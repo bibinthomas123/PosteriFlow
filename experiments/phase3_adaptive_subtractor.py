@@ -15,10 +15,10 @@ from tqdm import tqdm
 import yaml
 from typing import List, Dict, Tuple
 
-from src.ahsd.utils.config import AHSDConfig
-from src.ahsd.models.neural_pe import NeuralPosteriorEstimator
-from src.ahsd.core.adaptive_subtractor import AdaptiveSubtractor, UncertaintyAwareSubtractor
-from src.ahsd.core.priority_net import PriorityNet
+from ahsd.utils.config import AHSDConfig
+from ahsd.models.neural_pe import NeuralPosteriorEstimator
+from ahsd.core.adaptive_subtractor import AdaptiveSubtractor, UncertaintyAwareSubtractor
+from ahsd.core.priority_net import PriorityNet
 
 def setup_logging(verbose: bool = False):
     """Setup logging configuration."""
@@ -65,6 +65,10 @@ class NeuralPETrainer:
                         # Forward pass through flow
                         log_prob = self.neural_pe.flow.log_prob(samples, context=context)
                         loss = -torch.mean(log_prob)
+                        
+                        # Handle NaN/inf losses
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            continue
                         
                         # Backward pass
                         self.optimizer.zero_grad()

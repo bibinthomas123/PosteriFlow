@@ -10,12 +10,13 @@ from pathlib import Path
 import logging
 from tqdm import tqdm
 import yaml
+from typing import List, Dict, Tuple 
 
-from src.ahsd.utils.config import AHSDConfig
-from src.ahsd.data.simulation import OverlappingSignalSimulator
-from src.ahsd.data.gwtc_loader import GWTCDataLoader
-from src.ahsd.data.preprocessing import DataPreprocessor
-from src.ahsd.data.injection import RealDataSignalInjector
+from ahsd.utils.config import AHSDConfig
+from ahsd.data.simulation import OverlappingSignalSimulator
+from ahsd.data.gwtc_loader import GWTCDataLoader
+from ahsd.data.preprocessing import DataPreprocessor
+from ahsd.data.injection import RealDataSignalInjector
 
 def setup_logging(verbose: bool = False):
     """Setup logging configuration."""
@@ -126,7 +127,7 @@ def generate_real_data_scenarios(config: AHSDConfig, n_scenarios: int = 200) -> 
 def run_baseline_analysis(scenarios: List[Dict], config: AHSDConfig) -> List[Dict]:
     """Run baseline hierarchical subtraction analysis."""
     
-    from src.ahsd.evaluation.benchmarks import BaselineHierarchicalSubtraction
+    from ahsd.evaluation.benchmarks import BaselineHierarchicalSubtraction
     
     logging.info("Running baseline analysis for comparison...")
     

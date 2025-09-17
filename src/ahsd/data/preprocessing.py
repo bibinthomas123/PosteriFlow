@@ -112,35 +112,34 @@ class DataPreprocessor:
         return strain
     
     def _remove_glitches(self, strain: np.ndarray, threshold: float = 5.0) -> np.ndarray:
-        """Simple glitch removal using amplitude threshold."""
+        """Simple glitch removal using amplitude threshold (fixed version)."""
         
         try:
-            # Compute rolling standard deviation
-            window_size = int(0.1 * self.sampling_rate)  # 0.1 second window
+            strain_array = np.array(strain, dtype=float)
             
-            # Use scipy for rolling std calculation
-            std_values = np.array([
-                np.std(strain[max(0, i-window_size//2):min(len(strain), i+window_size//2)])
-                for i in range(len(strain))
-            ])
+            # Simple approach: clip extreme values
+            std_val = np.std(strain_array)
+            mean_val = np.mean(strain_array)
             
-            # Find outliers
-            median_std = np.median(std_values)
-            outliers = np.abs(strain) > threshold * median_std
-            
-            # Replace outliers with interpolated values
-            if np.any(outliers):
-                good_indices = np.where(~outliers)[0]
-                if len(good_indices) > 1:
-                    interp_func = interp1d(good_indices, strain[good_indices], 
-                                         kind='linear', fill_value='extrapolate')
-                    strain[outliers] = interp_func(np.where(outliers)[0])
+            if std_val > 0:
+                # Clip values beyond threshold * std
+                lower_bound = mean_val - threshold * std_val
+                upper_bound = mean_val + threshold * std_val
+                
+                clipped_strain = np.clip(strain_array, lower_bound, upper_bound)
+                
+                # Count clipped values
+                clipped_count = np.sum((strain_array < lower_bound) | (strain_array > upper_bound))
+                if clipped_count > 0:
+                    self.logger.debug(f"Clipped {clipped_count} outlier samples")
+                
+                return clipped_strain
+            else:
+                return strain_array
             
         except Exception as e:
             self.logger.debug(f"Glitch removal failed: {e}")
-            # Return original if glitch removal fails
-        
-        return strain
+            return np.array(strain, dtype=float)
     
     def _highpass_filter(self, strain: np.ndarray, f_low: Optional[float] = None) -> np.ndarray:
         """Apply high-pass filter."""

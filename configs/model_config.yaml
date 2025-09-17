@@ -1,0 +1,68 @@
+# Model Architecture Configuration
+
+# PriorityNet configuration
+priority_net:
+  architecture: "feedforward"
+  input_features: 13
+  hidden_layers: [256, 128, 64, 32]
+  activation: "relu"
+  dropout_rate: 0.15
+  batch_norm: true
+  output_activation: "sigmoid"
+  
+  # Training parameters
+  learning_rate: 0.001
+  weight_decay: 1e-4
+  batch_size: 64
+  max_epochs: 200
+  patience: 50
+  
+  # Learning rate scheduling
+  lr_scheduler: "reduce_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 20
+
+# Neural Posterior Estimation
+neural_pe:
+  # Flow architecture
+  flow_type: "masked_autoregressive"
+  n_flow_layers: 12
+  hidden_features: 128
+  num_blocks: 3
+  activation: "relu"
+  
+  # Training parameters
+  learning_rate: 5e-4
+  batch_size: 512
+  max_epochs: 500
+  validation_split: 0.2
+  
+  # Data conditioning
+  context_features: 512
+  preprocessing: "standardize"
+
+# Bias Correction Network  
+bias_corrector:
+  architecture: "residual"
+  input_dim: 15  # Number of parameters
+  hidden_layers: [256, 128, 64]
+  residual_connections: true
+  layer_norm: true
+  dropout_rate: 0.1
+  
+  # Training parameters
+  learning_rate: 0.001
+  batch_size: 128
+  max_epochs: 1000
+  gradient_clipping: 1.0
+  
+  # Regularization
+  l1_weight: 1e-5
+  l2_weight: 1e-4
+
+# Ensemble parameters
+ensemble:
+  use_ensemble: false
+  n_models: 5
+  ensemble_method: "average"
+  diversity_weight: 0.1

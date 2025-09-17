@@ -11,37 +11,38 @@ class SignalFeatureExtractor:
     
     def __init__(self):
         self.feature_names = [
-            'network_snr', 'coherent_snr', 'null_snr',
-            'chirp_mass_source', 'total_mass_source', 'mass_ratio',
-            'effective_spin', 'chi_eff', 'chi_p',
-            'luminosity_distance', 'redshift',
-            'frequency_overlap', 'time_overlap',
-            'astrophysical_significance'
+            'network_snr', 'chirp_mass_source', 'total_mass_source', 
+            'mass_1', 'mass_2', 'luminosity_distance',
+            'ra', 'dec', 'a_1', 'a_2',
+            'astrophysical_significance', 'frequency_overlap', 
+            'time_overlap', 'sky_area_90'
         ]
         
     def extract_features(self, detections: List[Dict]) -> torch.Tensor:
-        """Extract ranking features from real GW event candidates"""
-        features = []
+        """Extract exactly 14 features for priority ranking."""
+        if not detections:
+            return torch.empty(0, 14)
         
+        features = []
         for detection in detections:
             feature_vector = [
-                detection.get('network_snr', 0.0),
-                detection.get('coherent_snr', detection.get('network_snr', 0.0) * 0.9),
-                detection.get('null_snr', 1.0),
-                detection.get('chirp_mass_source', detection.get('chirp_mass', 30.0)),
-                detection.get('total_mass_source', detection.get('total_mass', 60.0)),
-                self._compute_mass_ratio(detection),
-                detection.get('chi_eff', 0.0),
-                detection.get('chi_eff', 0.0),  # Effective spin
-                detection.get('chi_p', 0.0),    # Precessing spin
-                detection.get('luminosity_distance', 500.0),
-                self._compute_redshift(detection.get('luminosity_distance', 500.0)),
-                self._compute_frequency_overlap(detection, detections),
-                self._compute_time_overlap(detection, detections),
-                self._compute_astrophysical_significance(detection)
+                detection.get('network_snr', 10.0),           # 1
+                detection.get('mass_1', 35.0),                # 2
+                detection.get('mass_2', 30.0),                # 3
+                detection.get('chirp_mass_source', 30.0),     # 4
+                detection.get('total_mass_source', 60.0),     # 5
+                detection.get('luminosity_distance', 500.0),  # 6
+                detection.get('ra', 0.0),                     # 7
+                detection.get('dec', 0.0),                    # 8
+                detection.get('a_1', 0.0),                    # 9
+                detection.get('a_2', 0.0),                    # 10
+                detection.get('theta_jn', 1.57),              # 11
+                detection.get('psi', 0.0),                    # 12
+                self._compute_frequency_overlap(detection, detections),  # 13
+                self._compute_time_overlap(detection, detections)        # 14
             ]
             features.append(feature_vector)
-            
+        
         return torch.tensor(features, dtype=torch.float32)
     
     def _compute_mass_ratio(self, detection: Dict) -> float:
@@ -122,7 +123,7 @@ class PriorityNet(nn.Module):
         
         # Build network architecture
         layers = []
-        input_dim = 13  # Number of features
+        input_dim = 14  # Match actual feature count  # Match actual feature count  # Number of features
         
         for hidden_dim in config.hidden_dims:
             layers.extend([

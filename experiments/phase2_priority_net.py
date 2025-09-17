@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """
 Phase 2: Train PriorityNet for intelligent signal ranking
@@ -16,8 +17,8 @@ from tqdm import tqdm
 import yaml
 from typing import List, Dict
 
-from src.ahsd.utils.config import AHSDConfig
-from src.ahsd.core.priority_net import PriorityNet, PriorityNetTrainer
+from ahsd.utils.config import AHSDConfig
+from ahsd.core.priority_net import PriorityNet, PriorityNetTrainer
 
 class PriorityNetDataset(Dataset):
     """Dataset for training PriorityNet with real and simulated data."""
@@ -310,7 +311,7 @@ def train_priority_net(config: AHSDConfig, train_dataset: PriorityNetDataset,
         else:
             patience_counter += 1
         
-        if patience_counter >= patience:
+        if patience_counter >= patience or (avg_val_loss == float("inf") and epoch > 5):
             logging.info(f"Early stopping at epoch {epoch+1}")
             break
         
@@ -324,7 +325,10 @@ def train_priority_net(config: AHSDConfig, train_dataset: PriorityNetDataset,
             })
     
     # Load best model
-    model.load_state_dict(torch.load('best_priority_net.pth'))
+    if os.path.exists('best_priority_net.pth'):
+        model.load_state_dict(torch.load('best_priority_net.pth', weights_only=True))
+    else:
+        logging.warning("Best model file not found, using current model")
     
     return model
 

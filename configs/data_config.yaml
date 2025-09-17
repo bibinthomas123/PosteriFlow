@@ -1,0 +1,47 @@
+# Data Configuration for AHSD
+
+# Data paths and sources
+data_sources:
+  gwtc_catalog: "GWTC-4"  # Latest catalog version
+  strain_data_source: "losc"  # LIGO Open Science Center
+  
+# File paths
+data_directories:
+  raw_data: "data/raw"
+  processed_data: "data/processed" 
+  cache_data: "data/cache"
+  
+# Data processing parameters
+processing:
+  # Strain data parameters
+  segment_duration: 32  # seconds
+  analysis_duration: 4   # seconds  
+  overlap: 2            # seconds
+  
+  # Quality cuts
+  min_snr: 8.0
+  max_far: 1.0e-6  # False alarm rate threshold
+  
+  # Detector requirements
+  required_detectors: ["H1", "L1"]
+  optional_detectors: ["V1"]
+  
+# Injection parameters  
+injection:
+  # SNR ranges for synthetic signals
+  snr_range: [8, 25]
+  
+  # Parameter ranges (based on GWTC observations)
+  mass_range: [5, 100]  # Solar masses
+  distance_range: [50, 3000]  # Mpc
+  spin_range: [0, 0.99]
+  
+  # Overlapping signal parameters
+  max_overlapping: 5
+  time_overlap_window: 1.0  # seconds
+  
+# Background estimation
+background:
+  estimation_method: "off_source"
+  background_duration: 100  # seconds before/after event
+  psd_estimation_duration: 32  # seconds

@@ -1,0 +1,43 @@
+# AHSD Real Data Configuration
+
+detectors:
+  - name: "H1"
+    psd_file: null  # Will use online data
+    sampling_rate: 4096
+    duration: 4.0
+  - name: "L1" 
+    psd_file: null  # Will use online data
+    sampling_rate: 4096
+    duration: 4.0
+  - name: "V1"
+    psd_file: null  # Will use online data
+    sampling_rate: 4096
+    duration: 4.0
+
+waveform:
+  approximant: "IMRPhenomPv2"
+  f_lower: 20.0
+  f_ref: 20.0
+  duration: 4.0
+
+priority_net:
+  hidden_dims: [256, 128, 64]
+  dropout: 0.15
+  learning_rate: 0.001
+  batch_size: 32
+
+adaptive_subtractor:
+  neural_pe:
+    flow_layers: 10
+    hidden_features: 128
+    num_blocks: 3
+  uncertainty_realizations: 50
+
+bias_corrector:
+  hidden_dims: [256, 128, 64]
+  training_epochs: 1500
+
+general:
+  max_overlapping_signals: 4
+  snr_threshold: 8.0
+  seed: 42

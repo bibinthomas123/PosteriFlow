@@ -53,7 +53,7 @@ class AHSDPipeline:
         
         return bilby.gw.WaveformGenerator(
             duration=self.config.waveform.duration,
-            sampling_frequency=self.config.detectors.sampling_rate,
+            sampling_frequency=self.config.detectors[0].sampling_rate,
             frequency_domain_source_model=bilby.gw.source.lal_binary_black_hole,
             parameter_conversion=bilby.gw.conversion.convert_to_lal_binary_black_hole_parameters,
             waveform_arguments=dict(

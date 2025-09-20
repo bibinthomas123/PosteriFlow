@@ -136,7 +136,6 @@ class PriorityNet(nn.Module):
             
         # Output layer - single priority score
         layers.append(nn.Linear(input_dim, 1))
-        layers.append(nn.Sigmoid())  # Ensure output is between 0 and 1
         
         self.network = nn.Sequential(*layers)
         self.feature_extractor = SignalFeatureExtractor()

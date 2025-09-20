@@ -30,7 +30,7 @@ MANIFEST
 *.h5
 
 # Data files
-data/
+data/.pkl .yaml
 *.fits
 *.hdf5
 *.csv
@@ -65,3 +65,7 @@ Thumbs.db
 
 # Conda
 *.conda
+
+#logs
+logs/
+*.log

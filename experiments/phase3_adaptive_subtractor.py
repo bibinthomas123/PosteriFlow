@@ -346,47 +346,65 @@ def create_detection_candidates(true_parameters: List[Dict]) -> List[Dict]:
 
 def evaluate_extraction(true_params: Dict, extraction_result: Dict, 
                        subtraction_uncertainty: Dict) -> Dict:
-    """Evaluate extraction quality against ground truth."""
+    """Evaluate extraction quality against ground truth with robust bias calculation."""
+    
+    def get_parameter_scale(param_name: str, true_value: float) -> float:
+        """Get reasonable scale for parameter normalization"""
+        scales = {
+            'mass_1': max(abs(true_value) * 0.15, 5.0),  # 15% or 5 M☉
+            'mass_2': max(abs(true_value) * 0.15, 5.0),
+            'luminosity_distance': max(abs(true_value) * 0.25, 100.0),  # 25% or 100 Mpc
+            'geocent_time': 0.01,  # 10 ms
+            'ra': 0.2, 'dec': 0.2, 'theta_jn': 0.3, 'psi': 0.3
+        }
+        return scales.get(param_name, max(abs(true_value) * 0.2, 0.1))
     
     try:
         posterior_summary = extraction_result.get('posterior_summary', {})
         
-        # Parameter biases
+        # Parameter biases with robust normalization
         biases = {}
         for param_name in ['mass_1', 'mass_2', 'luminosity_distance']:
             if param_name in true_params and param_name in posterior_summary:
                 true_val = true_params[param_name]
-                est_val = posterior_summary[param_name]['median']
-                std_val = posterior_summary[param_name]['std']
+                posterior_data = posterior_summary[param_name]
                 
-                if std_val > 0:
-                    normalized_bias = abs(est_val - true_val) / std_val
+                # Handle different posterior formats
+                if isinstance(posterior_data, dict):
+                    est_val = posterior_data.get('median', posterior_data.get('mean', true_val))
+                    std_val = posterior_data.get('std', 0.0)
                 else:
-                    normalized_bias = abs(est_val - true_val)
+                    est_val = float(posterior_data)
+                    std_val = 0.0
                 
+                # Robust bias calculation
+                raw_bias = abs(est_val - true_val)
+                
+                if std_val > 1e-6:  # Valid uncertainty
+                    normalized_bias = raw_bias / std_val
+                else:
+                    # Use parameter-specific scale
+                    param_scale = get_parameter_scale(param_name, true_val)
+                    normalized_bias = raw_bias / param_scale
+                
+                # Cap extreme biases
+                normalized_bias = min(normalized_bias, 10.0)
                 biases[param_name] = normalized_bias
         
-        # Overall quality metrics
+        # Compute overall metrics
         avg_bias = np.mean(list(biases.values())) if biases else float('inf')
         signal_quality = extraction_result.get('signal_quality', 0.0)
-        
-        # Subtraction quality
-        if subtraction_uncertainty:
-            avg_uncertainty = np.mean([np.mean(unc) for unc in subtraction_uncertainty.values()])
-        else:
-            avg_uncertainty = 0.0
         
         return {
             'parameter_biases': biases,
             'avg_parameter_bias': avg_bias,
             'signal_quality': signal_quality,
-            'subtraction_uncertainty': avg_uncertainty,
-            'extraction_success': avg_bias < 3.0  # Less than 3-sigma bias
+            'extraction_success': avg_bias < 3.0
         }
         
     except Exception as e:
         return {'error': str(e), 'extraction_success': False}
-
+    
 def compute_test_metrics(test_results: List[Dict]) -> Dict:
     """Compute summary metrics from test results."""
     

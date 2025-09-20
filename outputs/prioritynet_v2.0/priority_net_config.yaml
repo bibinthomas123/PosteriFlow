@@ -1,0 +1,91 @@
+config: !!python/object:ahsd.utils.config.AHSDConfig
+  adaptive_subtractor: !!python/object:ahsd.utils.config.AdaptiveSubtractorConfig
+    neural_pe:
+      flow_layers: 8
+      hidden_features: 256
+      num_blocks: 3
+    uncertainty_realizations: 200
+  bias_corrector: !!python/object:ahsd.utils.config.BiasCorrectorConfig
+    hidden_dims:
+    - 256
+    - 128
+    - 64
+    training_epochs: 1500
+  detectors:
+  - !!python/object:ahsd.utils.config.DetectorConfig
+    duration: 8.0
+    name: H1
+    psd_file: aligo_O4_high_psd.txt
+    sampling_rate: 4096
+  - !!python/object:ahsd.utils.config.DetectorConfig
+    duration: 8.0
+    name: L1
+    psd_file: aligo_O4_high_psd.txt
+    sampling_rate: 4096
+  - !!python/object:ahsd.utils.config.DetectorConfig
+    duration: 8.0
+    name: V1
+    psd_file: virgo_O4_psd.txt
+    sampling_rate: 4096
+  max_overlapping_signals: 5
+  priority_net: !!python/object:ahsd.utils.config.PriorityNetConfig
+    batch_size: 16
+    dropout: 0.25
+    hidden_dims:
+    - 512
+    - 256
+    - 128
+    - 64
+    learning_rate: 0.0005
+  seed: 42
+  snr_threshold: 8.0
+  waveform: !!python/object:ahsd.utils.config.WaveformConfig
+    approximant: IMRPhenomPv2
+    duration: 8.0
+    f_lower: 20.0
+    f_ref: 20.0
+evaluation_metrics:
+  avg_priority_accurac: !!python/object/apply:numpy._core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    xP9bOq+J5T8=
+  avg_ranking_correlation: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    AAAAAAAA6D8=
+  avg_top_k_precision: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    NBqNRqPR7D8=
+  std_priority_accurac: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    1FqPEu6stT8=
+  std_ranking_correlation: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    SbubtTp+2j8=
+  std_top_k_precision: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    5P3KnKnGyj8=
+training_args:
+  config: configs/enhanced_training.yaml
+  data_dir: data/training_data
+  output_dir: outputs/prioritynet_v2.0
+  use_wandb: true
+  val_split: 0.2
+  verbose: true

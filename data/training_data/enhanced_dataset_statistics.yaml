@@ -1,0 +1,11 @@
+quality_metrics:
+  avg_diversity_score: 0.5032293891510968
+  avg_mass_range: 37.1436766307282
+  avg_snr_range: 19.986469557322657
+  high_quality_fraction: 0.04621072088724584
+signal_distribution:
+  2_signals: 2154
+  3_signals: 1727
+  4_signals: 987
+  5_signals: 542
+total_scenarios: 5410

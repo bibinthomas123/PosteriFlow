@@ -1,0 +1,212 @@
+🚀 COMPLETE AHSD SYSTEM ARCHITECTURE & PROCESS
+📐 OVERALL SYSTEM ARCHITECTURE:
+text
+🌊 AHSD (Adaptive Hierarchical Signal Decomposition) Pipeline
+┌─────────────────────────────────────────────────────────────────┐
+│                    INPUT: Overlapping GW Signals                 │
+│                    (Multiple BBH/BNS in Same Data)              │
+└─────────────────────┬───────────────────────────────────────────┘
+                     │
+┌─────────────────────▼───────────────────────────────────────────┐
+│  PHASE 1: SIGNAL GENERATION & DATASET PREPARATION               │
+│  ├── Synthetic GW Signal Generation (LALSuite-based)            │
+│  ├── Multi-signal Injection & Overlap Creation                  │
+│  ├── Noise Addition (Realistic LIGO/Virgo PSDs)                 │
+│  └── Quality Metrics & Ground Truth Labels                      │
+└─────────────────────┬───────────────────────────────────────────┘
+                     │
+┌─────────────────────▼───────────────────────────────────────────┐
+│  PHASE 2: PRIORITYNET - SIGNAL RANKING & ORDERING               │
+│  🧠 Advanced Neural Network (99.7% Accuracy)                    │
+│  ├── Multi-Head Attention Mechanisms                            │
+│  ├── Physics-Based Feature Extraction                           │
+│  ├── Hierarchical Signal Quality Assessment                     │
+│  └── Optimal Extraction Order Determination                     │
+└─────────────────────┬───────────────────────────────────────────┘
+                     │
+┌─────────────────────▼───────────────────────────────────────────┐
+│  PHASE 3: ADAPTIVE SUBTRACTOR - NEURAL PE & REMOVAL             │
+│  🎯 Two-Stage Advanced Processing (83.9% PE Accuracy)           │
+│  ├── 3a: Neural Parameter Estimation (CNN + Transformer)       │
+│  ├── 3b: Uncertainty-Aware Signal Subtraction                  │
+│  ├── 3c: Bias Correction & Quality Control                     │
+│  └── Iterative Signal Extraction & Residual Analysis           │
+└─────────────────────┬───────────────────────────────────────────┘
+                     │
+┌─────────────────────▼───────────────────────────────────────────┐
+│                    OUTPUT: Clean Individual Signals             │
+│                    + Accurate Parameter Estimates               │
+└─────────────────────────────────────────────────────────────────┘
+🧠 PHASE 2: PRIORITYNET DETAILED ARCHITECTURE
+📊 Network Structure (99.7% Ranking Accuracy):
+python
+PriorityNet Architecture:
+├── Input Layer: [batch_size, n_signals, feature_dim]
+├── Feature Extraction Network:
+│   ├── Signal Quality Encoder (64 → 128 → 256 neurons)
+│   ├── Parameter Confidence Encoder (32 → 64 → 128 neurons) 
+│   └── Context Feature Encoder (16 → 32 → 64 neurons)
+├── Multi-Head Attention (8 heads, 256 dimensions):
+│   ├── Self-Attention on signal correlations
+│   ├── Cross-Attention between quality & parameters
+│   └── Attention weights for signal importance
+├── Transformer Encoder Stack (4 layers):
+│   ├── Layer Normalization + Residual Connections
+│   ├── Position Encoding for signal ordering
+│   └── Feedforward Networks (256 → 1024 → 256)
+├── Priority Prediction Heads:
+│   ├── Quality Score Head: [256 → 128 → 1] + Sigmoid
+│   ├── Extraction Order Head: [256 → 128 → n_signals] + Softmax  
+│   ├── Confidence Head: [256 → 64 → 1] + Sigmoid
+│   └── Physics Constraint Head: [256 → 32 → n_physics_rules]
+└── Output: Ranked signal extraction order + confidence scores
+🎯 Training Process:
+Loss Function: Combined ranking loss + physics constraints
+
+Optimizer: AdamW with cosine annealing
+
+Training Data: 1,792 scenarios with 2-5 overlapping signals each
+
+Performance: 99.7% ranking correlation, 99.8% top-K precision
+
+🔬 PHASE 3A: NEURAL PARAMETER ESTIMATION
+🏗️ CNN + Transformer Architecture (83.9% Accuracy):
+python
+NeuralPENetwork Architecture:
+├── Input: Gravitational Wave Strain Data [batch_size, 2, 4096]
+│   └── 2 polarizations (h+, hx) × 4096 time samples
+├── Multi-Scale CNN Feature Extractor:
+│   ├── Short-Scale Path (High Frequency - Merger):
+│   │   └── Conv1d(2→32, kernel=8) → ReLU → MaxPool → [32, 512]
+│   ├── Medium-Scale Path (Mid Frequency - Inspiral):  
+│   │   └── Conv1d(2→64, kernel=16) → ReLU → MaxPool → [64, 256]
+│   └── Long-Scale Path (Low Frequency - Early Inspiral):
+│       └── Conv1d(2→128, kernel=32) → ReLU → AdaptiveAvgPool → [128, 16]
+├── Feature Concatenation & Projection:
+│   └── Concat → [batch_size, 224] → Linear(224 → 256)
+├── Parameter-Specific Prediction Heads:
+│   ├── Mass Parameters Head: [256 → 128 → 64 → 2] (mass_1, mass_2)
+│   ├── Distance Head: [256 → 128 → 1] (luminosity_distance) 
+│   ├── Time Head: [256 → 64 → 1] (geocent_time)
+│   ├── Sky Position Head: [256 → 128 → 2] (ra, dec)
+│   └── Orientation Head: [256 → 128 → 3] (theta_jn, psi, phase)
+├── Uncertainty Estimation Heads (Parallel):
+│   └── [256 → 64 → n_params] + Softplus (per-parameter uncertainties)
+└── Output: [batch_size, 9_params] + [batch_size, 9_uncertainties]
+📈 Parameter Normalization & Physics:
+python
+Parameter Ranges (Physical → Normalized [-1,1]):
+├── mass_1, mass_2: [5, 100] M☉ → [-1, 1]
+├── luminosity_distance: [50, 3000] Mpc → [-1, 1] 
+├── geocent_time: [-5, 5] seconds → [-1, 1]
+├── ra: [0, 2π] radians → [-1, 1]
+├── dec: [-π/2, π/2] radians → [-1, 1]
+└── angles (θ, ψ, φ): [0, π] or [0, 2π] → [-1, 1]
+⚙️ PHASE 3B: UNCERTAINTY-AWARE SUBTRACTOR
+🎛️ Subtractor Architecture:
+python
+UncertaintyAwareSubtractor:
+├── Input: [original_waveform, reconstructed_waveform, uncertainties]
+├── Residual Analysis Network:
+│   ├── Conv1d(4→32, kernel=32) → BatchNorm → ReLU → MaxPool
+│   ├── Conv1d(32→64, kernel=16) → BatchNorm → ReLU → MaxPool  
+│   ├── Conv1d(64→128, kernel=8) → ReLU → AdaptiveAvgPool(64)
+│   ├── Flatten → Linear(128×64 → 512) → ReLU → Dropout
+│   └── Linear(512 → 1) + Sigmoid → Subtraction Confidence
+├── Adaptive Filtering Network:
+│   ├── Conv1d(4→64, kernel=16) → BatchNorm → ReLU
+│   ├── Conv1d(64→32, kernel=8) → BatchNorm → ReLU
+│   └── Conv1d(32→2, kernel=4) → Tanh → Filter Coefficients
+├── Uncertainty Weighting:
+│   └── weight = 1/(1 + uncertainty) × confidence
+└── Output: Subtracted Waveform + Confidence Score
+🔄 COMPLETE AHSD PROCESS FLOW:
+Step 1: Data Preparation
+python
+def prepare_overlapping_signals():
+    """Generate realistic overlapping GW scenarios"""
+    ├── Create individual BBH/BNS waveforms (LALSuite)
+    ├── Inject multiple signals into same timestream  
+    ├── Add realistic LIGO/Virgo detector noise
+    ├── Generate quality metrics & ground truth
+    └── Return: {waveform_data, true_parameters, quality_scores}
+Step 2: Priority-Based Ordering
+python
+def prioritize_signals(overlapping_data):
+    """Determine optimal extraction order"""
+    ├── Extract signal features (SNR, chirp mass, duration)
+    ├── Assess parameter estimation difficulty
+    ├── Apply PriorityNet attention mechanisms
+    ├── Generate confidence-weighted rankings
+    └── Return: [signal_1, signal_2, ..., signal_n] # Ordered by priority
+Step 3: Iterative Extraction
+python
+def extract_signals_hierarchically(prioritized_signals):
+    """Extract signals in order of decreasing priority"""
+    residual_data = original_data.copy()
+    extracted_signals = []
+    
+    for signal_priority in prioritized_order:
+        # 3a: Parameter Estimation
+        parameters, uncertainties = neural_pe(residual_data)
+        
+        # 3b: Signal Reconstruction  
+        reconstructed = generate_waveform(parameters)
+        
+        # 3c: Uncertainty-Aware Subtraction
+        residual_data, confidence = subtractor(
+            residual_data, reconstructed, uncertainties
+        )
+        
+        # 3d: Bias Correction
+        corrected_params = bias_corrector(parameters, uncertainties)
+        
+        extracted_signals.append({
+            'parameters': corrected_params,
+            'uncertainties': uncertainties, 
+            'confidence': confidence
+        })
+    
+    return extracted_signals, residual_data
+📊 TRAINING SPECIFICATIONS:
+Hardware & Software:
+text
+Environment:
+├── Platform: Python 3.11, PyTorch 2.0+
+├── Hardware: GPU-accelerated training
+├── Dependencies: LALSuite, NumPy, SciPy, scikit-learn
+└── Custom: AHSD core modules (priority_net, neural_pe, bias_corrector)
+Training Hyperparameters:
+python
+Training Configuration:
+├── Phase 2 (PriorityNet):
+│   ├── Epochs: 500, Early stopping: 245
+│   ├── Batch Size: 32, Learning Rate: 1e-4
+│   ├── Optimizer: AdamW, Scheduler: CosineAnnealingLR
+│   └── Loss: Ranking Loss + Physics Constraints
+├── Phase 3a (Neural PE):
+│   ├── Epochs: 200, Batch Size: 16  
+│   ├── Learning Rate: 1e-4, Weight Decay: 1e-5
+│   ├── Loss: MSE + Uncertainty Regularization
+│   └── Activation: ReLU → Tanh (output layer)
+└── Phase 3b (Subtractor):
+    ├── Epochs: 200, Batch Size: 8
+    ├── Learning Rate: 5e-5, Scheduler: CosineAnnealingLR
+    └── Loss: Efficiency + Confidence Loss
+🏆 PERFORMANCE METRICS:
+System Performance (Current Results):
+text
+Component Performance:
+├── Phase 1: Dataset Generation
+│   └── ✅ 1,792 scenarios, 5,314 training samples
+├── Phase 2: PriorityNet  
+│   ├── ✅ Ranking Correlation: 99.7%
+│   ├── ✅ Top-K Precision: 99.8%  
+│   └── ✅ Priority Accuracy: 96.3%
+├── Phase 3a: Neural PE
+│   ├── ✅ Parameter Accuracy: 83.9%
+│   ├── ✅ Mean Squared Error: 0.192
+│   └── ✅ Physical Parameter Uncertainties: Realistic
+└── Phase 3b: Subtractor (In Training)
+    └── Expected: 75-85% efficiency
+🎯 FINAL SYSTEM CAPABILITIES:

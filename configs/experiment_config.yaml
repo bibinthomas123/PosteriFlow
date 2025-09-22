@@ -1,44 +1,42 @@
-# AHSD Experiment Configuration
-
+#  VERSION of your config
 detectors:
   - name: "H1"
     psd_file: "aligo_O4_high_psd.txt"
     sampling_rate: 4096
-    duration: 4.0
+    duration: 8.0
   - name: "L1" 
     psd_file: "aligo_O4_high_psd.txt"
     sampling_rate: 4096
-    duration: 4.0
+    duration: 8.0
   - name: "V1"
     psd_file: "virgo_O4_psd.txt"
     sampling_rate: 4096
-    duration: 4.0
+    duration: 8.0
 
 waveform:
   approximant: "IMRPhenomPv2"
   f_lower: 20.0
   f_ref: 20.0
-  duration: 4.0
+  duration: 8.0
 
 priority_net:
-  hidden_dims: [128, 64, 32]
-  dropout: 0.15
-  learning_rate: 0.001
-  batch_size: 64
+  hidden_dims: [512, 256, 128, 64]
+  dropout: 0.25
+  learning_rate: 0.0005
+  batch_size: 16
 
 adaptive_subtractor:
   neural_pe:
     flow_layers: 8
-    hidden_features: 64
-    num_blocks: 2
-  uncertainty_realizations: 100
+    hidden_features: 256
+    num_blocks: 3
+    context_features: 300  # ADD THIS - was missing
+  uncertainty_realizations: 200
 
 bias_corrector:
-  hidden_dims: [128, 64, 32]
-  training_epochs: 1000
+  hidden_dims: [256, 128, 64]
+  training_epochs: 1500
 
-# Move general settings to top level instead of nested
 max_overlapping_signals: 5
 snr_threshold: 8.0
 seed: 42
-

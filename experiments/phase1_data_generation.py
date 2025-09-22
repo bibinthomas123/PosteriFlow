@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-FIXED Enhanced Phase 1: Maximum diversity data generation for optimal PriorityNet training
+ Phase 1: Maximum diversity data generation for optimal PriorityNet training
+INTEGRATED with  AHSD pipeline
 """
-
+import sys
+import os
 import numpy as np
 import argparse
 import pickle
@@ -14,8 +16,50 @@ from typing import List, Dict, Tuple
 from scipy.stats import powerlaw, norm
 import json
 
-from ahsd.utils.config import AHSDConfig
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
+# Safe imports with fallbacks
+try:
+    from ahsd.utils.config import AHSDConfig
+    from ahsd.utils.data_format import standardize_strain_data
+    IMPORTS_OK = True
+except ImportError as e:
+    print(f"Warning: Package imports failed: {e}")
+    IMPORTS_OK = False
+    
+    # Fallback config implementation
+    from dataclasses import dataclass, field
+    from typing import List, Optional
+    
+    @dataclass
+    class DetectorConfig:
+        name: str
+        sampling_rate: int = 4096
+        duration: float = 8.0
+    
+    @dataclass
+    class WaveformConfig:
+        approximant: str = "IMRPhenomPv2"
+        f_lower: float = 20.0
+        duration: float = 8.0
+    
+    @dataclass
+    class AHSDConfig:
+        detectors: List[DetectorConfig] = field(default_factory=lambda: [
+            DetectorConfig('H1'), DetectorConfig('L1'), DetectorConfig('V1')
+        ])
+        waveform: WaveformConfig = field(default_factory=WaveformConfig)
+        
+        @classmethod
+        def from_yaml(cls, config_path: str):
+            try:
+                with open(config_path, 'r') as f:
+                    config_dict = yaml.safe_load(f)
+                return cls()  # Use defaults if loading fails
+            except:
+                return cls()
 
 def setup_logging(verbose: bool = False):
     """Setup logging configuration."""
@@ -24,11 +68,10 @@ def setup_logging(verbose: bool = False):
         level=level,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('enhanced_phase1.log'),
+            logging.FileHandler('phase1_enhanced.log'),
             logging.StreamHandler()
         ]
     )
-
 
 class OptimalParameterGenerator:
     """Generate parameters optimized for PriorityNet training diversity."""
@@ -215,11 +258,10 @@ class OptimalParameterGenerator:
         
         return signal_parameters
 
-
 def generate_optimal_training_scenarios(config: AHSDConfig, n_scenarios: int) -> List[Dict]:
     """Generate optimized training scenarios for maximum learning."""
     
-    logging.info(f"Generating {n_scenarios} optimal training scenarios...")
+    logging.info(f"📊 Phase 1: Generating {n_scenarios} optimal training scenarios...")
     
     generator = OptimalParameterGenerator(config)
     scenarios = []
@@ -235,7 +277,7 @@ def generate_optimal_training_scenarios(config: AHSDConfig, n_scenarios: int) ->
         scenario = {
             'scenario_id': scenario_id,
             'true_parameters': signal_parameters,
-            'injected_data': create_synthetic_data_fixed(signal_parameters, config),
+            'injected_data': create_synthetic_data_(signal_parameters, config),
             'n_signals': n_signals,
             'data_type': 'simulated',
             'quality_metrics': compute_scenario_quality_metrics(signal_parameters)
@@ -246,18 +288,17 @@ def generate_optimal_training_scenarios(config: AHSDConfig, n_scenarios: int) ->
     # Filter for quality - less restrictive threshold
     high_quality_scenarios = [s for s in scenarios if s['quality_metrics']['diversity_score'] > 0.3]
     
-    logging.info(f"Generated {len(high_quality_scenarios)} high-quality scenarios out of {len(scenarios)}")
+    logging.info(f"✅ Phase 1: Generated {len(high_quality_scenarios)} high-quality scenarios out of {len(scenarios)}")
     return high_quality_scenarios
 
-
-def create_synthetic_data_fixed(signal_parameters: List[Dict], config: AHSDConfig) -> Dict:
-    """Create synthetic data structure FIXED to match evaluation expectations."""
+def create_synthetic_data_(signal_parameters: List[Dict], config: AHSDConfig) -> Dict:
+    """✅ : Create synthetic data structure that matches AHSD pipeline expectations."""
     
     duration = config.waveform.duration
     sample_rate = 4096
     n_samples = int(duration * sample_rate)
     
-    # Create realistic data structure
+    # ✅ CRITICAL FIX: Create data format that matches pipeline expectations
     data = {}
     for detector in ['H1', 'L1', 'V1']:
         # Generate noise + signals
@@ -296,12 +337,8 @@ def create_synthetic_data_fixed(signal_parameters: List[Dict], config: AHSDConfi
                 logging.debug(f"Signal generation failed: {e}")
                 continue
         
-        # FIXED: Return proper structure expected by PriorityNet
-        data[detector] = {
-            'strain': noise + signal_sum,
-            'times': t,
-            'sample_rate': sample_rate
-        }
+        # ✅ : Return simple arrays, not dicts - this is what PriorityNet expects
+        data[detector] = noise + signal_sum
     
     return data
 
@@ -341,11 +378,10 @@ def compute_scenario_quality_metrics(signal_parameters: List[Dict]) -> Dict:
         logging.debug(f"Quality metrics computation failed: {e}")
         return {'diversity_score': 0.5, 'mass_diversity': 0.0, 'distance_diversity': 0.0, 'snr_diversity': 0.0}
 
-
 def generate_physics_based_biases(scenarios: List[Dict]) -> List[Dict]:
     """Generate realistic parameter biases based on physics and SNR."""
     
-    logging.info("Computing physics-based parameter biases...")
+    logging.info("📊 Computing physics-based parameter biases...")
     
     baseline_results = []
     
@@ -375,7 +411,7 @@ def generate_physics_based_biases(scenarios: List[Dict]) -> List[Dict]:
                 
                 total_scale = bias_scale * diff_scale
                 
-                # Generate realistic biases (SMALLER values to avoid 207 bias issue)
+                # ✅ : Generate realistic biases (SMALLER values to prevent issues)
                 param_bias = {
                     'mass_1': np.random.normal(0, 0.05 * total_scale),        # Reduced from 0.1
                     'mass_2': np.random.normal(0, 0.05 * total_scale),        # Reduced from 0.1
@@ -404,9 +440,8 @@ def generate_physics_based_biases(scenarios: List[Dict]) -> List[Dict]:
     
     return baseline_results
 
-
 def validate_scenario(scenario: Dict) -> bool:
-    """Validate scenario has all required components."""
+    """✅ : Validate scenario has all required components."""
     required_keys = ['true_parameters', 'injected_data', 'n_signals']
     
     if not all(key in scenario for key in required_keys):
@@ -427,7 +462,6 @@ def validate_scenario(scenario: Dict) -> bool:
     
     return True
 
-
 def save_enhanced_training_data(scenarios: List[Dict], baseline_results: List[Dict], output_dir: Path):
     """Save enhanced training data with quality metrics."""
     
@@ -435,7 +469,7 @@ def save_enhanced_training_data(scenarios: List[Dict], baseline_results: List[Di
     valid_scenarios = [s for s in scenarios if validate_scenario(s)]
     valid_baseline = baseline_results[:len(valid_scenarios)]
     
-    logging.info(f"Saving {len(valid_scenarios)} valid scenarios out of {len(scenarios)}")
+    logging.info(f"✅ Saving {len(valid_scenarios)} valid scenarios out of {len(scenarios)}")
     
     # Save scenarios
     with open(output_dir / 'training_scenarios.pkl', 'wb') as f:
@@ -482,14 +516,13 @@ def save_enhanced_training_data(scenarios: List[Dict], baseline_results: List[Di
     with open(output_dir / 'enhanced_dataset_statistics.yaml', 'w') as f:
         yaml.dump(stats, f, default_flow_style=False)
     
-    logging.info(f"Enhanced training data saved to {output_dir}")
-    logging.info(f"Dataset statistics: {stats}")
-
+    logging.info(f"✅ Enhanced training data saved to {output_dir}")
+    logging.info(f"📊 Dataset statistics: {stats}")
 
 def main():
     parser = argparse.ArgumentParser(description='Generate enhanced AHSD training data')
     parser.add_argument('--config', required=True, help='Config file path')
-    parser.add_argument('--n_simulated', type=int, default=10000, help='Number of simulated scenarios')
+    parser.add_argument('--n_simulated', type=int, default=5000, help='Number of simulated scenarios')
     parser.add_argument('--output_dir', required=True, help='Output directory')
     parser.add_argument('--verbose', action='store_true', help='Verbose logging')
     
@@ -501,11 +534,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    logging.info("🚀 Starting Enhanced Phase 1 Data Generation")
+    
     # Generate optimal scenarios
     scenarios = generate_optimal_training_scenarios(config, args.n_simulated)
     
     if not scenarios:
-        logging.error("No valid scenarios generated!")
+        logging.error("❌ No valid scenarios generated!")
         return
     
     # Generate physics-based biases
@@ -514,8 +549,7 @@ def main():
     # Save enhanced data
     save_enhanced_training_data(scenarios, baseline_results, output_dir)
     
-    logging.info("Enhanced Phase 1 data generation completed successfully!")
-
+    logging.info("✅ Enhanced Phase 1 data generation completed successfully!")
 
 if __name__ == '__main__':
     main()

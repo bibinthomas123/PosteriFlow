@@ -1,0 +1,87 @@
+## DATA SET STRUCTURE
+
+challenge_level_distribution:
+  easy: 227 (0.9%)
+  extreme: 1175 (4.6%)
+  medium: 15990 (62.0%)
+  real: 52 (0.2%)
+  real_inspired: 2940 (11.4%)
+  real_multi_inspired: 4814 (18.7%)
+  very_hard: 592 (2.3%)
+data_type_distribution:
+  extreme_scenarios: 600 (5.2%)
+  high_snr_pristine: 150 (1.3%)
+  low_snr_challenge: 300 (2.6%)
+  pure_synthetic: 5250 (45.7%)
+  real_augmented_multi: 2184 (19.0%)
+  real_augmented_single: 2940 (25.6%)
+  real_background: 52 (0.5%)
+dataset_overview:
+  avg_signals_per_scenario: 2.247298710352039
+  creation_timestamp: '2025-09-24 10:25:49'
+  total_scenarios: 11476
+  total_signals: 25790
+diversity_statistics:
+  high_diversity_fraction: '0.296'
+  mean_diversity_score: '0.440'
+  very_high_diversity_fraction: '0.276'
+expected_training_performance:
+  baseline_synthetic_accuracy: 80-85% (maintained with larger dataset)
+  domain_adaptation_method: mixed_real_synthetic_training
+  target_real_data_accuracy: 65-80% (major improvement from 23.8%)
+  training_recommendation: batch_size_16_lr_1e-4_epochs_200
+parameter_statistics:
+  distance_stats:
+    max: 17638 Mpc
+    mean: 1654 Mpc
+    min: 10 Mpc
+    std: 2198 Mpc
+  mass_1_stats:
+    max: "201.6 M\xE2\u02DC\u2030"
+    mean: "36.4 M\xE2\u02DC\u2030"
+    min: "3.1 M\xE2\u02DC\u2030"
+    std: "16.7 M\xE2\u02DC\u2030"
+  mass_2_stats:
+    max: "149.9 M\xE2\u02DC\u2030"
+    mean: "26.4 M\xE2\u02DC\u2030"
+    min: "1.0 M\xE2\u02DC\u2030"
+    std: "10.8 M\xE2\u02DC\u2030"
+  snr_stats:
+    max: '100.0'
+    mean: '12.6'
+    min: '3.0'
+    std: '9.8'
+signal_count_distribution:
+  1_signals: 3387 (29.5%)
+  2_signals: 3964 (34.5%)
+  3_signals: 2542 (22.2%)
+  4_signals: 1066 (9.3%)
+  5_signals: 517 (4.5%)
+source_distribution:
+  real_ligo: 52 (0.5%)
+  real_ligo_augmented_enhanced: 5124 (44.6%)
+  synthetic: 5250 (45.7%)
+  synthetic_extreme: 600 (5.2%)
+  synthetic_high_snr: 150 (1.3%)
+  synthetic_low_snr: 300 (2.6%)
+
+## PHASE 2 RESULTS
+2025-09-24 13:22:39,275 - INFO - Epoch 299: Average Loss = 0.020383
+2025-09-24 13:22:39,279 - INFO - 📊 Evaluating PriorityNet performance...
+2025-09-24 13:22:45,741 - INFO - 📈 Evaluation completed: 8089 samples evaluated
+2025-09-24 13:22:45,745 - INFO - ✅ Production PriorityNet training completed!
+2025-09-24 13:22:45,745 - INFO - ✅ Phase 2:PriorityNet Training COMPLETED
+2025-09-24 13:22:45,745 - INFO - 📊 avg_ranking_correlation: 0.6050
+2025-09-24 13:22:45,745 - INFO - 📊 std_ranking_correlation: 0.6747
+2025-09-24 13:22:45,745 - INFO - 📊 avg_top_k_precision: 0.9660
+2025-09-24 13:22:45,745 - INFO - 📊 std_top_k_precision: 0.1049
+2025-09-24 13:22:45,745 - INFO - 📊 avg_priority_accuracy: 0.9458
+2025-09-24 13:22:45,745 - INFO - 📊 std_priority_accuracy: 0.0257
+
+============================================================
+✅ PHASE 2 COMPLETE PRIORITYNET
+============================================================
+📈 Ranking Correlation: 60.5%
+🎯 Top-K Precision: 96.6%
+✅ Priority Accuracy: 94.6%
+============================================================

@@ -348,6 +348,9 @@ class PriorityNetTrainer:
             return {'loss': float(avg_loss)}
         else:
             return {'loss': 0.0}
+        
+        
+        
     def train_epoch(self, data_loader) -> Dict[str, float]:
         """Train for one epoch"""
         

@@ -5,17 +5,17 @@ PRODUCTION Phase 2: Train PriorityNet for intelligent signal extraction ordering
 
 import sys
 import os
-import numpy as np
+import numpy as np 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader 
 import argparse
 import pickle
 from pathlib import Path
 import logging
 from tqdm import tqdm
 import yaml
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -37,6 +37,34 @@ def setup_logging(verbose: bool = False):
     )
 
 class PriorityNetDataset(Dataset):
+    """Production dataset for PriorityNet training.
+    This dataset class processes gravitational wave scenarios to compute extraction priorities
+    based on signal characteristics and baseline biases.
+    Args:
+        scenarios (List[Dict]): List of scenario dictionaries containing:
+            - true_parameters: Signal parameters including mass_1, mass_2, network_snr etc.
+            - baseline_biases: Optional bias information from baseline extractions
+    Attributes:
+        data (List[Dict]): Processed scenarios containing:
+            - scenario_id: Index of the original scenario
+            - detections: Signal parameters
+            - priorities: Computed extraction priorities as torch.Tensor
+        logger: Logger instance for this class
+    Example:
+        >>> scenarios = [{"true_parameters": {...}, "baseline_biases": {...}}, ...]
+        >>> dataset = PriorityNetDataset(scenarios)
+        >>> len(dataset)  # Number of valid scenarios
+        >>> sample = dataset[0]  # Get first scenario data
+    Notes:
+        - Skips scenarios with missing true parameters
+        - Computes priorities based on:
+            - Signal-to-noise ratio (SNR)
+            - Total mass of the binary system
+            - Luminosity distance
+            - Baseline extraction biases
+            - Hierarchical extraction difficulty
+        - Priority values are normalized between 0.1 and 1.0
+    """
     """Production dataset for PriorityNet training"""
     
     def __init__(self, scenarios: List[Dict]):
@@ -68,7 +96,7 @@ class PriorityNetDataset(Dataset):
         self.logger.info(f"✅ Created production dataset with {len(self.data)} scenarios")
     
     def _compute_extraction_priorities(self, signals: List[Dict], 
-                                     baseline_biases: List[Dict] = None) -> torch.Tensor:
+                                     baseline_biases: Optional[List[Dict]] = None) -> torch.Tensor:
         """Compute extraction priorities based on signal characteristics"""
         
         n_signals = len(signals)
@@ -367,13 +395,13 @@ def main():
     evaluation_metrics = train_priority_net(config, dataset, output_dir)
     
     # Print results
-    logging.info("✅ Phase 2: Production PriorityNet Training COMPLETED")
+    logging.info("✅ Phase 2:PriorityNet Training COMPLETED")
     for key, value in evaluation_metrics.items():
         if isinstance(value, float):
             logging.info(f"📊 {key}: {value:.4f}")
     
     print("\n" + "="*60)
-    print("✅ PHASE 2 COMPLETE - PRODUCTION PRIORITYNET")
+    print("✅ PHASE 2 COMPLETE PRIORITYNET")
     print("="*60)
     
     if 'avg_ranking_correlation' in evaluation_metrics:

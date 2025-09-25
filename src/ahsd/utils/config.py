@@ -8,35 +8,36 @@ class DetectorConfig:
     name: str
     psd_file: Optional[str] = None
     sampling_rate: int = 4096
-    duration: float = 4.0
+    duration: float = 8.0  # Changed from 4.0 to match your enhanced config
 
 @dataclass 
 class WaveformConfig:
     approximant: str = "IMRPhenomPv2"
     f_lower: float = 20.0
     f_ref: float = 20.0
-    duration: float = 4.0
+    duration: float = 8.0  # Changed from 4.0 to match enhanced config
 
 @dataclass
 class PriorityNetConfig:
-    hidden_dims: List[int] = field(default_factory=lambda: [128, 64, 32])
-    dropout: float = 0.1
-    learning_rate: float = 1e-3
-    batch_size: int = 64
+    hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128, 64])  # Match enhanced config
+    dropout: float = 0.25  # Match enhanced config
+    learning_rate: float = 0.0005  # Match enhanced config
+    batch_size: int = 16  # Match enhanced config
 
 @dataclass
 class AdaptiveSubtractorConfig:
     neural_pe: Dict = field(default_factory=lambda: {
         'flow_layers': 8,
-        'hidden_features': 64,
-        'num_blocks': 2
+        'hidden_features': 256,  # Match enhanced config
+        'num_blocks': 3,         # Match enhanced config
+        'context_features': 300  # Add missing context_features
     })
-    uncertainty_realizations: int = 100
+    uncertainty_realizations: int = 200  # Match enhanced config
 
 @dataclass
 class BiasCorrectorConfig:
-    hidden_dims: List[int] = field(default_factory=lambda: [128, 64, 32])
-    training_epochs: int = 1000
+    hidden_dims: List[int] = field(default_factory=lambda: [256, 128, 64])  # Match enhanced config
+    training_epochs: int = 1500  # Match enhanced config
 
 @dataclass
 class AHSDConfig:
@@ -51,21 +52,39 @@ class AHSDConfig:
     
     @classmethod
     def from_yaml(cls, config_path: str):
-        with open(config_path, 'r') as f:
-            config_dict = yaml.safe_load(f)
+        """: Better error handling and defaults"""
+        try:
+            with open(config_path, 'r') as f:
+                config_dict = yaml.safe_load(f)
+        except Exception as e:
+            print(f"Warning: Could not load config from {config_path}: {e}")
+            config_dict = {}
         
-        # Convert detector configs
-        detector_configs = [DetectorConfig(**det) for det in config_dict['detectors']]
+        # Convert detector configs with better defaults
+        detector_configs = []
+        for det in config_dict.get('detectors', []):
+            detector_configs.append(DetectorConfig(**det))
+        
+        if not detector_configs:
+            # Default detectors
+            detector_configs = [
+                DetectorConfig('H1'),
+                DetectorConfig('L1'), 
+                DetectorConfig('V1')
+            ]
         
         return cls(
             detectors=detector_configs,
-            waveform=WaveformConfig(**config_dict['waveform']),
-            priority_net=PriorityNetConfig(**config_dict['priority_net']),
-            adaptive_subtractor=AdaptiveSubtractorConfig(**config_dict['adaptive_subtractor']),
-            bias_corrector=BiasCorrectorConfig(**config_dict['bias_corrector']),
-            **{k: v for k, v in config_dict.items() if k not in ['detectors', 'waveform', 'priority_net', 'adaptive_subtractor', 'bias_corrector']}
+            waveform=WaveformConfig(**config_dict.get('waveform', {})),
+            priority_net=PriorityNetConfig(**config_dict.get('priority_net', {})),
+            adaptive_subtractor=AdaptiveSubtractorConfig(**config_dict.get('adaptive_subtractor', {})),
+            bias_corrector=BiasCorrectorConfig(**config_dict.get('bias_corrector', {})),
+            max_overlapping_signals=config_dict.get('max_overlapping_signals', 5),
+            snr_threshold=config_dict.get('snr_threshold', 8.0),
+            seed=config_dict.get('seed', 42)
         )
 
+# Add missing utility functions that other files expect
 def add_parameter_noise(param_name: str, true_value: float) -> float:
     """Add realistic noise to parameter estimates"""
     noise_levels = {
@@ -111,12 +130,12 @@ def compute_detailed_metrics(true_parameters: List[Dict],
                     # Normalized bias
                     estimated_val = posterior.get('median', posterior.get('mean', 0))
                     std_val = posterior.get('std', 1)
-                    bias = abs(estimated_val - true_val) / std_val
+                    bias = abs(estimated_val - true_val) / std_val if std_val > 0 else 0
                     parameter_biases.append(bias)
                     
                     # Coverage probability (90% credible interval)
-                    if 'quantiles' in posterior:
-                        q5, q95 = posterior['quantiles'], posterior['quantiles'][-1]
+                    if 'quantiles' in posterior and len(posterior['quantiles']) >= 2:
+                        q5, q95 = posterior['quantiles'][0], posterior['quantiles'][-1]
                         coverage = 1.0 if q5 <= true_val <= q95 else 0.0
                         coverage_probabilities.append(coverage)
     
@@ -158,11 +177,12 @@ def compute_summary_metrics(evaluation_results: Dict) -> Dict:
             all_recovery_rates = []
             
             for result in method_results:
-                metrics = result['metrics']
-                all_biases.extend(metrics['parameter_biases'])
-                all_coverages.extend(metrics['coverage_probabilities'])
-                all_times.append(metrics['extraction_time'])
-                all_recovery_rates.append(metrics['recovery_rate'])
+                if 'metrics' in result:
+                    metrics = result['metrics']
+                    all_biases.extend(metrics.get('parameter_biases', []))
+                    all_coverages.extend(metrics.get('coverage_probabilities', []))
+                    all_times.append(metrics.get('extraction_time', 0))
+                    all_recovery_rates.append(metrics.get('recovery_rate', 0))
             
             summary[method] = {
                 'mean_bias': np.mean(all_biases) if all_biases else np.inf,
@@ -178,9 +198,19 @@ def compute_summary_metrics(evaluation_results: Dict) -> Dict:
         ahsd_bias = summary['ahsd']['mean_bias']
         hierarchical_bias = summary['hierarchical_baseline']['mean_bias']
         
+        if hierarchical_bias > 0 and not np.isinf(hierarchical_bias):
+            bias_improvement = (hierarchical_bias - ahsd_bias) / hierarchical_bias
+        else:
+            bias_improvement = 0
+        
+        if summary['hierarchical_baseline']['mean_extraction_time'] > 0:
+            time_ratio = summary['ahsd']['mean_extraction_time'] / summary['hierarchical_baseline']['mean_extraction_time']
+        else:
+            time_ratio = 1
+            
         summary['ahsd_vs_hierarchical'] = {
-            'bias_improvement': (hierarchical_bias - ahsd_bias) / hierarchical_bias if hierarchical_bias > 0 else 0,
-            'time_ratio': summary['ahsd']['mean_extraction_time'] / summary['hierarchical_baseline']['mean_extraction_time'] if summary['hierarchical_baseline']['mean_extraction_time'] > 0 else 1
+            'bias_improvement': bias_improvement,
+            'time_ratio': time_ratio
         }
     
     return summary

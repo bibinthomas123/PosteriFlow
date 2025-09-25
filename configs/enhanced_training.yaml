@@ -1,10 +1,11 @@
-#  VERSION of your config
+# AHSD Experiment Configuration - Ranking Optimized Version
+
 detectors:
   - name: "H1"
     psd_file: "aligo_O4_high_psd.txt"
     sampling_rate: 4096
     duration: 8.0
-  - name: "L1" 
+  - name: "L1"
     psd_file: "aligo_O4_high_psd.txt"
     sampling_rate: 4096
     duration: 8.0
@@ -20,17 +21,16 @@ waveform:
   duration: 8.0
 
 priority_net:
-  hidden_dims: [512, 256, 128, 64]
-  dropout: 0.25
+  hidden_dims: [512, 256, 128, 64]  # Instead of [128, 64, 32]
+  dropout: 0.25                  # Slightly higher regularization
   learning_rate: 0.0005
-  batch_size: 16
+  batch_size: 16                 # Smaller batch for stable ranking gradients
 
 adaptive_subtractor:
   neural_pe:
     flow_layers: 8
-    hidden_features: 256
+    hidden_features: 256          # Richer representation for PE
     num_blocks: 3
-    context_features: 300  # ADD THIS - was missing
   uncertainty_realizations: 200
 
 bias_corrector:
@@ -40,3 +40,4 @@ bias_corrector:
 max_overlapping_signals: 5
 snr_threshold: 8.0
 seed: 42
+

@@ -112,7 +112,7 @@ class DataPreprocessor:
         return strain
     
     def _remove_glitches(self, strain: np.ndarray, threshold: float = 5.0) -> np.ndarray:
-        """Simple glitch removal using amplitude threshold (fixed version)."""
+        """Simple glitch removal using amplitude threshold ( version)."""
         
         try:
             strain_array = np.array(strain, dtype=float)

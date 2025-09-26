@@ -1,5 +1,4 @@
-# AHSD Experiment Configuration - Ranking Optimized Version
-
+# AHSD Experiment Configuration
 detectors:
   - name: "H1"
     psd_file: "aligo_O4_high_psd.txt"
@@ -21,15 +20,15 @@ waveform:
   duration: 8.0
 
 priority_net:
-  hidden_dims: [512, 256, 128, 64]  # Instead of [128, 64, 32]
-  dropout: 0.25                  # Slightly higher regularization
+  hidden_dims: [512, 256, 128, 64]  # Deeper network for better ranking
+  dropout: 0.25                  # Regularization to prevent overfitting
   learning_rate: 0.0005
-  batch_size: 16                 # Smaller batch for stable ranking gradients
+  batch_size: 16                 # Smaller batch size for stability
 
 adaptive_subtractor:
   neural_pe:
     flow_layers: 8
-    hidden_features: 256          # Richer representation for PE
+    hidden_features: 256          # Increased capacity for complex noise modeling
     num_blocks: 3
   uncertainty_realizations: 200
 

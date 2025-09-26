@@ -9,7 +9,6 @@ using real LIGO-Virgo-KAGRA data.
 
 __version__ = "1.0.0"
 
-# Make sure the package can be imported
 try:
     from .utils.config import AHSDConfig
     from .utils.data_format import standardize_strain_data

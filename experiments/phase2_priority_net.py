@@ -17,11 +17,10 @@ from tqdm import tqdm
 import yaml
 from typing import List, Dict, Tuple, Any, Optional
 
-# Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Import from ahsd.core
+
 from ahsd.core.priority_net import PriorityNet, PriorityNetTrainer
 print('PriorityNetTrainer loaded from:', sys.modules['ahsd.core.priority_net'].__file__)
 

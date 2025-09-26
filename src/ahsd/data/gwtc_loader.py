@@ -11,7 +11,49 @@ import h5py
 
 
 class GWTCDataLoader:
+    """
+    GWTCDataLoader
+    A utility class for loading and processing real gravitational-wave event data from the LIGO-Virgo-KAGRA GWTC catalogs (up to GWTC-4.0), as well as downloading strain data and generating synthetic overlapping event scenarios.
+    Main Features:
+    --------------
+    - Fetches event metadata from GWOSC API endpoints, with robust fallback to hardcoded event lists if APIs are unavailable.
+    - Parses event data from various API response formats (old dict, new list, paginated).
+    - Downloads strain data for specific events and detectors using gwpy.
+    - Identifies real events with overlapping GPS times within a configurable window.
+    - Generates synthetic overlapping event scenarios for simulation and testing.
+    - Loads background strain data for overlapping scenarios, with fallback to synthetic Gaussian noise if real data is unavailable.
+    Parameters
+    ----------
+    data_dir : str, optional
+        Directory to store downloaded data (default: "data/raw").
+    Attributes
+    ----------
+    data_dir : pathlib.Path
+        Path object for the data directory.
+    logger : logging.Logger
+        Logger for status and error messages.
+    gwosc_base_url : str
+        Base URL for GWOSC API endpoints.
+    Methods
+    -------
+    get_gwtc_events(catalog: str = "GWTC-4") -> pd.DataFrame
+        Fetch all events from the specified GWTC catalog.
+    download_strain_data(event_name: str, detector: str = "H1", duration: int = 32, sampling_rate: int = 4096) -> Optional[TimeSeries]
+        Download strain data for a specific event and detector.
+    load_overlapping_candidates(time_window: float = 1.0, min_events: int = 2) -> List[Dict]
+        Find groups of events with overlapping GPS times.
+    create_synthetic_overlaps(events_df: pd.DataFrame, n_overlaps: int = 100) -> List[Dict]
+        Generate synthetic overlapping event scenarios from real events.
+    load_strain_for_overlap(overlap_scenario: Dict, detectors: List[str] = ['H1', 'L1'], duration: int = 4, sampling_rate: int = 4096) -> Dict
+        Load background strain data for a given overlapping scenario.
+    Notes
+    -----
+    - Requires `requests`, `pandas`, `numpy`, and `gwpy` packages.
+    - Handles changes in GWOSC API formats and provides robust fallbacks.
+    - Designed for use in gravitational-wave data analysis and simulation pipelines.
+    """
     """Load real LIGO-Virgo-KAGRA data from GWTC-4.0"""
+    
     
     def __init__(self, data_dir: str = "data/raw"):
         self.data_dir = Path(data_dir)

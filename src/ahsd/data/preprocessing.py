@@ -11,8 +11,55 @@ from gwpy.timeseries import TimeSeries
 from gwpy.frequencyseries import FrequencySeries
 
 class DataPreprocessor:
-    """Preprocess gravitational wave strain data."""
-    
+    """DataPreprocessor
+    A class for preprocessing gravitational wave strain data from multiple detectors.
+    Provides a modular pipeline for common preprocessing steps such as length adjustment,
+    glitch removal, filtering, whitening, windowing, and validation. Designed to be
+    configurable via a user-supplied configuration object.
+    Parameters
+    ----------
+    config : object
+        Configuration object containing detector and waveform parameters.
+    Attributes
+    ----------
+    sampling_rate : int
+        Sampling rate in Hz (default: 4096, can be overridden by config).
+    duration : float
+        Duration of the data segment in seconds (default: 4.0, can be overridden by config).
+    f_low : float
+        Low-frequency cutoff for filtering in Hz (default: 20.0, can be overridden by config).
+    f_high : float
+        High-frequency cutoff for filtering in Hz (default: 1024.0).
+    Methods
+    -------
+    preprocess(data: Dict) -> Dict
+        Main preprocessing pipeline for raw strain data from each detector.
+    _preprocess_detector_data(strain: np.ndarray, detector: str) -> np.ndarray
+        Preprocess data for a single detector, applying all steps.
+    _ensure_correct_length(strain: np.ndarray) -> np.ndarray
+        Ensure strain data has the correct length by truncating or zero-padding.
+    _remove_glitches(strain: np.ndarray, threshold: float = 5.0) -> np.ndarray
+        Remove glitches using a simple amplitude thresholding method.
+    _highpass_filter(strain: np.ndarray, f_low: Optional[float] = None) -> np.ndarray
+        Apply a high-pass Butterworth filter to remove low-frequency noise.
+    _notch_filter(strain: np.ndarray) -> np.ndarray
+        Apply notch filters to remove power line harmonics (e.g., 60 Hz and harmonics).
+    _whiten(strain: np.ndarray, detector: str) -> np.ndarray
+        Whiten strain data using a power spectral density (PSD) estimate.
+    _apply_window(strain: np.ndarray, window_type: str = 'tukey', alpha: float = 0.1) -> np.ndarray
+        Apply a window function (Tukey, Hann, or Hamming) to reduce edge effects.
+    compute_psd(strain: np.ndarray, method: str = 'welch') -> Tuple[np.ndarray, np.ndarray]
+        Compute the power spectral density (PSD) of the strain data.
+    bandpass_filter(strain: np.ndarray, f_low: float, f_high: float, order: int = 8) -> np.ndarray
+        Apply a bandpass Butterworth filter to the strain data.
+    resample_data(strain: np.ndarray, original_rate: int, target_rate: int) -> np.ndarray
+        Resample strain data to a target sampling rate.
+    validate_data(data: Dict) -> Dict
+        Validate the quality of preprocessed data, checking for NaNs, length mismatches, and basic statistics.
+    Logging
+    -------
+    Uses the standard Python logging module for debug, warning, and error messages during preprocessing steps.
+    """    
     def __init__(self, config):
         self.config = config
         self.logger = logging.getLogger(__name__)
@@ -86,7 +133,7 @@ class DataPreprocessor:
         strain = self._notch_filter(strain)
         
         # Step 5: Whitening (optional, usually done in analysis)
-        # strain = self._whiten(strain, detector)
+        #strain = self._whiten(strain, detector)
         
         # Step 6: Apply window
         strain = self._apply_window(strain)

@@ -10,7 +10,7 @@ from .bias_corrector import BiasCorrector, BiasEstimator
 __all__ = [
     "AHSDPipeline",
     "PriorityNet",
-    "SignalFeatureExtractor",  # ✅ FIXED: Changed from SignalInteractionNet
+    "SignalFeatureExtractor",  
     "CombinedPriorityLoss",
     "PriorityNetTrainer",
     "AdaptiveSubtractor",

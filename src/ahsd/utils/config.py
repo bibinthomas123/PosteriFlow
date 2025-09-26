@@ -8,36 +8,36 @@ class DetectorConfig:
     name: str
     psd_file: Optional[str] = None
     sampling_rate: int = 4096
-    duration: float = 8.0  # Changed from 4.0 to match your enhanced config
+    duration: float = 8.0  
 
 @dataclass 
 class WaveformConfig:
     approximant: str = "IMRPhenomPv2"
     f_lower: float = 20.0
     f_ref: float = 20.0
-    duration: float = 8.0  # Changed from 4.0 to match enhanced config
+    duration: float = 8.0  
 
 @dataclass
 class PriorityNetConfig:
-    hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128, 64])  # Match enhanced config
-    dropout: float = 0.25  # Match enhanced config
-    learning_rate: float = 0.0005  # Match enhanced config
-    batch_size: int = 16  # Match enhanced config
+    hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128, 64])  
+    dropout: float = 0.25  
+    learning_rate: float = 0.0005  
+    batch_size: int = 16  
 
 @dataclass
 class AdaptiveSubtractorConfig:
     neural_pe: Dict = field(default_factory=lambda: {
         'flow_layers': 8,
-        'hidden_features': 256,  # Match enhanced config
-        'num_blocks': 3,         # Match enhanced config
-        'context_features': 300  # Add missing context_features
+        'hidden_features': 256,  
+        'num_blocks': 3,         
+        'context_features': 300  
     })
-    uncertainty_realizations: int = 200  # Match enhanced config
+    uncertainty_realizations: int = 200  
 
 @dataclass
 class BiasCorrectorConfig:
-    hidden_dims: List[int] = field(default_factory=lambda: [256, 128, 64])  # Match enhanced config
-    training_epochs: int = 1500  # Match enhanced config
+    hidden_dims: List[int] = field(default_factory=lambda: [256, 128, 64])  
+    training_epochs: int = 1500  
 
 @dataclass
 class AHSDConfig:
@@ -88,7 +88,7 @@ class AHSDConfig:
 def add_parameter_noise(param_name: str, true_value: float) -> float:
     """Add realistic noise to parameter estimates"""
     noise_levels = {
-        'geocent_time': 0.01,  # 10ms uncertainty
+        'geocent_time': 0.01,  
         'ra': 0.1,  # ~6 degree uncertainty
         'dec': 0.1,
         'psi': 0.5,

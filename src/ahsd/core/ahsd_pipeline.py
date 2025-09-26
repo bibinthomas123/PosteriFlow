@@ -9,18 +9,80 @@ import time
 from typing import Dict, List, Tuple, Any, Optional
 import logging
 
-# Import real components
+# Import  components
 from .adaptive_subtractor import AdaptiveSubtractor
 from .bias_corrector import BiasCorrector
 
 class AHSDPipeline:
-    """REAL AHSD Pipeline with complete physics-based implementation"""
+    """
+    AHSDPipeline
+    A comprehensive, physics-based pipeline for decomposing overlapping gravitational wave signals.
+    This class implements an end-to-end workflow for signal extraction, prioritization, bias correction,
+    and performance evaluation, supporting both neural and heuristic prioritization strategies.
+    Key Features:
+    -------------
+    - Intelligent signal prioritization using a trained PriorityNet or physics-based heuristics.
+    - Iterative signal extraction with adaptive subtraction and configurable convergence/quality thresholds.
+    - Hierarchical bias correction for extracted signals, with support for training and evaluation.
+    - Comprehensive performance metrics and reporting, including timing, quality, and efficiency statistics.
+    - Pipeline state management: save/load configuration and model states.
+    - Integrity validation and parameter optimization utilities for robust operation.
+    Parameters
+    ----------
+    config : dict, optional
+        Pipeline configuration dictionary.
+    priority_net : object, optional
+        Trained PriorityNet model for signal prioritization.
+    Attributes
+    ----------
+    config : dict
+        Pipeline configuration.
+    logger : logging.Logger
+        Logger instance for pipeline events.
+    adaptive_subtractor : AdaptiveSubtractor
+        Component for adaptive signal extraction and subtraction.
+    bias_corrector : BiasCorrector
+        Component for hierarchical bias correction.
+    priority_net : object or None
+        Trained PriorityNet model, if provided.
+    max_iterations : int
+        Maximum number of extraction iterations.
+    convergence_threshold : float
+        Threshold for convergence in iterative extraction.
+    quality_threshold : float
+        Minimum quality required to accept an extracted signal.
+    Methods
+    -------
+    decompose_overlapping_signals(data, initial_detections)
+        Run the full AHSD pipeline to extract and correct overlapping signals from input data.
+    train_bias_corrector(training_scenarios)
+        Train the bias corrector component using provided training scenarios.
+    set_priority_net(priority_net)
+        Set or update the PriorityNet model for prioritization.
+    get_pipeline_state()
+        Retrieve the current state and configuration of the pipeline.
+    save_pipeline_state(filepath)
+        Save the pipeline's configuration and model states to a file.
+    load_pipeline_state(filepath)
+        Load the pipeline's configuration and model states from a file.
+    validate_pipeline_integrity()
+        Validate the integrity and readiness of all pipeline components.
+    optimize_pipeline_parameters(test_scenarios)
+        Optimize pipeline parameters (e.g., quality threshold, max iterations) using test scenarios.
+    get_performance_report(recent_results=None)
+        Generate a comprehensive performance report based on recent pipeline results.
+    Notes
+    -----
+    - The pipeline is designed for extensibility and can be integrated with custom prioritization or bias correction models.
+    - Performance and quality thresholds should be tuned for the specific application and data characteristics.
+    """
+    """AHSD Pipeline with complete physics-based implementation"""
     
     def __init__(self, config=None, priority_net=None):
         self.config = config
         self.logger = logging.getLogger(__name__)
         
-        # Initialize REAL components
+        # Initialize  components
         param_names = [
             'mass_1', 'mass_2', 'luminosity_distance', 
             'geocent_time', 'ra', 'dec', 'theta_jn', 'psi', 'phase'
@@ -35,21 +97,21 @@ class AHSDPipeline:
         self.convergence_threshold = 0.01
         self.quality_threshold = 0.3
         
-        self.logger.info("✅ REAL AHSDPipeline initialized with physics-based components")
+        self.logger.info("✅  AHSDPipeline initialized with physics-based components")
     
     def decompose_overlapping_signals(self, data: Dict, initial_detections: List[Dict]) -> Dict:
-        """REAL AHSD pipeline analysis with complete physics implementation."""
+        """ AHSD pipeline analysis with complete physics implementation."""
         
         start_time = time.time()
         
         try:
-            # ✅ REAL: Intelligent signal prioritization using trained PriorityNet
+            # Intelligent signal prioritization using trained PriorityNet
             if self.priority_net is not None:
                 prioritized_detections = self._prioritize_signals_with_net(initial_detections)
             else:
                 prioritized_detections = self._prioritize_signals_heuristic(initial_detections)
             
-            # ✅ REAL: Iterative signal extraction with adaptive subtraction
+            # Iterative signal extraction with adaptive subtraction
             extracted_signals = []
             remaining_data = data.copy()
             
@@ -58,16 +120,16 @@ class AHSDPipeline:
                     self.logger.warning(f"Reached maximum iterations ({self.max_iterations})")
                     break
                 
-                # ✅ REAL: Extract signal using adaptive subtractor
+                # Extract signal using adaptive subtractor
                 residual_data, extraction_result, uncertainties = self.adaptive_subtractor.extract_and_subtract(
                     remaining_data, iteration
                 )
                 
-                # ✅ REAL: Quality assessment
+                # Quality assessment
                 signal_quality = extraction_result.get('signal_quality', 0.0)
                 
                 if signal_quality >= self.quality_threshold:
-                    # ✅ REAL: Apply bias correction
+                    # Apply bias correction
                     corrected_signals = self.bias_corrector.correct_hierarchical_biases([extraction_result])
                     
                     if corrected_signals:
@@ -90,7 +152,7 @@ class AHSDPipeline:
             
             processing_time = time.time() - start_time
             
-            # ✅ REAL: Compute comprehensive performance metrics
+            # Compute comprehensive performance metrics
             performance_metrics = self._compute_comprehensive_performance_metrics(
                 extracted_signals, initial_detections, processing_time
             )
@@ -110,7 +172,7 @@ class AHSDPipeline:
             }
             
         except Exception as e:
-            self.logger.error(f"REAL AHSD pipeline failed: {e}")
+            self.logger.error(f" AHSD pipeline failed: {e}")
             
             # Fallback result
             return {
@@ -125,7 +187,7 @@ class AHSDPipeline:
             }
     
     def _prioritize_signals_with_net(self, detections: List[Dict]) -> List[Dict]:
-        """REAL signal prioritization using trained PriorityNet."""
+        """ signal prioritization using trained PriorityNet."""
         
         try:
             # Use PriorityNet to rank detections
@@ -148,13 +210,13 @@ class AHSDPipeline:
             return self._prioritize_signals_heuristic(detections)
     
     def _prioritize_signals_heuristic(self, detections: List[Dict]) -> List[Dict]:
-        """REAL heuristic signal prioritization based on physics principles."""
+        """ heuristic signal prioritization based on physics principles."""
         
         try:
             scored_detections = []
             
             for i, detection in enumerate(detections):
-                # ✅ REAL: Multi-factor priority scoring
+                # Multi-factor priority scoring
                 priority_score = 0.0
                 
                 # SNR factor (40% weight) - higher SNR = higher priority
@@ -217,7 +279,7 @@ class AHSDPipeline:
     def _compute_comprehensive_performance_metrics(self, extracted_signals: List[Dict], 
                                                  initial_detections: List[Dict],
                                                  processing_time: float) -> Dict[str, Any]:
-        """REAL comprehensive performance metrics computation."""
+        """ comprehensive performance metrics computation."""
         
         metrics = {
             'timing_metrics': {},
@@ -230,7 +292,7 @@ class AHSDPipeline:
             n_initial = len(initial_detections)
             n_extracted = len(extracted_signals)
             
-            # ✅ REAL: Timing metrics
+            # Timing metrics
             metrics['timing_metrics'] = {
                 'total_extraction_time': float(processing_time),
                 'average_time_per_signal': float(processing_time / max(n_extracted, 1)),
@@ -238,7 +300,7 @@ class AHSDPipeline:
                 'time_per_input_signal': float(processing_time / max(n_initial, 1))
             }
             
-            # ✅ REAL: Extraction metrics
+            # Extraction metrics
             metrics['extraction_metrics'] = {
                 'n_initial_detections': n_initial,
                 'n_extracted_signals': n_extracted,
@@ -247,7 +309,7 @@ class AHSDPipeline:
                 'processing_efficiency': float(n_extracted / max(n_initial, 1))
             }
             
-            # ✅ REAL: Quality metrics
+            # Quality metrics
             if extracted_signals:
                 qualities = [s.get('signal_quality', 0.0) for s in extracted_signals]
                 bias_corrections = [s.get('bias_correction', {}) for s in extracted_signals]
@@ -281,7 +343,7 @@ class AHSDPipeline:
                     'poor': quality_bins[3]
                 }
             
-            # ✅ REAL: Efficiency metrics
+            # Efficiency metrics
             if n_initial > 0:
                 # Computational efficiency
                 theoretical_time = n_initial * 0.5  # Assume 0.5s per signal baseline
@@ -301,7 +363,7 @@ class AHSDPipeline:
                     'efficiency_grade': self._compute_efficiency_grade(overall_efficiency)
                 }
             
-            # ✅ REAL: Advanced metrics
+            # Advanced metrics
             if extracted_signals:
                 # SNR statistics
                 snr_estimates = []
@@ -366,7 +428,7 @@ class AHSDPipeline:
         """Set the trained PriorityNet."""
         
         self.priority_net = priority_net
-        self.logger.info("✅ PriorityNet set for AHSD pipeline")
+        self.logger.info("PriorityNet set for AHSD pipeline")
     
     def get_pipeline_state(self) -> Dict[str, Any]:
         """Get current pipeline state and configuration."""
@@ -441,7 +503,7 @@ class AHSDPipeline:
             
             # Note: PriorityNet would need to be loaded separately
             
-            self.logger.info(f"✅ Pipeline state loaded from {filepath}")
+            self.logger.info(f"Pipeline state loaded from {filepath}")
             
         except Exception as e:
             self.logger.error(f"Failed to load pipeline state: {e}")

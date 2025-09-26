@@ -24,6 +24,44 @@ warnings.filterwarnings("ignore", message="Unknown projection method")
 bilby.core.utils.logger.setLevel('WARNING')
 
 class OverlappingSignalSimulator:
+    """
+    OverlappingSignalSimulator
+    Simulates overlapping gravitational wave (GW) signals for training machine learning models or testing GW data analysis pipelines. This class provides methods to generate realistic GW signal parameters, simulate detector noise, inject multiple overlapping signals into noise, and create datasets for training.
+    Attributes:
+        config (AHSDConfig): Configuration object specifying waveform and detector settings.
+        logger (logging.Logger): Logger for status and error messages.
+        detectors (dict): Dictionary of detector objects keyed by detector name.
+        waveform_generator (bilby.gw.WaveformGenerator): Bilby waveform generator for GW signals.
+    Methods:
+        __init__(config: AHSDConfig):
+            Initializes the simulator with the given configuration, sets up detectors and waveform generator.
+        _setup_waveform_generator():
+            Sets up the bilby waveform generator using configuration parameters.
+        generate_single_signal_params() -> Dict:
+            Generates a dictionary of parameters for a single GW signal using conservative, realistic priors.
+        _sample_power_law(min_val: float, max_val: float, alpha: float) -> float:
+            Samples a value from a power-law distribution.
+        _sample_spin_magnitude() -> float:
+            Samples a spin magnitude using a Beta distribution fit to GWTC measurements.
+        generate_overlapping_scenario(n_signals: int) -> Dict:
+            Generates a scenario dictionary containing parameters for multiple overlapping GW signals.
+        generate_detector_noise(duration: Optional[float] = None, sampling_rate: Optional[int] = None) -> Dict:
+            Generates realistic colored Gaussian noise for each detector using analytical PSDs.
+        _generate_colored_noise(n_samples: int, sampling_rate: int, detector: str) -> np.ndarray:
+            Generates colored noise for a given detector using its power spectral density (PSD).
+        _aLIGO_psd(freqs: np.ndarray) -> np.ndarray:
+            Returns a simplified analytical PSD for Advanced LIGO.
+        _virgo_psd(freqs: np.ndarray) -> np.ndarray:
+            Returns a simplified analytical PSD for Virgo.
+        inject_signals_to_data(scenario: Dict, noise_data: Dict) -> Tuple[Dict, Dict]:
+            Injects multiple GW signals into detector noise, returning the injected data and individual signal contributions.
+        _generate_mock_waveform(params: Dict, detector_name: str) -> np.ndarray:
+            Generates a simple mock waveform for a GW signal, used as a fallback if bilby waveform generation fails.
+        _generate_detector_strain(params: Dict, detector_name: str) -> Optional[np.ndarray]:
+            Generates the strain time series for a specific detector using bilby, with fallback to mock waveform.
+        create_training_dataset(n_scenarios: int, output_dir: str) -> List[Dict]:
+            Generates and saves a dataset of simulated scenarios with overlapping GW signals and noise for training.
+    """
     """Simulate overlapping gravitational wave signals for training."""
     
     def __init__(self, config: AHSDConfig):

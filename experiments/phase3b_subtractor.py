@@ -34,7 +34,24 @@ def setup_logging(verbose: bool = False):
     )
 
 class EffectiveSubtractor(nn.Module):
-    """WORKING Subtractor with proper contamination handling"""
+    """
+    EffectiveSubtractor is a neural network module designed to subtract contamination from input data using a multi-scale contamination detector and an adaptive strength mechanism based on neural parameter estimation confidence.
+    Args:
+        data_length (int): The length of the input data sequence. Default is 4096.
+    Attributes:
+        contamination_detector (nn.Sequential): A convolutional neural network that detects contamination patterns in the input data.
+        confidence_adapter (nn.Sequential): A feedforward network that adapts the subtraction strength based on neural parameter estimation confidence.
+        data_length (int): The length of the input data sequence.
+    Methods:
+        forward(contaminated_data: torch.Tensor, neural_pe_output) -> Tuple[torch.Tensor, torch.Tensor]:
+            Processes the contaminated input data and neural parameter estimation output to produce cleaned data and a confidence score.
+            - contaminated_data (torch.Tensor): The input data with contamination, shape (batch_size, 2, data_length).
+            - neural_pe_output: Output from a neural parameter estimator, either a tensor of parameters or a tuple (params, uncertainties).
+            Returns:
+                cleaned_data (torch.Tensor): The contamination-subtracted data.
+                confidence (torch.Tensor): The adaptive confidence score used for subtraction strength.
+    """
+    """Subtractor with proper contamination handling"""
     
     def __init__(self, data_length: int = 4096):
         super().__init__()
@@ -110,7 +127,28 @@ class EffectiveSubtractor(nn.Module):
         return cleaned_data, confidence.squeeze(-1)
 
 def create_contaminated_dataset(param_names: List[str], num_samples: int = 500):
-    """WORKING contamination generation with STRONG, detectable contamination"""
+    """
+    Generates a synthetic dataset of gravitational wave (GW) signals contaminated with strong, detectable noise artifacts.
+    This function simulates GW signals with realistic astrophysical parameters and adds a variety of strong contaminations,
+    including power line noise, seismic noise, glitches, and broadband noise, to create challenging training data for 
+    machine learning models. Each sample includes both the contaminated and clean GW signals, as well as normalized 
+    source parameters.
+    Args:
+        param_names (List[str]): List of parameter names (not directly used in the function, but included for compatibility).
+        num_samples (int, optional): Number of samples to generate. Defaults to 500.
+    Returns:
+        ContaminatedDataset: An object containing the generated samples. Each sample is a dictionary with:
+            - 'contaminated_data': np.ndarray of shape (2, 4096), the contaminated GW strain (h_plus, h_cross).
+            - 'clean_data': np.ndarray of shape (2, 4096), the clean GW strain (h_plus, h_cross).
+            - 'true_parameters': np.ndarray, normalized source parameters for neural parameter estimation.
+            - 'signal_quality': float, a random quality metric in [0.8, 1.0].
+    Notes:
+        - Contaminations are intentionally strong to ensure detectability and to challenge denoising models.
+        - The function logs dataset statistics and verifies the strength of contamination.
+        - Minimal Gaussian noise is added to both clean and contaminated signals.
+        - The returned dataset supports indexing and length queries.
+    """
+    """ contamination generation with STRONG, detectable contamination"""
     
     class ContaminatedDataset:
         def __init__(self, samples):
@@ -123,7 +161,7 @@ def create_contaminated_dataset(param_names: List[str], num_samples: int = 500):
     samples = []
     np.random.seed(42)
     
-    logging.info(f"🔧 Creating WORKING contaminated dataset with {num_samples} samples")
+    logging.info(f"🔧 Creating contaminated dataset with {num_samples} samples")
     
     for i in range(num_samples):
         t = np.linspace(0, 4, 4096)
@@ -134,12 +172,12 @@ def create_contaminated_dataset(param_names: List[str], num_samples: int = 500):
         distance = np.random.uniform(200, 800)
         chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
         
-        # ✅ FIXED: Direct signal scaling
-        signal_scale = 1e-3  # Simple, working amplitude
+        # Direct signal scaling
+        signal_scale = 1e-3  
         contamination_scale = signal_scale * 10.0  # 10x signal strength
         
-        # ✅ WORKING: Scale that actually produces STRONG detectable signals
-        signal_scale = 1e-3  # 1,000,000x stronger than before!
+        # Scale that actually produces strong detectable signals
+        signal_scale = 1e-3  
         amplitude = signal_scale * np.exp(-t / 8.0) * np.sqrt(chirp_mass / 30.0)
         
         # Generate clean GW signal
@@ -152,16 +190,16 @@ def create_contaminated_dataset(param_names: List[str], num_samples: int = 500):
         h_plus_clean = amplitude * (1 + np.cos(inclination)**2) * np.cos(phase)
         h_cross_clean = amplitude * 2 * np.cos(inclination) * np.sin(phase)
         
-        # ✅ WORKING: VERY STRONG contamination that completely dominates
+        # strong contamination that completely dominates
         contamination_h_plus = np.zeros_like(h_plus_clean)
         contamination_h_cross = np.zeros_like(h_cross_clean)
         
-        # Power line contamination (extremely obvious)
+        # Power line contamination (60 Hz, very strong)
         power_amplitude = contamination_scale * np.random.uniform(1.0, 3.0)
         contamination_h_plus += power_amplitude * np.sin(2 * np.pi * 60.0 * t)
         contamination_h_cross += power_amplitude * np.cos(2 * np.pi * 60.0 * t)
         
-        # Seismic contamination (low frequency, very strong)
+        # Seismic contamination (low frequency, strong)
         seismic_freq = np.random.uniform(1.0, 8.0)
         seismic_amplitude = contamination_scale * np.random.uniform(1.0, 3.0)
         seismic_phase = np.random.uniform(0, 2*np.pi)
@@ -198,7 +236,7 @@ def create_contaminated_dataset(param_names: List[str], num_samples: int = 500):
         contaminated_data = np.array([h_plus_contaminated, h_cross_contaminated], dtype=np.float32)
         clean_data = np.array([h_plus_clean, h_cross_clean], dtype=np.float32)
         
-        # ✅ VERIFICATION: Ensure contamination is VERY strong
+        # Ensure contamination is VERY strong
         contamination_strength = np.mean(np.abs(contaminated_data - clean_data))
         signal_strength = np.mean(np.abs(clean_data))
         contamination_to_signal_ratio = contamination_strength / (signal_strength + 1e-20)
@@ -269,9 +307,9 @@ def collate_contaminated_batch(batch: List[Dict]) -> Tuple[torch.Tensor, torch.T
     return contaminated, clean, parameters, qualities
 
 def train_effective_subtractor(subtractor, neural_pe, dataset, epochs: int = 25):
-    """WORKING training with proper efficiency calculation"""
+    """training with proper efficiency calculation"""
     
-    logging.info("🔧 WORKING: Training with strong contamination learning...")
+    logging.info("🔧 Training with strong contamination learning...")
     
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True, collate_fn=collate_contaminated_batch)
     optimizer = torch.optim.AdamW(subtractor.parameters(), lr=8e-4, weight_decay=1e-5)
@@ -297,7 +335,7 @@ def train_effective_subtractor(subtractor, neural_pe, dataset, epochs: int = 25)
             # Forward pass through subtractor
             cleaned_output, confidence = subtractor(contaminated, neural_pe_output)
             
-            # ✅ WORKING: MSE-based efficiency calculation
+            #MSE-based efficiency calculation
             mse_before = torch.mean((contaminated - clean_target) ** 2, dim=(1, 2))
             mse_after = torch.mean((cleaned_output - clean_target) ** 2, dim=(1, 2))
             
@@ -337,7 +375,7 @@ def train_effective_subtractor(subtractor, neural_pe, dataset, epochs: int = 25)
         training_metrics.append(avg_efficiency)
         scheduler.step(-avg_efficiency)  # Minimize negative efficiency
         
-        logging.info(f'✅ WORKING Epoch {epoch}: Average Efficiency = {avg_efficiency:.4f}')
+        logging.info(f'Epoch {epoch}: Average Efficiency = {avg_efficiency:.4f}')
         
         if avg_efficiency > 0.1:
             logging.info(f"🎉 EXCELLENT LEARNING! Efficiency > 10% at epoch {epoch}")
@@ -406,7 +444,7 @@ def main():
             raise KeyError("No neural PE model found")
         
         pe_results = phase3a_data.get('pe_results', {'final_accuracy': 0.802})
-        logging.info(f"✅ WORKING: Neural PE loaded successfully - {pe_results.get('final_accuracy', 0.8):.3f} accuracy")
+        logging.info(f"Neural PE loaded successfully - {pe_results.get('final_accuracy', 0.8):.3f} accuracy")
         
     except Exception as e:
         logging.error(f"❌ Failed to load Phase 3A: {e}")
@@ -440,7 +478,7 @@ def main():
     }
     
     torch.save(output_data, output_dir / 'phase3b_working_output.pth')
-    logging.info(f"✅ WORKING: Phase 3B saved successfully")
+    logging.info(f"Phase 3B saved successfully")
     
     # Generate summary
     with open(output_dir / 'phase3b_working_results.txt', 'w') as f:

@@ -29,7 +29,7 @@ try:
 except ImportError:
     print("Warning: Could not import NeuralPENetwork")
 
-# ✅ EXACT EffectiveSubtractor class definition
+# EXACT EffectiveSubtractor class definition
 class EffectiveSubtractor(nn.Module):
     def __init__(self, data_length: int = 4096):
         super().__init__()
@@ -86,7 +86,7 @@ class EffectiveSubtractor(nn.Module):
         contamination_pattern = self.contamination_detector(contaminated_data)
         contamination_pattern = contamination_pattern.view(batch_size, 2, self.data_length)
         
-        # ✅ FIXED: Use actual confidence mapping (not hardcoded range)
+        #  Use actual confidence mapping (not hardcoded range)
         confidence = self.confidence_adapter(confidence_input)
         # The trained model may use different scaling - let's discover it dynamically
         strength = 0.3 + 0.5 * confidence  # This creates [0.3, 0.8] range from [0,1] sigmoid
@@ -103,7 +103,7 @@ def setup_logging():
     )
 
 def create_phase3c_compatible_dataset(n_samples: int, seed: int = 42):
-    """✅ EXACT Phase 3C data generation"""
+    """EXACT Phase 3C data generation"""
     
     np.random.seed(seed)
     samples = []
@@ -120,7 +120,7 @@ def create_phase3c_compatible_dataset(n_samples: int, seed: int = 42):
         chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
         inclination = np.random.uniform(0, np.pi)
         
-        # ✅ EXACT Phase 3C scaling
+        # EXACT Phase 3C scaling
         signal_scale = 1e-3
         contamination_scale = signal_scale * 10.0
         
@@ -134,7 +134,7 @@ def create_phase3c_compatible_dataset(n_samples: int, seed: int = 42):
         h_plus_clean = amplitude * (1 + np.cos(inclination)**2) * np.cos(phase)
         h_cross_clean = amplitude * 2 * np.cos(inclination) * np.sin(phase)
         
-        # ✅ EXACT Phase 3C contamination patterns
+        # EXACT Phase 3C contamination patterns
         power_contamination_h_plus = contamination_scale * np.sin(2 * np.pi * 60.0 * t)
         power_contamination_h_cross = contamination_scale * np.cos(2 * np.pi * 60.0 * t)
         
@@ -194,12 +194,12 @@ def create_phase3c_compatible_dataset(n_samples: int, seed: int = 42):
         # Verify contamination strength on first sample
         if i == 0:
             contamination_strength = np.mean(np.abs(contaminated_data - clean_data))
-            logging.info(f"✅ First sample contamination strength: {contamination_strength:.6f}")
+            logging.info(f"First sample contamination strength: {contamination_strength:.6f}")
     
     return samples
 
 def load_models_safely(phase3b_path: str):
-    """✅ Load models with error handling"""
+    """Load models with error handling"""
     
     logging.info("📂 Loading models using robust state_dict approach...")
     
@@ -243,7 +243,7 @@ def load_models_safely(phase3b_path: str):
         raise
 
 def verify_subtractor_architecture(subtractor):
-    """✅ FIXED: Flexible subtractor architecture verification"""
+    """ Flexible subtractor architecture verification"""
     
     logging.info("🔧 Verifying subtractor architecture...")
     
@@ -258,7 +258,7 @@ def verify_subtractor_architecture(subtractor):
         assert cleaned.shape == test_input.shape, f"Output shape mismatch: {cleaned.shape} vs {test_input.shape}"
         assert confidence.shape == (1,), f"Confidence shape mismatch: {confidence.shape}"
         
-        # ✅ FIXED: Flexible confidence range (discover actual range)
+        #  Flexible confidence range (discover actual range)
         conf_val = confidence.item()
         logging.info(f"🔍 Discovered confidence range: {conf_val:.6f}")
         
@@ -278,7 +278,7 @@ def verify_subtractor_architecture(subtractor):
         logging.info(f"🔍 Power change: {power_change.item():.8f}")
         assert power_change > 1e-10, f"No measurable subtraction: {power_change.item()}"
         
-        logging.info("✅ Subtractor architecture verification PASSED")
+        logging.info("Subtractor architecture verification PASSED")
         logging.info(f"   Confidence range: [0, 1] → strength mapping [0.3, 0.8]")
         logging.info(f"   Test confidence: {conf_val:.4f}")
         return True
@@ -288,7 +288,7 @@ def verify_subtractor_architecture(subtractor):
         return False
 
 def verify_system_performance(neural_pe, subtractor, samples):
-    """✅ Complete system performance verification"""
+    """Complete system performance verification"""
     
     pe_accuracies = []
     subtractor_efficiencies = []

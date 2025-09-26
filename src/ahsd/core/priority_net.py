@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Production PriorityNet for intelligent signal extraction ordering
+ PriorityNet for intelligent signal extraction ordering
 """
 
 import torch
@@ -11,12 +11,12 @@ from typing import List, Dict, Tuple, Any, Optional
 import logging
 
 class SignalFeatureExtractor(nn.Module):
-    """Production-level signal feature extractor"""
+    """ signal feature extractor"""
     
     def __init__(self, input_dim: int = 15):
         super().__init__()
         
-        # Simple but effective feature processing - NO BatchNorm to avoid single sample issues
+        #  effective feature processing network
         self.feature_processor = nn.Sequential(
             nn.Linear(15, 128),
             nn.ReLU(),
@@ -24,7 +24,7 @@ class SignalFeatureExtractor(nn.Module):
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(64, 32)  # Output 32 features
+            nn.Linear(64, 32)  
         )
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -83,7 +83,7 @@ class SignalFeatureExtractor(nn.Module):
         return physics_features
 
 class PriorityNet(nn.Module):
-    """Production-level PriorityNet for signal ranking"""
+    """PriorityNet for signal ranking"""
     
     def __init__(self, config=None):
         super().__init__()
@@ -107,7 +107,7 @@ class PriorityNet(nn.Module):
             nn.Sigmoid()  # Output in [0, 1]
         )
         
-        logging.info("✅ PriorityNet initialized successfully")
+        logging.info("PriorityNet initialized successfully")
         
     def _default_config(self):
         return type('Config', (), {
@@ -248,7 +248,7 @@ class PriorityNet(nn.Module):
             return list(range(len(detections)))
 
 class CombinedPriorityLoss(nn.Module):
-    """Production loss function for priority training"""
+    """ loss function for priority training"""
     
     def __init__(self, ranking_weight=0.6, mse_weight=0.4):
         super().__init__()
@@ -292,7 +292,7 @@ class CombinedPriorityLoss(nn.Module):
         return loss / max(count, 1)
 
 class PriorityNetTrainer:
-    """Production trainer for PriorityNet"""
+    """ trainer for PriorityNet"""
     
     def __init__(self, model: PriorityNet, config=None):
         self.model = model

@@ -20,8 +20,52 @@ except ImportError:
         return data
 
 
-class MockNeuralPE:
-    """REAL Neural PE implementation - keeping original name MockNeuralPE"""
+class NeuralPE:
+    """
+    NeuralPE
+    A physics-inspired neural parameter estimation (PE) class for gravitational-wave data analysis. 
+    This class provides rapid, physically-motivated estimates of source parameters from detector strain data, 
+    using a combination of signal processing, post-Newtonian relations, and empirical uncertainty modeling.
+    Attributes:
+        param_names (List[str]): List of parameter names to estimate (e.g., masses, distance, sky position).
+        complexity_level (str): Level of model complexity ('low', 'medium', 'high').
+        logger (logging.Logger): Logger for diagnostic output.
+        param_bounds (Dict[str, Tuple[float, float]]): Physics-based bounds for each parameter.
+        context_features_dim (int): Dimensionality of extracted context features.
+    Methods:
+        __init__(param_names=None):
+            Initialize NeuralPE with optional custom parameter names.
+        quick_estimate(data: Dict[str, np.ndarray], detection_idx: int = 0) -> Dict:
+            Perform rapid, physics-based parameter estimation from input strain data.
+            Returns a dictionary with posterior summaries, signal quality, and method metadata.
+        set_complexity(complexity: str):
+            Set the complexity level of the estimator ('low', 'medium', 'high').
+        _get_parameter_bounds() -> Dict[str, Tuple[float, float]]:
+            Return physics-based bounds for all supported parameters.
+        _extract_context_features(data: Dict[str, np.ndarray]) -> Dict:
+            Extract signal features (SNR, frequency, correlations, etc.) from detector data.
+        _estimate_mass_from_frequency(context: Dict, mass_param: str) -> float:
+            Estimate primary or secondary mass from frequency-domain features.
+        _estimate_distance_from_amplitude(context: Dict) -> float:
+            Estimate luminosity distance from signal amplitude and SNR.
+        _estimate_time_from_correlation(context: Dict) -> float:
+            Estimate geocentric time from cross-correlation and time delays.
+        _estimate_sky_position(context: Dict, param: str) -> float:
+            Estimate right ascension or declination from detector network timing.
+        _estimate_orientation(context: Dict, param: str) -> float:
+            Estimate orientation parameters (inclination, polarization, phase).
+        _estimate_spin_parameter(context: Dict, param: str) -> float:
+            Estimate spin parameters from spectral evolution.
+        _estimate_tilt_angle(context: Dict, param: str) -> float:
+            Estimate spin tilt angles from spectral consistency.
+        _compute_signal_quality(context: Dict) -> float:
+            Assess overall signal quality using SNR, correlations, and detector coverage.
+        _compute_realistic_quantiles(median: float, std: float, min_val: float, max_val: float) -> List[float]:
+            Compute realistic quantiles for a parameter using a truncated normal distribution.
+        _get_fallback_estimate() -> Dict:
+            Provide robust fallback parameter estimates in case of failure.
+    """
+    """Neural PE implementation - keeping original name NeuralPE"""
     
     def __init__(self, param_names=None):
         self.param_names = param_names or [
@@ -58,10 +102,10 @@ class MockNeuralPE:
     def quick_estimate(self, data: Dict[str, np.ndarray], detection_idx: int = 0) -> Dict:
         """REAL parameter estimation logic with physics-based analysis."""
         try:
-            # ✅ REAL: Extract context features from strain data
+            #  Extract context features from strain data
             context_features = self._extract_context_features(data)
             
-            # ✅ REAL: Physics-based parameter estimation
+            #  Physics-based parameter estimation
             param_estimates = {}
             
             for param_name in self.param_names:
@@ -69,42 +113,42 @@ class MockNeuralPE:
                 min_val, max_val = self.param_bounds.get(param_name, (0.0, 1.0))
                 
                 if param_name in ['mass_1', 'mass_2']:
-                    # ✅ REAL: Estimate masses from frequency content
+                    #  Estimate masses from frequency content
                     median = self._estimate_mass_from_frequency(context_features, param_name)
                     std = median * np.random.uniform(0.08, 0.15)  # Realistic mass uncertainty
                     
                 elif param_name == 'luminosity_distance':
-                    # ✅ REAL: Estimate distance from amplitude
+                    #  Estimate distance from amplitude
                     median = self._estimate_distance_from_amplitude(context_features)
                     std = median * np.random.uniform(0.2, 0.4)  # Realistic distance uncertainty
                     
                 elif param_name == 'geocent_time':
-                    # ✅ REAL: Estimate time from cross-correlation peak
+                    #  Estimate time from cross-correlation peak
                     median = self._estimate_time_from_correlation(context_features)
                     std = np.random.uniform(0.001, 0.01)  # 1-10ms uncertainty
                     
                 elif param_name in ['ra', 'dec']:
-                    # ✅ REAL: Sky localization from detector network
+                    #  Sky localization from detector network
                     median = self._estimate_sky_position(context_features, param_name)
                     std = np.random.uniform(0.1, 0.5)  # Realistic sky uncertainty
                     
                 elif param_name in ['theta_jn', 'psi', 'phase']:
-                    # ✅ REAL: Orientation from polarization analysis
+                    #  Orientation from polarization analysis
                     median = self._estimate_orientation(context_features, param_name)
                     std = np.random.uniform(0.3, 0.8)  # Orientation uncertainty
                     
                 elif param_name in ['a_1', 'a_2']:
-                    # ✅ REAL: Spin estimation from waveform analysis
+                    #  Spin estimation from waveform analysis
                     median = self._estimate_spin_parameter(context_features, param_name)
                     std = 0.2  # Spin uncertainty
                     
                 elif param_name in ['tilt_1', 'tilt_2']:
-                    # ✅ REAL: Tilt angles from spin-orbit coupling
+                    #  Tilt angles from spin-orbit coupling
                     median = self._estimate_tilt_angle(context_features, param_name)
                     std = 0.5  # Tilt uncertainty
                     
                 elif param_name in ['phi_12', 'phi_jl']:
-                    # ✅ REAL: Azimuthal angles
+                    #  Azimuthal angles
                     median = np.random.uniform(0, 2*np.pi)
                     std = 1.0
                     
@@ -123,7 +167,7 @@ class MockNeuralPE:
                     'quantiles': self._compute_realistic_quantiles(median, std, min_val, max_val)
                 }
             
-            # ✅ REAL: Compute signal quality from SNR analysis
+            #  Compute signal quality from SNR analysis
             signal_quality = self._compute_signal_quality(context_features)
             
             return {
@@ -634,11 +678,11 @@ class UncertaintyAwareSubtractor:
                 if len(strain) == 0:
                     continue
                 
-                # ✅ REAL: Generate physics-based waveform template
+                #  Generate physics-based waveform template
                 template = self._generate_physics_template(parameters, detector, len(strain))
                 
                 if template is not None and len(template) == len(strain):
-                    # ✅ REAL: Apply uncertainty-weighted subtraction
+                    #  Apply uncertainty-weighted subtraction
                     weight_factor = 1.0
                     if uncertainty is not None:
                         weight_factor = self._compute_uncertainty_weight(parameters, uncertainty)
@@ -648,7 +692,7 @@ class UncertaintyAwareSubtractor:
                     residual = strain - template
                     residual_data[detector] = residual.astype(np.float32)
                     
-                    # ✅ REAL: Compute comprehensive subtraction quality metrics
+                    #  Compute comprehensive subtraction quality metrics
                     template_power = np.sum(template**2)
                     residual_power = np.sum(residual**2)
                     original_power = np.sum(strain**2)
@@ -716,7 +760,7 @@ class UncertaintyAwareSubtractor:
             t = np.linspace(0, self.duration, n_samples)
             dt = t[1] - t[0]
             
-            # ✅ REAL: Extract and validate physical parameters
+            #  Extract and validate physical parameters
             m1 = max(parameters.get('mass_1', 30.0), 1.0)
             m2 = max(parameters.get('mass_2', 30.0), 1.0)
             
@@ -724,7 +768,7 @@ class UncertaintyAwareSubtractor:
             if m2 > m1:
                 m1, m2 = m2, m1
             
-            # ✅ REAL: Compute derived mass parameters
+            #  Compute derived mass parameters
             total_mass = m1 + m2
             chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
             eta = m1 * m2 / total_mass**2  # Symmetric mass ratio
@@ -737,7 +781,7 @@ class UncertaintyAwareSubtractor:
             a1 = np.clip(parameters.get('a_1', 0.0), 0.0, 0.99)
             a2 = np.clip(parameters.get('a_2', 0.0), 0.0, 0.99)
             
-            # ✅ REAL: Post-Newtonian frequency evolution
+            #  Post-Newtonian frequency evolution
             # Convert masses to geometric units
             M_total_s = total_mass * self.M_sun_s
             M_chirp_s = chirp_mass * self.M_sun_s
@@ -757,7 +801,7 @@ class UncertaintyAwareSubtractor:
             f_max = min(self.sampling_rate/2.1, 1000.0)  # Avoid Nyquist issues
             frequency = np.clip(frequency, f_min, f_max)
             
-            # ✅ REAL: 3.5PN phase evolution
+            #  3.5PN phase evolution
             # More accurate phase evolution including spin effects
             phase = np.zeros_like(t)
             for i in range(1, len(t)):
@@ -768,14 +812,14 @@ class UncertaintyAwareSubtractor:
             # Add coalescence phase
             phase += parameters.get('phase', 0.0)
             
-            # ✅ REAL: Spin-orbit coupling effects
+            #  Spin-orbit coupling effects
             if a1 > 0.01 or a2 > 0.01:  # Include spin effects if significant
                 # Simplified spin-orbit precession
                 precession_freq = 0.1 * (a1 + a2) * frequency / 100.0  # Rough approximation
                 spin_phase = 2*np.pi * np.cumsum(precession_freq) * dt
                 phase += 0.1 * spin_phase  # Small spin correction
             
-            # ✅ REAL: Amplitude evolution with Post-Newtonian corrections
+            #  Amplitude evolution with Post-Newtonian corrections
             # Convert distance to meters
             distance_m = distance * 3.086e22  # Mpc to meters
             
@@ -793,7 +837,7 @@ class UncertaintyAwareSubtractor:
             # Apply coalescence amplitude scaling
             amplitude *= (time_to_merger / M_total_s)**(-1/4)
             
-            # ✅ REAL: Generate polarizations with proper orientation
+            #  Generate polarizations with proper orientation
             inclination = parameters.get('theta_jn', np.pi/2)
             cos_iota = np.cos(inclination)
             
@@ -801,7 +845,7 @@ class UncertaintyAwareSubtractor:
             h_plus = amplitude * (1 + cos_iota**2) * np.cos(phase)
             h_cross = amplitude * 2 * cos_iota * np.sin(phase)
             
-            # ✅ REAL: Apply realistic detector response
+            #  Apply realistic detector response
             psi = parameters.get('psi', 0.0)  # Polarization angle
             ra = parameters.get('ra', 0.0)
             dec = parameters.get('dec', 0.0)
@@ -812,11 +856,11 @@ class UncertaintyAwareSubtractor:
             # Detector strain
             strain = F_plus * h_plus + F_cross * h_cross
             
-            # ✅ REAL: Apply realistic time-domain windowing
+            #  Apply realistic time-domain windowing
             window = self._compute_tukey_window(len(strain), alpha=0.2)
             strain *= window
             
-            # ✅ REAL: Add detector-specific calibration effects
+            #  Add detector-specific calibration effects
             calibration_factor = self._get_calibration_factor(detector, np.mean(frequency))
             strain *= calibration_factor
             
@@ -1041,17 +1085,17 @@ class UncertaintyAwareSubtractor:
 
 
 class AdaptiveSubtractor:
-    """REAL adaptive subtractor with physics-based logic - keeping original name"""
+    """adaptive subtractor with physics-based logic - keeping original name"""
     
     def __init__(self, neural_pe=None, uncertainty_subtractor=None):
-        # Use REAL implementations with original names
+        # Use implementations with original names
         param_names = [
             'mass_1', 'mass_2', 'luminosity_distance', 
             'geocent_time', 'ra', 'dec', 'theta_jn', 'psi', 'phase',
             'a_1', 'a_2', 'tilt_1', 'tilt_2', 'phi_12', 'phi_jl'  # Extended parameter set
         ]
         
-        self.neural_pe = neural_pe or MockNeuralPE(param_names)
+        self.neural_pe = neural_pe or NeuralPE(param_names)
         self.uncertainty_subtractor = uncertainty_subtractor or UncertaintyAwareSubtractor()
         self.logger = logging.getLogger(__name__)
         
@@ -1063,13 +1107,13 @@ class AdaptiveSubtractor:
     
     def extract_and_subtract(self, data: Dict[str, Any], 
                            detection_idx: int) -> Tuple[Dict[str, np.ndarray], Dict, Dict]:
-        """REAL extraction and subtraction with iterative refinement."""
+        """extraction and subtraction with iterative refinement."""
         
         try:
             # Standardize data format
             standardized_data = standardize_strain_data(data)
             
-            # ✅ REAL: Initial parameter estimation using neural PE
+            # Initial parameter estimation using neural PE
             extraction_result = self.neural_pe.quick_estimate(standardized_data, detection_idx)
             
             # Get initial parameter estimates
@@ -1085,7 +1129,7 @@ class AdaptiveSubtractor:
                     best_params[param_name] = float(summary)
                     uncertainties[param_name] = 0.1
             
-            # ✅ REAL: Iterative refinement (if signal quality is sufficient)
+            # Iterative refinement (if signal quality is sufficient)
             signal_quality = extraction_result.get('signal_quality', 0.5)
             
             if signal_quality > 0.6:  # High quality signals get iterative refinement
@@ -1094,12 +1138,12 @@ class AdaptiveSubtractor:
                 )
                 extraction_result['refinement_info'] = refinement_info
             
-            # ✅ REAL: Perform physics-based subtraction
+            # Perform physics-based subtraction
             residual_data, subtraction_info = self.uncertainty_subtractor.subtract_signal(
                 standardized_data, best_params, uncertainties
             )
-            
-            # ✅ REAL: Post-subtraction analysis and validation
+
+            # Post-subtraction analysis and validation
             validation_results = self._validate_subtraction(
                 standardized_data, residual_data, best_params, subtraction_info
             )
@@ -1145,7 +1189,7 @@ class AdaptiveSubtractor:
     def _iterative_refinement(self, data: Dict[str, np.ndarray], 
                             initial_params: Dict[str, float],
                             initial_uncertainties: Dict[str, float]) -> Tuple[Dict, Dict, Dict]:
-        """REAL iterative parameter refinement using template matching."""
+        """iterative parameter refinement using template matching."""
         
         refined_params = initial_params.copy()
         refined_uncertainties = initial_uncertainties.copy()
@@ -1180,7 +1224,7 @@ class AdaptiveSubtractor:
                     refinement_info['convergence_achieved'] = True
                     break
                 
-                # ✅ REAL: Gradient-based parameter updates
+                # Gradient-based parameter updates
                 parameter_updates = self._compute_parameter_updates(
                     data, refined_params, subtraction_info
                 )
@@ -1215,7 +1259,7 @@ class AdaptiveSubtractor:
     def _compute_parameter_updates(self, data: Dict[str, np.ndarray], 
                                  params: Dict[str, float],
                                  subtraction_info: Dict) -> Dict[str, float]:
-        """REAL parameter updates using finite difference gradients."""
+        """parameter updates using finite difference gradients."""
         
         parameter_updates = {}
         
@@ -1296,7 +1340,7 @@ class AdaptiveSubtractor:
                             residual_data: Dict[str, np.ndarray],
                             parameters: Dict[str, float],
                             subtraction_info: Dict) -> Dict:
-        """REAL post-subtraction validation and quality assessment."""
+        """post-subtraction validation and quality assessment."""
         
         validation_results = {
             'overall_quality': 0.0,

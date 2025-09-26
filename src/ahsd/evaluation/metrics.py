@@ -1,6 +1,25 @@
 #!/usr/bin/env python3
-"""
-REAL Metrics for AHSD evaluation - COMPLETE PHYSICS-BASED IMPLEMENTATION
+"""his module provides comprehensive metrics and statistical analysis tools for evaluating the performance, bias, recovery, and comparison of signal extraction methods in the context of the AHSD (Advanced Hierarchical Signal Decomposition) framework. The metrics are designed to assess both the accuracy and computational efficiency of various signal extraction algorithms, with a focus on physics-based criteria relevant to gravitational wave signal analysis.
+Classes:
+--------
+- BiasMetrics:
+    Computes parameter-wise biases between true and estimated parameters, including statistical significance tests, distributional analysis, and expected vs. observed bias comparison. Provides overall bias metrics and grading.
+- PerformanceMetrics:
+    Evaluates extraction performance, including timing, accuracy, efficiency, and scalability metrics. Supports method-specific expectations and grades performance based on computational and signal quality criteria.
+- RecoveryMetrics:
+    Analyzes signal recovery by matching extracted signals to true signals using multi-criteria physical matching (mass, time, sky position, distance). Computes recall, precision, F1 score, and provides detailed analysis of recovery quality and failure patterns.
+- ComparisonMetrics:
+    Compares multiple extraction methods using pairwise comparisons, multi-criteria ranking, and statistical significance testing. Summarizes method characteristics and provides recommendations based on performance across timing, recovery, and quality.
+Dependencies:
+-------------
+- numpy
+- torch
+- scipy.stats
+- scipy.spatial.distance
+- logging
+Intended Usage:
+---------------
+Import this module and instantiate the relevant metric classes to evaluate and compare the performance of signal extraction methods on simulated or real datasets. The metrics are suitable for benchmarking, method development, and reporting in gravitational wave data analysis pipelines.
 """
 
 import numpy as np
@@ -11,9 +30,22 @@ from scipy.stats import ks_2samp, anderson_ksamp
 from scipy.spatial.distance import wasserstein_distance
 
 class BiasMetrics:
-    """REAL Bias metrics with comprehensive statistical analysis"""
+    """Bias metrics with comprehensive statistical analysis"""
     
     def __init__(self, param_names: List[str]):
+        """
+        Initialize BiasMetrics.
+
+        Parameters
+        ----------
+        param_names : List[str]
+            List of parameter names for which bias metrics will be computed.
+        
+        Usage
+        -----
+        Instantiate with a list of parameter names to evaluate, e.g.:
+            bias_metrics = BiasMetrics(['mass_1', 'mass_2', 'luminosity_distance'])
+        """
         self.param_names = param_names
         self.logger = logging.getLogger(__name__)
         
@@ -32,7 +64,29 @@ class BiasMetrics:
         
     def compute_parameter_biases(self, true_params: List[Dict], 
                                estimated_params: List[Dict]) -> Dict[str, Any]:
-        """REAL parameter bias computation with statistical significance testing."""
+        """
+        Compute parameter-wise biases between true and estimated parameters, including statistical significance tests.
+
+        Parameters
+        ----------
+        true_params : List[Dict]
+            List of dictionaries containing the true parameter values for each signal.
+        estimated_params : List[Dict]
+            List of dictionaries containing the estimated parameter values for each signal.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing parameter-wise bias metrics, overall metrics, and the number of signals analyzed.
+            The structure includes:
+                - 'parameter_biases': Dict of bias statistics for each parameter.
+                - 'overall_metrics': Summary statistics across all parameters.
+                - 'n_signals_analyzed': Number of signals included in the analysis.
+
+        Usage
+        -----
+        Call this method with lists of true and estimated parameter dictionaries to obtain detailed bias analysis.
+        """
         
         if not true_params or not estimated_params:
             return self._get_empty_bias_metrics()
@@ -87,7 +141,7 @@ class BiasMetrics:
     def _compute_comprehensive_parameter_bias(self, param_name: str, 
                                             true_vals: List[float], 
                                             est_vals: List[float]) -> Dict[str, Any]:
-        """REAL comprehensive bias analysis for a single parameter."""
+        """comprehensive bias analysis for a single parameter."""
         
         true_array = np.array(true_vals)
         est_array = np.array(est_vals)
@@ -142,7 +196,7 @@ class BiasMetrics:
     def _perform_bias_significance_tests(self, abs_biases: np.ndarray, 
                                        rel_biases: np.ndarray, 
                                        param_name: str) -> Dict[str, Any]:
-        """REAL statistical significance testing for biases."""
+        """statistical significance testing for biases."""
         
         tests = {}
         
@@ -209,7 +263,7 @@ class BiasMetrics:
             return 0.0
     
     def _compute_overall_bias_metrics(self, param_biases: Dict[str, Dict]) -> Dict[str, Any]:
-        """REAL overall bias assessment across all parameters."""
+        """overall bias assessment across all parameters."""
         
         overall_metrics = {
             'parameters_analyzed': 0,
@@ -296,14 +350,14 @@ class BiasMetrics:
 
 
 class PerformanceMetrics:
-    """REAL Performance metrics with computational and accuracy analysis"""
+    """Performance metrics with computational and accuracy analysis"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
     def compute_extraction_performance(self, extraction_results: Dict, 
                                      ground_truth: List[Dict]) -> Dict[str, Any]:
-        """REAL extraction performance analysis."""
+        """extraction performance analysis."""
         
         performance_metrics = {
             'timing_metrics': {},
@@ -333,7 +387,7 @@ class PerformanceMetrics:
         return performance_metrics
     
     def _analyze_timing_performance(self, results: Dict) -> Dict[str, Any]:
-        """REAL timing performance analysis."""
+        """timing performance analysis."""
         
         timing_metrics = {}
         
@@ -391,7 +445,7 @@ class PerformanceMetrics:
             return 'poor'
     
     def _analyze_accuracy_performance(self, results: Dict, ground_truth: List[Dict]) -> Dict[str, Any]:
-        """REAL accuracy performance analysis."""
+        """accuracy performance analysis."""
         
         accuracy_metrics = {}
         
@@ -464,7 +518,7 @@ class PerformanceMetrics:
         return expected_accuracies.get(method, 0.6)
     
     def _analyze_efficiency_performance(self, results: Dict) -> Dict[str, Any]:
-        """REAL efficiency performance analysis."""
+        """efficiency performance analysis."""
         
         efficiency_metrics = {}
         
@@ -538,7 +592,7 @@ class PerformanceMetrics:
             return 1.0 / n_signals
     
     def _analyze_scalability_performance(self, results: Dict) -> Dict[str, Any]:
-        """REAL scalability performance analysis."""
+        """scalability performance analysis."""
         
         scalability_metrics = {}
         
@@ -583,7 +637,7 @@ class PerformanceMetrics:
 
 
 class RecoveryMetrics:
-    """REAL Recovery metrics with statistical analysis"""
+    """Recovery metrics with statistical analysis"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
@@ -591,7 +645,7 @@ class RecoveryMetrics:
     def compute_signal_recovery(self, extracted_signals: List[Dict], 
                               true_signals: List[Dict],
                               matching_threshold: float = 0.1) -> Dict[str, Any]:
-        """REAL signal recovery analysis with matching and statistical tests."""
+        """signal recovery analysis with matching and statistical tests."""
         
         recovery_results = {
             'matching_results': {},
@@ -621,7 +675,7 @@ class RecoveryMetrics:
     
     def _match_signals(self, extracted: List[Dict], true_signals: List[Dict], 
                       threshold: float) -> Dict[str, Any]:
-        """REAL signal matching using multiple criteria."""
+        """signal matching using multiple criteria."""
         
         matches = {
             'matched_pairs': [],
@@ -695,7 +749,7 @@ class RecoveryMetrics:
         return matches
     
     def _compute_signal_match_score(self, extracted: Dict, true_signal: Dict) -> float:
-        """REAL signal matching score using multiple physical criteria."""
+        """signal matching score using multiple physical criteria."""
         
         try:
             scores = []
@@ -893,7 +947,7 @@ class RecoveryMetrics:
             return -1
     
     def _compute_recovery_statistics(self, matches: Dict, true_signals: List[Dict]) -> Dict[str, Any]:
-        """REAL recovery statistics computation."""
+        """recovery statistics computation."""
         
         stats = {}
         
@@ -948,7 +1002,7 @@ class RecoveryMetrics:
         return stats
     
     def _analyze_recovery_quality(self, matches: Dict, extracted_signals: List[Dict]) -> Dict[str, Any]:
-        """REAL recovery quality analysis."""
+        """recovery quality analysis."""
         
         quality_analysis = {}
         
@@ -1000,7 +1054,7 @@ class RecoveryMetrics:
         return quality_analysis
     
     def _analyze_recovery_failures(self, matches: Dict, true_signals: List[Dict]) -> Dict[str, Any]:
-        """REAL recovery failure analysis."""
+        """recovery failure analysis."""
         
         failure_analysis = {}
         
@@ -1095,13 +1149,13 @@ class RecoveryMetrics:
 
 
 class ComparisonMetrics:
-    """REAL Comparison metrics for method evaluation"""
+    """Comparison metrics for method evaluation"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
     def compare_methods(self, method_results: Dict[str, Dict]) -> Dict[str, Any]:
-        """REAL comprehensive method comparison."""
+        """comprehensive method comparison."""
         
         comparison_results = {
             'pairwise_comparisons': {},
@@ -1135,7 +1189,7 @@ class ComparisonMetrics:
         return comparison_results
     
     def _compute_pairwise_comparisons(self, method_results: Dict[str, Dict]) -> Dict[str, Any]:
-        """REAL pairwise method comparisons."""
+        """pairwise method comparisons."""
         
         pairwise = {}
         method_names = list(method_results.keys())
@@ -1161,7 +1215,7 @@ class ComparisonMetrics:
     
     def _compare_two_methods(self, name1: str, results1: Dict, 
                            name2: str, results2: Dict) -> Dict[str, Any]:
-        """REAL comparison between two methods."""
+        """comparison between two methods."""
         
         comparison = {
             'method_1': name1,
@@ -1245,7 +1299,7 @@ class ComparisonMetrics:
         return comparison
     
     def _compute_method_ranking(self, method_results: Dict[str, Dict]) -> Dict[str, Any]:
-        """REAL method ranking based on multiple criteria."""
+        """method ranking based on multiple criteria."""
         
         ranking = {
             'overall_ranking': [],
@@ -1339,7 +1393,7 @@ class ComparisonMetrics:
         return ranking
     
     def _test_statistical_significance(self, method_results: Dict[str, Dict]) -> Dict[str, Any]:
-        """REAL statistical significance testing."""
+        """statistical significance testing."""
         
         significance_tests = {
             'quality_differences': {},
@@ -1411,7 +1465,7 @@ class ComparisonMetrics:
         return significance_tests
     
     def _summarize_method_performance(self, method_results: Dict[str, Dict]) -> Dict[str, Any]:
-        """REAL method performance summary."""
+        """method performance summary."""
         
         summary = {
             'best_overall': 'unknown',

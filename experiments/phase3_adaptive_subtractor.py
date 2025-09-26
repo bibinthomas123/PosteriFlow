@@ -377,7 +377,7 @@ class AdaptiveSubtractorDataset(Dataset):
             
         except Exception as e:
             logging.debug(f"Waveform generation failed: {e}, using clean fallback")
-            # Ultra-safe fallback - simple sine wave
+            # fallback - simple sine wave
             t = np.linspace(0, 4, 4096)
             clean_amplitude = 1e-23
             clean_freq = 50.0  # Hz
@@ -407,7 +407,7 @@ class AdaptiveSubtractorDataset(Dataset):
             return default
     
     def _extract_parameter_vector(self, params: Dict) -> np.ndarray:
-        """Extract and PROPERLY NORMALIZE parameter values to [-1,1]."""
+        """Extract and PREPROCESS parameter values to [-1,1]."""
         try:
             param_vector = []
 
@@ -503,7 +503,7 @@ def collate_subtractor_batch(batch: List[Dict]) -> Tuple[torch.Tensor, torch.Ten
 
 def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDataset, 
                    epochs: int = 100) -> Dict[str, Any]:
-    """PRODUCTION training for Neural PE Network"""
+    """Training for Neural PE Network"""
     
     logging.info("🧠 Training Neural PE Network...")
     
@@ -528,7 +528,7 @@ def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDatas
         optimizer, T_max=epochs, eta_min=1e-6
     )
     
-    # PRODUCTION loss function with uncertainty
+    # loss function with uncertainty
     def neural_pe_loss(pred_params, pred_uncertainties, true_params, quality_weights):
         """NaN-safe loss function"""
         
@@ -619,9 +619,9 @@ def train_uncertainty_subtractor(subtractor: UncertaintyAwareSubtractor,
                                 neural_pe: NeuralPENetwork,
                                 dataset: AdaptiveSubtractorDataset,
                                 epochs: int = 150) -> Dict[str, Any]:
-    """ULTRA-STABLE training - ZERO NaN GUARANTEE"""
+    """Uncertainty training - ZERO NaN GUARANTEE"""
     
-    logging.info("�� Training uncertainty-aware subtractor...")
+    logging.info("Training uncertainty-aware subtractor...")
     
     dataloader = DataLoader(
         dataset,
@@ -668,7 +668,7 @@ def train_uncertainty_subtractor(subtractor: UncertaintyAwareSubtractor,
                     # Generate predictions
                     pred_params, pred_uncertainties = neural_pe(waveforms)
                     
-                    # ULTRA-SAFE reconstructed waveform generation
+                    # reconstructed waveform generation
                     # Method: Create controlled imperfect copy
                     random_scale = 0.9 + 0.2 * torch.rand(batch_size, 1, 1)  # 0.9 to 1.1 scaling
                     phase_shift = 0.1 * torch.randn(batch_size, n_channels, 1)
@@ -692,7 +692,7 @@ def train_uncertainty_subtractor(subtractor: UncertaintyAwareSubtractor,
                 # Forward pass through subtractor
                 subtracted_data, confidence = subtractor(waveforms, reconstructed, pred_uncertainties)
                 
-                # ULTRA-SAFE efficiency calculation with NaN protection
+                #  efficiency calculation with NaN protection
                 original_power = torch.mean(waveforms ** 2, dim=(1, 2)) + 1e-8  # Add small constant
                 subtracted_power = torch.mean(subtracted_data ** 2, dim=(1, 2)) + 1e-8
                 
@@ -712,7 +712,7 @@ def train_uncertainty_subtractor(subtractor: UncertaintyAwareSubtractor,
                     efficiency = torch.zeros_like(efficiency)
                     logging.warning('NaN efficiency detected, using zeros')
                 
-                # ULTRA-SAFE loss function
+                #  loss function
                 try:
                     # Simple MSE-based loss to minimize residual power
                     power_reduction_loss = torch.mean(subtracted_power / (original_power + 1e-6))
@@ -782,7 +782,7 @@ def train_uncertainty_subtractor(subtractor: UncertaintyAwareSubtractor,
 
 def validate_components(neural_pe: NeuralPENetwork, subtractor: UncertaintyAwareSubtractor,
                        dataset: AdaptiveSubtractorDataset, n_samples: int = 50) -> Dict[str, Any]:
-    """ULTRA-SAFE validation of trained components"""
+    """ validation of trained components"""
     
     logging.info("🔍 Validating trained components...")
     

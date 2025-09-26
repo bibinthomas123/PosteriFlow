@@ -24,9 +24,9 @@ warnings.filterwarnings('ignore')
 sys.path.append("experiments")
 from phase3a_neural_pe import NeuralPENetwork
 
-# ✅ ADDED: EffectiveSubtractor class for compatibility
+
 class EffectiveSubtractor(nn.Module):
-    """WORKING Subtractor with proper contamination handling"""
+    """Subtractor with proper contamination handling"""
     
     def __init__(self, data_length: int = 4096):
         super().__init__()
@@ -131,7 +131,7 @@ def create_test_dataset(param_names: List[str], n_samples: int = 200):
         distance = np.random.uniform(200, 800)
         chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
         
-        # ✅ FIXED: Same scaling as Phase 3B training
+        # Same scaling as Phase 3B training
         signal_scale = 1e-3
         contamination_scale = signal_scale * 10.0
         
@@ -146,7 +146,7 @@ def create_test_dataset(param_names: List[str], n_samples: int = 200):
         h_plus_clean = amplitude * (1 + np.cos(inclination)**2) * np.cos(phase)
         h_cross_clean = amplitude * 2 * np.cos(inclination) * np.sin(phase)
         
-        # ✅ FIXED: Match EXACT training contamination strength
+        # Match EXACT training contamination strength
         # Power line contamination (60Hz - very obvious)
         power_contamination_h_plus = contamination_scale * np.sin(2 * np.pi * 60.0 * t)
         power_contamination_h_cross = contamination_scale * np.cos(2 * np.pi * 60.0 * t)
@@ -165,7 +165,7 @@ def create_test_dataset(param_names: List[str], n_samples: int = 200):
         glitch_amplitude = contamination_scale * 2.0
         glitch = glitch_amplitude * np.exp(-((t - glitch_center) / glitch_width)**2)
         
-        # ✅ COMPLETE contamination matching training
+        # contamination matching training
         total_contamination_h_plus = (power_contamination_h_plus + 
                                      seismic_contamination_h_plus + 
                                      hf_contamination_h_plus + glitch)
@@ -209,6 +209,38 @@ def create_test_dataset(param_names: List[str], n_samples: int = 200):
     return TestDataset(samples)
 
 def validate_complete_system(neural_pe, subtractor, dataset, n_samples: int = 200):
+    """
+    Validates the complete Phase 3B/3C gravitational wave contamination removal system by evaluating
+    both the neural parameter estimator (neural_pe) and the subtractor model on a given dataset.
+    This function performs the following steps for each sample:
+        - Runs the neural parameter estimator on contaminated data to predict parameters.
+        - Computes the accuracy of the predicted parameters against ground truth.
+        - Runs the subtractor model using the predicted parameters and uncertainties to clean the data.
+        - Measures the subtraction efficiency by comparing mean squared error before and after cleaning.
+        - Aggregates results and computes overall system success based on defined thresholds.
+        - Handles and logs errors robustly for each sample.
+    At the end, prints a detailed summary of system performance and returns key statistics.
+    Args:
+        neural_pe: The neural network model for parameter estimation. Should accept a tensor input and
+            return either predicted parameters or a tuple (parameters, uncertainties).
+        subtractor: The model responsible for subtracting contamination. Should accept contaminated data
+            and uncertainties, returning cleaned data and a confidence score.
+        dataset: A dataset object supporting indexing, where each sample is a dict with keys:
+            'contaminated_data', 'clean_data', and 'true_parameters'.
+        n_samples (int, optional): Maximum number of samples to validate. Defaults to 200.
+    Returns:
+        dict: A dictionary containing:
+            - 'avg_pe_accuracy': Average parameter estimation accuracy.
+            - 'avg_subtraction_efficiency': Average subtraction efficiency.
+            - 'validation_success_rate': Fraction of samples passing both accuracy and efficiency thresholds.
+            - 'pe_std': Standard deviation of parameter estimation accuracy.
+            - 'efficiency_std': Standard deviation of subtraction efficiency.
+            - 'samples_tested': Number of samples evaluated.
+            - 'errors_count': Number of samples with errors during validation.
+    Notes:
+        - Prints a summary table with system classification based on performance thresholds.
+        - Designed for robust evaluation of Phase 3B/3C models in gravitational wave data analysis.
+    """
     """Fixed validation compatible with Phase 3B models"""
     
     logging.info("🔍 Validating complete Phase 3B system...")
@@ -228,7 +260,7 @@ def validate_complete_system(neural_pe, subtractor, dataset, n_samples: int = 20
             try:
                 sample = dataset[idx]
                 
-                # ✅ FIXED: Use correct data keys from Phase 3B
+                # Use correct data keys from Phase 3B
                 contaminated_data = torch.tensor(sample['contaminated_data'], dtype=torch.float32).unsqueeze(0)
                 clean_data = torch.tensor(sample['clean_data'], dtype=torch.float32).unsqueeze(0)
                 true_params = torch.tensor(sample['true_parameters'], dtype=torch.float32).unsqueeze(0)
@@ -238,7 +270,7 @@ def validate_complete_system(neural_pe, subtractor, dataset, n_samples: int = 20
                 clean_data = torch.nan_to_num(clean_data, nan=0.0)
                 true_params = torch.nan_to_num(true_params, nan=0.0)
                 
-                # ✅ FIXED: Neural PE prediction with robust output handling
+                # Neural PE prediction with robust output handling
                 try:
                     neural_pe_output = neural_pe(contaminated_data)
                     if isinstance(neural_pe_output, tuple):
@@ -261,7 +293,7 @@ def validate_complete_system(neural_pe, subtractor, dataset, n_samples: int = 20
                 pe_accuracy = max(0.0, min(1.0, pe_accuracy))
                 validation_results['pe_accuracies'].append(pe_accuracy)
                 
-                # ✅ FIXED: Subtractor test with correct interface
+                # Subtractor test with correct interface
                 try:
                     # Test subtractor on contaminated data
                     cleaned_output, confidence = subtractor(contaminated_data, pred_uncertainties)
@@ -319,7 +351,7 @@ def validate_complete_system(neural_pe, subtractor, dataset, n_samples: int = 20
     print(f"   Samples Tested: {len(validation_results['pe_accuracies'])}")
     print(f"   Errors: {len(validation_results['detailed_errors'])}")
     
-    # ✅ FIXED: Realistic thresholds for GW contamination removal systems
+    # Realistic thresholds for GW contamination removal systems
     if avg_pe_accuracy > 0.55 and avg_efficiency > 0.75:
         print(f"\n🏆 SYSTEM CLASSIFICATION: WORLD-CLASS PERFORMANCE")
         print(f"   🎯 Ready for top-tier journal publication!")
@@ -363,7 +395,7 @@ def main():
     setup_logging(args.verbose)
     logging.info("🚀 Starting Phase 3C: FIXED System Validation")
     
-    # ✅ FIXED: Load Phase 3B output correctly
+    # Load Phase 3B output correctly
     try:
         phase3b_data = torch.load(args.phase3b_output, map_location='cpu')
         neural_pe = phase3b_data['neural_pe_model']
@@ -382,7 +414,7 @@ def main():
         logging.error(f"❌ Failed to load Phase 3B output: {e}")
         return
     
-    # ✅ FIXED: Create compatible test dataset
+    # Create compatible test dataset
     logging.info(f"🔧 Creating test dataset with {args.n_samples} samples...")
     test_dataset = create_test_dataset(param_names, args.n_samples)
     
@@ -411,7 +443,7 @@ def main():
         f.write(f"Samples Tested: {validation_results['samples_tested']}\n")
         f.write(f"Errors: {validation_results['errors_count']}\n")
         
-        # ✅ FIXED: Realistic classification in report
+        # Realistic classification in report
         if validation_results['avg_pe_accuracy'] > 0.55 and validation_results['avg_subtraction_efficiency'] > 0.75:
             f.write("Classification: 🏆 WORLD-CLASS PERFORMANCE - Ready for top journals\n")
         elif validation_results['avg_pe_accuracy'] > 0.50 and validation_results['avg_subtraction_efficiency'] > 0.65:

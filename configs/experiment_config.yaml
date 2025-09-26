@@ -30,7 +30,7 @@ adaptive_subtractor:
     flow_layers: 8
     hidden_features: 256
     num_blocks: 3
-    context_features: 300  # ADD THIS - was missing
+    context_features: 300  
   uncertainty_realizations: 200
 
 bias_corrector:

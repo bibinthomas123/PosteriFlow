@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PRODUCTION Bias Correction with Advanced Neural Networks - COMPLETE REAL IMPLEMENTATION
+ Bias Correction with Advanced Neural Networks - COMPLETE REAL IMPLEMENTATION
 """
 
 import numpy as np
@@ -14,7 +14,7 @@ from scipy.optimize import minimize
 import warnings
 
 class BiasEstimator(nn.Module):
-    """PRODUCTION advanced bias estimator with transformer architecture"""
+    """ advanced bias estimator with transformer architecture"""
     
     def __init__(self, input_dim: int, hidden_dims: List[int] = None):
         super().__init__()
@@ -25,7 +25,7 @@ class BiasEstimator(nn.Module):
         if hidden_dims is None:
             hidden_dims = [256, 128, 64] if input_dim <= 9 else [512, 256, 128, 64]
         
-        # PRODUCTION: Multi-scale feature extraction
+        #  Multi-scale feature extraction
         self.param_embedding = nn.Sequential(
             nn.Linear(input_dim, 128),
             nn.LayerNorm(128),
@@ -42,7 +42,7 @@ class BiasEstimator(nn.Module):
             nn.Linear(64, 32)
         )
         
-        # PRODUCTION: Transformer encoder for parameter correlations
+        #  Transformer encoder for parameter correlations
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=96,  # 64 + 32
             nhead=8,
@@ -52,7 +52,7 @@ class BiasEstimator(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
         
-        # PRODUCTION: Parameter-specific correction heads with physics constraints
+        #  Parameter-specific correction heads with physics constraints
         self.mass_corrector = nn.Sequential(
             nn.Linear(96, 64),
             nn.ReLU(),
@@ -93,7 +93,7 @@ class BiasEstimator(nn.Module):
             nn.Tanh()
         )
         
-        # PRODUCTION: Additional parameters corrector
+        #  Additional parameters corrector
         remaining_params = max(0, input_dim - 6)
         if remaining_params > 0:
             self.extra_corrector = nn.Sequential(
@@ -108,14 +108,14 @@ class BiasEstimator(nn.Module):
         else:
             self.extra_corrector = None
         
-        # PRODUCTION: Physics-based scaling parameters (learned)
+        #  Physics-based scaling parameters (learned)
         self.mass_scale = nn.Parameter(torch.tensor(0.08))        # 8% max mass correction
         self.distance_scale = nn.Parameter(torch.tensor(0.25))    # 25% max distance correction
         self.time_scale = nn.Parameter(torch.tensor(0.001))       # 1ms max time correction
         self.sky_scale = nn.Parameter(torch.tensor(0.15))         # 15% max sky correction
         self.extra_scale = nn.Parameter(torch.tensor(0.12))       # 12% max other corrections
         
-        # PRODUCTION: Uncertainty estimation head
+        #  Uncertainty estimation head
         self.uncertainty_head = nn.Sequential(
             nn.Linear(96, 32),
             nn.ReLU(),
@@ -124,7 +124,7 @@ class BiasEstimator(nn.Module):
         )
         
     def forward(self, param_estimates: torch.Tensor, context_features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """PRODUCTION forward pass with uncertainty quantification"""
+        """ forward pass with uncertainty quantification"""
         
         batch_size = param_estimates.shape[0]
         
@@ -182,18 +182,88 @@ class BiasEstimator(nn.Module):
         return all_corrections, uncertainties
 
 class BiasCorrector:
-    """PRODUCTION bias corrector with advanced machine learning and physics validation"""
+    """
+    BiasCorrector is a comprehensive class for correcting hierarchical biases in parameter estimation, 
+    particularly in gravitational-wave (GW) signal analysis. It integrates advanced machine learning 
+    (neural network-based bias estimation) with physics-based validation and constraints to ensure 
+    robust and physically plausible corrections.
+    Key Features:
+    -------------
+    - Initialization of parameter-specific physics bounds, priors, and known parameter correlations.
+    - Extraction and normalization of parameter values and uncertainties from posterior summaries.
+    - Preparation of neural network input features, including context and physics-informed statistics.
+    - Dual correction modes:
+        - Neural network-based correction with uncertainty quantification (if trained).
+        - Physics-based correction using domain knowledge (fallback).
+    - Comprehensive validation of corrections:
+        - Physics bounds enforcement.
+        - Correction magnitude checks.
+        - Correlation consistency with expected parameter relationships.
+        - Uncertainty reasonableness.
+    - Application of validated corrections to posterior summaries, updating central values and uncertainties.
+    - Adaptive correction strategies (conservative, balanced, aggressive) with configurable scaling.
+    - Performance tracking and statistics, including correction rates, parameter improvements, and quality metrics.
+    - Training interface for the neural bias estimator, supporting early stopping and validation.
+    - Error handling and logging throughout the correction and training processes.
+    Typical Usage:
+    --------------
+    1. Instantiate with a list of parameter names.
+    2. Optionally train the neural bias estimator using labeled scenarios.
+    3. Apply `correct_hierarchical_biases` to a list of extracted signals to obtain bias-corrected results.
+    4. Retrieve correction statistics via `get_correction_statistics`.
+    Parameters
+    ----------
+    param_names : List[str]
+        List of parameter names to be corrected (e.g., ['mass_1', 'mass_2', 'luminosity_distance', ...]).
+    Attributes
+    ----------
+    param_names : List[str]
+        Names of parameters to correct.
+    n_params : int
+        Number of parameters.
+    bias_estimator : BiasEstimator
+        Neural network model for bias estimation.
+    logger : logging.Logger
+        Logger for information and error reporting.
+    correction_history : list
+        History of correction attempts and their outcomes.
+    performance_metrics : dict
+        Aggregated statistics on corrections and improvements.
+    is_trained : bool
+        Indicates if the neural bias estimator has been trained.
+    training_epochs : int
+        Number of epochs completed during training.
+    physics_bounds : dict
+        Physics-based bounds and priors for each parameter.
+    correlation_matrix : np.ndarray
+        Expected parameter correlation matrix.
+    correction_strategies : dict
+        Preset strategies for scaling and thresholding corrections.
+    current_strategy : str
+        Currently selected correction strategy.
+    quality_thresholds : dict
+        Thresholds for signal and posterior quality assessment.
+    Methods
+    -------
+    - correct_hierarchical_biases(extracted_signals)
+        Applies bias correction to a list of extracted signals with validation.
+    - train_bias_estimator(training_scenarios, epochs=200, validation_split=0.2)
+        Trains the neural bias estimator using provided scenarios.
+    - get_correction_statistics()
+        Returns comprehensive statistics on correction performance.
+    """
+    """ bias corrector with advanced machine learning and physics validation"""
     
     def __init__(self, param_names: List[str]):
         self.param_names = param_names
         self.n_params = len(param_names)
         
-        # PRODUCTION: Initialize advanced neural bias estimator
+        #  Initialize advanced neural bias estimator
         self.bias_estimator = BiasEstimator(self.n_params)
         
         self.logger = logging.getLogger(__name__)
         
-        # PRODUCTION: Comprehensive statistics tracking
+        #  Comprehensive statistics tracking
         self.correction_history = []
         self.performance_metrics = {
             'corrections_applied': 0,
@@ -208,11 +278,11 @@ class BiasCorrector:
         self.is_trained = False
         self.training_epochs = 0
         
-        # PRODUCTION: Physics-based parameter bounds and constraints
+        #  Physics-based parameter bounds and constraints
         self.physics_bounds = self._initialize_physics_bounds()
         self.correlation_matrix = self._initialize_parameter_correlations()
         
-        # PRODUCTION: Adaptive correction strategies
+        #  Adaptive correction strategies
         self.correction_strategies = {
             'conservative': {'scaling': 0.3, 'threshold': 0.8},
             'balanced': {'scaling': 0.7, 'threshold': 0.6},
@@ -220,7 +290,7 @@ class BiasCorrector:
         }
         self.current_strategy = 'balanced'
         
-        # PRODUCTION: Quality assessment thresholds
+        #  Quality assessment thresholds
         self.quality_thresholds = {
             'minimum_snr': 8.0,
             'maximum_chi_squared': 2.0,
@@ -228,7 +298,7 @@ class BiasCorrector:
             'maximum_autocorr_time': 50.0
         }
         
-        self.logger.info(f"✅ PRODUCTION BiasCorrector initialized for {self.n_params} parameters")
+        self.logger.info(f"BiasCorrector initialized for {self.n_params} parameters")
     
     def _initialize_physics_bounds(self) -> Dict[str, Dict[str, float]]:
         """Initialize physics-based parameter bounds and priors"""
@@ -676,7 +746,7 @@ class BiasCorrector:
         })
     
     def correct_hierarchical_biases(self, extracted_signals: List[Dict]) -> List[Dict]:
-        """PRODUCTION bias correction with comprehensive validation and error handling"""
+        """ bias correction with comprehensive validation and error handling"""
         
         if not extracted_signals:
             return []
@@ -786,7 +856,7 @@ class BiasCorrector:
     
     def train_bias_estimator(self, training_scenarios: List[Dict], epochs: int = 200, 
                            validation_split: float = 0.2) -> Dict[str, Any]:
-        """PRODUCTION training of neural bias estimator"""
+        """ training of neural bias estimator"""
         
         if not training_scenarios:
             self.logger.warning("No training scenarios provided")
@@ -1000,5 +1070,5 @@ class BiasCorrector:
         
         return stats
 
-# Compatibility for older imports
-UncertaintyAwareSubtractor = BiasCorrector  # Alias for backward compatibility
+
+UncertaintyAwareSubtractor = BiasCorrector  

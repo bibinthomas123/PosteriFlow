@@ -1,0 +1,74 @@
+{
+  "analysis_info": {
+    "event": "GW190521",
+    "gps_time": 1242442967.4,
+    "analysis_timestamp": "2025-09-26T11:32:57.002529",
+    "processing_time_seconds": 0.027723,
+    "ahsd_version": "1.0.0_scale_aware"
+  },
+  "data_info": {
+    "sampling_rate": 4096,
+    "segment_duration": 4.0,
+    "actual_samples": 16384,
+    "bandpass_filter": [
+      20.0,
+      400.0
+    ],
+    "whitening_applied": true,
+    "data_scale_detected": "synthetic"
+  },
+  "model_info": {
+    "phase3a_checkpoint": "outputs/phase3a_output_3/neural_pe_model_only.pth",
+    "phase3b_checkpoint": "outputs/phase3b_production/phase3b_working_output.pth",
+    "computation_device": "cpu",
+    "neural_pe_parameters": 2995414,
+    "subtractor_parameters": 38681377,
+    "scale_aware_subtraction": true
+  },
+  "results": {
+    "parameter_estimation": {
+      "normalized_parameters": [
+        -0.410347044467926,
+        -0.2672659158706665,
+        0.6415202021598816,
+        0.2446029931306839,
+        -0.2502661645412445,
+        0.2699172794818878,
+        0.2606932520866394,
+        0.2529061436653137,
+        0.24040859937667847
+      ],
+      "parameter_uncertainties": [
+        0.010004449635744095,
+        0.010008497163653374,
+        0.010004175826907158,
+        0.010003478266298771,
+        0.01000941451638937,
+        0.010010698810219765,
+        0.010008521378040314,
+        0.010004900395870209,
+        0.010004144161939621
+      ],
+      "physical_parameters": {
+        "mass_1": 80.5538830422479,
+        "mass_2": 63.13238120815214,
+        "luminosity_distance": 4516.798117489795,
+        "ra": 3.910035619855224,
+        "dec": -0.393117171982434,
+        "geocent_time": 0.05398345589637754,
+        "theta_jn": 1.9802923295928057,
+        "psi": 1.9680603682882338,
+        "phase": 3.896858543251378
+      },
+      "constraints_applied": true
+    },
+    "signal_subtraction": {
+      "subtraction_strength": 0.33337342739105225,
+      "h1_noise_reduction_percent": 69.08710214264504,
+      "l1_noise_reduction_percent": 60.821781563466224,
+      "snr_improvement_h1_db": 10.197205622145038,
+      "snr_improvement_l1_db": 8.139106334040635,
+      "scale_aware_processing": true
+    }
+  }
+}

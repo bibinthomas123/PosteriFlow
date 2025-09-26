@@ -133,7 +133,7 @@ class DataPreprocessor:
         strain = self._notch_filter(strain)
         
         # Step 5: Whitening (optional, usually done in analysis)
-        #strain = self._whiten(strain, detector)
+        strain = self._whiten(strain, detector)
         
         # Step 6: Apply window
         strain = self._apply_window(strain)

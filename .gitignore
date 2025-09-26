@@ -69,3 +69,9 @@ Thumbs.db
 #logs
 logs/
 *.log
+
+github/
+
+*.npy
+
+github.pub

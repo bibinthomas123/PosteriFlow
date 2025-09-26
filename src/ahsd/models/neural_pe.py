@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-REAL Neural Posterior Estimation using normalizing flows - PRODUCTION VERSION
+ Neural Posterior Estimation using normalizing flows - PRODUCTION VERSION
 """
 
 import numpy as np
@@ -15,8 +15,8 @@ import warnings
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning)
 
-class RealNVPLayer(nn.Module):
-    """Real NVP coupling layer for normalizing flow."""
+class NVPLayer(nn.Module):
+    """ NVP coupling layer for normalizing flow."""
     
     def __init__(self, input_dim: int, hidden_dim: int = 128, mask: torch.Tensor = None):
         super().__init__()
@@ -95,8 +95,8 @@ class RealNVPLayer(nn.Module):
         
         return x, log_det
 
-class RealNeuralPosteriorEstimator(nn.Module):
-    """Real Neural Posterior Estimator using normalizing flows."""
+class NeuralPosteriorEstimator(nn.Module):
+    """ Neural Posterior Estimator using normalizing flows."""
     
     def __init__(self, param_names: List[str], config: Dict[str, Any]):
         super().__init__()
@@ -126,14 +126,14 @@ class RealNeuralPosteriorEstimator(nn.Module):
             else:
                 mask[1::2] = 1
             
-            layer = RealNVPLayer(self.param_dim, self.hidden_features, mask)
+            layer = NVPLayer(self.param_dim, self.hidden_features, mask)
             self.flow_layers_list.append(layer)
         
         # Base distribution
         self.register_buffer('base_mean', torch.zeros(self.param_dim))
         self.register_buffer('base_cov', torch.eye(self.param_dim))
         
-        self.logger.info(f"✅ Real Neural PE initialized: {self.param_dim} params, {self.flow_layers} layers")
+        self.logger.info(f"✅  Neural PE initialized: {self.param_dim} params, {self.flow_layers} layers")
     
     def _get_parameter_bounds(self) -> Dict[str, Tuple[float, float]]:
         """Get reasonable parameter bounds for normalization."""
@@ -377,7 +377,7 @@ class RealNeuralPosteriorEstimator(nn.Module):
                 }
                 
         except Exception as e:
-            self.logger.debug(f"Real Neural PE failed: {e}")
+            self.logger.debug(f" Neural PE failed: {e}")
             return self._fallback_estimate()
     
     def _fallback_estimate(self) -> Dict:
@@ -418,8 +418,8 @@ class RealNeuralPosteriorEstimator(nn.Module):
         self.num_samples = complexity_map.get(complexity, 100)
         self.logger.debug(f"Set Neural PE complexity to {complexity} ({self.num_samples} samples)")
 
-class RealUncertaintyAwareSubtractor:
-    """Real uncertainty-aware signal subtractor with physics-based templates."""
+class UncertaintyAwareSubtractor:
+    """ uncertainty-aware signal subtractor with physics-based templates."""
     
     def __init__(self, waveform_generator=None):
         self.logger = logging.getLogger(__name__)
@@ -517,7 +517,7 @@ class RealUncertaintyAwareSubtractor:
             tc = parameters.get('geocent_time', 0.0)
             
             # Frequency evolution using post-Newtonian approximation
-            # This is a simplified PN expansion - real implementation would use LAL
+            # This is a simplified PN expansion -  implementation would use LAL
             
             # Convert to geometric units (G=c=1)
             M_sun_s = 4.925490947e-6  # Solar mass in seconds
@@ -582,7 +582,7 @@ class RealUncertaintyAwareSubtractor:
             
             response *= window
             
-            # Add realistic noise floor
+            # Add istic noise floor
             noise_floor = np.random.normal(0, 1e-24, len(response))
             template = response + noise_floor
             
@@ -620,8 +620,8 @@ class RealUncertaintyAwareSubtractor:
         except:
             return 0.8  # Default conservative weight
 
-class RealAdaptiveSubtractor:
-    """Real adaptive subtractor with physics-based neural PE."""
+class AdaptiveSubtractor:
+    """ adaptive subtractor with physics-based neural PE."""
     
     def __init__(self, neural_pe=None, uncertainty_subtractor=None):
         param_names = [
@@ -629,32 +629,32 @@ class RealAdaptiveSubtractor:
             'geocent_time', 'ra', 'dec', 'theta_jn', 'psi', 'phase'
         ]
         
-        # Use real neural PE
+        # Use  neural PE
         if neural_pe is None:
             config = {
                 'flow_layers': 6,
                 'hidden_features': 128,
                 'context_features': 256
             }
-            self.neural_pe = RealNeuralPosteriorEstimator(param_names, config)
+            self.neural_pe = NeuralPosteriorEstimator(param_names, config)
         else:
             self.neural_pe = neural_pe
         
-        # Use real uncertainty-aware subtractor
-        self.uncertainty_subtractor = uncertainty_subtractor or RealUncertaintyAwareSubtractor()
+        # Use  uncertainty-aware subtractor
+        self.uncertainty_subtractor = uncertainty_subtractor or UncertaintyAwareSubtractor()
         self.logger = logging.getLogger(__name__)
         
-        self.logger.info("✅ Real AdaptiveSubtractor initialized with physics-based components")
+        self.logger.info("✅  AdaptiveSubtractor initialized with physics-based components")
     
     def extract_and_subtract(self, data: Dict[str, np.ndarray], 
                            detection_idx: int) -> Tuple[Dict[str, np.ndarray], Dict, Dict]:
-        """Extract signal parameters and subtract using real physics."""
+        """Extract signal parameters and subtract using  physics."""
         
         try:
             # Standardize data format
             standardized_data = self._standardize_data(data)
             
-            # Use real neural PE for parameter estimation
+            # Use  neural PE for parameter estimation
             extraction_result = self.neural_pe.quick_estimate(standardized_data, detection_idx)
             
             # Get best parameter estimates from posterior
@@ -682,7 +682,7 @@ class RealAdaptiveSubtractor:
             return residual_data, extraction_result, uncertainties
             
         except Exception as e:
-            self.logger.error(f"Real extract and subtract failed: {e}")
+            self.logger.error(f" extract and subtract failed: {e}")
             
             # Return original data and empty results
             try:

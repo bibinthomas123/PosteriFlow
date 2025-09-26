@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhanced Phase 1: MASSIVE 10K Diversified Mixed Real+Synthetic Dataset
+Phase 1:   Diversified Mixed Real+Synthetic Dataset
 Uses existing AHSD modules with proper imports and implementations
 """
 import sys
@@ -83,9 +83,9 @@ class FallbackConfig:
         return cls()
 
 
-class MassiveDatasetGenerator:
-    """A class for generating massive, diversified gravitational wave datasets with real LIGO integration.
-    This class handles generation of a comprehensive 10K dataset containing different types of gravitational wave scenarios,
+class DatasetGenerator:
+    """A class for generating , diversified gravitational wave datasets with real LIGO integration.
+    This class handles generation of a comprehensive  dataset containing different types of gravitational wave scenarios,
     including pure synthetic, colored noise, real-augmented single/multi signals, real backgrounds, and extreme parameter cases.
     The generated dataset is designed for robust machine learning model training with emphasis on diversity and realism.
     Attributes:
@@ -97,7 +97,7 @@ class MassiveDatasetGenerator:
         param_generator: Generator for creating diverse parameter sets
         stats: Dictionary tracking statistics about generated scenarios
     Methods:
-        generate_massive_diversified_dataset: Main method to generate the full 10K dataset
+        generate_diversified_dataset: Main method to generate the full  dataset
         fix_signal_parameters: Ensures signal parameters have all required keys
         generate_pure_synthetic_scenarios: Creates pure synthetic gravitational wave scenarios
         generate_synthetic_colored_noise_scenarios: Generates scenarios with colored noise
@@ -108,8 +108,8 @@ class MassiveDatasetGenerator:
         generate_high_snr_scenarios: Creates pristine high SNR scenarios
     Example:
         config = DatasetConfig()
-        generator = MassiveDatasetGenerator(config)
-        dataset = generator.generate_massive_diversified_dataset(
+        generator = DatasetGenerator(config)
+        dataset = generator.generate_diversified_dataset(
             total_scenarios=10000,
             max_real_events=100
     Notes:
@@ -128,7 +128,7 @@ class MassiveDatasetGenerator:
         - Low SNR challenge: 2% (200 scenarios)
         - High SNR pristine: 1% (100 scenarios)
     """
-    """Generate massive 10K diversified dataset with real LIGO integration."""
+    """Generate   diversified dataset with real LIGO integration."""
     
     def __init__(self, config):
         self.config = config
@@ -140,12 +140,12 @@ class MassiveDatasetGenerator:
                 self.gwtc_loader = GWTCDataLoader() 
                 self.preprocessor = DataPreprocessor(config)
                 self.simulator = OverlappingSignalSimulator(config)
-                self.logger.info("âœ… Successfully initialized AHSD modules")
+                self.logger.info("Successfully initialized AHSD modules")
             else:
                 self.gwtc_loader = FallbackGWTCLoader()
                 self.preprocessor = None
                 self.simulator = None
-                self.logger.warning("âš ï¸  Using fallback implementations")
+                self.logger.warning("Using fallback implementations")
         except Exception as e:
             self.logger.error(f"Failed to initialize modules: {e}")
             self.gwtc_loader = FallbackGWTCLoader() 
@@ -219,24 +219,23 @@ class MassiveDatasetGenerator:
         return fixed_parameters
 
 
-    def generate_massive_diversified_dataset(self, 
+    def generate_diversified_dataset(self, 
                                         total_scenarios: int = 10000,
                                         max_real_events: int = 100) -> List[Dict]:
-        """Generate comprehensive 10K dataset with ENHANCED REAL DATA distribution."""
+        """Generate comprehensive dataset with REAL DATA distribution."""
         
-        self.logger.info("ðŸš€ GENERATING 10K DATASET - ENHANCED REAL DATA FOCUS")
         self.logger.info("="*80)
         
-        # **ENHANCED DISTRIBUTION STRATEGY**
+        # **DISTRIBUTION STRATEGY**
         distribution = {
-            'pure_synthetic': int(total_scenarios * 0.35),        # 3500 (35%)
-            'synthetic_colored_noise': int(total_scenarios * 0.15), # 1500 (15%)
-            'real_augmented_single': int(total_scenarios * 0.20),   # 2000 (20%) â¬†ï¸ BOOSTED
-            'real_augmented_multi': int(total_scenarios * 0.15),    # 1500 (15%) â¬†ï¸ BOOSTED
-            'real_background': int(total_scenarios * 0.08),        # 800 (8%) â¬†ï¸ INCREASED
-            'extreme_scenarios': int(total_scenarios * 0.04),      # 400 (4%)
-            'low_snr_challenge': int(total_scenarios * 0.02),      # 200 (2%)
-            'high_snr_pristine': int(total_scenarios * 0.01)       # 100 (1%)
+            'pure_synthetic': int(total_scenarios * 0.35),        
+            'synthetic_colored_noise': int(total_scenarios * 0.15), 
+            'real_augmented_single': int(total_scenarios * 0.20),   
+            'real_augmented_multi': int(total_scenarios * 0.15),    
+            'real_background': int(total_scenarios * 0.08),        
+            'extreme_scenarios': int(total_scenarios * 0.04),      
+            'low_snr_challenge': int(total_scenarios * 0.02),      
+            'high_snr_pristine': int(total_scenarios * 0.01)       
         }
         
         # Purpose descriptions
@@ -251,7 +250,7 @@ class MassiveDatasetGenerator:
             'high_snr_pristine': 'Ideal signal benchmarks'
         }
         
-        self.logger.info("ðŸ“Š ENHANCED REAL-DATA FOCUSED DISTRIBUTION:")
+        self.logger.info("ðŸ“Š REAL-DATA FOCUSED DISTRIBUTION:")
         for category, count in distribution.items():
             percentage = count/total_scenarios*100
             self.logger.info(f"   {category:25}: {count:4d} ({percentage:4.1f}%) - {purpose[category]}")
@@ -259,60 +258,60 @@ class MassiveDatasetGenerator:
         # Continue with rest of generation...
         all_scenarios = []
         
-        # **PHASE 1: Pure Synthetic (4000 scenarios)**
-        self.logger.info(f"\nðŸ”¬ Phase 1: Generating {distribution['pure_synthetic']} pure synthetic scenarios...")
+        # **PHASE 1: Pure Synthetic**
+        self.logger.info(f"\n Phase 1: Generating {distribution['pure_synthetic']} pure synthetic scenarios...")
         pure_synthetic = self.generate_pure_synthetic_scenarios(distribution['pure_synthetic'])
         all_scenarios.extend(pure_synthetic)
         self.stats['pure_synthetic'] = len(pure_synthetic)
         
-        # **PHASE 2: Synthetic with Colored Noise (2000 scenarios)**
-        self.logger.info(f"\nðŸŽ¨ Phase 2: Generating {distribution['synthetic_colored_noise']} colored noise scenarios...")
+        # **PHASE 2: Synthetic with Colored Noise**
+        self.logger.info(f"\n Phase 2: Generating {distribution['synthetic_colored_noise']} colored noise scenarios...")
         colored_noise = self.generate_synthetic_colored_noise_scenarios(distribution['synthetic_colored_noise'])
         all_scenarios.extend(colored_noise)
         self.stats['synthetic_colored_noise'] = len(colored_noise)
         
-        # **PHASE 3: Real-Augmented Single Signal (1500 scenarios)**
-        self.logger.info(f"\nðŸ“¡ Phase 3: Generating {distribution['real_augmented_single']} real-augmented single scenarios...")
+        # **PHASE 3: Real-Augmented Single Signal**
+        self.logger.info(f"\n Phase 3: Generating {distribution['real_augmented_single']} real-augmented single scenarios...")
         real_aug_single = self.generate_real_augmented_scenarios(
             distribution['real_augmented_single'], max_real_events, multi_signal=False
         )
         all_scenarios.extend(real_aug_single)
         self.stats['real_augmented_single'] = len(real_aug_single)
         
-        # **PHASE 4: Real-Augmented Multi Signal (1000 scenarios)**
-        self.logger.info(f"\nðŸŽ¯ Phase 4: Generating {distribution['real_augmented_multi']} real-augmented multi scenarios...")
+        # **PHASE 4: Real-Augmented Multi Signal **
+        self.logger.info(f"\n Phase 4: Generating {distribution['real_augmented_multi']} real-augmented multi scenarios...")
         real_aug_multi = self.generate_real_augmented_scenarios(
             distribution['real_augmented_multi'], max_real_events, multi_signal=True
         )
         all_scenarios.extend(real_aug_multi)
         self.stats['real_augmented_multi'] = len(real_aug_multi)
         
-        # **PHASE 5: Real Background Events (500 scenarios)**
-        self.logger.info(f"\nðŸŒŸ Phase 5: Generating {distribution['real_background']} real background scenarios...")
+        # **PHASE 5: Real Background Events **
+        self.logger.info(f"\n Phase 5: Generating {distribution['real_background']} real background scenarios...")
         real_background = self.generate_real_background_scenarios(distribution['real_background'], max_real_events)
         all_scenarios.extend(real_background)
         self.stats['real_background_events'] = len(real_background)
         
-        # **PHASE 6: Extreme Scenarios (500 scenarios)**
-        self.logger.info(f"\nâš¡ Phase 6: Generating {distribution['extreme_scenarios']} extreme parameter scenarios...")
+        # **PHASE 6: Extreme Scenarios **
+        self.logger.info(f"\n Phase 6: Generating {distribution['extreme_scenarios']} extreme parameter scenarios...")
         extreme_scenarios = self.generate_extreme_scenarios(distribution['extreme_scenarios'])
         all_scenarios.extend(extreme_scenarios)
         self.stats['extreme_parameter_scenarios'] = len(extreme_scenarios)
         
-        # **PHASE 7: Low SNR Challenge (300 scenarios)**
-        self.logger.info(f"\nðŸ” Phase 7: Generating {distribution['low_snr_challenge']} low SNR challenge scenarios...")
+        # **PHASE 7: Low SNR Challenge **
+        self.logger.info(f"\n Phase 7: Generating {distribution['low_snr_challenge']} low SNR challenge scenarios...")
         low_snr = self.generate_low_snr_scenarios(distribution['low_snr_challenge'])
         all_scenarios.extend(low_snr)
         self.stats['low_snr_scenarios'] = len(low_snr)
         
-        # **PHASE 8: High SNR Pristine (200 scenarios)**
-        self.logger.info(f"\nðŸ’Ž Phase 8: Generating {distribution['high_snr_pristine']} high SNR pristine scenarios...")
+        # **PHASE 8: High SNR Pristine **
+        self.logger.info(f"\n Phase 8: Generating {distribution['high_snr_pristine']} high SNR pristine scenarios...")
         high_snr = self.generate_high_snr_scenarios(distribution['high_snr_pristine'])
         all_scenarios.extend(high_snr)
         self.stats['high_snr_scenarios'] = len(high_snr)
         
         # **PHASE 9: Post-Processing and Validation**
-        self.logger.info(f"\nðŸ”§ Phase 9: Post-processing {len(all_scenarios)} total scenarios...")
+        self.logger.info(f"\n Phase 9: Post-processing {len(all_scenarios)} total scenarios...")
         self.stats['total_processed'] = len(all_scenarios)
         
         # Shuffle for training diversity
@@ -321,8 +320,8 @@ class MassiveDatasetGenerator:
         # Validate and clean
         validated_scenarios = self.validate_and_clean_scenarios(all_scenarios)
         
-        self.logger.info("âœ… MASSIVE 10K DATASET GENERATION COMPLETED!")
-        self.logger.info(f"ðŸ“Š FINAL STATISTICS:")
+        self.logger.info(" DATASET GENERATION COMPLETED!")
+        self.logger.info(f"FINAL STATISTICS:")
         for key, value in self.stats.items():
             self.logger.info(f"   {key:30}: {value:5d}")
         
@@ -338,14 +337,14 @@ class MassiveDatasetGenerator:
                 try:
                     n_signals = np.random.choice([2, 3, 4, 5], p=[0.35, 0.35, 0.20, 0.10])
                     
-                    # Generate scenario using existing simulator
+                    # Generate scenario using simulator
                     scenario = self.simulator.generate_overlapping_scenario(n_signals)
                     noise_data = self.simulator.generate_detector_noise()
                     injected_data, signal_contributions = self.simulator.inject_signals_to_data(
                         scenario, noise_data
                     )
                     
-                    # âœ… FIX: Ensure all signals have network_snr
+                    #Ensure all signals have network_snr
                     fixed_signals = []
                     for signal in scenario['signals']:
                         if 'network_snr' not in signal:
@@ -367,13 +366,13 @@ class MassiveDatasetGenerator:
                     # Convert to training format
                     training_scenario = {
                         'scenario_id': scenario_id,
-                        'true_parameters': fixed_signals,  # âœ… Use fixed signals
+                        'true_parameters': fixed_signals,  #  Use fixed signals
                         'injected_data': injected_data,
                         'waveform_data': self.convert_to_waveform_format(injected_data),
                         'n_signals': n_signals,
                         'data_type': 'pure_synthetic',
                         'source': 'synthetic',
-                        'quality_metrics': self.compute_quality_metrics(fixed_signals)  # âœ… Use fixed signals
+                        'quality_metrics': self.compute_quality_metrics(fixed_signals)  # Use fixed signals
                     }
                     
                     scenarios.append(training_scenario)
@@ -684,12 +683,12 @@ class MassiveDatasetGenerator:
 
     
     def generate_real_augmented_scenarios(self, n_scenarios: int, max_events: int, multi_signal: bool = False) -> List[Dict]:
-        """Enhanced real-augmented scenarios using your gwtc_loader.py with expanded event access."""
+        """real-augmented scenarios using your gwtc_loader.py with expanded event access."""
         
         scenarios = []
         
         try:
-            # **ENHANCED EVENT LOADING** - Use your gwtc_loader.py more effectively
+            # **EVENT LOADING** - Use your gwtc_loader.py more effectively
             self.logger.info(f"Loading GWTC events for {'multi' if multi_signal else 'single'}-signal scenarios...")
             
             # Get comprehensive events using your loader
@@ -723,7 +722,7 @@ class MassiveDatasetGenerator:
             
             self.logger.info(f"Quality events after filtering: {len(quality_events)}")
             
-            # **MAXIMIZE EVENT USAGE** - Use more events than before
+            # **MAXIMIZE EVENT USAGE** - Use more events than before\
             selected_events = quality_events.head(min(max_events, len(quality_events)))
             
             if len(selected_events) == 0:
@@ -740,7 +739,7 @@ class MassiveDatasetGenerator:
             
             self.logger.info(f"Generating {scenarios_per_event} scenarios per event")
             
-            # Process events with enhanced scenario generation
+            # Process events with scenario generation
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = []
                 
@@ -859,7 +858,7 @@ class MassiveDatasetGenerator:
         return scenarios
 
     def generate_enhanced_single_signal_params(self, event) -> List[Dict]:
-        """Generate enhanced single signal parameters from real event."""
+        """Generate single signal parameters from real event."""
         
         # Extract base parameters with error handling
         base_mass_1 = float(event.get('mass_1_source', 30.0))
@@ -868,7 +867,7 @@ class MassiveDatasetGenerator:
         base_snr = float(event.get('network_snr', 15.0))
         observing_run = event.get('observing_run', 'O3a')
         
-        # **ENHANCED VARIATIONS** - More realistic parameter space exploration
+        # **VARIATIONS** - More realistic parameter space exploration
         # Vary masses within astrophysically reasonable bounds
         mass_variation = np.random.uniform(0.85, 1.15)  # Â±15% variation
         distance_variation = np.random.uniform(0.7, 1.4)   # Â±30% variation
@@ -918,7 +917,7 @@ class MassiveDatasetGenerator:
         return [param]
 
     def generate_enhanced_multi_signal_params(self, event) -> List[Dict]:
-        """Generate enhanced multi-signal parameters from real event."""
+        """Generate multi-signal parameters from real event."""
         
         n_signals = np.random.choice([2, 3], p=[0.8, 0.2])  # Favor 2 signals for realism
         params = []
@@ -974,10 +973,10 @@ class MassiveDatasetGenerator:
 
 
     def create_enhanced_real_augmented_scenario(self, event, scenario_id: int, multi_signal: bool) -> Optional[Dict]:
-        """Enhanced real-augmented scenario creation with better success rate."""
+        """real-augmented scenario creation with better success rate."""
         
         try:
-            # **ENHANCED BACKGROUND EXTRACTION** - Try multiple approaches
+            # **BACKGROUND EXTRACTION** - Try multiple approaches
             background_data = None
             
             # Attempt 1: Use your gwtc_loader strain download
@@ -1011,18 +1010,18 @@ class MassiveDatasetGenerator:
                 except Exception as e:
                     self.logger.debug(f"Overlapping candidates failed: {e}")
             
-            # Attempt 3: Generate realistic synthetic background based on event characteristics
+            # Generate realistic synthetic background based on event characteristics
             if background_data is None:
                 background_data = self.generate_realistic_background_from_event(event)
                 self.logger.debug(f"Using synthetic background for {event.get('event_name')}")
             
-            # **ENHANCED PARAMETER GENERATION** - More realistic variations
+            # **PARAMETER GENERATION** - More realistic variations
             if multi_signal:
                 synthetic_params = self.generate_enhanced_multi_signal_params(event)
             else:
                 synthetic_params = self.generate_enhanced_single_signal_params(event)
             
-            # **ENHANCED INJECTION** - Better signal-to-noise integration
+            # **INJECTION** - Better signal-to-noise integration
             injected_data = self.enhanced_inject_signals_into_background(synthetic_params, background_data)
             
             scenario = {
@@ -1041,12 +1040,12 @@ class MassiveDatasetGenerator:
             return scenario
             
         except Exception as e:
-            self.logger.debug(f"Enhanced real augmented scenario creation failed: {e}")
+            self.logger.debug(f"real augmented scenario creation failed: {e}")
             return None
     
     
     def enhanced_inject_signals_into_background(self, signal_params: List[Dict], background_data: Dict) -> Dict:
-        """Enhanced signal injection with better SNR control."""
+        """signal injection with better SNR control."""
         
         injected_data = {}
         
@@ -1055,10 +1054,10 @@ class MassiveDatasetGenerator:
                 total_strain = np.array(noise)
                 
                 for params in signal_params:
-                    # Generate signal with enhanced physics
+                    # Generate signal with physics
                     signal = self.generate_realistic_waveform(params, len(noise), detector)
                     
-                    # Enhanced SNR control - scale signal to match target SNR
+                    # SNR control - scale signal to match target SNR
                     target_snr = params.get('network_snr', 15.0)
                     current_rms = np.sqrt(np.mean(signal**2))
                     noise_rms = np.sqrt(np.mean(noise**2))
@@ -1073,7 +1072,7 @@ class MassiveDatasetGenerator:
                 injected_data[detector] = total_strain
                 
             except Exception as e:
-                self.logger.debug(f"Enhanced signal injection failed for {detector}: {e}")
+                self.logger.debug(f"signal injection failed for {detector}: {e}")
                 injected_data[detector] = noise
         
         return injected_data
@@ -1587,7 +1586,7 @@ class MassiveDatasetGenerator:
         return params
     
     def create_synthetic_data(self, signal_parameters: List[Dict], config) -> Dict:
-        """Create synthetic data with enhanced physics."""
+        """Create synthetic data with physics."""
         
         duration = config.waveform.duration
         sample_rate = 4096
@@ -1713,7 +1712,7 @@ class MassiveDatasetGenerator:
             distance = params['luminosity_distance']
             snr = params['network_snr']
             
-            # Enhanced physics
+            # physics
             chirp_mass = (m1 * m2)**(3/5) / (m1 + m2)**(1/5)
             eta = (m1 * m2) / (m1 + m2)**2
             
@@ -2019,7 +2018,7 @@ class MassiveDatasetGenerator:
 
 
 class MaximumDiversityParameterGenerator:
-    """Generate parameters with maximum diversity for 10K dataset."""
+    """Generate parameters with maximum diversity for  dataset."""
     
     def __init__(self, config):
         self.config = config
@@ -2093,7 +2092,7 @@ class MaximumDiversityParameterGenerator:
         phi_12 = np.random.uniform(0, 2 * np.pi)
         phi_jl = np.random.uniform(0, 2 * np.pi)
         
-        # ALWAYS compute SNR - this was missing before
+        # compute SNR and difficulty
         network_snr = self._compute_enhanced_snr(mass_1, mass_2, distance, diversity_mode)
         difficulty = self._assign_difficulty_from_parameters(mass_1, mass_2, distance, network_snr)
         
@@ -2115,15 +2114,15 @@ class MaximumDiversityParameterGenerator:
             'phi_12': float(phi_12),
             'phi_jl': float(phi_jl),
             'signal_id': sig_idx,
-            'network_snr': float(network_snr),  # âœ… ALWAYS INCLUDED
-            'snr': float(network_snr),          # âœ… BACKUP KEY
+            'network_snr': float(network_snr),  
+            'snr': float(network_snr),          
             'difficulty': difficulty,
             'diversity_mode': diversity_mode
         }
 
     
     def _compute_enhanced_snr(self, mass_1: float, mass_2: float, distance: float, diversity_mode: str) -> float:
-        """Compute enhanced SNR with mode-specific adjustments."""
+        """Compute SNR with mode-specific adjustments."""
         
         chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
         total_mass = mass_1 + mass_2
@@ -2223,7 +2222,7 @@ class MaximumDiversityParameterGenerator:
         return signal_parameters
 
 
-# Fallback GWTC loader if main loader fails
+
 class FallbackGWTCLoader:
     """Fallback GWTC loader with built-in event database."""
     
@@ -2271,17 +2270,17 @@ class FallbackGWTCLoader:
         return None
 
 
-def save_massive_training_data(scenarios: List[Dict], output_dir: Path):
-    """Save massive training data with comprehensive statistics."""
+def save_training_data(scenarios: List[Dict], output_dir: Path):
+    """Save  training data with comprehensive statistics."""
     
-    logging.info(f"âœ… Saving {len(scenarios)} massive diversified scenarios...")
+    logging.info(f"Saving {len(scenarios)}  diversified scenarios...")
     
     # Save main dataset
     with open(output_dir / 'training_scenarios.pkl', 'wb') as f:
         pickle.dump(scenarios, f)
     
     # Compute and save comprehensive statistics
-    stats = compute_massive_dataset_statistics(scenarios)
+    stats = compute_dataset_statistics(scenarios)
     
     with open(output_dir / 'dataset_statistics.yaml', 'w') as f:
         yaml.dump(stats, f, default_flow_style=False)
@@ -2290,13 +2289,13 @@ def save_massive_training_data(scenarios: List[Dict], output_dir: Path):
     create_training_splits(scenarios, output_dir)
     
     # Generate comprehensive report
-    generate_massive_dataset_report(scenarios, stats, output_dir)
+    generate_dataset_report(scenarios, stats, output_dir)
     
-    logging.info(f"âœ… Massive 10K dataset saved to {output_dir}")
+    logging.info(f"dataset saved to {output_dir}")
 
 
-def compute_massive_dataset_statistics(scenarios: List[Dict]) -> Dict:
-    """Compute comprehensive statistics for massive dataset."""
+def compute_dataset_statistics(scenarios: List[Dict]) -> Dict:
+    """Compute comprehensive statistics for  dataset."""
     
     total_scenarios = len(scenarios)
     if total_scenarios == 0:
@@ -2431,15 +2430,15 @@ def create_training_splits(scenarios: List[Dict], output_dir: Path):
     logging.info(f"âœ… Created training splits: {len(train_scenarios)} train, {len(val_scenarios)} val, {len(test_scenarios)} test")
 
 
-def generate_massive_dataset_report(scenarios: List[Dict], stats: Dict, output_dir: Path):
-    """Generate comprehensive report for massive dataset."""
+def generate_dataset_report(scenarios: List[Dict], stats: Dict, output_dir: Path):
+    """Generate comprehensive report for  dataset."""
     
     report = f"""#DIVERSIFIED AHSD TRAINING DATASET
 
-## ðŸŽ¯ Executive Summary
+## Executive Summary
 This dataset contains {stats['dataset_overview']['total_scenarios']} scenarios with {stats['dataset_overview']['total_signals']} gravitational wave signals, designed for maximum diversity and real-world applicability.
 
-## ðŸ“Š Dataset Composition
+## Dataset Composition
 
 ### Data Type Distribution
 """
@@ -2454,7 +2453,7 @@ This dataset contains {stats['dataset_overview']['total_scenarios']} scenarios w
         report += f"- **{signal_count.replace('_', ' ').title()}**: {percentage}\n"
     
     report += f"""
-## ðŸ”¬ Parameter Coverage
+## Parameter Coverage
 
 ### Mass Parameters
 - **Primary Mass**: {stats['parameter_statistics']['mass_1_stats']['min']} to {stats['parameter_statistics']['mass_1_stats']['max']}
@@ -2464,12 +2463,12 @@ This dataset contains {stats['dataset_overview']['total_scenarios']} scenarios w
 - **Distance**: {stats['parameter_statistics']['distance_stats']['min']} to {stats['parameter_statistics']['distance_stats']['max']}
 - **SNR**: {stats['parameter_statistics']['snr_stats']['min']} to {stats['parameter_statistics']['snr_stats']['max']}
 
-## ðŸŽ¯ Expected Training Impact
+## Expected Training Impact
 - **Synthetic Accuracy**: {stats['expected_training_performance']['baseline_synthetic_accuracy']}
 - **Real Data Accuracy**: {stats['expected_training_performance']['target_real_data_accuracy']}
 - **Domain Adaptation**: Successfully bridges synthetic-real gap
 
-## ðŸ“ˆ Success Metrics
+## Success Metrics
 Success measured by:
 - Maintaining 80-85% accuracy on synthetic data
 - Achieving 65-80% accuracy on real LIGO events
@@ -2483,7 +2482,7 @@ Success measured by:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate Massive 10K Diversified AHSD Dataset')
+    parser = argparse.ArgumentParser(description='Generate Diversified AHSD Dataset')
     parser.add_argument('--config', required=True, help='Config file path')
     parser.add_argument('--total_scenarios', type=int, default=10000, help='Total scenarios')
     parser.add_argument('--max_real_events', type=int, default=100, help='Max real events')
@@ -2506,22 +2505,22 @@ def main():
     logging.info("STARTING DIVERSIFIED DATASET GENERATION")
     logging.info("="*80)
     
-    # Generate massive dataset
-    generator = MassiveDatasetGenerator(config)
-    massive_scenarios = generator.generate_massive_diversified_dataset(
+    # Generate  dataset
+    generator = DatasetGenerator(config)
+    _scenarios = generator.generate_diversified_dataset(
         total_scenarios=args.total_scenarios,
         max_real_events=args.max_real_events
     )
     
-    if not massive_scenarios:
+    if not _scenarios:
         logging.error("No valid scenarios generated!")
         return
     
-    # Save massive dataset
-    save_massive_training_data(massive_scenarios, output_dir)
+    # Save  dataset
+    save_training_data(_scenarios, output_dir)
     
     logging.info("DATASET GENERATION COMPLETED!")
-    logging.info(f"Final count: {len(massive_scenarios)} scenarios")
+    logging.info(f"Final count: {len(_scenarios)} scenarios")
 
 
 if __name__ == '__main__':

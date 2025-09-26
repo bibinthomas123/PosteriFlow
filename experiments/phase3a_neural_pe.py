@@ -42,7 +42,7 @@ def setup_logging(verbose: bool = False):
     )
 
 class NeuralPENetwork(nn.Module):
-    """OPTIMIZED Neural PE Network - Enhanced for 90%+ accuracy"""
+    """Neural PE Network - Enhanced for 90%+ accuracy"""
     
     def __init__(self, param_names: List[str], data_length: int = 4096):
         super().__init__()
@@ -51,10 +51,10 @@ class NeuralPENetwork(nn.Module):
         self.n_params = len(param_names)
         self.data_length = data_length
         
-        # ✅ OPTIMIZED: More powerful feature extractor
+        #More powerful feature extractor
         self.feature_extractor = nn.Sequential(
             nn.BatchNorm1d(2),
-            nn.Conv1d(2, 64, kernel_size=16, stride=2, padding=7),  # Increased from 32
+            nn.Conv1d(2, 64, kernel_size=16, stride=2, padding=7),  
             nn.ReLU(),
             nn.MaxPool1d(2),
             nn.Dropout(0.1),
@@ -62,9 +62,9 @@ class NeuralPENetwork(nn.Module):
             nn.ReLU(),
             nn.MaxPool1d(2),
             nn.Dropout(0.1),
-            nn.Conv1d(128, 256, kernel_size=4, stride=2, padding=1),  # Increased from 128
+            nn.Conv1d(128, 256, kernel_size=4, stride=2, padding=1), 
             nn.ReLU(),
-            nn.AdaptiveAvgPool1d(16),  # Increased from 8
+            nn.AdaptiveAvgPool1d(16),  
             nn.Dropout(0.1),
             nn.Flatten(),
         )
@@ -72,7 +72,7 @@ class NeuralPENetwork(nn.Module):
         # Calculate exact feature size: 256 channels * 16 length = 4096
         self.feature_size = 4096
         
-        # ✅ OPTIMIZED: More expressive predictor
+        # predictor
         self.param_predictor = nn.Sequential(
             nn.Linear(self.feature_size, 512),  # Increased from 256
             nn.ReLU(),
@@ -87,7 +87,7 @@ class NeuralPENetwork(nn.Module):
         )
         
         self.uncertainty_predictor = nn.Sequential(
-            nn.Linear(self.feature_size, 128),  # Increased from 64
+            nn.Linear(self.feature_size, 128),  
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(128, 64),
@@ -98,12 +98,12 @@ class NeuralPENetwork(nn.Module):
         
         self.apply(self._init_weights)
         
-        # ✅ OPTIMIZED: Better final layer initialization
+        #  Better final layer initialization
         with torch.no_grad():
             final_layer = self.param_predictor[-2]
-            torch.nn.init.uniform_(final_layer.bias, -0.05, 0.05)  # Reduced from [-0.1, 0.1]
+            torch.nn.init.uniform_(final_layer.bias, -0.05, 0.05)
         
-        logging.info(f"✅ Optimized Neural PE Network initialized for {self.n_params} parameters")
+        logging.info(f"   Neural PE Network initialized for {self.n_params} parameters")
         logging.info(f"   Feature size: {self.feature_size}")
         
         # Count total parameters
@@ -111,7 +111,7 @@ class NeuralPENetwork(nn.Module):
         logging.info(f"   Total parameters: {total_params:,}")
     
     def _init_weights(self, module):
-        """Enhanced weight initialization"""
+        """weight initialization"""
         if isinstance(module, nn.Linear):
             torch.nn.init.xavier_normal_(module.weight, gain=1.2)  # Increased gain
             if module.bias is not None:
@@ -132,7 +132,7 @@ class NeuralPENetwork(nn.Module):
         return predicted_params, predicted_uncertainties
 
 class AdaptiveSubtractorDataset(Dataset):
-    """OPTIMIZED dataset with better data quality"""
+    """Dataset with better data quality"""
     
     def __init__(self, scenarios: List[Dict], param_names: List[str]):
         self.scenarios = scenarios
@@ -143,8 +143,8 @@ class AdaptiveSubtractorDataset(Dataset):
         valid_scenarios = 0
         processed_signals = 0
         
-        # ✅ OPTIMIZED: Process more scenarios for better training
-        max_scenarios = min(len(scenarios), 2000)  # Limit for memory efficiency
+        # Process more scenarios for better training
+        max_scenarios = min(len(scenarios), 2000) 
         
         for scenario_id, scenario in enumerate(scenarios[:max_scenarios]):
             try:
@@ -157,8 +157,7 @@ class AdaptiveSubtractorDataset(Dataset):
                             param_vector = self._extract_parameter_vector(params)
                             if param_vector is not None:
                                 quality = self._compute_synthetic_quality(params)
-                                # ✅ OPTIMIZED: Only use high-quality samples
-                                if quality > 0.3:  # Filter out poor quality
+                                if quality > 0.3:  
                                     self.data.append({
                                         'scenario_id': scenario_id,
                                         'signal_index': signal_idx,
@@ -197,7 +196,6 @@ class AdaptiveSubtractorDataset(Dataset):
             h_plus = amplitude * (1 + np.cos(inclination)**2) * np.cos(phase)
             h_cross = amplitude * 2 * np.cos(inclination) * np.sin(phase)
             
-            # ✅ OPTIMIZED: Better noise modeling
             noise_level = base_amplitude * 0.005  # Reduced noise
             h_plus += np.random.normal(0, noise_level, len(h_plus))
             h_cross += np.random.normal(0, noise_level, len(h_cross))
@@ -311,9 +309,41 @@ def collate_subtractor_batch(batch: List[Dict]) -> Tuple[torch.Tensor, torch.Ten
     qualities = torch.tensor([item['signal_quality'] for item in batch], dtype=torch.float32)
     return waveforms, parameters, qualities
 
-def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDataset, 
-                   epochs: int = 40) -> Dict[str, Any]:
-    """FIXED Neural PE training for 80%+ accuracy"""
+def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDataset, epochs: int = 40) -> Dict[str, Any]:
+    """
+                Trains a Neural PE (Parameter Estimation) network on the provided dataset with optimized settings 
+                to achieve high accuracy (80%+). The function uses an AdamW optimizer, ReduceLROnPlateau scheduler, 
+                and a custom loss function that incorporates quality weighting, uncertainty regularization, 
+                physics constraints, and scale-aware penalties.
+                Args:
+                    neural_pe (NeuralPENetwork): The neural network model to be trained for parameter estimation.
+                    dataset (AdaptiveSubtractorDataset): The dataset containing input waveforms, true parameters, 
+                        and quality weights for training.
+                    epochs (int, optional): The maximum number of training epochs. Defaults to 40.
+                Returns:
+                    Dict[str, Any]: A dictionary containing:
+                        - 'training_history': Dict with lists of epoch losses and accuracies.
+                        - 'final_accuracy': Final accuracy achieved at the end of training.
+                        - 'best_accuracy': Best accuracy achieved during training.
+                        - 'prediction_magnitude': Magnitude of the final prediction for a sample input.
+                        - 'debug_samples': List of debug sample predictions and statistics.
+                        - 'epochs_trained': Number of epochs actually trained (may be less than `epochs` if early stopping).
+                        - 'early_stopped': Boolean indicating if early stopping was triggered.
+                
+                    neural_pe (NeuralPENetwork): The neural network model to be trained for parameter estimation.
+                    dataset (AdaptiveSubtractorDataset): The dataset containing input waveforms, true parameters, 
+                        and quality weights for training.
+                    epochs (int, optional): The maximum number of training epochs. Defaults to 40.
+                Returns:
+                    Dict[str, Any]: A dictionary containing:
+                        - 'training_history': Dict with lists of epoch losses and accuracies.
+                        - 'final_accuracy': Final accuracy achieved at the end of training.
+                        - 'best_accuracy': Best accuracy achieved during training.
+                        - 'prediction_magnitude': Magnitude of the final prediction for a sample input.
+                        - 'debug_samples': List of debug sample predictions and statistics.
+                        - 'epochs_trained': Number of epochs actually trained (may be less than `epochs` if early stopping).
+                        - 'early_stopped': Boolean indicating if early stopping was triggered.
+                """
     
     logging.info("🧠 Training Optimized Neural PE Network...")
     
@@ -326,12 +356,12 @@ def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDatas
         pin_memory=True
     )
     
-    # ✅ OPTIMIZED: Better optimizer settings
+    # Better optimizer settings
     optimizer = torch.optim.AdamW(
         neural_pe.parameters(), 
-        lr=1e-3,  # REDUCED from 3e-3 (was too high!)
+        lr=1e-3,  
         weight_decay=1e-6,
-        betas=(0.9, 0.999)  # More conservative momentum
+        betas=(0.9, 0.999) 
     )
     
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -345,7 +375,7 @@ def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDatas
     def optimized_neural_pe_loss(pred_params, pred_uncertainties, true_params, quality_weights):
         device = pred_params.device
         
-        # ✅ OPTIMIZED: Less aggressive clamping
+        # Less aggressive clamping
         pred_params = torch.clamp(pred_params, min=-3.0, max=3.0)
         pred_uncertainties = torch.clamp(pred_uncertainties, min=1e-6, max=10.0)
         true_params = torch.clamp(true_params, min=-3.0, max=3.0)
@@ -358,13 +388,13 @@ def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDatas
         # Uncertainty regularization
         uncertainty_loss = torch.mean(pred_uncertainties)
         
-        # ✅ OPTIMIZED: Lighter physics constraint
+        # Lighter physics constraint
         physics_penalty = torch.tensor(0.0, device=device)
         if pred_params.size(1) >= 2:
             mass_violation = torch.relu(pred_params[:, 1] - pred_params[:, 0])
             physics_penalty = torch.mean(mass_violation ** 2) * 0.005
         
-        # ✅ OPTIMIZED: Scale-aware loss
+        # Scale-aware loss
         scale_penalty = torch.tensor(0.0, device=device)
         pred_scale = torch.mean(torch.abs(pred_params))
         true_scale = torch.mean(torch.abs(true_params))
@@ -439,14 +469,14 @@ def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDatas
         training_history['losses'].append(avg_loss)
         training_history['accuracies'].append(avg_accuracy)
         
-        # ✅ FIXED: Single best accuracy logic with early stopping
+        # Single best accuracy logic with early stopping
         if avg_accuracy > best_accuracy:
             best_accuracy = avg_accuracy
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
 
-        # ✅ FIXED: Scheduler step AFTER avg_accuracy is calculated
+        # Scheduler step AFTER avg_accuracy is calculated
         scheduler.step(avg_accuracy)
 
         # Early stopping check
@@ -585,9 +615,8 @@ def main():
     neural_pe = NeuralPENetwork(param_names)
     pe_results = train_neural_pe(neural_pe, dataset, epochs=40)
     
-    # ✅ FIXED: Proper model saving without dataset (causes issues)
+    # model saving 
     try:
-        # Save with minimal, safe data
         output_data = {
             'neural_pe_state_dict': neural_pe.state_dict(),
             'pe_results': pe_results,
@@ -603,12 +632,10 @@ def main():
             }
         }
         
-        # Save main model file
         main_output_file = output_dir / 'phase3a_neural_pe_output.pth'
         torch.save(output_data, main_output_file, pickle_protocol=pickle.HIGHEST_PROTOCOL)
         logging.info(f"✅ Model saved to {main_output_file}")
         
-        # ✅ ADDITIONAL: Save just the model for easy loading
         model_only = {
             'model_state_dict': neural_pe.state_dict(),
             'param_names': param_names,
@@ -622,7 +649,7 @@ def main():
         
     except Exception as e:
         logging.error(f"❌ Error saving model: {e}")
-        # Fallback: save just the essentials
+
         try:
             fallback_data = {
                 'model_state_dict': neural_pe.state_dict(),
@@ -635,7 +662,7 @@ def main():
         except Exception as e2:
             logging.error(f"❌ Fallback save also failed: {e2}")
     
-    # Save readable results
+
     try:
         with open(output_dir / 'phase3a_results.txt', 'w') as f:
             f.write("PHASE 3A OPTIMIZED NEURAL PE RESULTS\n")

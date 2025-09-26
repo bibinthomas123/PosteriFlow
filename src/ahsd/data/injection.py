@@ -10,7 +10,49 @@ from gwpy.timeseries import TimeSeries
 from ..utils.config import AHSDConfig
 
 class RealDataSignalInjector:
-    """Inject synthetic signals into real background data."""
+    """ 
+    RealDataSignalInjector
+    A class for injecting synthetic gravitational-wave signals into real background data, 
+    primarily for use in gravitational-wave data analysis pipelines. This class supports 
+    the generation, projection, scaling, and injection of multiple overlapping signals 
+    into background strain data from multiple detectors.
+    Parameters
+    ----------
+    config : AHSDConfig
+        Configuration object containing waveform and detector settings.
+    Attributes
+    ----------
+    config : AHSDConfig
+        The configuration object used for waveform and detector settings.
+    logger : logging.Logger
+        Logger instance for this class.
+    waveform_generator : bilby.gw.WaveformGenerator
+        Waveform generator instance for producing gravitational-wave signals.
+    Methods
+    -------
+    create_overlapping_injection(background_data, signal_parameters, target_snrs)
+        Injects multiple overlapping signals into background data for each detector.
+    estimate_injection_snr(signal, background, detector_name)
+        Estimates the signal-to-noise ratio (SNR) of an injected signal in the background.
+    validate_injection_parameters(params)
+        Validates the injection parameters for physical plausibility and completeness.
+    Private Methods
+    ---------------
+    _setup_waveform_generator()
+        Sets up the waveform generator using the configuration.
+    _generate_signal_strain(params, detector_name, target_snr, background)
+        Generates the signal strain for a specific detector and target SNR.
+    _project_waveform_manually(waveform_polarizations, params, detector_name)
+        Projects waveform polarizations onto a detector using simplified antenna patterns.
+    _get_detector(detector_name)
+        Retrieves a detector object, with multiple fallback methods for compatibility.
+    _create_mock_detector(detector_name)
+        Creates a mock detector object if standard detector retrieval fails.
+    _scale_to_target_snr(signal, target_snr, background, detector_name)
+        Scales a signal to achieve the desired SNR in the given background noise.
+    _generate_mock_signal(params, detector_name, target_snr)
+        Generates a simple mock signal as a fallback if waveform generation fails.
+        """
     
     def __init__(self, config: AHSDConfig):
         self.config = config
@@ -18,8 +60,8 @@ class RealDataSignalInjector:
         self.waveform_generator = self._setup_waveform_generator()
         
     def _setup_waveform_generator(self):
-        """Setup bilby waveform generator."""
         
+        """Setup bilby waveform generator."""
         return bilby.gw.WaveformGenerator(
             duration=self.config.waveform.duration,
             sampling_frequency=self.config.detectors[0].sampling_rate,

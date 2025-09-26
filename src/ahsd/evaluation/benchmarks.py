@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-REAL Benchmarking implementations for AHSD evaluation - NO MORE MOCKS
+Benchmarking implementations for AHSD evaluation
 """
 
 import numpy as np
@@ -13,14 +13,13 @@ from scipy.optimize import minimize
 from scipy.stats import multivariate_normal
 
 class StandardHierarchicalSubtraction:
-    """REAL Standard hierarchical subtraction implementation"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.subtraction_order = 'snr_based'  # Always highest SNR first
         
     def analyze(self, data: Dict, initial_detections: List[Dict]) -> Dict:
-        """REAL hierarchical analysis with actual parameter estimation."""
+        """hierarchical analysis with actual parameter estimation."""
         start_time = time.time()
         
         # Sort by SNR (standard hierarchical approach)
@@ -65,7 +64,7 @@ class StandardHierarchicalSubtraction:
         }
     
     def _real_hierarchical_estimation(self, detection: Dict, position: int, total_signals: int) -> Dict:
-        """REAL hierarchical parameter estimation with position-dependent biases."""
+        """hierarchical parameter estimation with position-dependent biases."""
         
         posterior_summary = {}
         
@@ -128,14 +127,47 @@ class StandardHierarchicalSubtraction:
 
 
 class JointParameterEstimation:
-    """REAL Joint parameter estimation implementation"""
+    """
+    JointParameterEstimation implements joint parameter estimation for multiple gravitational-wave signals
+    with computational constraints. It supports both single-signal and joint multi-signal estimation, 
+    accounting for parameter correlations, degeneracies, and computational complexity.
+    Methods
+    -------
+    __init__():
+        Initializes the estimator, sets up logging, and defines computational limits.
+    analyze(data: Dict, initial_detections: List[Dict]) -> Dict:
+        Performs joint parameter estimation on a set of candidate detections, limiting the number of signals 
+        for computational feasibility. Returns extracted signal summaries and performance metrics.
+    _real_joint_likelihood_estimation(detections: List[Dict], data: Dict) -> List[Dict]:
+        Simulates joint likelihood estimation for multiple signals, modeling parameter correlations, 
+        systematic biases, and uncertainty reduction due to joint analysis.
+    _compute_parameter_correlation_bias(param: str, all_detections: List[Dict], signal_idx: int) -> float:
+        Estimates parameter bias introduced by correlations between overlapping signals.
+    _compute_signal_separation_factor(signal: Dict, all_signals: List[Dict]) -> float:
+        Computes a factor representing the separation between signals, affecting estimation quality.
+    _estimate_frequency(signal: Dict) -> float:
+        Estimates the characteristic frequency of a signal based on its masses.
+    _single_signal_estimation(detection: Dict) -> Dict:
+        Performs parameter estimation for a single signal, assuming no joint effects.
+    _get_default_param_value(param: str) -> float:
+        Provides default values for parameters if not specified in the detection.
+    _compute_quantiles(median: float, std: float) -> List[float]:
+        Computes quantiles for a parameter's posterior distribution based on its median and standard deviation.
+    Attributes
+    ----------
+    logger : logging.Logger
+        Logger for the class.
+    max_joint_signals : int
+        Maximum number of signals to jointly estimate due to computational constraints.
+    """
+    """Joint parameter estimation implementation"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.max_joint_signals = 4  # Computational limit
         
     def analyze(self, data: Dict, initial_detections: List[Dict]) -> Dict:
-        """REAL joint parameter estimation with computational constraints."""
+        """joint parameter estimation with computational constraints."""
         start_time = time.time()
         
         # Joint PE has exponential complexity - limit number of signals
@@ -172,7 +204,7 @@ class JointParameterEstimation:
         }
     
     def _real_joint_likelihood_estimation(self, detections: List[Dict], data: Dict) -> List[Dict]:
-        """REAL joint likelihood estimation using MCMC-like sampling."""
+        """joint likelihood estimation using MCMC-like sampling."""
         
         extracted_signals = []
         n_signals = len(detections)
@@ -239,7 +271,7 @@ class JointParameterEstimation:
         return extracted_signals
     
     def _compute_parameter_correlation_bias(self, param: str, all_detections: List[Dict], signal_idx: int) -> float:
-        """REAL parameter correlation bias in joint estimation."""
+        """parameter correlation bias in joint estimation."""
         
         try:
             # Correlations arise from overlapping signals
@@ -267,7 +299,7 @@ class JointParameterEstimation:
             return 0.0
     
     def _compute_signal_separation_factor(self, signal: Dict, all_signals: List[Dict]) -> float:
-        """REAL signal separation factor affecting joint estimation quality."""
+        """signal separation factor affecting joint estimation quality."""
         
         try:
             min_separation = 1.0
@@ -360,14 +392,14 @@ class JointParameterEstimation:
 
 
 class SimpleIterativeSubtraction:
-    """REAL Simple iterative subtraction baseline"""
+    """Simple iterative subtraction baseline"""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.max_iterations = 3
         
     def analyze(self, data: Dict, initial_detections: List[Dict]) -> Dict:
-        """REAL iterative subtraction with convergence issues."""
+        """iterative subtraction with convergence issues."""
         start_time = time.time()
         
         extracted_signals = []

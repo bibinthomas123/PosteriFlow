@@ -231,19 +231,20 @@ class DataPreprocessor:
         except Exception as e:
             self.logger.debug(f"Notch filtering failed: {e}")
             return strain
-    
+        
+        
     def _whiten(self, strain: np.ndarray, detector: str) -> np.ndarray:
-        """Whiten strain data using PSD estimate."""
+        """Whiten strain data using PSD estimate"""
         
         try:
-            # Estimate PSD
+            # Estimate PSD - : use 'noverlap' instead of 'overlap'
             freqs, psd = signal.welch(strain, 
                                     fs=self.sampling_rate,
                                     nperseg=self.sampling_rate//2,
-                                    overlap=0.5)
+                                    noverlap=self.sampling_rate//4)  #  noverlap instead of overlap
             
             # Avoid division by zero
-            psd[psd <= 0] = np.min(psd[psd > 0])
+            psd[psd <= 0] = np.min(psd[psd > 0]) if np.any(psd > 0) else 1e-46
             
             # Whiten in frequency domain
             strain_fft = np.fft.fft(strain)
@@ -251,6 +252,9 @@ class DataPreprocessor:
             
             # Interpolate PSD to match FFT frequencies
             psd_interp = np.interp(np.abs(freqs_fft), freqs, psd)
+            
+            # Ensure no zero values in interpolated PSD
+            psd_interp[psd_interp <= 0] = np.min(psd_interp[psd_interp > 0]) if np.any(psd_interp > 0) else 1e-46
             
             # Apply whitening
             whitened_fft = strain_fft / np.sqrt(psd_interp)
@@ -261,7 +265,8 @@ class DataPreprocessor:
         except Exception as e:
             self.logger.debug(f"Whitening failed for {detector}: {e}")
             return strain
-    
+
+          
     def _apply_window(self, strain: np.ndarray, window_type: str = 'tukey', alpha: float = 0.1) -> np.ndarray:
         """Apply window function to reduce edge effects."""
         

@@ -1,37 +1,39 @@
 # #!/usr/bin/env python3
 # """
-# Phase 3A: Neural Parameter Estimation Training - OPTIMIZED
-# High performance training with proper model saving
+# PRODUCTION Phase 2: Train PriorityNet for intelligent signal extraction ordering with NS support
+# Enhanced to handle BBH, BNS, and NSBH systems with proper tidal effects and binary-type-aware prioritization
 # """
+
 
 # import sys
 # import os
-# import numpy as np
+# import numpy as np 
 # import torch
 # import torch.nn as nn
-# from torch.utils.data import Dataset, DataLoader
+# from torch.utils.data import Dataset, DataLoader 
 # import argparse
 # import pickle
 # from pathlib import Path
 # import logging
 # from tqdm import tqdm
 # import yaml
-# from typing import List, Dict, Tuple, Any
-# from scipy import signal
+# from typing import List, Dict, Tuple, Any, Optional
 # import warnings
-# import gc
 # warnings.filterwarnings('ignore')
 
-# # Add project root to path
+
 # project_root = Path(__file__).parent.parent
 # sys.path.insert(0, str(project_root))
 
-# # Import from ahsd.core
+
 # try:
-#     from ahsd.core.priority_net import PriorityNet
-#     from ahsd.core.bias_corrector import BiasCorrector
-# except ImportError:
-#     print("Warning: Could not import AHSD modules. Continuing without them.")
+#     from ahsd.core.priority_net import PriorityNet, PriorityNetTrainer
+#     print('PriorityNetTrainer loaded from:', sys.modules['ahsd.core.priority_net'].__file__)
+#     IMPORTS_OK = True
+# except ImportError as e:
+#     print(f"Warning: Could not import PriorityNet modules: {e}")
+#     IMPORTS_OK = False
+
 
 # def setup_logging(verbose: bool = False):
 #     level = logging.DEBUG if verbose else logging.INFO
@@ -39,268 +41,449 @@
 #         level=level,
 #         format='%(asctime)s - %(levelname)s - %(message)s',
 #         handlers=[
-#             logging.FileHandler('phase3a_neural_pe_optimized.log'),
+#             logging.FileHandler('phase2_production_priority_net_ns.log'),
 #             logging.StreamHandler()
 #         ]
 #     )
 
-# class NeuralPENetwork(nn.Module):
-#     """OPTIMIZED Neural PE Network - Enhanced for 90%+ accuracy"""
+
+# class EnhancedPriorityNet(nn.Module):
+#     """Enhanced PriorityNet with comprehensive NS support for BBH, BNS, and NSBH systems"""
     
-#     def __init__(self, param_names: List[str], data_length: int = 4096):
+#     def __init__(self, config):
 #         super().__init__()
         
-#         self.param_names = param_names
-#         self.n_params = len(param_names)
-#         self.data_length = data_length
+#         # Enhanced input dimension for NS features
+#         self.input_dim = 15  # Expanded feature set including NS characteristics
         
-#         # ✅ OPTIMIZED: More powerful feature extractor
-#         self.feature_extractor = nn.Sequential(
-#             nn.BatchNorm1d(2),
-#             nn.Conv1d(2, 64, kernel_size=16, stride=2, padding=7),  # Increased from 32
-#             nn.ReLU(),
-#             nn.MaxPool1d(2),
-#             nn.Dropout(0.1),
-#             nn.Conv1d(64, 128, kernel_size=8, stride=2, padding=3),
-#             nn.ReLU(),
-#             nn.MaxPool1d(2),
-#             nn.Dropout(0.1),
-#             nn.Conv1d(128, 256, kernel_size=4, stride=2, padding=1),  # Increased from 128
-#             nn.ReLU(),
-#             nn.AdaptiveAvgPool1d(16),  # Increased from 8
-#             nn.Dropout(0.1),
-#             nn.Flatten(),
-#         )
+#         hidden_dims = getattr(config, 'hidden_dims', [512, 256, 128, 64])
+#         dropout = getattr(config, 'dropout', 0.15)
         
-#         # Calculate exact feature size: 256 channels * 16 length = 4096
-#         self.feature_size = 4096
+#         layers = []
+#         prev_dim = self.input_dim
         
-#         # ✅ OPTIMIZED: More expressive predictor
-#         self.param_predictor = nn.Sequential(
-#             nn.Linear(self.feature_size, 512),  # Increased from 256
-#             nn.ReLU(),
-#             nn.Dropout(0.15),
-#             nn.Linear(512, 256),
-#             nn.ReLU(),
-#             nn.Dropout(0.1),
-#             nn.Linear(256, 128),
-#             nn.ReLU(),
-#             nn.Linear(128, self.n_params),
-#             nn.Tanh()
-#         )
+#         for i, hidden_dim in enumerate(hidden_dims):
+#             layers.extend([
+#                 nn.Linear(prev_dim, hidden_dim),
+#                 nn.ReLU(),
+#                 nn.BatchNorm1d(hidden_dim),
+#                 nn.Dropout(dropout if i < len(hidden_dims) - 1 else dropout * 0.5)
+#             ])
+#             prev_dim = hidden_dim
         
-#         self.uncertainty_predictor = nn.Sequential(
-#             nn.Linear(self.feature_size, 128),  # Increased from 64
-#             nn.ReLU(),
-#             nn.Dropout(0.1),
-#             nn.Linear(128, 64),
-#             nn.ReLU(),
-#             nn.Linear(64, self.n_params),
-#             nn.Sigmoid()
-#         )
+#         # Output layer for priority prediction
+#         layers.append(nn.Linear(prev_dim, 1))
+#         layers.append(nn.Sigmoid())  # Priority between 0 and 1
         
-#         self.apply(self._init_weights)
+#         self.network = nn.Sequential(*layers)
         
-#         # ✅ OPTIMIZED: Better final layer initialization
-#         with torch.no_grad():
-#             final_layer = self.param_predictor[-2]
-#             torch.nn.init.uniform_(final_layer.bias, -0.05, 0.05)  # Reduced from [-0.1, 0.1]
+#         # NS-specific parameters
+#         self.ns_weight_factor = getattr(config, 'ns_weight_factor', 1.2)
+#         self.tidal_bonus = getattr(config, 'tidal_bonus', 0.1)
+#         self.binary_type_aware = getattr(config, 'binary_type_aware', True)
         
-#         logging.info(f"✅ Optimized Neural PE Network initialized for {self.n_params} parameters")
-#         logging.info(f"   Feature size: {self.feature_size}")
-        
-#         # Count total parameters
-#         total_params = sum(p.numel() for p in self.parameters())
-#         logging.info(f"   Total parameters: {total_params:,}")
+#         logging.info(f"✅ Enhanced PriorityNet initialized with {self.input_dim} input features")
+#         logging.info(f"   Hidden layers: {hidden_dims}")
+#         logging.info(f"   NS weight factor: {self.ns_weight_factor}")
+#         logging.info(f"   Tidal bonus: {self.tidal_bonus}")
     
-#     def _init_weights(self, module):
-#         """Enhanced weight initialization"""
-#         if isinstance(module, nn.Linear):
-#             torch.nn.init.xavier_normal_(module.weight, gain=1.2)  # Increased gain
-#             if module.bias is not None:
-#                 torch.nn.init.constant_(module.bias, 0.0)
-#         elif isinstance(module, nn.Conv1d):
-#             torch.nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
-#             if module.bias is not None:
-#                 torch.nn.init.constant_(module.bias, 0.0)
-#         elif isinstance(module, nn.BatchNorm1d):
-#             torch.nn.init.constant_(module.weight, 1.0)
-#             torch.nn.init.constant_(module.bias, 0.0)
+#     def extract_signal_features(self, signal: Dict) -> torch.Tensor:
+#         """Extract enhanced features including NS characteristics"""
+        
+#         # Basic parameters
+#         snr = signal.get('network_snr', 10.0)
+#         m1 = signal.get('mass_1', 30.0)
+#         m2 = signal.get('mass_2', 25.0) 
+#         distance = signal.get('luminosity_distance', 500.0)
+        
+#         # Binary type encoding
+#         binary_type = signal.get('binary_type', 'BBH')
+#         is_bbh = 1.0 if binary_type == 'BBH' else 0.0
+#         is_bns = 1.0 if binary_type == 'BNS' else 0.0
+#         is_nsbh = 1.0 if binary_type == 'NSBH' else 0.0
+        
+#         # Tidal parameters
+#         lambda_1 = signal.get('lambda_1', 0.0)
+#         lambda_2 = signal.get('lambda_2', 0.0)
+#         has_tidal = 1.0 if (lambda_1 > 0 or lambda_2 > 0) else 0.0
+        
+#         # Approximant encoding
+#         approximant = signal.get('approximant', 'IMRPhenomPv2')
+#         is_tidal_approx = 1.0 if 'NRTidal' in approximant else 0.0
+        
+#         # Derived features
+#         total_mass = m1 + m2
+#         chirp_mass = (m1 * m2)**(3/5) / (m1 + m2)**(1/5)
+#         mass_ratio = min(m1, m2) / max(m1, m2)
+        
+#         # NS-specific derived features
+#         ns_mass_count = sum(1 for m in [m1, m2] if m <= 3.0)  # Count NS components
+#         effective_lambda = (lambda_1 + lambda_2) / 2.0 if (lambda_1 > 0 or lambda_2 > 0) else 0.0
+        
+#         # Difficulty indicators
+#         difficulty = signal.get('difficulty', 'medium')
+#         is_hard = 1.0 if difficulty in ['hard', 'extreme'] else 0.0
+        
+#         # Additional physics features
+#         symmetric_mass_ratio = (m1 * m2) / (m1 + m2)**2
+        
+#         features = torch.tensor([
+#             # Basic parameters (log-normalized for better learning)
+#             np.log10(snr + 1e-6) / 2.0,  # Normalize to ~[0,1]
+#             np.log10(total_mass) / 2.5,   # Normalize to ~[0,1]  
+#             np.log10(chirp_mass) / 2.5,   # Normalize to ~[0,1]
+#             mass_ratio,                   # Already [0,1]
+#             np.log10(distance) / 4.0,     # Normalize to ~[0,1]
+            
+#             # Binary type features
+#             is_bbh, is_bns, is_nsbh,
+            
+#             # NS-specific features  
+#             ns_mass_count / 2.0,          # 0, 0.5, or 1.0
+#             has_tidal,                    # 0 or 1
+#             np.log10(effective_lambda + 1.0) / 4.0,  # Log of tidal parameter, normalized
+#             is_tidal_approx,              # 0 or 1
+            
+#             # Additional features
+#             symmetric_mass_ratio * 4.0,   # Scale symmetric mass ratio
+#             is_hard,                      # Difficulty indicator
+            
+#             # Cross-features for NS systems
+#             is_bns * np.log10(effective_lambda + 1.0) / 4.0,  # BNS-tidal interaction
+#         ], dtype=torch.float32)
+        
+#         return features
     
-#     def forward(self, waveform_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-#         waveform_data = torch.clamp(waveform_data, min=-1e3, max=1e3)
-#         features = self.feature_extractor(waveform_data)
-#         predicted_params = self.param_predictor(features)
-#         predicted_uncertainties = 0.01 + 1.99 * self.uncertainty_predictor(features)
-#         return predicted_params, predicted_uncertainties
+#     def forward(self, detections: List[Dict]) -> torch.Tensor:
+#         """Forward pass with enhanced NS-aware processing"""
+        
+#         if not detections:
+#             return torch.tensor([])
+        
+#         # Extract enhanced features for each detection
+#         features_list = []
+#         for detection in detections:
+#             features = self.extract_signal_features(detection)
+#             features_list.append(features)
+        
+#         # Stack and process
+#         if len(features_list) > 1:
+#             batch_features = torch.stack(features_list)
+#             priorities = self.network(batch_features).squeeze(-1)
+#         else:
+#             priorities = self.network(features_list[0].unsqueeze(0)).squeeze()
+#             if priorities.dim() == 0:
+#                 priorities = priorities.unsqueeze(0)
+        
+#         # Apply NS-specific weighting if enabled
+#         if self.binary_type_aware:
+#             ns_weights = torch.ones_like(priorities)
+#             for i, detection in enumerate(detections):
+#                 binary_type = detection.get('binary_type', 'BBH')
+#                 if binary_type in ['BNS', 'NSBH']:
+#                     ns_weights[i] *= self.ns_weight_factor
+            
+#             priorities = priorities * ns_weights
+        
+#         return priorities
 
-# class AdaptiveSubtractorDataset(Dataset):
-#     """OPTIMIZED dataset with better data quality"""
+
+# class EnhancedPriorityNetTrainer:
+#     """Enhanced trainer for NS-aware PriorityNet"""
     
-#     def __init__(self, scenarios: List[Dict], param_names: List[str]):
-#         self.scenarios = scenarios
-#         self.param_names = param_names
+#     def __init__(self, model: EnhancedPriorityNet, config):
+#         self.model = model
+#         self.config = config
+        
+#         # Enhanced optimizer for NS systems
+#         self.optimizer = torch.optim.AdamW(
+#             model.parameters(),
+#             lr=getattr(config, 'learning_rate', 0.0008),
+#             weight_decay=getattr(config, 'weight_decay', 1e-4),
+#             betas=(0.9, 0.999)
+#         )
+        
+#         # Learning rate scheduler
+#         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+#             self.optimizer,
+#             mode='min',
+#             factor=0.7,
+#             patience=15,
+#             verbose=True
+#         )
+        
+#         # Enhanced loss function
+#         self.criterion = nn.MSELoss()
+#         self.ranking_loss_weight = getattr(config, 'ranking_loss_weight', 0.3)
+        
+#         logging.info("✅ Enhanced PriorityNet trainer initialized")
+    
+#     def ranking_loss(self, pred_priorities: torch.Tensor, true_priorities: torch.Tensor) -> torch.Tensor:
+#         """Ranking-aware loss function for better priority ordering"""
+        
+#         if len(pred_priorities) <= 1:
+#             return torch.tensor(0.0)
+        
+#         # Get rankings
+#         true_ranking = torch.argsort(true_priorities, descending=True)
+#         pred_ranking = torch.argsort(pred_priorities, descending=True)
+        
+#         # Ranking loss (penalize incorrect ordering)
+#         ranking_error = 0.0
+#         n = len(true_ranking)
+        
+#         for i in range(n):
+#             for j in range(i + 1, n):
+#                 true_i, true_j = true_ranking[i], true_ranking[j]
+#                 pred_i_pos = torch.where(pred_ranking == true_i)[0]
+#                 pred_j_pos = torch.where(pred_ranking == true_j)[0]
+                
+#                 if len(pred_i_pos) > 0 and len(pred_j_pos) > 0:
+#                     if pred_i_pos[0] > pred_j_pos[0]:  # Wrong order
+#                         ranking_error += 1.0
+        
+#         ranking_error = ranking_error / (n * (n - 1) / 2) if n > 1 else 0.0
+#         return torch.tensor(ranking_error)
+    
+#     def train_step(self, detections_batch: List[List[Dict]], 
+#                   priorities_batch: List[torch.Tensor]) -> Dict[str, float]:
+#         """Enhanced training step with NS-aware loss computation"""
+        
+#         self.model.train()
+#         self.optimizer.zero_grad()
+        
+#         total_loss = 0.0
+#         mse_loss_total = 0.0
+#         ranking_loss_total = 0.0
+#         batch_size = len(detections_batch)
+        
+#         for detections, true_priorities in zip(detections_batch, priorities_batch):
+#             if len(detections) == 0:
+#                 continue
+            
+#             try:
+#                 # Forward pass
+#                 pred_priorities = self.model(detections)
+                
+#                 if len(pred_priorities) != len(true_priorities):
+#                     continue
+                
+#                 # MSE loss
+#                 mse_loss = self.criterion(pred_priorities, true_priorities)
+                
+#                 # Ranking loss
+#                 ranking_loss = self.ranking_loss(pred_priorities, true_priorities)
+                
+#                 # Combined loss
+#                 combined_loss = mse_loss + self.ranking_loss_weight * ranking_loss
+                
+#                 total_loss += combined_loss
+#                 mse_loss_total += mse_loss.item()
+#                 ranking_loss_total += ranking_loss.item() if isinstance(ranking_loss, torch.Tensor) else ranking_loss
+                
+#             except Exception as e:
+#                 logging.debug(f"Training step error: {e}")
+#                 continue
+        
+#         if total_loss > 0:
+#             total_loss.backward()
+            
+#             # Gradient clipping for stability
+#             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
+#             self.optimizer.step()
+        
+#         return {
+#             'loss': total_loss.item() if isinstance(total_loss, torch.Tensor) else total_loss,
+#             'mse_loss': mse_loss_total / batch_size,
+#             'ranking_loss': ranking_loss_total / batch_size
+#         }
+
+
+# class PriorityNetDataset(Dataset):
+#     """Enhanced production dataset for PriorityNet training with NS support"""
+    
+#     def __init__(self, scenarios: List[Dict]):
 #         self.data = []
 #         self.logger = logging.getLogger(__name__)
         
-#         valid_scenarios = 0
-#         processed_signals = 0
+#         # Statistics tracking
+#         self.stats = {
+#             'total_scenarios': len(scenarios),
+#             'valid_scenarios': 0,
+#             'bbh_scenarios': 0,
+#             'bns_scenarios': 0,
+#             'nsbh_scenarios': 0,
+#             'tidal_systems': 0
+#         }
         
-#         # ✅ OPTIMIZED: Process more scenarios for better training
-#         max_scenarios = min(len(scenarios), 2000)  # Limit for memory efficiency
-        
-#         for scenario_id, scenario in enumerate(scenarios[:max_scenarios]):
+#         for scenario_id, scenario in enumerate(scenarios):
 #             try:
 #                 true_params = scenario.get('true_parameters', [])
-#                 if true_params:
-#                     valid_scenarios += 1
-#                     for signal_idx, params in enumerate(true_params):
-#                         waveform_data = self._generate_synthetic_waveform(params, scenario)
-#                         if waveform_data is not None:
-#                             param_vector = self._extract_parameter_vector(params)
-#                             if param_vector is not None:
-#                                 quality = self._compute_synthetic_quality(params)
-#                                 # ✅ OPTIMIZED: Only use high-quality samples
-#                                 if quality > 0.3:  # Filter out poor quality
-#                                     self.data.append({
-#                                         'scenario_id': scenario_id,
-#                                         'signal_index': signal_idx,
-#                                         'waveform_data': waveform_data,
-#                                         'true_parameters': param_vector,
-#                                         'signal_quality': quality
-#                                     })
-#                                     processed_signals += 1
+#                 baseline_results = scenario.get('baseline_biases', [])
+                
+#                 if not true_params:
+#                     continue
+                
+#                 # Track binary types
+#                 binary_types = [p.get('binary_type', 'BBH') for p in true_params]
+#                 for bt in binary_types:
+#                     self.stats[f'{bt.lower()}_scenarios'] += 1
+                
+#                 # Track tidal systems
+#                 tidal_count = sum(1 for p in true_params if 'lambda_1' in p or 'lambda_2' in p)
+#                 self.stats['tidal_systems'] += tidal_count
+                
+#                 # Compute enhanced physics-based priorities
+#                 priorities = self._compute_enhanced_extraction_priorities(true_params, baseline_results)
+                
+#                 if priorities is not None and len(priorities) > 0:
+#                     self.data.append({
+#                         'scenario_id': scenario_id,
+#                         'detections': true_params,
+#                         'priorities': priorities,
+#                         'binary_types': binary_types,
+#                         'has_ns': any(bt in ['BNS', 'NSBH'] for bt in binary_types)
+#                     })
+#                     self.stats['valid_scenarios'] += 1
+                    
 #             except Exception as e:
 #                 self.logger.debug(f"Error processing scenario {scenario_id}: {e}")
 #                 continue
         
-#         self.logger.info(f"✅ Optimized Dataset: {valid_scenarios} scenarios, {processed_signals} signals, {len(self.data)} samples")
-
-#     def _generate_synthetic_waveform(self, params: Dict, scenario: Dict) -> np.ndarray:
-#         try:
-#             mass_1 = max(5.0, min(100.0, self._extract_param_value(params, 'mass_1', 35.0)))
-#             mass_2 = max(5.0, min(100.0, self._extract_param_value(params, 'mass_2', 30.0)))
-#             distance = max(50.0, min(5000.0, self._extract_param_value(params, 'luminosity_distance', 500.0)))
-            
-#             t = np.linspace(0, 4.0, 4096)
-#             total_mass = mass_1 + mass_2
-#             chirp_mass = max(10.0, min(100.0, (mass_1 * mass_2)**(3/5) / total_mass**(1/5)))
-            
-#             f_start = 20.0
-#             f_end = min(200.0, 220.0 / total_mass)
-#             frequency = f_start + (f_end - f_start) * (t / 4.0)
-#             frequency = np.clip(frequency, f_start, f_end)
-            
-#             base_amplitude = max(1e-24, min(1e-20, chirp_mass / distance))
-#             amplitude = base_amplitude * np.exp(-t / 8.0)
-#             phase = 2 * np.pi * np.cumsum(frequency) * (4.0 / 4096)
-            
-#             inclination = max(0.1, min(np.pi-0.1, self._extract_param_value(params, 'theta_jn', np.pi/4)))
-            
-#             h_plus = amplitude * (1 + np.cos(inclination)**2) * np.cos(phase)
-#             h_cross = amplitude * 2 * np.cos(inclination) * np.sin(phase)
-            
-#             # ✅ OPTIMIZED: Better noise modeling
-#             noise_level = base_amplitude * 0.005  # Reduced noise
-#             h_plus += np.random.normal(0, noise_level, len(h_plus))
-#             h_cross += np.random.normal(0, noise_level, len(h_cross))
-            
-#             h_plus = np.nan_to_num(h_plus, nan=0.0, posinf=base_amplitude, neginf=-base_amplitude)
-#             h_cross = np.nan_to_num(h_cross, nan=0.0, posinf=base_amplitude, neginf=-base_amplitude)
-            
-#             max_val = base_amplitude * 10
-#             h_plus = np.clip(h_plus, -max_val, max_val)
-#             h_cross = np.clip(h_cross, -max_val, max_val)
-            
-#             waveform_data = np.zeros((2, 4096))
-#             waveform_data[0] = h_plus
-#             waveform_data[1] = h_cross
-            
-#             return waveform_data
-            
-#         except Exception:
-#             t = np.linspace(0, 4, 4096)
-#             clean_amplitude = 1e-23
-#             clean_wave = clean_amplitude * np.sin(2 * np.pi * 50.0 * t)
-#             noise = np.random.normal(0, clean_amplitude * 0.005, 4096)
-            
-#             waveform_data = np.zeros((2, 4096))
-#             waveform_data[0] = clean_wave + noise
-#             waveform_data[1] = (clean_wave + noise) * 0.7
-#             return waveform_data
-
-#     def _extract_param_value(self, params: Dict, param_name: str, default: float) -> float:
-#         try:
-#             value = params.get(param_name, default)
-#             if isinstance(value, dict):
-#                 for key in ['median', 'mean', 'value']:
-#                     if key in value:
-#                         return float(value[key])
-#                 return default
-#             return float(value)
-#         except:
-#             return default
+#         self.logger.info(f"✅ Enhanced PriorityNet dataset created:")
+#         self.logger.info(f"   Valid scenarios: {self.stats['valid_scenarios']}/{self.stats['total_scenarios']}")
+#         self.logger.info(f"   BBH scenarios: {self.stats['bbh_scenarios']}")
+#         self.logger.info(f"   BNS scenarios: {self.stats['bns_scenarios']}")
+#         self.logger.info(f"   NSBH scenarios: {self.stats['nsbh_scenarios']}")
+#         self.logger.info(f"   Tidal systems: {self.stats['tidal_systems']}")
     
-#     def _extract_parameter_vector(self, params: Dict) -> np.ndarray:
-#         try:
-#             param_vector = []
+#     def _compute_enhanced_extraction_priorities(self, signals: List[Dict], 
+#                                               baseline_biases: Optional[List[Dict]] = None) -> torch.Tensor:
+#         """Enhanced extraction priorities with comprehensive NS support"""
+        
+#         n_signals = len(signals)
+#         priorities = torch.zeros(n_signals)
+        
+#         for i, signal in enumerate(signals):
+#             # Get signal parameters
+#             snr = signal.get('network_snr', 10.0)
+#             m1 = signal.get('mass_1', 30.0)
+#             m2 = signal.get('mass_2', 25.0)
+#             distance = signal.get('luminosity_distance', 500.0)
+#             binary_type = signal.get('binary_type', 'BBH')
             
-#             defaults = {
-#                 'mass_1': 35.0, 'mass_2': 30.0, 'luminosity_distance': 500.0,
-#                 'ra': 0.0, 'dec': 0.0, 'geocent_time': 0.0,
-#                 'theta_jn': np.pi/4, 'psi': 0.0, 'phase': 0.0
-#             }
-
-#             param_ranges = {
-#                 'mass_1': (5.0, 80.0), 'mass_2': (3.0, 50.0),
-#                 'luminosity_distance': (50.0, 2000.0),
-#                 'ra': (0.0, 2 * np.pi), 'dec': (-np.pi/2, np.pi/2),
-#                 'geocent_time': (-2.0, 2.0), 'theta_jn': (0.0, np.pi),
-#                 'psi': (0.0, np.pi), 'phase': (0.0, 2 * np.pi)
-#             }
-
-#             for param_name in self.param_names:
-#                 raw_value = self._extract_param_value(params, param_name, defaults.get(param_name, 0.0))
-
-#                 if param_name in param_ranges:
-#                     min_val, max_val = param_ranges[param_name]
-#                     raw_value = max(min_val, min(max_val, raw_value))
-                    
-#                     if param_name in ['luminosity_distance']:
-#                         log_val = np.log10(raw_value)
-#                         log_min, log_max = np.log10(min_val), np.log10(max_val)  
-#                         normalized_value = 2.0 * (log_val - log_min) / (log_max - log_min) - 1.0
-#                     else:
-#                         normalized_value = 2.0 * (raw_value - min_val) / (max_val - min_val) - 1.0
-                    
-#                     normalized_value = np.clip(normalized_value, -0.98, 0.98)
+#             # SNR component (enhanced scaling)
+#             if binary_type == 'BNS':
+#                 snr_priority = min(snr / 20.0, 1.0)  # BNS typically lower SNR threshold
+#             elif binary_type == 'NSBH':
+#                 snr_priority = min(snr / 22.0, 1.0)  # NSBH intermediate threshold
+#             else:
+#                 snr_priority = min(snr / 25.0, 1.0)  # BBH standard threshold
+            
+#             # Binary-type-specific mass priority
+#             total_mass = m1 + m2
+            
+#             if binary_type == 'BNS':
+#                 # BNS systems: 2-5 M☉ total mass
+#                 if 2.5 <= total_mass <= 4.0:
+#                     mass_priority = 1.0  # Optimal BNS range
+#                 elif 2.0 <= total_mass <= 5.0:
+#                     mass_priority = 0.8  # Good BNS range
 #                 else:
-#                     normalized_value = np.tanh(raw_value / 10.0)
-
-#                 param_vector.append(normalized_value)
-
-#             return np.array(param_vector, dtype=np.float32)
-#         except Exception as e:
-#             self.logger.debug(f"Parameter extraction failed: {e}")
-#             return None # type: ignore
-
-#     def _compute_synthetic_quality(self, params: Dict) -> float:
-#         try:
-#             mass_1 = self._extract_param_value(params, 'mass_1', 35.0)
-#             mass_2 = self._extract_param_value(params, 'mass_2', 30.0)
-#             distance = self._extract_param_value(params, 'luminosity_distance', 500.0)
+#                     mass_priority = 0.5  # Unusual BNS mass
+                    
+#             elif binary_type == 'NSBH':
+#                 # NSBH systems: 6-50 M☉ total mass
+#                 if 8.0 <= total_mass <= 30.0:
+#                     mass_priority = 0.9  # Good NSBH range
+#                 elif 6.0 <= total_mass <= 50.0:
+#                     mass_priority = 0.7  # Acceptable NSBH range
+#                 else:
+#                     mass_priority = 0.4  # Extreme NSBH mass
+                    
+#             else:  # BBH systems
+#                 # BBH systems: 10-200 M☉ total mass
+#                 if 25 <= total_mass <= 75:
+#                     mass_priority = 1.0  # Optimal BBH range
+#                 elif 15 <= total_mass <= 100:
+#                     mass_priority = 0.7  # Moderate BBH
+#                 else:
+#                     mass_priority = 0.4  # Difficult BBH
             
-#             chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
-#             estimated_snr = 8.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / distance)
+#             # Binary-type-specific distance scaling
+#             if binary_type == 'BNS':
+#                 # BNS are typically closer and harder to detect at distance
+#                 distance_priority = max(0.3, min(1.0, 200.0 / distance))
+#             elif binary_type == 'NSBH':
+#                 # NSBH intermediate distance sensitivity
+#                 distance_priority = max(0.25, min(1.0, 500.0 / distance))
+#             else:  # BBH
+#                 # BBH can be detected at larger distances
+#                 distance_priority = max(0.2, min(1.0, 800.0 / distance))
             
-#             snr_quality = min(1.0, estimated_snr / 20.0)
-#             mass_quality = 1.0 if 10.0 <= mass_1 <= 60.0 and 5.0 <= mass_2 <= 40.0 else 0.7
-#             distance_quality = 1.0 if 100.0 <= distance <= 1500.0 else 0.8
+#             # Tidal effects bonus for NS systems
+#             tidal_bonus = 0.0
+#             if binary_type in ['BNS', 'NSBH']:
+#                 # NS systems get priority bonus for tidal physics
+#                 tidal_bonus = 0.1
+                
+#                 # Extra bonus if tidal parameters present
+#                 lambda_1 = signal.get('lambda_1', 0.0)
+#                 lambda_2 = signal.get('lambda_2', 0.0)
+#                 if lambda_1 > 0 or lambda_2 > 0:
+#                     tidal_bonus += 0.05
+                    
+#                     # Bonus for realistic tidal values
+#                     effective_lambda = (lambda_1 + lambda_2) / 2.0
+#                     if 100 <= effective_lambda <= 2000:
+#                         tidal_bonus += 0.03  # Realistic tidal range bonus
             
-#             combined_quality = 0.6 * snr_quality + 0.2 * mass_quality + 0.2 * distance_quality
-#             return max(0.1, min(1.0, combined_quality))
-#         except:
-#             return 0.5
+#             # Approximant-based priority
+#             approximant = signal.get('approximant', 'IMRPhenomPv2')
+#             approx_priority = 0.0
+#             if 'NRTidal' in approximant:
+#                 approx_priority = 0.05  # Tidal approximants are more complex
+            
+#             # Difficulty-based adjustment
+#             difficulty = signal.get('difficulty', 'medium')
+#             difficulty_factor = {
+#                 'easy': 1.1,
+#                 'medium': 1.0,
+#                 'hard': 0.8,
+#                 'extreme': 0.6
+#             }.get(difficulty, 1.0)
+            
+#             # Bias penalty (enhanced)
+#             bias_penalty = 0.0
+#             if baseline_biases and i < len(baseline_biases) and baseline_biases[i]:
+#                 try:
+#                     bias_values = [abs(b) for b in baseline_biases[i].values() if isinstance(b, (int, float))]
+#                     if bias_values:
+#                         bias_magnitude = np.mean(bias_values)
+#                         bias_penalty = min(0.3, bias_magnitude * 0.5)
+#                 except:
+#                     bias_penalty = 0.0
+            
+#             # Combined priority with enhanced NS considerations
+#             base_priority = (0.30 * snr_priority + 
+#                            0.25 * mass_priority + 
+#                            0.20 * distance_priority + 
+#                            0.10 * tidal_bonus +
+#                            0.05 * approx_priority +
+#                            0.05 * bias_penalty) * difficulty_factor
+            
+#             # Hierarchical penalty (later extractions are harder)
+#             hierarchy_penalty = i * 0.06  # Slightly increased for NS complexity
+            
+#             # NS system bonus
+#             if binary_type in ['BNS', 'NSBH']:
+#                 base_priority *= 1.1  # 10% bonus for NS systems
+            
+#             final_priority = max(0.1, min(1.0, base_priority - hierarchy_penalty))
+#             priorities[i] = final_priority
+        
+#         return priorities
     
 #     def __len__(self):
 #         return len(self.data)
@@ -308,205 +491,316 @@
 #     def __getitem__(self, idx):
 #         return self.data[idx]
 
-# def collate_subtractor_batch(batch: List[Dict]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-#     waveforms = torch.stack([torch.tensor(item['waveform_data'], dtype=torch.float32) for item in batch])
-#     parameters = torch.stack([torch.tensor(item['true_parameters'], dtype=torch.float32) for item in batch])
-#     qualities = torch.tensor([item['signal_quality'] for item in batch], dtype=torch.float32)
-#     return waveforms, parameters, qualities
 
-# def train_neural_pe(neural_pe: NeuralPENetwork, dataset: AdaptiveSubtractorDataset, 
-#                    epochs: int = 40) -> Dict[str, Any]:
-#     """OPTIMIZED Neural PE training for 90%+ accuracy"""
+# def collate_priority_batch(batch: List[Dict]) -> Tuple[List[List[Dict]], List[torch.Tensor]]:
+#     """Enhanced collate function for variable-length sequences"""
     
-#     logging.info("🧠 Training Optimized Neural PE Network...")
+#     detections_batch = []
+#     priorities_batch = []
     
+#     for item in batch:
+#         detections_batch.append(item['detections'])
+#         priorities_batch.append(item['priorities'])
+    
+#     return detections_batch, priorities_batch
+
+
+# def train_enhanced_priority_net(config, dataset: PriorityNetDataset, output_dir: Path) -> Dict[str, Any]:
+#     """Enhanced production training function for NS-aware PriorityNet"""
+    
+#     logging.info("🧠 Phase 2: Training Enhanced PriorityNet with NS Support...")
+    
+#     # Initialize enhanced model and trainer
+#     model = EnhancedPriorityNet(config)
+#     trainer = EnhancedPriorityNetTrainer(model, config)
+    
+#     # Enhanced data loader
 #     dataloader = DataLoader(
-#         dataset, 
-#         batch_size=48,  # Optimized batch size
+#         dataset,
+#         batch_size=getattr(config, 'batch_size', 16),
 #         shuffle=True,
-#         collate_fn=collate_subtractor_batch, 
-#         num_workers=0, 
-#         pin_memory=True
+#         collate_fn=collate_priority_batch,
+#         num_workers=0,
+#         drop_last=False
 #     )
     
-#     # ✅ OPTIMIZED: Better optimizer settings
-#     optimizer = torch.optim.AdamW(
-#         neural_pe.parameters(), 
-#         lr=1e-3,  # REDUCED from 3e-3 (was too high!)
-#         weight_decay=1e-6,
-#         betas=(0.9, 0.999)  # More conservative momentum
-#     )
+#     # Training parameters
+#     n_epochs = getattr(config, 'n_epochs', 400)
+#     best_loss = float('inf')
+#     patience = getattr(config, 'patience', 40)
+#     patience_counter = 0
     
-#     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-#     optimizer,
-#     mode='max',  # Watch accuracy (max)
-#     factor=0.5,  # Reduce LR by half
-#     patience=5,  # Wait 5 epochs for improvement
-#     min_lr=1e-6
-# )
+#     training_metrics = {
+#         'losses': [],
+#         'mse_losses': [],
+#         'ranking_losses': [],
+#         'epochs_completed': 0,
+#         'best_epoch': 0
+#     }
     
-#     def optimized_neural_pe_loss(pred_params, pred_uncertainties, true_params, quality_weights):
-#         device = pred_params.device
-        
-#         # ✅ OPTIMIZED: Less aggressive clamping
-#         pred_params = torch.clamp(pred_params, min=-3.0, max=3.0)
-#         pred_uncertainties = torch.clamp(pred_uncertainties, min=1e-6, max=10.0)
-#         true_params = torch.clamp(true_params, min=-3.0, max=3.0)
-#         quality_weights = torch.clamp(quality_weights, min=1e-6, max=1.0)
-        
-#         # Main MSE loss with quality weighting
-#         param_errors = (pred_params - true_params) ** 2
-#         weighted_mse = torch.mean(quality_weights.unsqueeze(1) * param_errors)
-        
-#         # Uncertainty regularization
-#         uncertainty_loss = torch.mean(pred_uncertainties)
-        
-#         # ✅ OPTIMIZED: Lighter physics constraint
-#         physics_penalty = torch.tensor(0.0, device=device)
-#         if pred_params.size(1) >= 2:
-#             mass_violation = torch.relu(pred_params[:, 1] - pred_params[:, 0])
-#             physics_penalty = torch.mean(mass_violation ** 2) * 0.005
-        
-#         # ✅ OPTIMIZED: Scale-aware loss
-#         scale_penalty = torch.tensor(0.0, device=device)
-#         pred_scale = torch.mean(torch.abs(pred_params))
-#         true_scale = torch.mean(torch.abs(true_params))
-#         if true_scale > 0:
-#             scale_diff = torch.abs(pred_scale - true_scale) / true_scale
-#             scale_penalty = scale_diff * 0.1
-        
-#         total_loss = weighted_mse + 0.005 * uncertainty_loss + physics_penalty + scale_penalty
-        
-#         # Anti-vanishing gradients
-#         if torch.abs(pred_params).max() < 1e-6:
-#             total_loss += 2.0
-        
-#         if torch.isnan(total_loss) or torch.isinf(total_loss):
-#             total_loss = weighted_mse
-        
-#         return total_loss
-
-#     training_history = {'losses': [], 'accuracies': []}
-#     debug_samples = []
-#     best_accuracy = 0.0
+#     logging.info(f"🚀 Starting training: {n_epochs} epochs, patience={patience}")
     
-#     for epoch in range(epochs):
+#     # Training loop
+#     for epoch in range(n_epochs):
 #         epoch_losses = []
-#         epoch_accuracies = []
+#         epoch_mse_losses = []
+#         epoch_ranking_losses = []
         
-#         neural_pe.train()
+#         progress_bar = tqdm(dataloader, desc=f'Epoch {epoch+1:3d}/{n_epochs}', leave=False)
         
-#         pbar = tqdm(dataloader, desc=f'Neural PE Epoch {epoch+1}', leave=False)
-        
-#         for batch_idx, (waveforms, true_params, qualities) in enumerate(pbar):
+#         for detections_batch, priorities_batch in progress_bar:
+#             loss_info = trainer.train_step(detections_batch, priorities_batch)
             
-#             pred_params, pred_uncertainties = neural_pe(waveforms)
-#             loss = optimized_neural_pe_loss(pred_params, pred_uncertainties, true_params, qualities)
-            
-#             optimizer.zero_grad()
-#             loss.backward()
-#             torch.nn.utils.clip_grad_norm_(neural_pe.parameters(), 1.0)
-#             optimizer.step()
-            
-#             epoch_losses.append(loss.item())
-            
-#             with torch.no_grad():
-#                 param_errors = torch.mean((pred_params - true_params) ** 2, dim=1)
-#                 accuracy = 1.0 / (1.0 + torch.mean(param_errors))
-#                 epoch_accuracies.append(float(accuracy))
+#             epoch_losses.append(loss_info['loss'])
+#             epoch_mse_losses.append(loss_info['mse_loss'])
+#             epoch_ranking_losses.append(loss_info['ranking_loss'])
             
 #             # Update progress bar
-#             if batch_idx % 10 == 0:
-#                 pbar.set_postfix({
-#                     'loss': loss.item(),
-#                     'acc': np.mean(epoch_accuracies[-10:]) if epoch_accuracies else 0.0,
-#                     'lr': scheduler.get_last_lr()[0]
-#                 })
+#             progress_bar.set_postfix({
+#                 'Loss': f"{loss_info['loss']:.4f}",
+#                 'MSE': f"{loss_info['mse_loss']:.4f}",
+#                 'Rank': f"{loss_info['ranking_loss']:.4f}"
+#             })
+        
+#         # Epoch statistics
+#         avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
+#         avg_mse_loss = np.mean(epoch_mse_losses) if epoch_mse_losses else 0.0
+#         avg_ranking_loss = np.mean(epoch_ranking_losses) if epoch_ranking_losses else 0.0
+        
+#         training_metrics['losses'].append(avg_loss)
+#         training_metrics['mse_losses'].append(avg_mse_loss)
+#         training_metrics['ranking_losses'].append(avg_ranking_loss)
+#         training_metrics['epochs_completed'] = epoch + 1
+        
+#         # Learning rate scheduling
+#         trainer.scheduler.step(avg_loss)
+        
+#         # Logging
+#         if epoch % 5 == 0 or epoch == n_epochs - 1:
+#             logging.info(f"Epoch {epoch:3d}: Loss={avg_loss:.6f}, MSE={avg_mse_loss:.6f}, Rank Loss={avg_ranking_loss:.6f}")
+        
+#         # Enhanced early stopping
+#         if avg_loss < best_loss:
+#             best_loss = avg_loss
+#             patience_counter = 0
+#             training_metrics['best_epoch'] = epoch
             
-#             # Collect debug samples
-#             if epoch == 0 and batch_idx == 0:
-#                 debug_samples.append({
-#                     'pred_params': pred_params[0].detach().cpu().numpy(),
-#                     'true_params': true_params[0].detach().cpu().numpy(),
-#                     'pred_uncertainties': pred_uncertainties[0].detach().cpu().numpy(),
-#                     'pred_range': [pred_params.min().item(), pred_params.max().item()],
-#                     'true_range': [true_params.min().item(), true_params.max().item()]
-#                 })
-        
-#         avg_loss = np.mean(epoch_losses)
-#         avg_accuracy = np.mean(epoch_accuracies)
-        
-#         training_history['losses'].append(avg_loss)
-#         training_history['accuracies'].append(avg_accuracy)
-        
-#         early_stop_patience = 10
-#         epochs_without_improvement = 0
-
-#         if avg_accuracy > best_accuracy:
-#             best_accuracy = avg_accuracy
-#             epochs_without_improvement = 0
+#             # Save best model
+#             torch.save({
+#                 'model_state_dict': model.state_dict(),
+#                 'optimizer_state_dict': trainer.optimizer.state_dict(),
+#                 'scheduler_state_dict': trainer.scheduler.state_dict(),
+#                 'epoch': epoch,
+#                 'loss': best_loss,
+#                 'config': config.__dict__ if hasattr(config, '__dict__') else {},
+#                 'dataset_stats': dataset.stats
+#             }, output_dir / 'priority_net_best.pth')
 #         else:
-#             epochs_without_improvement += 1
-
-#         if epochs_without_improvement >= early_stop_patience:
-#             logging.info(f"Early stopping at epoch {epoch}")
+#             patience_counter += 1
+            
+#         if patience_counter >= patience:
+#             logging.info(f"Early stopping at epoch {epoch} (best epoch: {training_metrics['best_epoch']})")
 #             break
-        
-#         if avg_accuracy > best_accuracy:
-#             best_accuracy = avg_accuracy
-        
-#         if epoch % 5 == 0:
-#             logging.info(f"Neural PE Epoch {epoch}: Loss = {avg_loss:.6f}, Accuracy = {avg_accuracy:.3f}, Best = {best_accuracy:.3f}")
     
-#     final_accuracy = training_history['accuracies'][-1] if training_history['accuracies'] else 0.0
+#     # Final evaluation
+#     logging.info("🔍 Performing final evaluation...")
+#     model.eval()
+#     evaluation_metrics = evaluate_enhanced_priority_net(model, dataset)
     
-#     # Final prediction check
-#     with torch.no_grad():
-#         sample_batch = next(iter(dataloader))
-#         sample_preds, sample_uncertainties = neural_pe(sample_batch[0][:1])
-#         pred_magnitude = torch.abs(sample_preds).max().item()
-    
-#     # Memory cleanup
-#     del dataloader
-#     gc.collect()
-    
-#     # Output results
-#     print("\n" + "="*60)
-#     print("📊 PHASE 3A OPTIMIZED NEURAL PE RESULTS")
-#     print("="*60)
-#     print(f"✅ Final Accuracy: {final_accuracy:.3f} ({final_accuracy:.1%})")
-#     print(f"🏆 Best Accuracy: {best_accuracy:.3f} ({best_accuracy:.1%})")
-#     print(f"✅ Training Completed: {epochs} epochs")
-#     print(f"✅ Prediction Magnitude: {pred_magnitude:.6f}")
-    
-#     if debug_samples:
-#         sample = debug_samples[0]
-#         print("\n🔍 SAMPLE PREDICTION DEBUG:")
-#         print(f"Predicted params: {sample['pred_params']}")
-#         print(f"True params: {sample['true_params']}")
-#         print(f"Pred range: [{sample['pred_range'][0]:.3f}, {sample['pred_range'][1]:.3f}]")
-#         print(f"True range: [{sample['true_range'][0]:.3f}, {sample['true_range'][1]:.3f}]")
-#         print(f"Uncertainties: {sample['pred_uncertainties']}")
-        
-#         if np.abs(sample['pred_params']).max() < 0.01:
-#             print("⚠️  WARNING: Predictions are near zero!")
-#         elif np.abs(sample['pred_params']).max() > 10:
-#             print("⚠️  WARNING: Predictions are extreme!")
-#         else:
-#             print("✅ Predictions look reasonable")
-    
-#     print("="*60)
-    
-#     return {
-#         'training_history': training_history,
-#         'final_accuracy': final_accuracy,
-#         'best_accuracy': best_accuracy,
-#         'prediction_magnitude': pred_magnitude,
-#         'debug_samples': debug_samples
+#     # Save final results
+#     final_results = {
+#         'training_metrics': training_metrics,
+#         'evaluation_metrics': evaluation_metrics,
+#         'model_config': config.__dict__ if hasattr(config, '__dict__') else {},
+#         'dataset_stats': dataset.stats,
+#         'total_epochs': training_metrics['epochs_completed'],
+#         'best_epoch': training_metrics['best_epoch'],
+#         'final_loss': training_metrics['losses'][-1] if training_metrics['losses'] else 0.0,
+#         'best_loss': best_loss
 #     }
+    
+#     # Save final model
+#     torch.save({
+#         'model_state_dict': model.state_dict(),
+#         'final_results': final_results
+#     }, output_dir / 'priority_net_final.pth')
+    
+#     # Save evaluation results
+#     with open(output_dir / 'priority_net_evaluation.pkl', 'wb') as f:
+#         pickle.dump(evaluation_metrics, f)
+    
+#     # Save training curves
+#     training_curves = {
+#         'epochs': list(range(training_metrics['epochs_completed'])),
+#         'total_loss': training_metrics['losses'],
+#         'mse_loss': training_metrics['mse_losses'],
+#         'ranking_loss': training_metrics['ranking_losses']
+#     }
+    
+#     with open(output_dir / 'training_curves.pkl', 'wb') as f:
+#         pickle.dump(training_curves, f)
+    
+#     logging.info("✅ Enhanced PriorityNet training completed!")
+    
+#     return evaluation_metrics
+
+
+# def evaluate_enhanced_priority_net(model: EnhancedPriorityNet, dataset: PriorityNetDataset) -> Dict[str, Any]:
+#     """Enhanced evaluation with NS-specific performance analysis"""
+    
+#     logging.info("📊 Evaluating Enhanced PriorityNet performance...")
+    
+#     model.eval()
+    
+#     # Overall metrics
+#     correlations = []
+#     precisions = []
+#     accuracies = []
+    
+#     # Binary-type-specific metrics
+#     bbh_metrics = {'correlations': [], 'precisions': [], 'accuracies': [], 'count': 0}
+#     bns_metrics = {'correlations': [], 'precisions': [], 'accuracies': [], 'count': 0}
+#     nsbh_metrics = {'correlations': [], 'precisions': [], 'accuracies': [], 'count': 0}
+#     mixed_metrics = {'correlations': [], 'precisions': [], 'accuracies': [], 'count': 0}
+    
+#     with torch.no_grad():
+#         for item in dataset:
+#             detections = item['detections']
+#             true_priorities = item['priorities']
+#             binary_types = item['binary_types']
+#             has_ns = item['has_ns']
+            
+#             if len(detections) <= 1:
+#                 continue
+            
+#             try:
+#                 # Get model predictions
+#                 pred_priorities = model(detections)
+                
+#                 if len(pred_priorities) != len(true_priorities):
+#                     continue
+                
+#                 # Ranking correlation (Spearman-like)
+#                 true_ranking = torch.argsort(true_priorities, descending=True)
+#                 pred_ranking = torch.argsort(pred_priorities, descending=True)
+                
+#                 n = len(true_ranking)
+#                 if n > 1:
+#                     rank_diffs = (true_ranking.float() - pred_ranking.float())**2
+#                     correlation = 1.0 - 6 * torch.sum(rank_diffs) / (n * (n**2 - 1))
+#                     correlation = float(correlation)
+#                     correlations.append(correlation)
+                    
+#                     # Top-k precision
+#                     k = min(3, len(detections))
+#                     true_top_k = set(true_ranking[:k].tolist())
+#                     pred_top_k = set(pred_ranking[:k].tolist())
+#                     precision = len(true_top_k & pred_top_k) / k
+#                     precisions.append(precision)
+                    
+#                     # Priority accuracy
+#                     priority_error = torch.mean(torch.abs(pred_priorities - true_priorities))
+#                     accuracy = 1.0 / (1.0 + priority_error)
+#                     accuracies.append(float(accuracy))
+                    
+#                     # Categorize by binary type composition
+#                     unique_types = set(binary_types)
+                    
+#                     if len(unique_types) == 1:
+#                         binary_type = list(unique_types)[0]
+#                         if binary_type == 'BBH':
+#                             bbh_metrics['correlations'].append(correlation)
+#                             bbh_metrics['precisions'].append(precision)
+#                             bbh_metrics['accuracies'].append(accuracy)
+#                             bbh_metrics['count'] += 1
+#                         elif binary_type == 'BNS':
+#                             bns_metrics['correlations'].append(correlation)
+#                             bns_metrics['precisions'].append(precision)
+#                             bns_metrics['accuracies'].append(accuracy)
+#                             bns_metrics['count'] += 1
+#                         elif binary_type == 'NSBH':
+#                             nsbh_metrics['correlations'].append(correlation)
+#                             nsbh_metrics['precisions'].append(precision)
+#                             nsbh_metrics['accuracies'].append(accuracy)
+#                             nsbh_metrics['count'] += 1
+#                     else:
+#                         # Mixed scenario
+#                         mixed_metrics['correlations'].append(correlation)
+#                         mixed_metrics['precisions'].append(precision)
+#                         mixed_metrics['accuracies'].append(accuracy)
+#                         mixed_metrics['count'] += 1
+                
+#             except Exception as e:
+#                 logging.debug(f"Evaluation error: {e}")
+#                 continue
+    
+#     # Compile comprehensive results
+#     def compute_stats(values):
+#         if not values:
+#             return {'mean': 0.0, 'std': 0.0, 'count': 0}
+#         return {
+#             'mean': float(np.mean(values)),
+#             'std': float(np.std(values)),
+#             'count': len(values)
+#         }
+    
+#     results = {
+#         # Overall performance
+#         'overall_performance': {
+#             'ranking_correlation': compute_stats(correlations),
+#             'top_k_precision': compute_stats(precisions),
+#             'priority_accuracy': compute_stats(accuracies)
+#         },
+        
+#         # Binary-type-specific performance
+#         'bbh_performance': {
+#             'ranking_correlation': compute_stats(bbh_metrics['correlations']),
+#             'top_k_precision': compute_stats(bbh_metrics['precisions']),
+#             'priority_accuracy': compute_stats(bbh_metrics['accuracies']),
+#             'scenario_count': bbh_metrics['count']
+#         },
+#         'bns_performance': {
+#             'ranking_correlation': compute_stats(bns_metrics['correlations']),
+#             'top_k_precision': compute_stats(bns_metrics['precisions']),
+#             'priority_accuracy': compute_stats(bns_metrics['accuracies']),
+#             'scenario_count': bns_metrics['count']
+#         },
+#         'nsbh_performance': {
+#             'ranking_correlation': compute_stats(nsbh_metrics['correlations']),
+#             'top_k_precision': compute_stats(nsbh_metrics['precisions']),
+#             'priority_accuracy': compute_stats(nsbh_metrics['accuracies']),
+#             'scenario_count': nsbh_metrics['count']
+#         },
+#         'mixed_performance': {
+#             'ranking_correlation': compute_stats(mixed_metrics['correlations']),
+#             'top_k_precision': compute_stats(mixed_metrics['precisions']),
+#             'priority_accuracy': compute_stats(mixed_metrics['accuracies']),
+#             'scenario_count': mixed_metrics['count']
+#         },
+        
+#         # Summary statistics
+#         'evaluation_summary': {
+#             'total_scenarios_evaluated': len(correlations),
+#             'ns_scenarios_evaluated': sum(1 for item in dataset if item['has_ns']),
+#             'bbh_only_scenarios': bbh_metrics['count'],
+#             'bns_scenarios': bns_metrics['count'],
+#             'nsbh_scenarios': nsbh_metrics['count'],
+#             'mixed_scenarios': mixed_metrics['count']
+#         }
+#     }
+    
+#     logging.info(f"📈 Enhanced evaluation completed:")
+#     logging.info(f"   Total scenarios evaluated: {len(correlations)}")
+#     logging.info(f"   BBH-only scenarios: {bbh_metrics['count']}")
+#     logging.info(f"   BNS scenarios: {bns_metrics['count']}")
+#     logging.info(f"   NSBH scenarios: {nsbh_metrics['count']}")
+#     logging.info(f"   Mixed scenarios: {mixed_metrics['count']}")
+    
+#     return results
+
 
 # def main():
-#     parser = argparse.ArgumentParser(description='Phase 3A: Optimized Neural PE Training')
+#     parser = argparse.ArgumentParser(description='Phase 2: Train Enhanced PriorityNet for AHSD with NS Support')
 #     parser.add_argument('--config', required=True, help='Config file path')
 #     parser.add_argument('--data_dir', required=True, help='Training data directory')
 #     parser.add_argument('--output_dir', required=True, help='Output directory')
@@ -515,165 +809,350 @@
 #     args = parser.parse_args()
     
 #     setup_logging(args.verbose)
-#     logging.info("🚀 Starting Phase 3A: Optimized Neural PE Training")
+#     logging.info("🚀 Starting Phase 2: Enhanced PriorityNet Training with NS Support")
     
-#     # Load configuration
+#     # Load enhanced configuration
 #     try:
 #         with open(args.config, 'r') as f:
 #             config_dict = yaml.safe_load(f)
-#         logging.info("✅ Configuration loaded")
+        
+#         priority_config = config_dict.get('priority_net', {})
+        
+#         config = type('Config', (), {
+#             # Enhanced architecture
+#             'hidden_dims': priority_config.get('hidden_dims', [1024,512, 256, 128, 64]),
+#             'dropout': priority_config.get('dropout', 0.1),
+#             'learning_rate': priority_config.get('learning_rate', 0.0008),
+#             'weight_decay': priority_config.get('weight_decay', 1e-4),
+#             'batch_size': priority_config.get('batch_size', 16),
+#             'n_epochs': priority_config.get('n_epochs', 400),
+#             'patience': priority_config.get('patience', 40),
+            
+#             # NS-specific parameters
+#             'ns_weight_factor': priority_config.get('ns_weight_factor', 1.5),
+#             'tidal_bonus': priority_config.get('tidal_bonus', 0.15),
+#             'binary_type_aware': priority_config.get('binary_type_aware', True),
+#             'ranking_loss_weight': priority_config.get('ranking_loss_weight', 0.6),
+#         })()
+        
+#         logging.info("✅ Enhanced configuration loaded from file")
+        
 #     except Exception as e:
-#         logging.warning(f"⚠️ Could not load config: {e}. Using defaults.")
-#         config_dict = {}
+#         logging.warning(f"Could not load config: {e}, using enhanced defaults")
+#         config = type('Config', (), {
+#             'hidden_dims': [512, 256, 128, 64],
+#             'dropout': 0.15,
+#             'learning_rate': 0.0008,
+#             'weight_decay': 1e-4,
+#             'batch_size': 16,
+#             'n_epochs': 400,
+#             'patience': 40,
+#             'ns_weight_factor': 1.2,
+#             'tidal_bonus': 0.1,
+#             'binary_type_aware': True,
+#             'ranking_loss_weight': 0.3,
+#         })()
     
 #     # Load training data
 #     data_dir = Path(args.data_dir)
     
 #     try:
-#         training_file = None
+#         # Try different possible filenames
 #         possible_files = [
 #             'training_scenarios.pkl',
-#             'scenarios.pkl'
+#             'diversified_dataset_ns_enhanced.pkl',
+#             'train_ns_enhanced.pkl'
 #         ]
         
+#         scenarios = None
 #         for filename in possible_files:
-#             if (data_dir / filename).exists():
-#                 training_file = data_dir / filename
+#             filepath = data_dir / filename
+#             if filepath.exists():
+#                 with open(filepath, 'rb') as f:
+#                     scenarios = pickle.load(f)
+#                 logging.info(f"✅ Loaded {len(scenarios)} training scenarios from {filename}")
 #                 break
         
-#         if training_file is None:
-#             raise FileNotFoundError("No training scenario file found")
-        
-#         with open(training_file, 'rb') as f:
-#             scenarios = pickle.load(f)
-#         logging.info(f"✅ Loaded {len(scenarios)} training scenarios from {training_file.name}")
+#         if scenarios is None:
+#             raise FileNotFoundError("No training data file found")
         
 #     except Exception as e:
 #         logging.error(f"❌ Failed to load training data: {e}")
 #         return
     
-#     # Define parameter names
-#     param_names = [
-#         'mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec', 'geocent_time',
-#         'theta_jn', 'psi', 'phase'
-#     ]
-    
-#     # Create dataset
-#     dataset = AdaptiveSubtractorDataset(scenarios, param_names)
+#     # Create enhanced dataset
+#     dataset = PriorityNetDataset(scenarios)
     
 #     if len(dataset) == 0:
-#         logging.error("❌ No valid training data")
+#         logging.error("❌ No valid training data for Enhanced PriorityNet")
 #         return
     
 #     # Create output directory
 #     output_dir = Path(args.output_dir)
 #     output_dir.mkdir(parents=True, exist_ok=True)
     
-#     # Initialize and train Neural PE
-#     neural_pe = NeuralPENetwork(param_names)
-#     pe_results = train_neural_pe(neural_pe, dataset, epochs=40)
+#     # Train enhanced model
+#     evaluation_metrics = train_enhanced_priority_net(config, dataset, output_dir)
     
-#     # ✅ FIXED: Proper model saving without dataset (causes issues)
-#     try:
-#         # Save with minimal, safe data
-#         output_data = {
-#             'neural_pe_state_dict': neural_pe.state_dict(),
-#             'pe_results': pe_results,
-#             'param_names': param_names,
-#             'model_architecture': {
-#                 'n_params': neural_pe.n_params,
-#                 'feature_size': neural_pe.feature_size,
-#                 'data_length': neural_pe.data_length
-#             },
-#             'dataset_info': {
-#                 'size': len(dataset),
-#                 'param_names': param_names
-#             }
-#         }
-        
-#         # Save main model file
-#         main_output_file = output_dir / 'phase3a_neural_pe_output.pth'
-#         torch.save(output_data, main_output_file, pickle_protocol=pickle.HIGHEST_PROTOCOL)
-#         logging.info(f"✅ Model saved to {main_output_file}")
-        
-#         # ✅ ADDITIONAL: Save just the model for easy loading
-#         model_only = {
-#             'model_state_dict': neural_pe.state_dict(),
-#             'param_names': param_names,
-#             'final_accuracy': pe_results['final_accuracy'],
-#             'best_accuracy': pe_results['best_accuracy']
-#         }
-        
-#         model_file = output_dir / 'neural_pe_model_only.pth'
-#         torch.save(model_only, model_file)
-#         logging.info(f"✅ Model-only saved to {model_file}")
-        
-#     except Exception as e:
-#         logging.error(f"❌ Error saving model: {e}")
-#         # Fallback: save just the essentials
-#         try:
-#             fallback_data = {
-#                 'model_state_dict': neural_pe.state_dict(),
-#                 'param_names': param_names,
-#                 'final_accuracy': pe_results['final_accuracy']
-#             }
-#             fallback_file = output_dir / 'neural_pe_fallback.pth'
-#             torch.save(fallback_data, fallback_file)
-#             logging.info(f"✅ Fallback model saved to {fallback_file}")
-#         except Exception as e2:
-#             logging.error(f"❌ Fallback save also failed: {e2}")
+#     # Print comprehensive results
+#     logging.info("✅ Phase 2: Enhanced PriorityNet Training COMPLETED")
     
-#     # Save readable results
-#     try:
-#         with open(output_dir / 'phase3a_results.txt', 'w') as f:
-#             f.write("PHASE 3A OPTIMIZED NEURAL PE RESULTS\n")
-#             f.write("="*50 + "\n")
-#             f.write(f"Final Accuracy: {pe_results['final_accuracy']:.3f}\n")
-#             f.write(f"Best Accuracy: {pe_results['best_accuracy']:.3f}\n")
-#             f.write(f"Prediction Magnitude: {pe_results['prediction_magnitude']:.6f}\n")
-#             f.write(f"Dataset Size: {len(dataset)} samples\n")
-#             f.write(f"Parameters: {param_names}\n")
-#             if pe_results.get('debug_samples'):
-#                 sample = pe_results['debug_samples'][0]
-#                 f.write(f"Sample Prediction Range: [{sample['pred_range'][0]:.3f}, {sample['pred_range'][1]:.3f}]\n")
-#                 f.write(f"Sample True Range: [{sample['true_range'][0]:.3f}, {sample['true_range'][1]:.3f}]\n")
-#         logging.info("✅ Results saved to phase3a_results.txt")
-#     except Exception as e:
-#         logging.error(f"❌ Error saving results file: {e}")
+#     def print_performance(perf_dict, name):
+#         if 'ranking_correlation' in perf_dict and perf_dict['ranking_correlation']['count'] > 0:
+#             corr = perf_dict['ranking_correlation']['mean']
+#             prec = perf_dict['top_k_precision']['mean']
+#             acc = perf_dict['priority_accuracy']['mean']
+#             count = perf_dict['ranking_correlation']['count']
+#             logging.info(f"📊 {name} ({count} scenarios): Corr={corr:.3f}, Prec={prec:.3f}, Acc={acc:.3f}")
     
-#     # Performance assessment
-#     final_acc = pe_results['final_accuracy']
-#     if final_acc >= 0.90:
-#         print("\n🏆 EXCELLENT: Ready for high-performance Phase 3B!")
-#     elif final_acc >= 0.85:
-#         print("\n✅ GOOD: Ready for Phase 3B!")
-#     elif final_acc >= 0.80:
-#         print("\n⚠️  ACCEPTABLE: Should work for Phase 3B")
-#     else:
-#         print("\n❌ LOW: Consider retraining or adjusting parameters")
+#     # Print detailed results
+#     if 'overall_performance' in evaluation_metrics:
+#         print_performance(evaluation_metrics['overall_performance'], "Overall")
+#         print_performance(evaluation_metrics['bbh_performance'], "BBH-only")
+#         print_performance(evaluation_metrics['bns_performance'], "BNS")
+#         print_performance(evaluation_metrics['nsbh_performance'], "NSBH")
+#         print_performance(evaluation_metrics['mixed_performance'], "Mixed")
     
-#     logging.info("✅ Phase 3A optimized training completed!")
+#     print("\n" + "="*80)
+#     print("✅ PHASE 2 COMPLETE: ENHANCED PRIORITYNET WITH NS SUPPORT")
+#     print("="*80)
+    
+#     if 'overall_performance' in evaluation_metrics:
+#         overall = evaluation_metrics['overall_performance']
+#         if overall['ranking_correlation']['count'] > 0:
+#             print(f"🎯 Overall Ranking Correlation: {overall['ranking_correlation']['mean']:.1%}")
+#             print(f"📈 Overall Top-K Precision: {overall['top_k_precision']['mean']:.1%}")
+#             print(f"✅ Overall Priority Accuracy: {overall['priority_accuracy']['mean']:.1%}")
+    
+#     summary = evaluation_metrics.get('evaluation_summary', {})
+#     if summary:
+#         print(f"📊 Scenarios Evaluated: {summary.get('total_scenarios_evaluated', 0)}")
+#         print(f"🌟 NS Systems Evaluated: {summary.get('ns_scenarios_evaluated', 0)}")
+#         print(f"   BBH-only: {summary.get('bbh_only_scenarios', 0)}")
+#         print(f"   BNS: {summary.get('bns_scenarios', 0)}")
+#         print(f"   NSBH: {summary.get('nsbh_scenarios', 0)}")
+#         print(f"   Mixed: {summary.get('mixed_scenarios', 0)}")
+    
+#     print("="*80)
+
 
 # if __name__ == '__main__':
 #     main()
 
+#!/usr/bin/env python3
+"""
+Phase 3B .pth File Inspector
+Inspects and displays the contents of your Phase 3B model file
+"""
 
 import torch
+import sys
+from pathlib import Path
 import numpy as np
+from typing import Any, Dict
 
-# Simulate the problem
-contaminated = torch.randn(32, 2, 4096) * 1e-21  # GW scale
-clean_target = torch.randn(32, 2, 4096) * 1e-21  # GW scale  
-cleaned_output = contaminated * 0.9  # Slight change
+def inspect_phase3b_file(file_path: str):
+    """Comprehensive inspection of Phase 3B .pth file"""
+    
+    print(f"🔍 INSPECTING PHASE 3B FILE: {file_path}")
+    print("="*80)
+    
+    try:
+        # Load the file
+        checkpoint = torch.load(file_path, map_location='cpu')
+        print(f"✅ File loaded successfully")
+        print(f"📊 File type: {type(checkpoint)}")
+        
+        if isinstance(checkpoint, dict):
+            print(f"📁 Dictionary with {len(checkpoint)} keys")
+            
+            # Display all top-level keys
+            print(f"\n🗂️  TOP-LEVEL KEYS:")
+            for i, key in enumerate(checkpoint.keys(), 1):
+                value = checkpoint[key]
+                value_type = type(value).__name__
+                
+                if hasattr(value, 'shape'):
+                    size_info = f"shape: {value.shape}"
+                elif hasattr(value, '__len__') and not isinstance(value, str):
+                    size_info = f"length: {len(value)}"
+                else:
+                    size_info = f"value: {str(value)[:100]}{'...' if len(str(value)) > 100 else ''}"
+                
+                print(f"   {i:2d}. '{key}' -> {value_type} ({size_info})")
+            
+            # Detailed inspection of important keys
+            important_keys = [
+                'neural_pe_model', 'subtractor_model', 'param_names', 
+                'pe_results', 'results', 'config', 'enhanced_config',
+                'training_metrics', 'evaluation_metrics', 'final_results'
+            ]
+            
+            print(f"\n🔍 DETAILED INSPECTION:")
+            
+            for key in important_keys:
+                if key in checkpoint:
+                    print(f"\n📋 KEY: '{key}'")
+                    value = checkpoint[key]
+                    
+                    if key.endswith('_model'):
+                        # Model inspection
+                        print(f"   Type: {type(value)}")
+                        if hasattr(value, 'state_dict'):
+                            print(f"   Has state_dict: ✅")
+                            state_dict = value.state_dict()
+                            print(f"   Parameters: {len(state_dict)} layers")
+                            total_params = sum(p.numel() for p in value.parameters())
+                            print(f"   Total parameters: {total_params:,}")
+                        
+                        if hasattr(value, '__class__'):
+                            print(f"   Model class: {value.__class__.__name__}")
+                        
+                        if hasattr(value, 'eval'):
+                            print(f"   Model can be evaluated: ✅")
+                    
+                    elif key == 'param_names':
+                        print(f"   Parameters: {value}")
+                        print(f"   Count: {len(value) if hasattr(value, '__len__') else 'N/A'}")
+                    
+                    elif key in ['pe_results', 'results', 'training_metrics', 'evaluation_metrics']:
+                        # Results inspection
+                        if isinstance(value, dict):
+                            print(f"   Result keys: {list(value.keys())}")
+                            for sub_key, sub_value in value.items():
+                                if isinstance(sub_value, (int, float)):
+                                    print(f"     {sub_key}: {sub_value}")
+                                elif isinstance(sub_value, list) and len(sub_value) > 0:
+                                    print(f"     {sub_key}: list[{len(sub_value)}] (first: {sub_value[0]})")
+                                else:
+                                    print(f"     {sub_key}: {type(sub_value).__name__}")
+                        else:
+                            print(f"   Value: {value}")
+                    
+                    elif key in ['config', 'enhanced_config']:
+                        # Config inspection
+                        if isinstance(value, dict):
+                            print(f"   Config keys: {list(value.keys())}")
+                            for sub_key, sub_value in value.items():
+                                print(f"     {sub_key}: {sub_value}")
+                        else:
+                            print(f"   Config type: {type(value)}")
+                            print(f"   Config value: {value}")
+                    
+                    else:
+                        # General inspection
+                        if isinstance(value, dict):
+                            print(f"   Dictionary keys: {list(value.keys())}")
+                        elif isinstance(value, list):
+                            print(f"   List length: {len(value)}")
+                            if len(value) > 0:
+                                print(f"   First item: {value[0]}")
+                        elif isinstance(value, (int, float, str)):
+                            print(f"   Value: {value}")
+                        else:
+                            print(f"   Type: {type(value)}")
+            
+            # Check for any model that can be tested
+            print(f"\n🧪 MODEL TESTING:")
+            
+            if 'neural_pe_model' in checkpoint:
+                neural_pe = checkpoint['neural_pe_model']
+                try:
+                    neural_pe.eval()
+                    test_input = torch.randn(1, 2, 4096)  # Standard GW data shape
+                    with torch.no_grad():
+                        output = neural_pe(test_input)
+                        if isinstance(output, tuple):
+                            params, uncert = output
+                            print(f"   Neural PE test: ✅ Output shape: {params.shape}, {uncert.shape}")
+                            print(f"   Neural PE output range: {torch.min(params):.3f} to {torch.max(params):.3f}")
+                        else:
+                            print(f"   Neural PE test: ✅ Output shape: {output.shape}")
+                            print(f"   Neural PE output range: {torch.min(output):.3f} to {torch.max(output):.3f}")
+                except Exception as e:
+                    print(f"   Neural PE test: ❌ Error: {e}")
+            
+            if 'subtractor_model' in checkpoint:
+                subtractor = checkpoint['subtractor_model']
+                try:
+                    subtractor.eval()
+                    test_data = torch.randn(1, 2, 4096)
+                    test_uncertainties = torch.randn(1, 9)
+                    with torch.no_grad():
+                        cleaned, confidence = subtractor(test_data, test_uncertainties)
+                        print(f"   Subtractor test: ✅ Cleaned shape: {cleaned.shape}, Confidence: {confidence.shape}")
+                except Exception as e:
+                    print(f"   Subtractor test: ❌ Error: {e}")
+            
+            # Summary
+            print(f"\n📊 SUMMARY:")
+            print(f"   File contains: {len(checkpoint)} main components")
+            has_neural_pe = 'neural_pe_model' in checkpoint
+            has_subtractor = 'subtractor_model' in checkpoint
+            has_params = 'param_names' in checkpoint
+            has_results = any(key in checkpoint for key in ['pe_results', 'results', 'training_metrics'])
+            
+            print(f"   Neural PE model: {'✅' if has_neural_pe else '❌'}")
+            print(f"   Subtractor model: {'✅' if has_subtractor else '❌'}")
+            print(f"   Parameter names: {'✅' if has_params else '❌'}")
+            print(f"   Training results: {'✅' if has_results else '❌'}")
+            
+            if has_neural_pe and has_subtractor and has_params:
+                print(f"   🏆 Complete Phase 3B system detected!")
+            elif has_neural_pe and has_params:
+                print(f"   🧠 Neural PE system detected")
+            else:
+                print(f"   ⚠️  Partial system detected")
+        
+        else:
+            print(f"📊 Non-dictionary content: {type(checkpoint)}")
+            if hasattr(checkpoint, 'shape'):
+                print(f"   Shape: {checkpoint.shape}")
+            elif hasattr(checkpoint, '__len__'):
+                print(f"   Length: {len(checkpoint)}")
+            else:
+                print(f"   Value: {str(checkpoint)[:200]}{'...' if len(str(checkpoint)) > 200 else ''}")
+    
+    except Exception as e:
+        print(f"❌ Error loading file: {e}")
+        return None
+    
+    print("="*80)
+    return checkpoint
 
-# Power calculation
-cont_power = torch.mean(contaminated ** 2, dim=(1,2))
-clean_power = torch.mean(cleaned_output ** 2, dim=(1,2)) 
-target_power = torch.mean(clean_target ** 2, dim=(1,2))
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Inspect Phase 3B .pth file contents')
+    parser.add_argument('--file', required=True, help='Path to .pth file')
+    parser.add_argument('--save_summary', help='Save summary to text file')
+    
+    args = parser.parse_args()
+    
+    # Inspect the file
+    checkpoint = inspect_phase3b_file(args.file)
+    
+    # Save summary if requested
+    if args.save_summary and checkpoint:
+        summary_path = Path(args.save_summary)
+        with open(summary_path, 'w') as f:
+            f.write(f"Phase 3B File Inspection Summary\n")
+            f.write(f"File: {args.file}\n")
+            f.write(f"="*50 + "\n")
+            
+            if isinstance(checkpoint, dict):
+                f.write(f"Keys: {list(checkpoint.keys())}\n\n")
+                
+                for key, value in checkpoint.items():
+                    f.write(f"{key}: {type(value).__name__}\n")
+                    if key == 'param_names':
+                        f.write(f"  Parameters: {value}\n")
+                    elif key in ['pe_results', 'results'] and isinstance(value, dict):
+                        for sub_key, sub_value in value.items():
+                            if isinstance(sub_value, (int, float)):
+                                f.write(f"  {sub_key}: {sub_value}\n")
+                    f.write("\n")
+        
+        print(f"📄 Summary saved to: {summary_path}")
 
-print(f"Contaminated power: {cont_power}")
-print(f"Cleaned power: {clean_power}")
-print(f"Target power: {target_power}")
-print(f"All essentially the same? {torch.allclose(cont_power, clean_power, atol=1e-45)}")
-
-# This shows why efficiency = 0!
+if __name__ == '__main__':
+    main()

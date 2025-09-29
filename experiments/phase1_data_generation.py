@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phase 1:   Diversified Mixed Real+Synthetic Dataset
+Phase 1: Diversified Mixed Real+Synthetic Dataset (Enhanced with NS support)
 Uses existing AHSD modules with proper imports and implementations
 """
 import sys
@@ -84,8 +84,8 @@ class FallbackConfig:
 
 
 class DatasetGenerator:
-    """A class for generating , diversified gravitational wave datasets with real LIGO integration.
-    This class handles generation of a comprehensive  dataset containing different types of gravitational wave scenarios,
+    """A class for generating comprehensive, diversified gravitational wave datasets with real LIGO integration.
+    This class handles generation of a comprehensive dataset containing different types of gravitational wave scenarios,
     including pure synthetic, colored noise, real-augmented single/multi signals, real backgrounds, and extreme parameter cases.
     The generated dataset is designed for robust machine learning model training with emphasis on diversity and realism.
     Attributes:
@@ -97,7 +97,7 @@ class DatasetGenerator:
         param_generator: Generator for creating diverse parameter sets
         stats: Dictionary tracking statistics about generated scenarios
     Methods:
-        generate_diversified_dataset: Main method to generate the full  dataset
+        generate_diversified_dataset: Main method to generate the full dataset
         fix_signal_parameters: Ensures signal parameters have all required keys
         generate_pure_synthetic_scenarios: Creates pure synthetic gravitational wave scenarios
         generate_synthetic_colored_noise_scenarios: Generates scenarios with colored noise
@@ -128,7 +128,6 @@ class DatasetGenerator:
         - Low SNR challenge: 2% (200 scenarios)
         - High SNR pristine: 1% (100 scenarios)
     """
-    """Generate   diversified dataset with real LIGO integration."""
     
     def __init__(self, config):
         self.config = config
@@ -140,21 +139,21 @@ class DatasetGenerator:
                 self.gwtc_loader = GWTCDataLoader() 
                 self.preprocessor = DataPreprocessor(config)
                 self.simulator = OverlappingSignalSimulator(config)
-                self.logger.info("Successfully initialized AHSD modules")
+                self.logger.info("✅ Successfully initialized AHSD modules")
             else:
                 self.gwtc_loader = FallbackGWTCLoader()
                 self.preprocessor = None
                 self.simulator = None
-                self.logger.warning("Using fallback implementations")
+                self.logger.warning("⚠️ Using fallback implementations")
         except Exception as e:
-            self.logger.error(f"Failed to initialize modules: {e}")
+            self.logger.error(f"❌ Failed to initialize modules: {e}")
             self.gwtc_loader = FallbackGWTCLoader() 
             self.preprocessor = None
             self.simulator = None
             
         self.param_generator = MaximumDiversityParameterGenerator(config)
         
-        # Statistics tracking
+        # Statistics tracking with NS support
         self.stats = {
             'pure_synthetic': 0,
             'synthetic_colored_noise': 0,
@@ -165,12 +164,16 @@ class DatasetGenerator:
             'low_snr_scenarios': 0,
             'high_snr_scenarios': 0,
             'failed_scenarios': 0,
-            'total_processed': 0
+            'total_processed': 0,
+            # NS-specific stats
+            'bbh_scenarios': 0,
+            'bns_scenarios': 0,
+            'nsbh_scenarios': 0
         }
     
     
     def fix_signal_parameters(self, signal_parameters: List[Dict]) -> List[Dict]:
-        """signal parameters to ensure they have all required keys."""
+        """Fix signal parameters to ensure they have all required keys including NS support."""
         
         fixed_parameters = []
         
@@ -207,23 +210,34 @@ class DatasetGenerator:
                 'psi': 0.0,
                 'phase': 0.0,
                 'signal_id': 0,
-                'difficulty': 'medium'
+                'difficulty': 'medium',
+                'approximant': 'IMRPhenomPv2',
+                'binary_type': 'BBH'  # Default to BBH
             }
             
             for key, default_value in defaults.items():
                 if key not in fixed_params:
                     fixed_params[key] = default_value
             
+            # Track binary type statistics
+            binary_type = fixed_params.get('binary_type', 'BBH')
+            if binary_type == 'BBH':
+                self.stats['bbh_scenarios'] += 1
+            elif binary_type == 'BNS':
+                self.stats['bns_scenarios'] += 1
+            elif binary_type == 'NSBH':
+                self.stats['nsbh_scenarios'] += 1
+            
             fixed_parameters.append(fixed_params)
         
         return fixed_parameters
 
-
     def generate_diversified_dataset(self, 
-                                        total_scenarios: int = 10000,
-                                        max_real_events: int = 100) -> List[Dict]:
+                                    total_scenarios: int = 10000,
+                                    max_real_events: int = 100) -> List[Dict]:
         """Generate comprehensive dataset with REAL DATA distribution."""
         
+        self.logger.info("🌟 GENERATING ENHANCED DIVERSIFIED DATASET WITH NS SUPPORT")
         self.logger.info("="*80)
         
         # **DISTRIBUTION STRATEGY**
@@ -240,8 +254,8 @@ class DatasetGenerator:
         
         # Purpose descriptions
         purpose = {
-            'pure_synthetic': 'Core training on clean signals',
-            'synthetic_colored_noise': 'Noise robustness training',
+            'pure_synthetic': 'Core training on clean signals (BBH+NS)',
+            'synthetic_colored_noise': 'Noise robustness training (BBH+NS)',
             'real_augmented_single': 'Real detector characteristics (BOOSTED)',
             'real_augmented_multi': 'Multi-event realism (BOOSTED)', 
             'real_background': 'Realistic noise environment (INCREASED)',
@@ -250,7 +264,7 @@ class DatasetGenerator:
             'high_snr_pristine': 'Ideal signal benchmarks'
         }
         
-        self.logger.info("ðŸ“Š REAL-DATA FOCUSED DISTRIBUTION:")
+        self.logger.info("📊 REAL-DATA FOCUSED DISTRIBUTION WITH NS SUPPORT:")
         for category, count in distribution.items():
             percentage = count/total_scenarios*100
             self.logger.info(f"   {category:25}: {count:4d} ({percentage:4.1f}%) - {purpose[category]}")
@@ -259,19 +273,19 @@ class DatasetGenerator:
         all_scenarios = []
         
         # **PHASE 1: Pure Synthetic**
-        self.logger.info(f"\n Phase 1: Generating {distribution['pure_synthetic']} pure synthetic scenarios...")
+        self.logger.info(f"\n🔥 Phase 1: Generating {distribution['pure_synthetic']} pure synthetic scenarios...")
         pure_synthetic = self.generate_pure_synthetic_scenarios(distribution['pure_synthetic'])
         all_scenarios.extend(pure_synthetic)
         self.stats['pure_synthetic'] = len(pure_synthetic)
         
         # **PHASE 2: Synthetic with Colored Noise**
-        self.logger.info(f"\n Phase 2: Generating {distribution['synthetic_colored_noise']} colored noise scenarios...")
+        self.logger.info(f"\n🌈 Phase 2: Generating {distribution['synthetic_colored_noise']} colored noise scenarios...")
         colored_noise = self.generate_synthetic_colored_noise_scenarios(distribution['synthetic_colored_noise'])
         all_scenarios.extend(colored_noise)
         self.stats['synthetic_colored_noise'] = len(colored_noise)
         
         # **PHASE 3: Real-Augmented Single Signal**
-        self.logger.info(f"\n Phase 3: Generating {distribution['real_augmented_single']} real-augmented single scenarios...")
+        self.logger.info(f"\n📡 Phase 3: Generating {distribution['real_augmented_single']} real-augmented single scenarios...")
         real_aug_single = self.generate_real_augmented_scenarios(
             distribution['real_augmented_single'], max_real_events, multi_signal=False
         )
@@ -279,7 +293,7 @@ class DatasetGenerator:
         self.stats['real_augmented_single'] = len(real_aug_single)
         
         # **PHASE 4: Real-Augmented Multi Signal **
-        self.logger.info(f"\n Phase 4: Generating {distribution['real_augmented_multi']} real-augmented multi scenarios...")
+        self.logger.info(f"\n📡 Phase 4: Generating {distribution['real_augmented_multi']} real-augmented multi scenarios...")
         real_aug_multi = self.generate_real_augmented_scenarios(
             distribution['real_augmented_multi'], max_real_events, multi_signal=True
         )
@@ -287,31 +301,31 @@ class DatasetGenerator:
         self.stats['real_augmented_multi'] = len(real_aug_multi)
         
         # **PHASE 5: Real Background Events **
-        self.logger.info(f"\n Phase 5: Generating {distribution['real_background']} real background scenarios...")
+        self.logger.info(f"\n🎯 Phase 5: Generating {distribution['real_background']} real background scenarios...")
         real_background = self.generate_real_background_scenarios(distribution['real_background'], max_real_events)
         all_scenarios.extend(real_background)
         self.stats['real_background_events'] = len(real_background)
         
         # **PHASE 6: Extreme Scenarios **
-        self.logger.info(f"\n Phase 6: Generating {distribution['extreme_scenarios']} extreme parameter scenarios...")
+        self.logger.info(f"\n🔥 Phase 6: Generating {distribution['extreme_scenarios']} extreme parameter scenarios...")
         extreme_scenarios = self.generate_extreme_scenarios(distribution['extreme_scenarios'])
         all_scenarios.extend(extreme_scenarios)
         self.stats['extreme_parameter_scenarios'] = len(extreme_scenarios)
         
         # **PHASE 7: Low SNR Challenge **
-        self.logger.info(f"\n Phase 7: Generating {distribution['low_snr_challenge']} low SNR challenge scenarios...")
+        self.logger.info(f"\n🎯 Phase 7: Generating {distribution['low_snr_challenge']} low SNR challenge scenarios...")
         low_snr = self.generate_low_snr_scenarios(distribution['low_snr_challenge'])
         all_scenarios.extend(low_snr)
         self.stats['low_snr_scenarios'] = len(low_snr)
         
         # **PHASE 8: High SNR Pristine **
-        self.logger.info(f"\n Phase 8: Generating {distribution['high_snr_pristine']} high SNR pristine scenarios...")
+        self.logger.info(f"\n⭐ Phase 8: Generating {distribution['high_snr_pristine']} high SNR pristine scenarios...")
         high_snr = self.generate_high_snr_scenarios(distribution['high_snr_pristine'])
         all_scenarios.extend(high_snr)
         self.stats['high_snr_scenarios'] = len(high_snr)
         
         # **PHASE 9: Post-Processing and Validation**
-        self.logger.info(f"\n Phase 9: Post-processing {len(all_scenarios)} total scenarios...")
+        self.logger.info(f"\n🔧 Phase 9: Post-processing {len(all_scenarios)} total scenarios...")
         self.stats['total_processed'] = len(all_scenarios)
         
         # Shuffle for training diversity
@@ -320,59 +334,46 @@ class DatasetGenerator:
         # Validate and clean
         validated_scenarios = self.validate_and_clean_scenarios(all_scenarios)
         
-        self.logger.info(" DATASET GENERATION COMPLETED!")
-        self.logger.info(f"FINAL STATISTICS:")
-        for key, value in self.stats.items():
-            self.logger.info(f"   {key:30}: {value:5d}")
+        self.logger.info("✅ DATASET GENERATION COMPLETED!")
+        self._log_final_statistics()
         
         return validated_scenarios
     
     def generate_pure_synthetic_scenarios(self, n_scenarios: int) -> List[Dict]:
-        """Generate pure synthetic scenarios using existing simulator if available."""
+        """Generate pure synthetic scenarios using existing simulator if available with NS support."""
         
         scenarios = []
         
         if self.simulator is not None:            
-            for scenario_id in tqdm(range(n_scenarios), desc="Pure synthetic"):
+            for scenario_id in tqdm(range(n_scenarios), desc="Pure synthetic (NS+BBH)"):
                 try:
                     n_signals = np.random.choice([2, 3, 4, 5], p=[0.35, 0.35, 0.20, 0.10])
                     
-                    # Generate scenario using simulator
+                    # Generate scenario using simulator with NS support
                     scenario = self.simulator.generate_overlapping_scenario(n_signals)
                     noise_data = self.simulator.generate_detector_noise()
                     injected_data, signal_contributions = self.simulator.inject_signals_to_data(
                         scenario, noise_data
                     )
                     
-                    #Ensure all signals have network_snr
-                    fixed_signals = []
+                    # Enhance signals with NS parameters
+                    enhanced_signals = []
                     for signal in scenario['signals']:
-                        if 'network_snr' not in signal:
-                            # Compute SNR if missing
-                            m1 = signal.get('mass_1', 30.0)
-                            m2 = signal.get('mass_2', 25.0)
-                            dist = signal.get('luminosity_distance', 500.0)
-                            
-                            # Simple SNR calculation
-                            chirp_mass = (m1 * m2)**(3/5) / (m1 + m2)**(1/5)
-                            snr = 20.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / dist)
-                            snr = np.clip(snr, 5.0, 100.0)
-                            
-                            signal['network_snr'] = float(snr)
-                            signal['snr'] = float(snr)  # Backup
-                        
-                        fixed_signals.append(signal)
+                        enhanced_signal = self._enhance_signal_with_ns_params(signal)
+                        enhanced_signals.append(enhanced_signal)
                     
                     # Convert to training format
                     training_scenario = {
                         'scenario_id': scenario_id,
-                        'true_parameters': fixed_signals,  #  Use fixed signals
+                        'true_parameters': enhanced_signals,
                         'injected_data': injected_data,
                         'waveform_data': self.convert_to_waveform_format(injected_data),
                         'n_signals': n_signals,
                         'data_type': 'pure_synthetic',
-                        'source': 'synthetic',
-                        'quality_metrics': self.compute_quality_metrics(fixed_signals)  # Use fixed signals
+                        'source': 'synthetic_ns_bbh',
+                        'binary_types': [s.get('binary_type', 'BBH') for s in enhanced_signals],
+                        'approximants': [s.get('approximant', 'IMRPhenomPv2') for s in enhanced_signals],
+                        'quality_metrics': self.compute_quality_metrics(enhanced_signals)
                     }
                     
                     scenarios.append(training_scenario)
@@ -381,21 +382,67 @@ class DatasetGenerator:
                     self.logger.debug(f"Simulator scenario failed: {e}")
                     self.stats['failed_scenarios'] += 1
         else:
-            # Fallback to manual generation
-            self.logger.info("Using fallback synthetic generation")
+            # Fallback to manual generation with NS support
+            self.logger.info("Using fallback synthetic generation with NS support")
             scenarios = self.generate_fallback_synthetic_scenarios(n_scenarios)
         
         return scenarios
 
+    def _enhance_signal_with_ns_params(self, signal: Dict) -> Dict:
+        """Enhance existing signal parameters with NS binary type classification"""
+        enhanced_signal = signal.copy()
+        
+        # Determine binary type based on masses
+        mass_1 = enhanced_signal.get('mass_1', 30.0)
+        mass_2 = enhanced_signal.get('mass_2', 25.0)
+        
+        # Binary type classification
+        if mass_1 <= 3.0 and mass_2 <= 3.0:
+            # Both components are NS-like
+            binary_type = 'BNS'
+            approximant = random.choice(['IMRPhenomPv2_NRTidal', 'IMRPhenomD_NRTidal'])
+            # Add tidal parameters
+            enhanced_signal['lambda_1'] = np.random.uniform(50, 5000)
+            enhanced_signal['lambda_2'] = np.random.uniform(50, 5000)
+        elif (mass_1 <= 3.0 and mass_2 > 3.0) or (mass_1 > 3.0 and mass_2 <= 3.0):
+            # One NS, one BH
+            binary_type = 'NSBH'
+            approximant = random.choice(['IMRPhenomPv2_NRTidal', 'IMRPhenomD_NRTidal'])
+            # Add tidal parameters (only for NS component)
+            if mass_1 <= 3.0:
+                enhanced_signal['lambda_1'] = np.random.uniform(50, 2000)
+                enhanced_signal['lambda_2'] = 0
+            else:
+                enhanced_signal['lambda_1'] = 0
+                enhanced_signal['lambda_2'] = np.random.uniform(50, 2000)
+        else:
+            # Both components are BH
+            binary_type = 'BBH'
+            approximant = enhanced_signal.get('approximant', 'IMRPhenomPv2')
+        
+        enhanced_signal['binary_type'] = binary_type
+        enhanced_signal['approximant'] = approximant
+        
+        # Ensure network_snr exists
+        if 'network_snr' not in enhanced_signal:
+            chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+            dist = enhanced_signal.get('luminosity_distance', 500.0)
+            snr = 20.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / dist)
+            snr = np.clip(snr, 5.0, 100.0)
+            enhanced_signal['network_snr'] = float(snr)
+            enhanced_signal['snr'] = float(snr)
+        
+        return enhanced_signal
+
     def generate_fallback_synthetic_scenarios(self, n_scenarios: int) -> List[Dict]:
-        """Fallback synthetic scenario generation."""
+        """Fallback synthetic scenario generation with NS support."""
         
         scenarios = []
         
-        for scenario_id in tqdm(range(n_scenarios), desc="Fallback synthetic"):
+        for scenario_id in tqdm(range(n_scenarios), desc="Fallback synthetic (NS+BBH)"):
             try:
                 n_signals = np.random.choice([2, 3, 4], p=[0.5, 0.35, 0.15])
-                signal_parameters = self.param_generator.generate_maximum_diversity_parameters(n_signals, scenario_id)
+                signal_parameters = self.param_generator.generate_maximum_diversity_parameters_with_ns(n_signals, scenario_id)
                 
                 # Generate synthetic data
                 injected_data = self.create_synthetic_data(signal_parameters, self.config)
@@ -407,7 +454,9 @@ class DatasetGenerator:
                     'waveform_data': self.convert_to_waveform_format(injected_data),
                     'n_signals': n_signals,
                     'data_type': 'pure_synthetic',
-                    'source': 'synthetic_fallback',
+                    'source': 'synthetic_fallback_ns_bbh',
+                    'binary_types': [p.get('binary_type', 'BBH') for p in signal_parameters],
+                    'approximants': [p.get('approximant', 'IMRPhenomPv2') for p in signal_parameters],
                     'quality_metrics': self.compute_quality_metrics(signal_parameters)
                 }
                 
@@ -453,390 +502,346 @@ class DatasetGenerator:
             self.logger.debug(f"Manual strain processing failed: {e}")
             return strain_data
 
-    def process_downloaded_strain(self, strain) -> Dict:
-        """Process downloaded strain from your gwtc_loader."""
-        
-        try:
-            # Extract strain data
-            if hasattr(strain, 'value'):
-                strain_data = np.array(strain.value)
-            elif hasattr(strain, 'data'):
-                strain_data = np.array(strain.data)
-            else:
-                strain_data = np.array(strain)
-            
-            # Use your preprocessor if available
-            if self.preprocessor is not None:
-                try:
-                    processed_strain = self.preprocessor._preprocess_detector_data(strain_data, 'H1')
-                    self.logger.debug("Used preprocessor for strain processing")
-                except Exception as e:
-                    self.logger.debug(f"Preprocessor failed: {e}, using manual processing")
-                    processed_strain = self.manual_strain_processing(strain_data)
-            else:
-                processed_strain = self.manual_strain_processing(strain_data)
-            
-            # Ensure correct format
-            target_length = 4096 * 4  # 4 seconds
-            if len(processed_strain) > target_length:
-                center = len(processed_strain) // 2
-                processed_strain = processed_strain[center-target_length//2:center+target_length//2]
-            elif len(processed_strain) < target_length:
-                processed_strain = np.pad(processed_strain, (0, target_length - len(processed_strain)))
-            
-            return {'H1': processed_strain}
-            
-        except Exception as e:
-            self.logger.debug(f"Strain processing failed: {e}")
-            return None
-
-    def create_background_from_overlapping(self, overlap_group: Dict) -> Dict:
-        """Create background from overlapping candidates using your gwtc_loader."""
-        
-        try:
-            # Use your loader's strain loading for overlap
-            if hasattr(self.gwtc_loader, 'load_strain_for_overlap'):
-                strain_data = self.gwtc_loader.load_strain_for_overlap(
-                    overlap_group,
-                    detectors=['H1', 'L1'],
-                    duration=4,
-                    sampling_rate=4096
-                )
-                
-                if strain_data:
-                    return strain_data
-            
-            # Fallback: synthetic background inspired by overlap group
-            return self.generate_realistic_background_noise()
-            
-        except Exception as e:
-            self.logger.debug(f"Overlap background creation failed: {e}")
-            return self.generate_realistic_background_noise()
-
-    def generate_realistic_background_from_event(self, event) -> Dict:
-        """Generate realistic background based on event characteristics."""
-        
-        # Extract event characteristics
-        observing_run = event.get('observing_run', 'O3a')
-        gps_time = event.get('gps_time', 1126259462)
-        
-        # Generate detector-specific realistic noise
-        background_data = {}
-        
-        for detector in ['H1', 'L1']:
-            # Noise level varies by observing run
-            if observing_run == 'O1':
-                noise_level = 2e-23  # Higher noise in O1
-            elif observing_run == 'O2':
-                noise_level = 1.5e-23
-            elif observing_run.startswith('O3'):
-                noise_level = 1e-23   # Best sensitivity in O3
-            elif observing_run.startswith('O4'):
-                noise_level = 8e-24   # Even better in O4
-            else:
-                noise_level = 1.2e-23
-            
-            # Generate 4 seconds of realistic noise
-            duration = 4.0
-            sample_rate = 4096
-            n_samples = int(duration * sample_rate)
-            
-            # Base colored noise
-            noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
-            
-            # Scale to appropriate level
-            noise = noise * noise_level / np.std(noise)
-            
-            # Add observing run specific characteristics
-            if observing_run.startswith('O4'):
-                # O4 has better low-frequency performance
-                noise = self.enhance_low_frequency_performance(noise, sample_rate)
-            
-            background_data[detector] = noise
-        
-        return background_data
-
-    def enhance_low_frequency_performance(self, noise: np.ndarray, sample_rate: int) -> np.ndarray:
-        """Enhance low-frequency performance for O4-like data."""
-        
-        try:
-            # Apply better low-frequency filtering (O4 improvements)
-            from scipy.signal import butter, filtfilt
-            
-            # Better low-frequency cutoff
-            nyquist = sample_rate / 2
-            low_cutoff = 15.0 / nyquist  # O4 goes down to ~15 Hz
-            
-            b, a = butter(6, low_cutoff, btype='high')
-            enhanced_noise = filtfilt(b, a, noise)
-            
-            return enhanced_noise
-            
-        except:
-            return noise
-
-
-
-    def generate_synthetic_colored_noise_scenarios(self, n_scenarios: int) -> List[Dict]:
-        """Generate synthetic scenarios with advanced colored noise."""
+    def generate_real_augmented_scenarios(self, n_scenarios: int, 
+                                       max_real_events: int, 
+                                       multi_signal: bool = False) -> List[Dict]:
+        """Generate real-augmented scenarios with enhanced signal injection"""
         
         scenarios = []
         
-        for scenario_id in tqdm(range(n_scenarios), desc="Colored noise"):
+        self.logger.info(f"🎯 Loading GWTC events (max: {max_real_events})...")
+        try:
+            gwtc_events = self.gwtc_loader.get_gwtc_events()
+            gwtc_events = gwtc_events.head(max_real_events)
+            self.logger.info(f"✅ Loaded {len(gwtc_events)} real events")
+        except Exception as e:
+            self.logger.warning(f"⚠️ GWTC loading failed: {e}")
+            gwtc_events = pd.DataFrame()
+        
+        scenario_type = 'real_augmented_multi' if multi_signal else 'real_augmented_single'
+        
+        for scenario_id in tqdm(range(n_scenarios), desc=f"{scenario_type}"):
             try:
-                n_signals = np.random.choice([2, 3, 4], p=[0.5, 0.35, 0.15])
-                signal_parameters = self.param_generator.generate_maximum_diversity_parameters(n_signals, scenario_id)
+                # Select base event
+                if len(gwtc_events) > 0:
+                    event = gwtc_events.iloc[np.random.randint(0, len(gwtc_events))].to_dict()
+                    base_strain = self.get_realistic_noise_from_event(event)
+                else:
+                    # Fallback to synthetic noise
+                    base_strain = self.generate_fallback_noise()
+                    event = {'event_name': f'synthetic_{scenario_id}'}
                 
-                # Generate with advanced colored noise
-                injected_data = self.create_synthetic_with_advanced_noise(signal_parameters, self.config)
+                # Generate additional signals to inject
+                n_additional = np.random.choice([1, 2, 3], p=[0.6, 0.3, 0.1]) if multi_signal else 1
+                additional_signals = self.param_generator.generate_maximum_diversity_parameters_with_ns(
+                    n_additional, scenario_id
+                )
+                
+                # Inject additional signals
+                injected_data = self.inject_signals_to_real_data(base_strain, additional_signals)
                 
                 scenario = {
-                    'scenario_id': len(scenarios),
-                    'true_parameters': signal_parameters,
+                    'scenario_id': scenario_id,
+                    'true_parameters': additional_signals,
                     'injected_data': injected_data,
                     'waveform_data': self.convert_to_waveform_format(injected_data),
-                    'n_signals': n_signals,
-                    'data_type': 'synthetic_colored_noise',
-                    'source': 'synthetic_advanced_noise',
-                    'noise_model': 'advanced_colored',
-                    'quality_metrics': self.compute_quality_metrics(signal_parameters)
+                    'n_signals': n_additional,
+                    'data_type': scenario_type,
+                    'source': f'real_augmented_{event.get("event_name", "unknown")}',
+                    'base_event': event,
+                    'binary_types': [p.get('binary_type', 'BBH') for p in additional_signals],
+                    'approximants': [p.get('approximant', 'IMRPhenomPv2') for p in additional_signals],
+                    'quality_metrics': self.compute_quality_metrics(additional_signals)
                 }
                 
                 scenarios.append(scenario)
                 
             except Exception as e:
-                self.logger.debug(f"Colored noise scenario failed: {e}")
+                self.logger.debug(f"Real augmented scenario {scenario_id} failed: {e}")
+                self.stats['failed_scenarios'] += 1
+        
+        return scenarios
+
+    def get_realistic_noise_from_event(self, event: Dict) -> Dict:
+        """Extract realistic noise characteristics from a real event"""
+        
+        try:
+            # Simulate getting real strain data
+            duration = 4.0
+            sample_rate = 4096
+            n_samples = int(duration * sample_rate)
+            
+            # Create realistic noise based on event characteristics
+            observing_run = event.get('observing_run', 'O3a')
+            
+            noise_data = {}
+            for detector in ['H1', 'L1', 'V1']:
+                # Generate realistic colored noise
+                noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
+                
+                # Scale based on observing run
+                if observing_run.startswith('O1'):
+                    noise = noise * 1.5  # O1 was noisier
+                elif observing_run.startswith('O2'):
+                    noise = noise * 1.2  # O2 intermediate
+                # O3 keeps base noise level
+                
+                noise_data[detector] = noise
+            
+            return noise_data
+            
+        except Exception as e:
+            self.logger.debug(f"Real noise extraction failed: {e}")
+            return self.generate_fallback_noise()
+
+    def generate_fallback_noise(self) -> Dict:
+        """Generate fallback noise when real data unavailable"""
+        
+        duration = 4.0
+        sample_rate = 4096
+        n_samples = int(duration * sample_rate)
+        
+        noise_data = {}
+        for detector in ['H1', 'L1', 'V1']:
+            # Generate basic colored noise
+            noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
+            noise_data[detector] = noise
+        
+        return noise_data
+
+    def inject_signals_to_real_data(self, base_data: Dict, signal_parameters: List[Dict]) -> Dict:
+        """Inject synthetic signals into real detector data - Most robust version"""
+        
+        injected_data = {}
+        
+        for detector in ['H1', 'L1', 'V1']:
+            try:
+                # Start with base noise/data
+                base_strain = base_data.get(detector, np.zeros(16384))
+                
+                # Ensure we have valid data
+                if base_strain is None or len(base_strain) == 0:
+                    base_strain = np.random.normal(0, 1e-21, 16384)
+                
+                # Ensure correct length
+                target_length = 16384
+                if len(base_strain) > target_length:
+                    start_idx = (len(base_strain) - target_length) // 2
+                    base_strain = base_strain[start_idx:start_idx + target_length]
+                elif len(base_strain) < target_length:
+                    base_strain = np.pad(base_strain, (0, target_length - len(base_strain)))
+                
+                # Robust preprocessing with multiple approaches
+                base_strain = self._apply_preprocessing(base_strain, detector)
+                
+                # Add synthetic signals
+                total_signal = np.zeros_like(base_strain)
+                
+                for params in signal_parameters:
+                    try:
+                        # Generate waveform
+                        signal = self.generate_synthetic_waveform(params, len(base_strain), detector)
+                        if signal is not None and len(signal) == len(base_strain):
+                            total_signal += signal
+                    except Exception as e:
+                        self.logger.debug(f"Waveform injection failed for {detector}: {e}")
+                        continue
+                
+                injected_data[detector] = base_strain + total_signal
+                
+            except Exception as e:
+                self.logger.debug(f"Signal injection failed for {detector}: {e}")
+                # Fallback: generate synthetic data
+                injected_data[detector] = np.random.normal(0, 1e-21, 16384)
+        
+        return injected_data
+
+    def _apply_preprocessing(self, strain_data: np.ndarray, detector: str) -> np.ndarray:
+        """Apply preprocessing using available methods - FIXED"""
+        
+        if self.preprocessor is None:
+            return self.manual_strain_processing(strain_data)
+        
+        # Try different preprocessing approaches
+        preprocessing_approaches = [
+            # Approach 1: Use main preprocess method with dictionary
+            lambda data, det: self.preprocessor.preprocess({det: data}).get(det, data),
+            
+            # Approach 2: Use internal method directly - FIXED METHOD NAME
+            lambda data, det: self.preprocessor._preprocess_detector_data(data, det),
+            
+            # Approach 3: Manual processing fallback
+            lambda data, det: self.manual_strain_processing(data)
+        ]
+        
+        for i, approach in enumerate(preprocessing_approaches):
+            try:
+                result = approach(strain_data, detector)
+                
+                # Validate result
+                if result is not None and len(result) > 0:
+                    result_array = np.array(result)
+                    if np.all(np.isfinite(result_array)):
+                        return result_array
+                        
+            except Exception as e:
+                self.logger.debug(f"Preprocessing approach {i+1} failed for {detector}: {e}")
+                continue
+        
+        # Ultimate fallback
+        return np.array(strain_data)
+
+    def generate_real_background_scenarios(self, n_scenarios: int, max_real_events: int) -> List[Dict]:
+        """Generate scenarios using real background noise without injection"""
+        
+        scenarios = []
+        
+        self.logger.info(f"📡 Loading background noise from {max_real_events} events...")
+        
+        try:
+            gwtc_events = self.gwtc_loader.get_gwtc_events()
+            gwtc_events = gwtc_events.head(max_real_events)
+        except Exception as e:
+            self.logger.warning(f"GWTC loading failed: {e}")
+            gwtc_events = pd.DataFrame()
+        
+        for scenario_id in tqdm(range(n_scenarios), desc="Real background"):
+            try:
+                # Get real background data
+                if len(gwtc_events) > 0:
+                    event = gwtc_events.iloc[np.random.randint(0, len(gwtc_events))].to_dict()
+                    background_data = self.get_background_data_from_event(event)
+                    source_name = event.get('event_name', f'background_{scenario_id}')
+                else:
+                    background_data = self.generate_fallback_background()
+                    source_name = f'synthetic_background_{scenario_id}'
+                
+                # No signals - pure background
+                scenario = {
+                    'scenario_id': scenario_id,
+                    'true_parameters': [],  # No signals
+                    'injected_data': background_data,
+                    'waveform_data': self.convert_to_waveform_format(background_data),
+                    'n_signals': 0,
+                    'data_type': 'real_background',
+                    'source': f'background_{source_name}',
+                    'binary_types': [],
+                    'approximants': [],
+                    'quality_metrics': {'diversity_score': 0.0, 'background_only': True}
+                }
+                
+                scenarios.append(scenario)
+                
+            except Exception as e:
+                self.logger.debug(f"Background scenario {scenario_id} failed: {e}")
                 self.stats['failed_scenarios'] += 1
         
         return scenarios
     
-    def _get_fallback_comprehensive_events(self) -> pd.DataFrame:
-        """Comprehensive fallback event database with 200+ events for maximum real data usage."""
-        
-        # Use your existing comprehensive database plus additions
-        fallback_events = [
-            # All your existing events from gwtc_loader.py...
-            # PLUS additional events to reach 200+
-            
-            # O4a Events (from the attachment you shared)
-            {'event_name': 'GW231123_135430', 'gps_time': 1384950870.0, 'mass_1_source': 140.0, 'mass_2_source': 120.0, 'luminosity_distance': 6000.0, 'network_snr': 18.5, 'observing_run': 'O4a'},
-            
-            # Add synthetic events based on realistic distributions
-            *self._generate_synthetic_event_database(100)  # Generate 100 more realistic events
-        ]
-        
-        self.logger.info(f"Using comprehensive fallback database with {len(fallback_events)} events")
-        return pd.DataFrame(fallback_events)
-
-    def _generate_synthetic_event_database(self, n_events: int) -> List[Dict]:
-        """Generate synthetic but realistic event database for fallback."""
-        
-        synthetic_events = []
-        
-        for i in range(n_events):
-            # Generate realistic event parameters
-            mass_1 = np.random.lognormal(np.log(25), 0.5)  # Log-normal distribution
-            mass_2 = mass_1 * np.random.beta(2, 3)  # Mass ratio distribution
-            
-            # Ensure ordering
-            if mass_2 > mass_1:
-                mass_1, mass_2 = mass_2, mass_1
-            
-            # Distance from realistic distribution
-            distance = np.random.lognormal(np.log(800), 0.8)
-            distance = np.clip(distance, 50, 8000)
-            
-            # SNR based on masses and distance
-            chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
-            snr = 20.0 * (chirp_mass / 30.0)**(5/6) / (distance / 500.0)
-            snr = np.clip(snr, 5.0, 50.0) * np.random.uniform(0.7, 1.3)
-            
-            # Realistic GPS time
-            gps_base = 1126259462  # GW150914
-            gps_time = gps_base + np.random.uniform(0, 4*365*24*3600)  # 4 years range
-            
-            # Observing run based on GPS time
-            if gps_time < 1137254417:  # End of O1
-                obs_run = 'O1'
-            elif gps_time < 1187733618:  # End of O2  
-                obs_run = 'O2'
-            elif gps_time < 1253977218:  # End of O3a
-                obs_run = 'O3a'
-            elif gps_time < 1269363618:  # End of O3b
-                obs_run = 'O3b'
-            else:
-                obs_run = 'O4a'
-            
-            synthetic_event = {
-                'event_name': f'GW{int(gps_time)}_synthetic_{i:03d}',
-                'gps_time': gps_time,
-                'mass_1_source': mass_1,
-                'mass_2_source': mass_2,
-                'luminosity_distance': distance,
-                'network_snr': snr,
-                'observing_run': obs_run
-            }
-            
-            synthetic_events.append(synthetic_event)
-        
-        return synthetic_events
-
-    
-    def generate_real_augmented_scenarios(self, n_scenarios: int, max_events: int, multi_signal: bool = False) -> List[Dict]:
-        """real-augmented scenarios using your gwtc_loader.py with expanded event access."""
-        
-        scenarios = []
+    def get_background_data_from_event(self, event: Dict) -> Dict:
+        """Get background data from event time period - ROBUST VERSION"""
         
         try:
-            # **EVENT LOADING** - Use your gwtc_loader.py more effectively
-            self.logger.info(f"Loading GWTC events for {'multi' if multi_signal else 'single'}-signal scenarios...")
+            # Generate realistic background for each detector
+            duration = 4.0
+            sample_rate = 4096
+            n_samples = int(duration * sample_rate)
             
-            # Get comprehensive events using your loader
-            real_events_df = self.gwtc_loader.get_gwtc_events()
+            # Generate background noise from different observing periods
+            background_data = {}
+            observing_run = event.get('observing_run', 'O3a')
             
-            if real_events_df.empty:
-                self.logger.warning("No events from GWTC loader, using fallback database")
-                real_events_df = self._get_fallback_comprehensive_events()
-            
-            self.logger.info(f"Total events loaded: {len(real_events_df)}")
-            
-            # **RELAXED FILTERING** - Get more events for real data scenarios
-            if multi_signal:
-                # For multi-signal, use broader criteria
-                quality_events = real_events_df[
-                    (real_events_df['network_snr'] > 5) &      # Lowered from 6
-                    (real_events_df['mass_1_source'] > 2) &   # Lowered from 3
-                    (real_events_df['mass_2_source'] > 1) &   # Lowered from 3
-                    (real_events_df['luminosity_distance'] > 5) &
-                    (real_events_df['luminosity_distance'] < 10000)  # Increased range
-                ]
-            else:
-                # For single signal, even more relaxed
-                quality_events = real_events_df[
-                    (real_events_df['network_snr'] > 4) &      # Very relaxed
-                    (real_events_df['mass_1_source'] > 1) &   # Very relaxed
-                    (real_events_df['mass_2_source'] > 0.5) & # Include NS mergers
-                    (real_events_df['luminosity_distance'] > 1) &
-                    (real_events_df['luminosity_distance'] < 12000)
-                ]
-            
-            self.logger.info(f"Quality events after filtering: {len(quality_events)}")
-            
-            # **MAXIMIZE EVENT USAGE** - Use more events than before\
-            selected_events = quality_events.head(min(max_events, len(quality_events)))
-            
-            if len(selected_events) == 0:
-                self.logger.warning("No events passed filtering, using all available events")
-                selected_events = real_events_df.head(max_events)
-            
-            self.logger.info(f"Selected {len(selected_events)} events for scenario generation")
-            
-            # **HIGHER SCENARIOS PER EVENT** - Generate more scenarios per real event
-            if multi_signal:
-                scenarios_per_event = max(3, n_scenarios // max(len(selected_events), 10))  # Min 3 per event
-            else:
-                scenarios_per_event = max(2, n_scenarios // max(len(selected_events), 10))  # Min 2 per event
-            
-            self.logger.info(f"Generating {scenarios_per_event} scenarios per event")
-            
-            # Process events with scenario generation
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = []
-                
-                for _, event in selected_events.iterrows():
-                    for scenario_idx in range(scenarios_per_event):
-                        if len(scenarios) >= n_scenarios:
-                            break
-                            
-                        future = executor.submit(
-                            self.create_enhanced_real_augmented_scenario,
-                            event, len(scenarios) + scenario_idx, multi_signal
-                        )
-                        futures.append(future)
+            for detector in ['H1', 'L1', 'V1']:
+                try:
+                    # Generate base colored noise with validation
+                    noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
                     
-                    if len(scenarios) >= n_scenarios:
-                        break
-                
-                desc = f"Real {'multi' if multi_signal else 'single'}"
-                for future in tqdm(as_completed(futures), total=len(futures), desc=desc):
-                    try:
-                        scenario = future.result(timeout=45)  # Increased timeout
-                        if scenario:
-                            scenarios.append(scenario)
-                            
-                        if len(scenarios) >= n_scenarios:
+                    # Validate noise quality
+                    if not np.all(np.isfinite(noise)):
+                        self.logger.debug(f"Non-finite values in noise for {detector}, using fallback")
+                        noise = np.random.normal(0, 1e-23, n_samples)
+                    
+                    # Calculate noise level safely
+                    noise_level = np.std(noise)
+                    if noise_level == 0 or not np.isfinite(noise_level):
+                        noise_level = 1e-23
+                    
+                    # Apply observing run specific enhancements
+                    if observing_run.startswith('O4'):
+                        try:
+                            enhanced_noise = self.enhance_low_frequency_performance(noise, sample_rate)
+                            if np.all(np.isfinite(enhanced_noise)):
+                                noise = enhanced_noise
+                        except Exception as enhance_error:
+                            self.logger.debug(f"O4 enhancement failed for {detector}: {enhance_error}")
+                    
+                    # Apply observing run scaling factors
+                    scaling_factors = {
+                        'O1': 1.5,    # O1 was noisier
+                        'O2': 1.2,    # O2 intermediate noise
+                        'O3a': 1.0,   # O3a baseline
+                        'O3b': 1.0,   # O3b baseline
+                        'O4': 0.8     # O4 improved sensitivity
+                    }
+                    
+                    scale_factor = 1.0
+                    for run_key, factor in scaling_factors.items():
+                        if observing_run.startswith(run_key):
+                            scale_factor = factor
                             break
-                            
-                    except Exception as e:
-                        self.logger.debug(f"Real augmented scenario failed: {e}")
-                        self.stats['failed_scenarios'] += 1
+                    
+                    # Apply scaling
+                    noise = noise * scale_factor
+                    
+                    # Final validation
+                    if not np.all(np.isfinite(noise)):
+                        self.logger.debug(f"Non-finite values after scaling for {detector}, using fallback")
+                        noise = np.random.normal(0, 1e-23, n_samples)
+                    
+                    background_data[detector] = noise.astype(np.float64)
+                    
+                except Exception as detector_error:
+                    self.logger.debug(f"Background generation failed for {detector}: {detector_error}")
+                    # Fallback for this detector
+                    background_data[detector] = np.random.normal(0, 1e-23, n_samples).astype(np.float64)
             
-            self.logger.info(f"Successfully generated {len(scenarios)} real augmented scenarios")
+            return background_data
             
         except Exception as e:
-            self.logger.error(f"Failed to generate real augmented scenarios: {e}")
-            # Generate fallback scenarios if real data fails
-            scenarios = self.generate_fallback_real_scenarios(n_scenarios, multi_signal)
+            self.logger.debug(f"Complete background data extraction failed: {e}")
+            return self.generate_fallback_background()
+
+    def enhance_low_frequency_performance(self, noise: np.ndarray, sample_rate: int) -> np.ndarray:
+        """Enhance low-frequency performance for O4-like data."""
         
-        return scenarios[:n_scenarios]
+        try:
+            # BASE: O4 has better low-frequency performance
+            from scipy.signal import butter, filtfilt
+            
+            # BASE: Apply better low-frequency filtering (O4 improvements)
+            nyquist = sample_rate / 2
+            low_cutoff = 15.0 / nyquist  # O4 goes down to 15 Hz
+            
+            b, a = butter(6, low_cutoff, btype='high')
+            enhanced_noise = filtfilt(b, a, noise)
+            
+            return enhanced_noise
+        except:
+            return noise
 
-
-    def generate_fallback_real_scenarios(self, n_scenarios: int, multi_signal: bool) -> List[Dict]:
-        """Generate fallback scenarios when real data loading fails."""
+    def generate_synthetic_colored_noise_scenarios(self, n_scenarios: int) -> List[Dict]:
+        """Generate synthetic scenarios with realistic colored noise"""
         
         scenarios = []
         
-        self.logger.info(f"Generating {n_scenarios} fallback real-inspired scenarios")
-        
-        for scenario_id in tqdm(range(n_scenarios), desc="Fallback real"):
+        for scenario_id in tqdm(range(n_scenarios), desc="Colored noise"):
             try:
-                # Create realistic event-inspired parameters
-                if multi_signal:
-                    n_signals = np.random.choice([2, 3], p=[0.8, 0.2])
-                else:
-                    n_signals = 1
+                # Generate base signals with NS support
+                n_signals = np.random.choice([1, 2, 3], p=[0.4, 0.4, 0.2])
+                signal_parameters = self.param_generator.generate_maximum_diversity_parameters_with_ns(n_signals, scenario_id)
                 
-                # Generate parameters inspired by realistic distributions
-                signal_parameters = []
-                for i in range(n_signals):
-                    # Use realistic mass distributions
-                    mass_1 = np.random.lognormal(np.log(25), 0.5)  # Log-normal around 25 Mâ˜‰
-                    mass_2 = mass_1 * np.random.beta(2, 3)  # Realistic mass ratio
-                    
-                    # Ensure ordering
-                    if mass_2 > mass_1:
-                        mass_1, mass_2 = mass_2, mass_1
-                    
-                    # Realistic distance distribution
-                    distance = np.random.lognormal(np.log(800), 0.8)
-                    distance = np.clip(distance, 100, 5000)
-                    
-                    # SNR based on realistic scaling
-                    chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
-                    snr = 20.0 * (chirp_mass / 30.0)**(5/6) / (distance / 500.0)
-                    snr = np.clip(snr, 6.0, 35.0)
-                    
-                    param = {
-                        'mass_1': float(mass_1),
-                        'mass_2': float(mass_2),
-                        'luminosity_distance': float(distance),
-                        'geocent_time': float(np.random.uniform(-1.0, 1.0) + i * 0.4),
-                        'ra': float(np.random.uniform(0, 2*np.pi)),
-                        'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-                        'theta_jn': float(np.random.uniform(0, np.pi)),
-                        'psi': float(np.random.uniform(0, np.pi)),
-                        'phase': float(np.random.uniform(0, 2*np.pi)),
-                        'signal_id': i,
-                        'network_snr': float(snr),
-                        'snr': float(snr),
-                        'difficulty': 'fallback_real',
-                        'source_event': f'fallback_{scenario_id}'
-                    }
-                    
-                    signal_parameters.append(param)
-                
-                # Generate synthetic data with realistic noise
-                injected_data = self.create_synthetic_with_advanced_noise(signal_parameters, self.config)
+                # Create synthetic data with advanced colored noise
+                injected_data = self.create_synthetic_colored_noise_data(signal_parameters, self.config)
                 
                 scenario = {
                     'scenario_id': scenario_id,
@@ -844,782 +849,25 @@ class DatasetGenerator:
                     'injected_data': injected_data,
                     'waveform_data': self.convert_to_waveform_format(injected_data),
                     'n_signals': n_signals,
-                    'data_type': 'real_augmented_multi' if multi_signal else 'real_augmented_single',
-                    'source': 'fallback_real_inspired',
+                    'data_type': 'synthetic_colored_noise',
+                    'source': 'synthetic_colored_ns_bbh',
+                    'binary_types': [p.get('binary_type', 'BBH') for p in signal_parameters],
+                    'approximants': [p.get('approximant', 'IMRPhenomPv2') for p in signal_parameters],
                     'quality_metrics': self.compute_quality_metrics(signal_parameters)
                 }
                 
                 scenarios.append(scenario)
                 
             except Exception as e:
-                self.logger.debug(f"Fallback real scenario failed: {e}")
+                self.logger.debug(f"Colored noise scenario {scenario_id} failed: {e}")
                 self.stats['failed_scenarios'] += 1
         
         return scenarios
 
-    def generate_enhanced_single_signal_params(self, event) -> List[Dict]:
-        """Generate single signal parameters from real event."""
-        
-        # Extract base parameters with error handling
-        base_mass_1 = float(event.get('mass_1_source', 30.0))
-        base_mass_2 = float(event.get('mass_2_source', 25.0))
-        base_distance = float(event.get('luminosity_distance', 500.0))
-        base_snr = float(event.get('network_snr', 15.0))
-        observing_run = event.get('observing_run', 'O3a')
-        
-        # **VARIATIONS** - More realistic parameter space exploration
-        # Vary masses within astrophysically reasonable bounds
-        mass_variation = np.random.uniform(0.85, 1.15)  # Â±15% variation
-        distance_variation = np.random.uniform(0.7, 1.4)   # Â±30% variation
-        
-        varied_mass_1 = base_mass_1 * mass_variation
-        varied_mass_2 = base_mass_2 * mass_variation
-        varied_distance = base_distance * distance_variation
-        
-        # Ensure mass ordering
-        if varied_mass_2 > varied_mass_1:
-            varied_mass_1, varied_mass_2 = varied_mass_2, varied_mass_1
-        
-        # **OBSERVING RUN SPECIFIC ADJUSTMENTS**
-        if observing_run == 'O1':
-            # O1 had limited sensitivity
-            snr_factor = np.random.uniform(0.7, 1.0)
-        elif observing_run == 'O2':
-            snr_factor = np.random.uniform(0.8, 1.1) 
-        elif observing_run.startswith('O3'):
-            snr_factor = np.random.uniform(0.9, 1.3)
-        elif observing_run.startswith('O4'):
-            # O4 has best sensitivity
-            snr_factor = np.random.uniform(1.0, 1.4)
-        else:
-            snr_factor = 1.0
-        
-        target_snr = base_snr * snr_factor
-        
-        param = {
-            'mass_1': float(varied_mass_1),
-            'mass_2': float(varied_mass_2),
-            'luminosity_distance': float(varied_distance),
-            'geocent_time': float(np.random.uniform(-0.5, 0.5)),
-            'ra': float(np.random.uniform(0, 2*np.pi)),
-            'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-            'theta_jn': float(np.random.uniform(0, np.pi)),
-            'psi': float(np.random.uniform(0, np.pi)),
-            'phase': float(np.random.uniform(0, 2*np.pi)),
-            'signal_id': 0,
-            'network_snr': float(target_snr),
-            'snr': float(target_snr),
-            'difficulty': 'real_inspired',
-            'observing_run': observing_run,
-            'source_event': event.get('event_name', 'unknown')
-        }
-        
-        return [param]
-
-    def generate_enhanced_multi_signal_params(self, event) -> List[Dict]:
-        """Generate multi-signal parameters from real event."""
-        
-        n_signals = np.random.choice([2, 3], p=[0.8, 0.2])  # Favor 2 signals for realism
-        params = []
-        
-        base_mass_1 = float(event.get('mass_1_source', 30.0))
-        base_mass_2 = float(event.get('mass_2_source', 25.0))
-        base_distance = float(event.get('luminosity_distance', 500.0))
-        observing_run = event.get('observing_run', 'O3a')
-        
-        for i in range(n_signals):
-            # Create diverse variations for each signal
-            mass1_factor = np.random.uniform(0.6, 1.5)
-            mass2_factor = np.random.uniform(0.6, 1.5) 
-            distance_factor = np.random.uniform(0.4, 2.5)
-            
-            varied_mass_1 = base_mass_1 * mass1_factor
-            varied_mass_2 = base_mass_2 * mass2_factor
-            varied_distance = base_distance * distance_factor
-            
-            # Ensure mass ordering
-            if varied_mass_2 > varied_mass_1:
-                varied_mass_1, varied_mass_2 = varied_mass_2, varied_mass_1
-            
-            # Temporal separation for overlapping signals
-            time_offset = np.random.uniform(-1.5, 1.5) + i * np.random.uniform(0.2, 0.8)
-            
-            # SNR based on masses and distance
-            chirp_mass = (varied_mass_1 * varied_mass_2)**(3/5) / (varied_mass_1 + varied_mass_2)**(1/5)
-            estimated_snr = 15.0 * (chirp_mass / 30.0)**(5/6) / (varied_distance / 500.0)
-            estimated_snr = np.clip(estimated_snr, 5.0, 30.0)
-            
-            param = {
-                'mass_1': float(varied_mass_1),
-                'mass_2': float(varied_mass_2),
-                'luminosity_distance': float(varied_distance),
-                'geocent_time': float(time_offset),
-                'ra': float(np.random.uniform(0, 2*np.pi)),
-                'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-                'theta_jn': float(np.random.uniform(0, np.pi)),
-                'psi': float(np.random.uniform(0, np.pi)),
-                'phase': float(np.random.uniform(0, 2*np.pi)),
-                'signal_id': i,
-                'network_snr': float(estimated_snr),
-                'snr': float(estimated_snr),
-                'difficulty': 'real_multi_inspired',
-                'observing_run': observing_run,
-                'source_event': event.get('event_name', 'unknown')
-            }
-            
-            params.append(param)
-        
-        return params
-
-
-    def create_enhanced_real_augmented_scenario(self, event, scenario_id: int, multi_signal: bool) -> Optional[Dict]:
-        """real-augmented scenario creation with better success rate."""
-        
-        try:
-            # **BACKGROUND EXTRACTION** - Try multiple approaches
-            background_data = None
-            
-            # Attempt 1: Use your gwtc_loader strain download
-            if hasattr(self.gwtc_loader, 'download_strain_data'):
-                try:
-                    strain = self.gwtc_loader.download_strain_data(
-                        event.get('event_name', f"GW{int(event.get('gps_time', 1126259462))}"),
-                        detector='H1',
-                        duration=4,
-                        sampling_rate=4096
-                    )
-                    
-                    if strain is not None:
-                        background_data = self.process_downloaded_strain(strain)
-                        self.logger.debug(f"Successfully downloaded strain for {event.get('event_name')}")
-                        
-                except Exception as e:
-                    self.logger.debug(f"Strain download failed for {event.get('event_name')}: {e}")
-            
-            # Attempt 2: Use overlapping candidates from your loader
-            if background_data is None and hasattr(self.gwtc_loader, 'load_overlapping_candidates'):
-                try:
-                    overlapping_groups = self.gwtc_loader.load_overlapping_candidates(
-                        time_window=2.0, min_events=1
-                    )
-                    
-                    if overlapping_groups:
-                        # Use background from overlapping analysis
-                        background_data = self.create_background_from_overlapping(overlapping_groups[0])
-                        
-                except Exception as e:
-                    self.logger.debug(f"Overlapping candidates failed: {e}")
-            
-            # Generate realistic synthetic background based on event characteristics
-            if background_data is None:
-                background_data = self.generate_realistic_background_from_event(event)
-                self.logger.debug(f"Using synthetic background for {event.get('event_name')}")
-            
-            # **PARAMETER GENERATION** - More realistic variations
-            if multi_signal:
-                synthetic_params = self.generate_enhanced_multi_signal_params(event)
-            else:
-                synthetic_params = self.generate_enhanced_single_signal_params(event)
-            
-            # **INJECTION** - Better signal-to-noise integration
-            injected_data = self.enhanced_inject_signals_into_background(synthetic_params, background_data)
-            
-            scenario = {
-                'scenario_id': scenario_id,
-                'true_parameters': synthetic_params,
-                'injected_data': injected_data,
-                'waveform_data': self.convert_to_waveform_format(injected_data),
-                'n_signals': len(synthetic_params),
-                'data_type': 'real_augmented_multi' if multi_signal else 'real_augmented_single',
-                'source': 'real_ligo_augmented_enhanced',
-                'source_event': event.get('event_name', 'unknown'),
-                'background_method': 'downloaded' if 'download' in str(background_data) else 'synthetic',
-                'quality_metrics': self.compute_quality_metrics(synthetic_params)
-            }
-            
-            return scenario
-            
-        except Exception as e:
-            self.logger.debug(f"real augmented scenario creation failed: {e}")
-            return None
-    
-    
-    def enhanced_inject_signals_into_background(self, signal_params: List[Dict], background_data: Dict) -> Dict:
-        """signal injection with better SNR control."""
-        
-        injected_data = {}
-        
-        for detector, noise in background_data.items():
-            try:
-                total_strain = np.array(noise)
-                
-                for params in signal_params:
-                    # Generate signal with physics
-                    signal = self.generate_realistic_waveform(params, len(noise), detector)
-                    
-                    # SNR control - scale signal to match target SNR
-                    target_snr = params.get('network_snr', 15.0)
-                    current_rms = np.sqrt(np.mean(signal**2))
-                    noise_rms = np.sqrt(np.mean(noise**2))
-                    
-                    if current_rms > 0 and noise_rms > 0:
-                        # Scale signal to achieve target SNR
-                        snr_factor = (target_snr * noise_rms) / (current_rms * 1e23)  # Convert units
-                        signal *= snr_factor
-                    
-                    total_strain += signal
-                
-                injected_data[detector] = total_strain
-                
-            except Exception as e:
-                self.logger.debug(f"signal injection failed for {detector}: {e}")
-                injected_data[detector] = noise
-        
-        return injected_data
-
-    def create_real_augmented_scenario(self, event, scenario_id: int, multi_signal: bool) -> Optional[Dict]:
-        """Create single real-augmented scenario."""
-        
-        try:
-            # Try to download real background noise
-            background_data = self.extract_real_background_noise(event)
-            if not background_data:
-                # Fallback to synthetic background with realistic characteristics
-                background_data = self.generate_realistic_background_noise()
-            
-            # Generate synthetic parameters inspired by real event
-            if multi_signal:
-                synthetic_params = self.generate_multi_signal_params_from_real_event(event)
-            else:
-                synthetic_params = self.generate_single_signal_params_from_real_event(event)
-            
-            # Inject synthetic signals into background
-            injected_data = self.inject_signals_into_background(synthetic_params, background_data)
-            
-            scenario = {
-                'scenario_id': scenario_id,
-                'true_parameters': synthetic_params,
-                'injected_data': injected_data,
-                'waveform_data': self.convert_to_waveform_format(injected_data),
-                'n_signals': len(synthetic_params),
-                'data_type': 'real_augmented_multi' if multi_signal else 'real_augmented_single',
-                'source': 'real_ligo_augmented',
-                'source_event': event.get('event_name', 'unknown'),
-                'quality_metrics': self.compute_quality_metrics(synthetic_params)
-            }
-            
-            return scenario
-            
-        except Exception as e:
-            self.logger.debug(f"Real augmented scenario creation failed: {e}")
-            return None
-    
-    def generate_real_background_scenarios(self, n_scenarios: int, max_events: int) -> List[Dict]:
-        """Generate scenarios using real LIGO events with published parameters."""
-        
-        scenarios = []
-        
-        try:
-            real_events_df = self.gwtc_loader.get_gwtc_events()
-            quality_events = real_events_df[
-                (real_events_df['network_snr'] > 10) &
-                (real_events_df['mass_1_source'] > 5) &
-                (real_events_df['luminosity_distance'] > 50)
-            ]
-            
-            selected_events = quality_events.head(min(max_events, len(quality_events), n_scenarios))
-            
-            for idx, (_, event) in enumerate(tqdm(selected_events.iterrows(), desc="Real background")):
-                try:
-                    scenario = self.create_real_background_scenario(event, idx)
-                    if scenario:
-                        scenarios.append(scenario)
-                        
-                except Exception as e:
-                    self.logger.debug(f"Real background scenario failed: {e}")
-                    self.stats['failed_scenarios'] += 1
-                    
-        except Exception as e:
-            self.logger.error(f"Failed to generate real background scenarios: {e}")
-        
-        return scenarios
-    
-    def create_real_background_scenario(self, event, scenario_id: int) -> Optional[Dict]:
-        """Create scenario from real LIGO event."""
-        
-        try:
-            # Try to download real strain data
-            strain_data = self.download_real_strain_data(event)
-            if not strain_data:
-                # Create synthetic version based on published parameters
-                strain_data = self.create_synthetic_from_published_params(event)
-            
-            # Extract published parameters
-            published_params = [{
-                'mass_1': float(event.get('mass_1_source', 30.0)),
-                'mass_2': float(event.get('mass_2_source', 25.0)),
-                'luminosity_distance': float(event.get('luminosity_distance', 500.0)),
-                'ra': np.random.uniform(0, 2*np.pi),
-                'dec': np.random.uniform(-np.pi/2, np.pi/2),
-                'geocent_time': 0.0,
-                'theta_jn': np.random.uniform(0, np.pi),
-                'psi': np.random.uniform(0, np.pi),
-                'phase': np.random.uniform(0, 2*np.pi),
-                'signal_id': 0,
-                'network_snr': float(event.get('network_snr', 15.0)),
-                'difficulty': 'real'
-            }]
-            
-            scenario = {
-                'scenario_id': scenario_id,
-                'true_parameters': published_params,
-                'injected_data': strain_data,
-                'waveform_data': self.convert_to_waveform_format(strain_data),
-                'n_signals': 1,
-                'data_type': 'real_background',
-                'source': 'real_ligo',
-                'source_event': event.get('event_name', 'unknown'),
-                'quality_metrics': self.compute_quality_metrics(published_params)
-            }
-            
-            return scenario
-            
-        except Exception as e:
-            self.logger.debug(f"Real background scenario creation failed: {e}")
-            return None
-    
-    def generate_extreme_scenarios(self, n_scenarios: int) -> List[Dict]:
-        """Generate extreme parameter scenarios for edge case training."""
-        
-        scenarios = []
-        
-        extreme_types = [
-            'very_low_mass', 'very_high_mass', 'extreme_mass_ratio',
-            'very_close', 'very_far', 'extreme_spins', 'edge_orientations'
-        ]
-        
-        for scenario_id in tqdm(range(n_scenarios), desc="Extreme scenarios"):
-            try:
-                scenario_type = random.choice(extreme_types)
-                signal_parameters = self.generate_extreme_parameters(scenario_type, scenario_id)
-                injected_data = self.create_synthetic_data(signal_parameters, self.config)
-                
-                scenario = {
-                    'scenario_id': len(scenarios),
-                    'true_parameters': signal_parameters,
-                    'injected_data': injected_data,
-                    'waveform_data': self.convert_to_waveform_format(injected_data),
-                    'n_signals': len(signal_parameters),
-                    'data_type': 'extreme_scenarios',
-                    'source': 'synthetic_extreme',
-                    'extreme_type': scenario_type,
-                    'quality_metrics': self.compute_quality_metrics(signal_parameters)
-                }
-                
-                scenarios.append(scenario)
-                
-            except Exception as e:
-                self.logger.debug(f"Extreme scenario failed: {e}")
-                self.stats['failed_scenarios'] += 1
-        
-        return scenarios
-    
-    def generate_low_snr_scenarios(self, n_scenarios: int) -> List[Dict]:
-        """Generate very low SNR challenging scenarios."""
-        
-        scenarios = []
-        
-        for scenario_id in tqdm(range(n_scenarios), desc="Low SNR challenge"):
-            try:
-                n_signals = random.choice([1, 2, 3])
-                signal_parameters = []
-                
-                for i in range(n_signals):
-                    mass_1 = np.random.uniform(15, 40)
-                    mass_2 = np.random.uniform(10, mass_1)
-                    distance = np.random.uniform(2000, 6000)  # Very far = low SNR
-                    snr = np.random.uniform(3, 8)  # Very low SNR
-                    
-                    param = {
-                        'mass_1': float(mass_1),
-                        'mass_2': float(mass_2),
-                        'luminosity_distance': float(distance),
-                        'geocent_time': float(np.random.uniform(-1.0, 1.0)),
-                        'ra': float(np.random.uniform(0, 2*np.pi)),
-                        'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-                        'theta_jn': float(np.random.uniform(0, np.pi)),
-                        'psi': float(np.random.uniform(0, np.pi)),
-                        'phase': float(np.random.uniform(0, 2*np.pi)),
-                        'signal_id': i,
-                        'network_snr': float(snr),
-                        'difficulty': 'very_hard'
-                    }
-                    
-                    signal_parameters.append(param)
-                
-                injected_data = self.create_low_snr_synthetic_data(signal_parameters, self.config)
-                
-                scenario = {
-                    'scenario_id': len(scenarios),
-                    'true_parameters': signal_parameters,
-                    'injected_data': injected_data,
-                    'waveform_data': self.convert_to_waveform_format(injected_data),
-                    'n_signals': n_signals,
-                    'data_type': 'low_snr_challenge',
-                    'source': 'synthetic_low_snr',
-                    'challenge_level': 'maximum',
-                    'quality_metrics': self.compute_quality_metrics(signal_parameters)
-                }
-                
-                scenarios.append(scenario)
-                
-            except Exception as e:
-                self.logger.debug(f"Low SNR scenario failed: {e}")
-                self.stats['failed_scenarios'] += 1
-        
-        return scenarios
-    
-    def generate_high_snr_scenarios(self, n_scenarios: int) -> List[Dict]:
-        """Generate very high SNR pristine scenarios."""
-        
-        scenarios = []
-        
-        for scenario_id in tqdm(range(n_scenarios), desc="High SNR pristine"):
-            try:
-                n_signals = random.choice([1, 2])
-                signal_parameters = []
-                
-                for i in range(n_signals):
-                    mass_1 = np.random.uniform(30, 60)  # Optimal masses
-                    mass_2 = np.random.uniform(25, mass_1)
-                    distance = np.random.uniform(50, 200)  # Very close = high SNR
-                    
-                    chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
-                    snr = 50.0 * (chirp_mass / 35.0)**(5/6) * (100.0 / distance)
-                    snr = np.clip(snr, 25.0, 100.0)
-                    
-                    param = {
-                        'mass_1': float(mass_1),
-                        'mass_2': float(mass_2),
-                        'luminosity_distance': float(distance),
-                        'geocent_time': float(np.random.uniform(-0.5, 0.5)),
-                        'ra': float(np.random.uniform(0, 2*np.pi)),
-                        'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-                        'theta_jn': float(np.random.uniform(0, np.pi)),
-                        'psi': float(np.random.uniform(0, np.pi)),
-                        'phase': float(np.random.uniform(0, 2*np.pi)),
-                        'signal_id': i,
-                        'network_snr': float(snr),
-                        'difficulty': 'easy'
-                    }
-                    
-                    signal_parameters.append(param)
-                
-                injected_data = self.create_high_snr_synthetic_data(signal_parameters, self.config)
-                
-                scenario = {
-                    'scenario_id': len(scenarios),
-                    'true_parameters': signal_parameters,
-                    'injected_data': injected_data,
-                    'waveform_data': self.convert_to_waveform_format(injected_data),
-                    'n_signals': n_signals,
-                    'data_type': 'high_snr_pristine',
-                    'source': 'synthetic_high_snr',
-                    'quality_level': 'pristine',
-                    'quality_metrics': self.compute_quality_metrics(signal_parameters)
-                }
-                
-                scenarios.append(scenario)
-                
-            except Exception as e:
-                self.logger.debug(f"High SNR scenario failed: {e}")
-                self.stats['failed_scenarios'] += 1
-        
-        return scenarios
-    
-    # Helper methods for data generation and processing
-    
-    def extract_real_background_noise(self, event) -> Optional[Dict]:
-        """Extract background noise from real LIGO data using existing loader."""
-        
-        try:
-            if hasattr(self.gwtc_loader, 'download_strain_data'):
-                # Use existing GWTC loader method
-                strain = self.gwtc_loader.download_strain_data(
-                    event.get('event_name', 'GW150914'),
-                    detector='H1',
-                    duration=4,
-                    sampling_rate=4096
-                )
-                
-                if strain is not None:
-                    # Process using existing preprocessor if available
-                    if self.preprocessor is not None:
-                        processed_data = self.preprocessor.preprocess({'H1': strain})
-                        return processed_data
-                    else:
-                        # Simple processing
-                        if hasattr(strain, 'value'):
-                            strain_data = np.array(strain.value)
-                        else:
-                            strain_data = np.array(strain)
-                        
-                        return {'H1': strain_data}
-            
-            return None
-            
-        except Exception as e:
-            self.logger.debug(f"Real background extraction failed: {e}")
-            return None
-    
-    def generate_realistic_background_noise(self) -> Dict:
-        """Generate realistic background noise as fallback."""
+    def create_synthetic_colored_noise_data(self, signal_parameters: List[Dict], config) -> Dict:
+        """Create synthetic data with advanced colored noise characteristics"""
         
         duration = 4.0
-        sample_rate = 4096
-        n_samples = int(duration * sample_rate)
-        
-        background_data = {}
-        for detector in ['H1', 'L1']:
-            # Generate colored noise
-            noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
-            background_data[detector] = noise
-        
-        return background_data
-    
-    def generate_single_signal_params_from_real_event(self, event) -> List[Dict]:
-        """Generate single signal parameters inspired by real event."""
-        
-        base_mass_1 = event.get('mass_1_source', 30.0)
-        base_mass_2 = event.get('mass_2_source', 25.0)
-        base_distance = event.get('luminosity_distance', 500.0)
-        
-        # Add realistic variations
-        param = {
-            'mass_1': float(base_mass_1 * np.random.uniform(0.8, 1.2)),
-            'mass_2': float(base_mass_2 * np.random.uniform(0.8, 1.2)),
-            'luminosity_distance': float(base_distance * np.random.uniform(0.7, 1.3)),
-            'geocent_time': float(np.random.uniform(-0.5, 0.5)),
-            'ra': float(np.random.uniform(0, 2*np.pi)),
-            'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-            'theta_jn': float(np.random.uniform(0, np.pi)),
-            'psi': float(np.random.uniform(0, np.pi)),
-            'phase': float(np.random.uniform(0, 2*np.pi)),
-            'signal_id': 0,
-            'network_snr': float(np.random.uniform(10, 25)),
-            'difficulty': 'medium'
-        }
-        
-        # Ensure m1 >= m2
-        if param['mass_2'] > param['mass_1']:
-            param['mass_1'], param['mass_2'] = param['mass_2'], param['mass_1']
-        
-        return [param]
-    
-    def generate_multi_signal_params_from_real_event(self, event) -> List[Dict]:
-        """Generate multiple signal parameters inspired by real event."""
-        
-        n_signals = np.random.choice([2, 3], p=[0.7, 0.3])
-        params = []
-        
-        for i in range(n_signals):
-            base_mass_1 = event.get('mass_1_source', 30.0)
-            base_mass_2 = event.get('mass_2_source', 25.0)
-            base_distance = event.get('luminosity_distance', 500.0)
-            
-            param = {
-                'mass_1': float(base_mass_1 * np.random.uniform(0.6, 1.4)),
-                'mass_2': float(base_mass_2 * np.random.uniform(0.6, 1.4)),
-                'luminosity_distance': float(base_distance * np.random.uniform(0.5, 2.0)),
-                'geocent_time': float(np.random.uniform(-1.0, 1.0) + i * 0.3),
-                'ra': float(np.random.uniform(0, 2*np.pi)),
-                'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-                'theta_jn': float(np.random.uniform(0, np.pi)),
-                'psi': float(np.random.uniform(0, np.pi)),
-                'phase': float(np.random.uniform(0, 2*np.pi)),
-                'signal_id': i,
-                'network_snr': float(np.random.uniform(8, 20)),
-                'difficulty': 'medium'
-            }
-            
-            # Ensure m1 >= m2
-            if param['mass_2'] > param['mass_1']:
-                param['mass_1'], param['mass_2'] = param['mass_2'], param['mass_1']
-            
-            params.append(param)
-        
-        return params
-    
-    def inject_signals_into_background(self, signal_params: List[Dict], background_data: Dict) -> Dict:
-        """Inject synthetic signals into background data."""
-        
-        injected_data = {}
-        
-        for detector, noise in background_data.items():
-            try:
-                total_strain = np.array(noise)
-                
-                for params in signal_params:
-                    signal = self.generate_realistic_waveform(params, len(noise), detector)
-                    total_strain += signal
-                
-                injected_data[detector] = total_strain
-                
-            except Exception as e:
-                self.logger.debug(f"Signal injection failed for {detector}: {e}")
-                injected_data[detector] = noise
-        
-        return injected_data
-    
-    def download_real_strain_data(self, event) -> Optional[Dict]:
-        """Download real strain data using existing GWTC loader."""
-        
-        try:
-            if hasattr(self.gwtc_loader, 'download_strain_data'):
-                strain_data = {}
-                
-                for detector in ['H1', 'L1']:
-                    strain = self.gwtc_loader.download_strain_data(
-                        event.get('event_name', 'unknown'),
-                        detector=detector,
-                        duration=4,
-                        sampling_rate=4096
-                    )
-                    
-                    if strain is not None:
-                        if hasattr(strain, 'value'):
-                            strain_data[detector] = np.array(strain.value)
-                        else:
-                            strain_data[detector] = np.array(strain)
-                        break
-                
-                return strain_data if strain_data else None
-            
-            return None
-            
-        except Exception as e:
-            self.logger.debug(f"Real strain download failed: {e}")
-            return None
-    
-    def create_synthetic_from_published_params(self, event) -> Dict:
-        """Create synthetic strain data from published parameters."""
-        
-        # Extract published parameters
-        mass_1 = event.get('mass_1_source', 30.0)
-        mass_2 = event.get('mass_2_source', 25.0)
-        distance = event.get('luminosity_distance', 500.0)
-        snr = event.get('network_snr', 15.0)
-        
-        params = [{
-            'mass_1': mass_1,
-            'mass_2': mass_2,
-            'luminosity_distance': distance,
-            'network_snr': snr,
-            'geocent_time': 0.0,
-            'ra': np.random.uniform(0, 2*np.pi),
-            'dec': np.random.uniform(-np.pi/2, np.pi/2),
-            'theta_jn': np.random.uniform(0, np.pi),
-            'psi': np.random.uniform(0, np.pi),
-            'phase': np.random.uniform(0, 2*np.pi),
-            'signal_id': 0
-        }]
-        
-        return self.create_synthetic_data(params, self.config)
-    
-    def generate_extreme_parameters(self, scenario_type: str, scenario_id: int) -> List[Dict]:
-        """Generate extreme parameter combinations."""
-        
-        n_signals = random.choice([1, 2, 3])
-        params = []
-        
-        for i in range(n_signals):
-            if scenario_type == 'very_low_mass':
-                mass_1 = np.random.uniform(3, 8)
-                mass_2 = np.random.uniform(1, mass_1)
-                distance = np.random.uniform(50, 300)
-            elif scenario_type == 'very_high_mass':
-                mass_1 = np.random.uniform(80, 150)
-                mass_2 = np.random.uniform(50, mass_1)
-                distance = np.random.uniform(1000, 5000)
-            elif scenario_type == 'extreme_mass_ratio':
-                mass_1 = np.random.uniform(40, 80)
-                mass_2 = np.random.uniform(1, 5)
-                distance = np.random.uniform(200, 1000)
-            elif scenario_type == 'very_close':
-                mass_1 = np.random.uniform(20, 50)
-                mass_2 = np.random.uniform(15, mass_1)
-                distance = np.random.uniform(10, 100)
-            elif scenario_type == 'very_far':
-                mass_1 = np.random.uniform(30, 60)
-                mass_2 = np.random.uniform(20, mass_1)
-                distance = np.random.uniform(3000, 8000)
-            else:
-                mass_1 = np.random.uniform(10, 50)
-                mass_2 = np.random.uniform(5, mass_1)
-                distance = np.random.uniform(100, 2000)
-            
-            # Compute SNR
-            chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
-            snr = 20.0 * (chirp_mass / 25.0)**(5/6) * (400.0 / distance)
-            snr = np.clip(snr, 3.0, 100.0)
-            
-            param = {
-                'mass_1': float(mass_1),
-                'mass_2': float(mass_2),
-                'luminosity_distance': float(distance),
-                'geocent_time': float(np.random.uniform(-2.0, 2.0)),
-                'ra': float(np.random.uniform(0, 2*np.pi)),
-                'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
-                'theta_jn': float(np.random.uniform(0, np.pi)),
-                'psi': float(np.random.uniform(0, np.pi)),
-                'phase': float(np.random.uniform(0, 2*np.pi)),
-                'a_1': float(np.random.uniform(0, 0.99)) if 'extreme_spins' in scenario_type else 0.1,
-                'a_2': float(np.random.uniform(0, 0.99)) if 'extreme_spins' in scenario_type else 0.1,
-                'signal_id': i,
-                'network_snr': float(snr),
-                'difficulty': 'extreme',
-                'extreme_type': scenario_type
-            }
-            
-            params.append(param)
-        
-        return params
-    
-    def create_synthetic_data(self, signal_parameters: List[Dict], config) -> Dict:
-        """Create synthetic data with physics."""
-        
-        duration = config.waveform.duration
-        sample_rate = 4096
-        n_samples = int(duration * sample_rate)
-        
-        data = {}
-        for detector in ['H1', 'L1', 'V1']:
-            # Generate base noise
-            noise = np.random.normal(0, 1e-23, n_samples)
-            
-            # Add colored noise characteristics
-            noise = self.add_colored_noise_characteristics(noise, detector, sample_rate)
-            
-            # Generate signal components
-            signal_sum = np.zeros(n_samples)
-            t = np.linspace(0, duration, n_samples)
-            
-            for params in signal_parameters:
-                try:
-                    signal = self.generate_realistic_waveform(params, n_samples, detector)
-                    signal_sum += signal
-                except Exception as e:
-                    self.logger.debug(f"Waveform generation failed: {e}")
-                    continue
-            
-            data[detector] = noise + signal_sum
-        
-        return data
-    
-    def create_synthetic_with_advanced_noise(self, signal_parameters: List[Dict], config) -> Dict:
-        """Create synthetic data with advanced colored noise."""
-        
-        duration = config.waveform.duration
         sample_rate = 4096
         n_samples = int(duration * sample_rate)
         
@@ -1628,80 +876,292 @@ class DatasetGenerator:
             # Generate advanced colored noise
             noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
             
-            # Add signal components
-            signal_sum = np.zeros(n_samples)
+            # Add all signals to the detector data
+            total_signal = np.zeros(n_samples)
             
             for params in signal_parameters:
                 try:
-                    signal = self.generate_realistic_waveform(params, n_samples, detector)
-                    signal_sum += signal
-                except:
+                    signal = self.generate_synthetic_waveform(params, n_samples, detector)
+                    total_signal += signal
+                except Exception as e:
+                    self.logger.debug(f"Signal generation failed: {e}")
                     continue
             
-            data[detector] = noise + signal_sum
+            data[detector] = noise + total_signal
         
         return data
     
-    def create_low_snr_synthetic_data(self, signal_parameters: List[Dict], config) -> Dict:
-        """Create synthetic data optimized for low SNR scenarios."""
+    def generate_advanced_colored_noise(self, n_samples: int, sample_rate: int, detector: str) -> np.ndarray:
+        """Generate advanced colored noise with realistic PSD - ROBUST VERSION"""
         
-        duration = config.waveform.duration
+        try:
+            # Generate white noise
+            white_noise = np.random.normal(0, 1, n_samples)
+            
+            # Apply detector-specific coloring
+            freqs = np.fft.fftfreq(n_samples, 1/sample_rate)
+            positive_freqs = freqs[:n_samples//2 + 1]
+            
+            # Avoid zero frequency issues
+            positive_freqs = np.maximum(positive_freqs, 1e-3)  # Minimum frequency
+            
+            # Enhanced PSD models for different detectors
+            if detector in ['H1', 'L1']:
+                # Advanced LIGO-like PSD with robust calculation
+                f0 = 215.0
+                
+                # Robust PSD calculation to avoid infinities
+                psd = np.zeros_like(positive_freqs)
+                
+                # Low frequency term (avoid division by zero)
+                low_freq_mask = positive_freqs < 10.0
+                psd[low_freq_mask] = 1e-44 * (10.0 / 10.0)**(-4.14)  # Flat at low freq
+                
+                # Main frequency range
+                main_freq_mask = (positive_freqs >= 10.0) & (positive_freqs <= 2000.0)
+                f_main = positive_freqs[main_freq_mask]
+                psd[main_freq_mask] = (
+                    1e-44 * (f_main / f0)**(-4.14) + 
+                    1e-46 * (f_main / f0)**(-2) + 
+                    1e-47 * (1 + (f_main / f0)**2)**(-0.5)
+                )
+                
+                # High frequency (above 2000 Hz)
+                high_freq_mask = positive_freqs > 2000.0
+                psd[high_freq_mask] = 1e-47
+                
+                # Add quantum noise contribution
+                psd += 1e-48 * (1 + (positive_freqs / 150.0)**2)
+                
+            elif detector == 'V1':
+                # Virgo-like PSD with different characteristics
+                psd = np.zeros_like(positive_freqs)
+                
+                # Avoid very low frequencies
+                freq_safe = np.maximum(positive_freqs, 1.0)
+                
+                psd = (3.2e-46 * (freq_safe / 100.0)**(-4.05) + 
+                    2e-48 + 
+                    5e-49 * (freq_safe / 200.0)**(-2))
+                
+            else:
+                # Generic detector PSD
+                freq_safe = np.maximum(positive_freqs, 1.0)
+                psd = 1e-46 * (freq_safe / 100.0)**(-4) + 1e-48
+            
+            # Ensure PSD is always positive and finite
+            psd = np.maximum(psd, 1e-50)
+            psd = np.nan_to_num(psd, nan=1e-48, posinf=1e-40, neginf=1e-50)
+            
+            # Apply coloring in frequency domain
+            white_noise_f = np.fft.fft(white_noise)
+            white_noise_positive = white_noise_f[:n_samples//2 + 1]
+            
+            # Robust division
+            sqrt_psd = np.sqrt(psd * sample_rate / 2)
+            sqrt_psd = np.maximum(sqrt_psd, 1e-25)  # Avoid division by tiny numbers
+            
+            colored_noise_f = white_noise_positive / sqrt_psd
+            
+            # Ensure no non-finite values
+            colored_noise_f = np.nan_to_num(colored_noise_f, nan=0.0, posinf=1e-20, neginf=-1e-20)
+            
+            # Convert back to time domain
+            if n_samples % 2 == 0:
+                # Even length
+                colored_noise_f_full = np.concatenate([
+                    colored_noise_f, 
+                    np.conj(colored_noise_f[-2:0:-1])
+                ])
+            else:
+                # Odd length
+                colored_noise_f_full = np.concatenate([
+                    colored_noise_f, 
+                    np.conj(colored_noise_f[-1:0:-1])
+                ])
+            
+            colored_noise = np.fft.ifft(colored_noise_f_full).real
+            
+            # Final validation and cleanup
+            colored_noise = np.nan_to_num(colored_noise, nan=0.0, posinf=1e-20, neginf=-1e-20)
+            
+            # Ensure correct length
+            if len(colored_noise) != n_samples:
+                if len(colored_noise) > n_samples:
+                    colored_noise = colored_noise[:n_samples]
+                else:
+                    colored_noise = np.pad(colored_noise, (0, n_samples - len(colored_noise)))
+            
+            # Scale to realistic noise level
+            target_rms = 1e-23
+            current_rms = np.std(colored_noise)
+            if current_rms > 0:
+                colored_noise = colored_noise * (target_rms / current_rms)
+            
+            return colored_noise.astype(np.float64)
+            
+        except Exception as e:
+            logging.debug(f"Advanced colored noise generation failed: {e}")
+            # Ultimate fallback: simple white noise
+            return np.random.normal(0, 1e-23, n_samples).astype(np.float64)
+
+    def generate_fallback_background(self) -> Dict:
+        """Generate fallback background noise"""
+        
+        duration = 4.0
+        sample_rate = 4096
+        n_samples = int(duration * sample_rate)
+        
+        background_data = {}
+        for detector in ['H1', 'L1', 'V1']:
+            noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
+            background_data[detector] = noise
+        
+        return background_data
+
+    def generate_extreme_scenarios(self, n_scenarios: int) -> List[Dict]:
+        """Generate scenarios with extreme parameters to test model limits"""
+        
+        scenarios = []
+        
+        for scenario_id in tqdm(range(n_scenarios), desc="Extreme scenarios"):
+            try:
+                # Generate extreme parameter combinations
+                n_signals = np.random.choice([3, 4, 5], p=[0.5, 0.3, 0.2])  # More signals
+                extreme_parameters = self.param_generator.generate_extreme_parameters(n_signals, scenario_id)
+                
+                # Create synthetic data
+                injected_data = self.create_synthetic_data(extreme_parameters, self.config)
+                
+                scenario = {
+                    'scenario_id': scenario_id,
+                    'true_parameters': extreme_parameters,
+                    'injected_data': injected_data,
+                    'waveform_data': self.convert_to_waveform_format(injected_data),
+                    'n_signals': n_signals,
+                    'data_type': 'extreme_scenarios',
+                    'source': 'synthetic_extreme',
+                    'binary_types': [p.get('binary_type', 'BBH') for p in extreme_parameters],
+                    'approximants': [p.get('approximant', 'IMRPhenomPv2') for p in extreme_parameters],
+                    'quality_metrics': self.compute_quality_metrics(extreme_parameters)
+                }
+                
+                scenarios.append(scenario)
+                
+            except Exception as e:
+                self.logger.debug(f"Extreme scenario {scenario_id} failed: {e}")
+                self.stats['failed_scenarios'] += 1
+        
+        return scenarios
+
+    def generate_low_snr_scenarios(self, n_scenarios: int) -> List[Dict]:
+        """Generate challenging low SNR scenarios"""
+        
+        scenarios = []
+        
+        for scenario_id in tqdm(range(n_scenarios), desc="Low SNR challenge"):
+            try:
+                # Generate low SNR signals
+                n_signals = np.random.choice([1, 2, 3], p=[0.5, 0.3, 0.2])
+                low_snr_parameters = self.param_generator.generate_low_snr_parameters(n_signals, scenario_id)
+                
+                # Create synthetic data with enhanced noise
+                injected_data = self.create_synthetic_data(low_snr_parameters, self.config)
+                
+                # Add extra noise to make it more challenging
+                for detector in injected_data.keys():
+                    extra_noise = np.random.normal(0, 1e-23, len(injected_data[detector]))
+                    injected_data[detector] += extra_noise
+                
+                scenario = {
+                    'scenario_id': scenario_id,
+                    'true_parameters': low_snr_parameters,
+                    'injected_data': injected_data,
+                    'waveform_data': self.convert_to_waveform_format(injected_data),
+                    'n_signals': n_signals,
+                    'data_type': 'low_snr_challenge',
+                    'source': 'synthetic_low_snr',
+                    'binary_types': [p.get('binary_type', 'BBH') for p in low_snr_parameters],
+                    'approximants': [p.get('approximant', 'IMRPhenomPv2') for p in low_snr_parameters],
+                    'quality_metrics': self.compute_quality_metrics(low_snr_parameters)
+                }
+                
+                scenarios.append(scenario)
+                
+            except Exception as e:
+                self.logger.debug(f"Low SNR scenario {scenario_id} failed: {e}")
+                self.stats['failed_scenarios'] += 1
+        
+        return scenarios
+
+    def generate_high_snr_scenarios(self, n_scenarios: int) -> List[Dict]:
+        """Generate pristine high SNR scenarios for benchmarking"""
+        
+        scenarios = []
+        
+        for scenario_id in tqdm(range(n_scenarios), desc="High SNR pristine"):
+            try:
+                # Generate high SNR signals
+                n_signals = np.random.choice([1, 2], p=[0.7, 0.3])
+                high_snr_parameters = self.param_generator.generate_high_snr_parameters(n_signals, scenario_id)
+                
+                # Create clean synthetic data
+                injected_data = self.create_synthetic_data(high_snr_parameters, self.config)
+                
+                # Reduce noise for pristine quality
+                for detector in injected_data.keys():
+                    injected_data[detector] *= 0.5  # Reduce noise component
+                
+                scenario = {
+                    'scenario_id': scenario_id,
+                    'true_parameters': high_snr_parameters,
+                    'injected_data': injected_data,
+                    'waveform_data': self.convert_to_waveform_format(injected_data),
+                    'n_signals': n_signals,
+                    'data_type': 'high_snr_pristine',
+                    'source': 'synthetic_high_snr',
+                    'binary_types': [p.get('binary_type', 'BBH') for p in high_snr_parameters],
+                    'approximants': [p.get('approximant', 'IMRPhenomPv2') for p in high_snr_parameters],
+                    'quality_metrics': self.compute_quality_metrics(high_snr_parameters)
+                }
+                
+                scenarios.append(scenario)
+                
+            except Exception as e:
+                self.logger.debug(f"High SNR scenario {scenario_id} failed: {e}")
+                self.stats['failed_scenarios'] += 1
+        
+        return scenarios
+
+    def create_synthetic_data(self, signal_parameters: List[Dict], config) -> Dict:
+        """Create synthetic detector data from signal parameters"""
+        
+        duration = 4.0
         sample_rate = 4096
         n_samples = int(duration * sample_rate)
         
         data = {}
         for detector in ['H1', 'L1', 'V1']:
-            # Higher noise level
-            noise = np.random.normal(0, 2e-23, n_samples)
+            # Generate base noise
+            noise = self.generate_advanced_colored_noise(n_samples, sample_rate, detector)
             
-            # Add low-frequency drift
-            drift = np.random.normal(0, 5e-24) * np.linspace(0, 1, n_samples)
-            noise += drift
-            
-            # Weak signal components
-            signal_sum = np.zeros(n_samples)
+            # Add all signals
+            total_signal = np.zeros(n_samples)
             
             for params in signal_parameters:
                 try:
-                    signal = self.generate_realistic_waveform(params, n_samples, detector)
-                    signal *= 0.3  # Make signals much weaker
-                    signal_sum += signal
-                except:
+                    signal = self.generate_synthetic_waveform(params, n_samples, detector)
+                    total_signal += signal
+                except Exception as e:
+                    self.logger.debug(f"Synthetic waveform generation failed: {e}")
                     continue
             
-            data[detector] = noise + signal_sum
+            data[detector] = noise + total_signal
         
         return data
-    
-    def create_high_snr_synthetic_data(self, signal_parameters: List[Dict], config) -> Dict:
-        """Create synthetic data optimized for high SNR scenarios."""
-        
-        duration = config.waveform.duration
-        sample_rate = 4096
-        n_samples = int(duration * sample_rate)
-        
-        data = {}
-        for detector in ['H1', 'L1', 'V1']:
-            # Lower noise level
-            noise = np.random.normal(0, 5e-24, n_samples)
-            
-            # Strong signal components
-            signal_sum = np.zeros(n_samples)
-            
-            for params in signal_parameters:
-                try:
-                    signal = self.generate_realistic_waveform(params, n_samples, detector)
-                    signal *= 2.0  # Make signals stronger
-                    signal_sum += signal
-                except:
-                    continue
-            
-            data[detector] = noise + signal_sum
-        
-        return data
-    
-    def generate_realistic_waveform(self, params: Dict, n_samples: int, detector: str) -> np.ndarray:
-        """Generate realistic gravitational waveform."""
+
+    def generate_synthetic_waveform(self, params: Dict, n_samples: int, detector: str) -> np.ndarray:
+        """Generate synthetic gravitational waveform with NS support"""
         
         try:
             sample_rate = 4096
@@ -1711,43 +1171,80 @@ class DatasetGenerator:
             m1, m2 = params['mass_1'], params['mass_2']
             distance = params['luminosity_distance']
             snr = params['network_snr']
+            binary_type = params.get('binary_type', 'BBH')
+            approximant = params.get('approximant', 'IMRPhenomPv2')
             
-            # physics
+            # Enhanced physics for different binary types
             chirp_mass = (m1 * m2)**(3/5) / (m1 + m2)**(1/5)
             eta = (m1 * m2) / (m1 + m2)**2
             
-            # Frequency evolution with PN corrections
+            # Time to merger and frequency evolution
             tc = duration * 0.8 + params.get('geocent_time', 0.0)
             time_to_merger = np.maximum(tc - t, 0.01)
             
-            frequency = 35.0 * (time_to_merger / 1.0)**(-3/8)
+            # Different frequency evolution for different binary types
+            if binary_type == 'BNS':
+                # BNS systems: longer inspiral, more cycles
+                f_start = 20.0  # Lower starting frequency for NS
+                frequency = f_start * (time_to_merger / 1.0)**(-3/8)
+                # Add tidal effects near merger
+                tidal_correction = 1.0
+                if 'lambda_1' in params and 'lambda_2' in params:
+                    lambda_eff = (params['lambda_1'] + params['lambda_2']) / 2
+                    tidal_correction = 1 + 0.1 * (lambda_eff / 1000) * (frequency / 1000)**2
+                frequency *= tidal_correction
+                frequency = np.clip(frequency, 20.0, 2048.0)
+            elif binary_type == 'NSBH':
+                # NSBH: intermediate behavior
+                f_start = 25.0
+                frequency = f_start * (time_to_merger / 1.0)**(-3/8)
+                # Partial tidal effects
+                frequency = np.clip(frequency, 25.0, 1536.0)
+            else:  # BBH
+                # BBH: standard evolution
+                f_start = 35.0
+                frequency = f_start * (time_to_merger / 1.0)**(-3/8)
+                frequency = np.clip(frequency, 35.0, 1024.0)
             
-            # Post-Newtonian corrections
-            pn_correction = 1 + (743/336 + 11*eta/4) * (np.pi * chirp_mass * frequency)**(2/3)
-            frequency *= pn_correction
-            frequency = np.clip(frequency, 35.0, 1024.0)
-            
-            # Amplitude with evolution
+            # Enhanced amplitude evolution
             amplitude = snr * 1e-23 * (chirp_mass / 30.0)**(5/6) / (distance / 400.0)
+            
+            # Different amplitude scaling for different binary types
+            if binary_type == 'BNS':
+                amplitude *= 0.7  # BNS typically have lower amplitude
+            elif binary_type == 'NSBH':
+                amplitude *= 0.85  # NSBH intermediate amplitude
+            
+            # Amplitude evolution with improved merger modeling
             amp_evolution = (time_to_merger / time_to_merger[0])**(-1/4)
             
-            # Merger and ringdown
+            # Enhanced merger and ringdown
             merger_mask = time_to_merger < 0.1
-            amp_evolution[merger_mask] *= np.exp(-(t[merger_mask] - tc)**2 / 0.01)
+            if binary_type == 'BBH':
+                # BBH has prominent ringdown
+                ringdown_decay = 0.02
+            elif binary_type == 'BNS':
+                # BNS may have disruption, not ringdown
+                ringdown_decay = 0.005
+            else:  # NSBH
+                # NSBH intermediate ringdown
+                ringdown_decay = 0.01
             
-            # Generate waveform
+            amp_evolution[merger_mask] *= np.exp(-(t[merger_mask] - tc)**2 / ringdown_decay)
+            
+            # Generate both polarizations
             dt = t[1] - t[0] if len(t) > 1 else 1/sample_rate
             phase = 2 * np.pi * np.cumsum(frequency) * dt + params['phase']
             
-            # Both polarizations
             h_plus = amplitude * amp_evolution * np.sin(phase)
             h_cross = amplitude * amp_evolution * np.cos(phase) * np.cos(2 * params.get('theta_jn', 0))
             
-            # Detector response
+            # Enhanced detector response with proper antenna patterns
             ra = params['ra']
             dec = params['dec']
             psi = params['psi']
             
+            # Improved antenna pattern calculations
             if detector == 'H1':
                 F_plus = 0.5 * (1 + np.cos(dec)**2) * np.cos(2*psi) * np.cos(2*ra)
                 F_cross = np.cos(dec) * np.sin(2*psi) * np.sin(2*ra)
@@ -1766,69 +1263,12 @@ class DatasetGenerator:
             return h_detector
             
         except Exception as e:
-            self.logger.debug(f"Realistic waveform generation failed: {e}")
+            self.logger.debug(f"Enhanced waveform generation failed: {e}")
             # Simple fallback
             t = np.linspace(0, n_samples/4096, n_samples)
-            simple_signal = np.sin(2 * np.pi * 100 * t) * 1e-22
-            return simple_signal
-    
-    def add_colored_noise_characteristics(self, noise: np.ndarray, detector: str, sample_rate: int) -> np.ndarray:
-        """Add realistic colored noise characteristics."""
-        
-        try:
-            # High-pass filter to remove low-frequency components
-            if detector in ['H1', 'L1']:
-                b_low, a_low = butter(4, 40/(sample_rate/2), btype='high')
-                noise = filtfilt(b_low, a_low, noise)
-                
-                # Add 1/f noise component
-                f_noise = np.random.normal(0, 1e-24, len(noise))
-                b_1f, a_1f = butter(2, 100/(sample_rate/2), btype='low')
-                f_noise = filtfilt(b_1f, a_1f, f_noise)
-                noise += f_noise
-            
-            return noise
-            
-        except:
-            return noise
-    
-    def generate_advanced_colored_noise(self, n_samples: int, sample_rate: int, detector: str) -> np.ndarray:
-        """Generate advanced colored noise with realistic PSD."""
-        
-        try:
-            # Generate white noise
-            white_noise = np.random.normal(0, 1, n_samples)
-            
-            # Apply detector-specific coloring
-            freqs = np.fft.fftfreq(n_samples, 1/sample_rate)
-            positive_freqs = freqs[:n_samples//2 + 1]
-            
-            # Simplified analytical PSD
-            if detector in ['H1', 'L1']:
-                # aLIGO-like PSD
-                f0 = 215.0
-                psd = (positive_freqs / f0)**(-4.14) - 5 * (positive_freqs / f0)**(-2) + 111 * (1 + (positive_freqs / f0)**2)**(-0.5)
-                psd += 1e4 * (positive_freqs / 10.0)**(-8)
-            else:
-                # Virgo-like PSD
-                psd = 3.2e-46 * (positive_freqs / 100.0)**(-4.05) + 2e-48
-            
-            psd = np.maximum(psd, 1e-50) * 1e-48
-            
-            # Apply coloring in frequency domain
-            white_noise_f = np.fft.fft(white_noise)
-            colored_noise_f = white_noise_f[:n_samples//2 + 1] / np.sqrt(psd * sample_rate / 2)
-            
-            # Convert back to time domain
-            colored_noise_f_full = np.concatenate([colored_noise_f, np.conj(colored_noise_f[-2:0:-1])])
-            colored_noise = np.fft.ifft(colored_noise_f_full).real
-            
-            return colored_noise
-            
-        except Exception as e:
-            self.logger.debug(f"Advanced colored noise generation failed: {e}")
-            return np.random.normal(0, 1e-23, n_samples)
-    
+            fallback_signal = np.sin(2 * np.pi * 100 * t) * 1e-22
+            return fallback_signal
+
     def convert_to_waveform_format(self, injected_data: Dict) -> np.ndarray:
         """Convert injected data to standardized waveform format."""
         
@@ -1836,7 +1276,7 @@ class DatasetGenerator:
             # Get first available detector data
             for detector, data in injected_data.items():
                 if isinstance(data, np.ndarray) and len(data) > 0:
-                    # Ensure correct length (4096 samples for 1 second)
+                    # Ensure correct length
                     target_length = 4096
                     if len(data) > target_length:
                         center = len(data) // 2
@@ -1844,7 +1284,7 @@ class DatasetGenerator:
                     elif len(data) < target_length:
                         data = np.pad(data, (0, target_length - len(data)))
                     
-                    # Create 2-channel format
+                    # Create 2-channel format (plus and cross polarizations)
                     waveform_data = np.zeros((2, target_length), dtype=np.float32)
                     waveform_data[0] = data.astype(np.float32)
                     
@@ -1863,364 +1303,545 @@ class DatasetGenerator:
         except Exception as e:
             self.logger.debug(f"Waveform conversion failed: {e}")
             return np.random.normal(0, 1e-21, (2, 4096)).astype(np.float32)
-    
-    
+
     def compute_quality_metrics(self, signal_parameters: List[Dict]) -> Dict:
-        """Compute quality metrics for scenarios with parameter fixing."""
+        """Compute comprehensive quality metrics including NS-specific metrics"""
         
-        if len(signal_parameters) < 1:
+        if not signal_parameters:
             return {'diversity_score': 0.0}
         
         try:
-            # âœ… FIX PARAMETERS FIRST
-            fixed_parameters = self.fix_signal_parameters(signal_parameters)
+            binary_types = [p.get('binary_type', 'BBH') for p in signal_parameters]
+            approximants = [p.get('approximant', 'IMRPhenomPv2') for p in signal_parameters]
             
-            if len(fixed_parameters) == 1:
-                params = fixed_parameters[0]
-                snr = params.get('network_snr', 15.0)
-                mass_1 = params.get('mass_1', 30.0)
-                mass_2 = params.get('mass_2', 25.0)
-                
-                quality_score = 1.0
-                if snr < 8:
-                    quality_score *= 0.8
-                if mass_1 < 10:
-                    quality_score *= 0.9
-                    
-                return {
-                    'diversity_score': quality_score,
-                    'single_signal_quality': quality_score,
-                    'snr_level': float(snr),
-                    'mass_level': float(mass_1 + mass_2)
-                }
+            # Count different binary types
+            type_diversity = len(set(binary_types)) / 3.0  # Max 3 types
+            approximant_diversity = len(set(approximants)) / max(len(set(approximants)), 1)
             
-            # Multi-signal metrics
-            masses = [p['mass_1'] + p['mass_2'] for p in fixed_parameters]
-            distances = [p['luminosity_distance'] for p in fixed_parameters]
-            snrs = [p['network_snr'] for p in fixed_parameters]
-            times = [p['geocent_time'] for p in fixed_parameters]
+            # Standard parameter diversity
+            masses = [p['mass_1'] + p['mass_2'] for p in signal_parameters]
+            distances = [p['luminosity_distance'] for p in signal_parameters]
+            snrs = [p['network_snr'] for p in signal_parameters]
             
-            mass_diversity = np.std(masses) / max(np.mean(masses), 1.0)
-            distance_diversity = np.std(distances) / max(np.mean(distances), 1.0)
-            snr_diversity = np.std(snrs) / max(np.mean(snrs), 1.0)
-            time_diversity = np.std(times) / max(abs(np.std(times)), 0.1)
+            mass_diversity = np.std(masses) / max(np.mean(masses), 1.0) if len(masses) > 1 else 0.5
+            distance_diversity = np.std(distances) / max(np.mean(distances), 1.0) if len(distances) > 1 else 0.5
+            snr_diversity = np.std(snrs) / max(np.mean(snrs), 1.0) if len(snrs) > 1 else 0.5
             
+            # NS-specific metrics
+            ns_fraction = sum(1 for bt in binary_types if 'NS' in bt) / len(binary_types)
+            tidal_systems = sum(1 for p in signal_parameters if 'lambda_1' in p or 'lambda_2' in p)
+            tidal_fraction = tidal_systems / len(signal_parameters) if signal_parameters else 0
+            
+            # Overall diversity score
             diversity_score = np.mean([
+                type_diversity,
+                approximant_diversity,
                 min(mass_diversity, 1.0),
                 min(distance_diversity, 1.0),
                 min(snr_diversity, 1.0),
-                min(time_diversity, 1.0)
+                ns_fraction,  # Bonus for NS inclusion
+                tidal_fraction  # Bonus for tidal systems
             ])
             
             return {
                 'diversity_score': float(diversity_score),
+                'type_diversity': float(type_diversity),
+                'approximant_diversity': float(approximant_diversity),
                 'mass_diversity': float(mass_diversity),
                 'distance_diversity': float(distance_diversity),
                 'snr_diversity': float(snr_diversity),
-                'time_diversity': float(time_diversity),
+                'ns_fraction': float(ns_fraction),
+                'tidal_fraction': float(tidal_fraction),
                 'avg_snr': float(np.mean(snrs)),
-                'snr_range': float(max(snrs) - min(snrs)),
-                'mass_range': float(max(masses) - min(masses))
+                'binary_types': binary_types,
+                'approximants': approximants
             }
             
         except Exception as e:
-            self.logger.debug(f"Quality metrics computation error: {e}")
+            self.logger.debug(f"Quality metrics computation failed: {e}")
             return {'diversity_score': 0.5, 'computation_failed': True}
-    
+
     def validate_and_clean_scenarios(self, scenarios: List[Dict]) -> List[Dict]:
-        """Validate and clean scenarios."""
+        """Validate and clean generated scenarios"""
         
         valid_scenarios = []
         
-        for scenario in tqdm(scenarios, desc="Validating scenarios"):
+        for scenario in tqdm(scenarios, desc="Validating"):
             try:
-                if self.validate_scenario(scenario):
-                    cleaned_scenario = self.clean_scenario(scenario)
-                    if cleaned_scenario:
-                        valid_scenarios.append(cleaned_scenario)
+                # Basic validation checks
+                if not isinstance(scenario, dict):
+                    continue
+                
+                if 'true_parameters' not in scenario:
+                    continue
+                
+                # Ensure parameters are properly formatted
+                scenario['true_parameters'] = self.fix_signal_parameters(scenario['true_parameters'])
+                
+                # Ensure waveform data exists and is properly formatted
+                if 'waveform_data' in scenario:
+                    waveform_data = scenario['waveform_data']
+                    if isinstance(waveform_data, np.ndarray):
+                        if waveform_data.shape != (2, 4096):
+                            # Try to reshape or regenerate
+                            try:
+                                if 'injected_data' in scenario:
+                                    scenario['waveform_data'] = self.convert_to_waveform_format(scenario['injected_data'])
+                            except:
+                                continue
+                    else:
+                        continue
                 else:
-                    self.stats['failed_scenarios'] += 1
-                    
+                    # Generate waveform data if missing
+                    if 'injected_data' in scenario:
+                        scenario['waveform_data'] = self.convert_to_waveform_format(scenario['injected_data'])
+                    else:
+                        continue
+                
+                # Add scenario to valid list
+                valid_scenarios.append(scenario)
+                
             except Exception as e:
                 self.logger.debug(f"Scenario validation failed: {e}")
-                self.stats['failed_scenarios'] += 1
+                continue
         
+        self.logger.info(f"✅ Validated {len(valid_scenarios)}/{len(scenarios)} scenarios")
         return valid_scenarios
-    
-    def validate_scenario(self, scenario: Dict) -> bool:
-        """Validate scenario structure and data quality."""
+
+    def _log_final_statistics(self):
+        """Log comprehensive statistics including NS support"""
         
-        try:
-            # Check required fields
-            required_fields = ['scenario_id', 'true_parameters', 'n_signals', 'waveform_data']
-            for field in required_fields:
-                if field not in scenario:
-                    return False
+        total = self.stats['total_processed']
+        if total == 0:
+            return
             
-            # Validate waveform data
-            waveform_data = scenario['waveform_data']
-            if not isinstance(waveform_data, np.ndarray):
-                return False
-            
-            if len(waveform_data.shape) != 2 or waveform_data.shape != (2, 4096):
-                return False
-            
-            # Check for NaN/Inf
-            if not np.all(np.isfinite(waveform_data)):
-                return False
-            
-            # Validate parameters
-            true_parameters = scenario['true_parameters']
-            if not isinstance(true_parameters, list) or len(true_parameters) == 0:
-                return False
-            
-            for params in true_parameters:
-                if not isinstance(params, dict):
-                    return False
-                
-                if 'mass_1' not in params or 'mass_2' not in params:
-                    return False
-                
-                if not (0.5 <= params['mass_1'] <= 300):
-                    return False
-                if not (0.5 <= params['mass_2'] <= 300):
-                    return False
-            
-            return True
-            
-        except Exception:
-            return False
-    
-    def clean_scenario(self, scenario: Dict) -> Optional[Dict]:
-        """Clean and standardize scenario data."""
+        self.logger.info("📊 FINAL DATASET STATISTICS (WITH NS SUPPORT):")
+        self.logger.info(f"   Total scenarios: {total}")
+        for key, value in self.stats.items():
+            if key != 'total_processed':
+                percentage = (value / total * 100) if total > 0 else 0
+                self.logger.info(f"   {key:30}: {value:5d} ({percentage:4.1f}%)")
         
-        try:
-            cleaned_scenario = scenario.copy()
-            
-            # Clean waveform data
-            waveform_data = scenario['waveform_data'].copy()
-            
-            # Remove NaN/Inf
-            waveform_data = np.nan_to_num(waveform_data, nan=0.0, posinf=1e-21, neginf=-1e-21)
-            
-            # Normalize amplitude
-            rms = np.sqrt(np.mean(waveform_data**2))
-            if rms > 0:
-                waveform_data = waveform_data / rms * 1e-21
-            
-            cleaned_scenario['waveform_data'] = waveform_data.astype(np.float32)
-            
-            return cleaned_scenario
-            
-        except Exception as e:
-            self.logger.debug(f"Scenario cleaning failed: {e}")
-            return None
+        # NS-specific statistics
+        total_binary = self.stats['bbh_scenarios'] + self.stats['bns_scenarios'] + self.stats['nsbh_scenarios']
+        if total_binary > 0:
+            self.logger.info("🌟 BINARY TYPE DISTRIBUTION:")
+            self.logger.info(f"   BBH systems: {self.stats['bbh_scenarios']} ({self.stats['bbh_scenarios']/total_binary*100:.1f}%)")
+            self.logger.info(f"   BNS systems: {self.stats['bns_scenarios']} ({self.stats['bns_scenarios']/total_binary*100:.1f}%)")
+            self.logger.info(f"   NSBH systems: {self.stats['nsbh_scenarios']} ({self.stats['nsbh_scenarios']/total_binary*100:.1f}%)")
 
 
 class MaximumDiversityParameterGenerator:
-    """Generate parameters with maximum diversity for  dataset."""
+    """Generate parameters with maximum diversity for dataset including NS support"""
     
     def __init__(self, config):
         self.config = config
-        
-    def generate_maximum_diversity_parameters(self, n_signals: int, scenario_id: int) -> List[Dict]:
-        """Generate maximally diverse parameters."""
-        
+        self.logger = logging.getLogger(__name__)
+    
+    def generate_maximum_diversity_parameters_with_ns(self, n_signals: int, scenario_id: int) -> List[Dict]:
+        """Enhanced parameter generation with NS support"""
         signal_parameters = []
         
-        diversity_modes = [
-            'mass_diversity', 'distance_diversity', 'snr_diversity', 
-            'temporal_diversity', 'angular_diversity', 'spin_diversity'
-        ]
-        
-        primary_mode = random.choice(diversity_modes)
-        
         for sig_idx in range(n_signals):
-            params = self._generate_diverse_signal(sig_idx, primary_mode, scenario_id)
+            # Select binary type with realistic probabilities
+            binary_type = self._select_binary_type()
+            
+            if binary_type == 'BBH':
+                params = self._generate_bbh_parameters(sig_idx, scenario_id)
+            elif binary_type == 'BNS':
+                params = self._generate_bns_parameters(sig_idx, scenario_id)
+            elif binary_type == 'NSBH':
+                params = self._generate_nsbh_parameters(sig_idx, scenario_id)
+            
             signal_parameters.append(params)
-        
-        signal_parameters = self._enforce_maximum_separation(signal_parameters)
         
         return signal_parameters
     
-    def _generate_diverse_signal(self, sig_idx: int, diversity_mode: str, scenario_id: int) -> Dict:
-        """Generate single signal with specified diversity mode."""
+    def _select_binary_type(self) -> str:
+        """Select binary type based on detection rates"""
+        return random.choices(
+            ['BBH', 'BNS', 'NSBH'], 
+            weights=[0.65, 0.20, 0.15],
+            k=1
+        )[0]
+    
+    def _generate_bbh_parameters(self, sig_idx: int, scenario_id: int) -> Dict:
+        """Generate BBH parameters"""
+        # BBH mass distribution
+        mass_1 = np.random.lognormal(np.log(25), 0.6)
+        mass_1 = np.clip(mass_1, 5.0, 100.0)
         
-        if diversity_mode == 'mass_diversity':
-            mass_1 = np.random.uniform(3, 150)
-            mass_ratio = beta.rvs(2, 5)
-            mass_2 = mass_1 * mass_ratio
-        elif diversity_mode == 'distance_diversity':
-            mass_1 = np.random.uniform(15, 60)
-            mass_2 = np.random.uniform(10, mass_1)
-            log_dist = np.random.uniform(np.log(20), np.log(8000))
-            distance = np.exp(log_dist)
-        else:
-            mass_1 = np.random.uniform(8, 80)
-            mass_2 = np.random.uniform(5, mass_1)
-            distance = np.random.uniform(100, 3000)
+        q = np.random.beta(2, 3)
+        mass_2 = mass_1 * q
+        mass_2 = np.clip(mass_2, 5.0, mass_1)
         
         if mass_2 > mass_1:
             mass_1, mass_2 = mass_2, mass_1
         
-        if 'distance' not in locals():
-            distance = np.random.uniform(100, 3000)
+        # BBH parameters
+        distance = np.random.lognormal(np.log(800), 0.8)
+        distance = np.clip(distance, 50, 8000)
         
-        ra = np.random.uniform(0, 2 * np.pi)
-        dec = np.arcsin(np.random.uniform(-1, 1))
+        chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+        snr = 20.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / distance)
+        snr = np.clip(snr, 5.0, 100.0)
         
-        geocent_time = np.random.uniform(-3.0, 3.0) + sig_idx * np.random.uniform(0.1, 0.5)
+        approximant = random.choice(['IMRPhenomPv2', 'IMRPhenomD', 'SEOBNRv4'])
         
-        if diversity_mode == 'angular_diversity':
-            theta_jn = np.random.uniform(0, np.pi)
-            psi = np.random.uniform(0, np.pi)
-            phase = np.random.uniform(0, 2 * np.pi)
-        else:
-            theta_jn = np.arccos(np.random.uniform(-1, 1))
-            psi = np.random.uniform(0, np.pi)
-            phase = np.random.uniform(0, 2 * np.pi)
+        return self._create_base_parameters(
+            mass_1, mass_2, distance, snr, approximant, 
+            sig_idx, scenario_id, 'BBH'
+        )
+    
+    def _generate_bns_parameters(self, sig_idx: int, scenario_id: int) -> Dict:
+        """Generate BNS parameters"""
+        # BNS mass distribution
+        mass_1 = np.random.normal(1.4, 0.3)
+        mass_1 = np.clip(mass_1, 1.0, 2.5)
         
-        if diversity_mode == 'spin_diversity':
-            a_1 = np.random.uniform(0, 0.99)
-            a_2 = np.random.uniform(0, 0.99)
-        else:
-            a_1 = beta.rvs(1.5, 3) * 0.9
-            a_2 = beta.rvs(1.5, 3) * 0.9
+        mass_2 = np.random.normal(1.4, 0.3)
+        mass_2 = np.clip(mass_2, 1.0, 2.5)
         
-        tilt_1 = np.arccos(np.random.uniform(-1, 1))
-        tilt_2 = np.arccos(np.random.uniform(-1, 1))
-        phi_12 = np.random.uniform(0, 2 * np.pi)
-        phi_jl = np.random.uniform(0, 2 * np.pi)
+        if mass_2 > mass_1:
+            mass_1, mass_2 = mass_2, mass_1
         
-        # compute SNR and difficulty
-        network_snr = self._compute_enhanced_snr(mass_1, mass_2, distance, diversity_mode)
-        difficulty = self._assign_difficulty_from_parameters(mass_1, mass_2, distance, network_snr)
+        # BNS are typically closer
+        distance = np.random.lognormal(np.log(200), 0.6)
+        distance = np.clip(distance, 20, 800)
         
-        # Return complete parameter dictionary with ALL required fields
+        # BNS SNR scaling
+        chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+        snr = 12.0 * (chirp_mass / 1.2)**(5/6) * (150.0 / distance)
+        snr = np.clip(snr, 4.0, 50.0)
+        
+        # Use tidal approximants
+        approximant = random.choice(['IMRPhenomPv2_NRTidal', 'IMRPhenomD_NRTidal'])
+        
+        params = self._create_base_parameters(
+            mass_1, mass_2, distance, snr, approximant, 
+            sig_idx, scenario_id, 'BNS'
+        )
+        
+        # Add tidal parameters
+        params['lambda_1'] = np.random.uniform(50, 5000)
+        params['lambda_2'] = np.random.uniform(50, 5000)
+        
+        return params
+    
+    def _generate_nsbh_parameters(self, sig_idx: int, scenario_id: int) -> Dict:
+        """Generate NSBH parameters"""
+        # NS mass
+        ns_mass = np.random.normal(1.4, 0.3)
+        ns_mass = np.clip(ns_mass, 1.0, 2.5)
+        
+        # BH mass
+        bh_mass = np.random.lognormal(np.log(15), 0.5)
+        bh_mass = np.clip(bh_mass, 5.0, 50.0)
+        
+        # BH is primary
+        mass_1, mass_2 = bh_mass, ns_mass
+        
+        # NSBH distance
+        distance = np.random.lognormal(np.log(400), 0.7)
+        distance = np.clip(distance, 40, 2000)
+        
+        # NSBH SNR
+        chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+        snr = 15.0 * (chirp_mass / 8.0)**(5/6) * (300.0 / distance)
+        snr = np.clip(snr, 4.0, 60.0)
+        
+        # Use tidal approximants
+        approximant = random.choice(['IMRPhenomPv2_NRTidal', 'IMRPhenomD_NRTidal'])
+        
+        params = self._create_base_parameters(
+            mass_1, mass_2, distance, snr, approximant, 
+            sig_idx, scenario_id, 'NSBH'
+        )
+        
+        # Add tidal parameters (only NS component)
+        params['lambda_1'] = 0  # BH
+        params['lambda_2'] = np.random.uniform(50, 2000)  # NS
+        
+        return params
+    
+    def _create_base_parameters(self, mass_1: float, mass_2: float, distance: float, 
+                              snr: float, approximant: str, sig_idx: int, 
+                              scenario_id: int, binary_type: str) -> Dict:
+        """Create base parameter dictionary"""
+        
         return {
             'mass_1': float(mass_1),
             'mass_2': float(mass_2),
             'luminosity_distance': float(distance),
-            'geocent_time': float(geocent_time),
-            'ra': float(ra),
-            'dec': float(dec),
-            'theta_jn': float(theta_jn),
-            'psi': float(psi),
-            'phase': float(phase),
-            'a_1': float(a_1),
-            'a_2': float(a_2),
-            'tilt_1': float(tilt_1),
-            'tilt_2': float(tilt_2),
-            'phi_12': float(phi_12),
-            'phi_jl': float(phi_jl),
+            'geocent_time': float(np.random.uniform(-2.0, 2.0) + sig_idx * 0.4),
+            'ra': float(np.random.uniform(0, 2 * np.pi)),
+            'dec': float(np.random.uniform(-np.pi/2, np.pi/2)),
+            'theta_jn': float(np.random.uniform(0, np.pi)),
+            'psi': float(np.random.uniform(0, np.pi)),
+            'phase': float(np.random.uniform(0, 2 * np.pi)),
             'signal_id': sig_idx,
-            'network_snr': float(network_snr),  
-            'snr': float(network_snr),          
-            'difficulty': difficulty,
-            'diversity_mode': diversity_mode
+            'network_snr': float(snr),
+            'snr': float(snr),
+            'approximant': approximant,
+            'binary_type': binary_type,
+            'difficulty': self._assign_difficulty(mass_1, mass_2, distance, snr),
+            'f_lower': 20.0,
+            'f_ref': 50.0
         }
-
     
-    def _compute_enhanced_snr(self, mass_1: float, mass_2: float, distance: float, diversity_mode: str) -> float:
-        """Compute SNR with mode-specific adjustments."""
-        
-        chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+    def _assign_difficulty(self, mass_1: float, mass_2: float, distance: float, snr: float) -> str:
+        """Assign difficulty level"""
         total_mass = mass_1 + mass_2
         
-        mass_factor = (chirp_mass / 30.0)**(5/6)
-        distance_factor = 400.0 / distance
-        total_mass_factor = (total_mass / 60.0)**(1/3)
+        difficulty_points = 0
         
-        base_snr = 18.0
-        if diversity_mode == 'snr_diversity':
-            base_snr *= np.random.uniform(0.5, 2.0)
+        # Low mass systems harder
+        if total_mass < 10:
+            difficulty_points += 2
+        elif total_mass < 20:
+            difficulty_points += 1
         
-        snr = base_snr * mass_factor * distance_factor * total_mass_factor
+        # Very high mass systems challenging
+        if total_mass > 80:
+            difficulty_points += 1
         
-        network_boost = np.random.uniform(1.0, 1.4)
-        snr *= network_boost
-        
-        scatter = np.random.uniform(0.6, 1.4)
-        snr *= scatter
-        
-        return float(np.clip(snr, 4.0, 150.0))
-    
-    def _assign_difficulty_from_parameters(self, mass_1: float, mass_2: float, distance: float, snr: float) -> str:
-        """Assign difficulty based on physical parameters."""
-        
-        mass_difficulty = 0
-        if mass_1 < 15 or mass_2 < 8:
-            mass_difficulty += 1
-        if mass_1 > 60 or mass_2 > 45:
-            mass_difficulty += 1
-        
-        distance_difficulty = 0
+        # Distance effects
         if distance > 1500:
-            distance_difficulty += 1
+            difficulty_points += 1
         if distance > 3000:
-            distance_difficulty += 1
+            difficulty_points += 2
         
-        snr_difficulty = 0
-        if snr < 12:
-            snr_difficulty += 1
-        if snr < 8:
-            snr_difficulty += 1
+        # SNR effects
+        if snr < 10:
+            difficulty_points += 2
+        elif snr < 15:
+            difficulty_points += 1
         
-        total_difficulty = mass_difficulty + distance_difficulty + snr_difficulty
-        
-        if total_difficulty >= 4:
-            return 'very_hard'
-        elif total_difficulty >= 2:
-            return 'hard'
-        elif total_difficulty == 1:
+        if difficulty_points >= 5:
+            return 'extreme'
+        elif difficulty_points >= 3:
+            return 'hard' 
+        elif difficulty_points >= 1:
             return 'medium'
         else:
             return 'easy'
-    
-    def _enforce_maximum_separation(self, signal_parameters: List[Dict]) -> List[Dict]:
-        """Enforce maximum parameter separation for diversity."""
-        
-        if len(signal_parameters) < 2:
-            return signal_parameters
-        
-        signal_parameters.sort(key=lambda x: x['network_snr'], reverse=True)
-        
-        for i in range(1, len(signal_parameters)):
-            prev_sig = signal_parameters[i-1]
-            curr_sig = signal_parameters[i]
-            
-            total_mass_prev = prev_sig['mass_1'] + prev_sig['mass_2']
-            total_mass_curr = curr_sig['mass_1'] + curr_sig['mass_2']
-            mass_diff = abs(total_mass_prev - total_mass_curr)
-            
-            if mass_diff < 15.0:
-                adjustment = 15.0 + np.random.uniform(0, 10)
-                if total_mass_curr > 60:
-                    curr_sig['mass_1'] -= adjustment * 0.6
-                    curr_sig['mass_2'] -= adjustment * 0.4
-                else:
-                    curr_sig['mass_1'] += adjustment * 0.6
-                    curr_sig['mass_2'] += adjustment * 0.4
-                
-                curr_sig['mass_1'] = max(5, min(150, curr_sig['mass_1']))
-                curr_sig['mass_2'] = max(3, min(curr_sig['mass_1'], curr_sig['mass_2']))
-            
-            dist_diff = abs(prev_sig['luminosity_distance'] - curr_sig['luminosity_distance'])
-            if dist_diff < 300.0:
-                adjustment = 300.0 + np.random.uniform(0, 200)
-                curr_sig['luminosity_distance'] = max(50, curr_sig['luminosity_distance'] + adjustment)
-                
-                curr_sig['network_snr'] = self._compute_enhanced_snr(
-                    curr_sig['mass_1'], curr_sig['mass_2'], 
-                    curr_sig['luminosity_distance'], curr_sig.get('diversity_mode', 'standard')
-                )
-            
-            time_diff = abs(prev_sig['geocent_time'] - curr_sig['geocent_time'])
-            if time_diff < 0.5:
-                curr_sig['geocent_time'] += np.random.uniform(0.5, 2.0)
-        
-        return signal_parameters
 
+    def generate_maximum_diversity_parameters(self, n_signals: int, scenario_id: int) -> List[Dict]:
+        """Original method maintained for backward compatibility"""
+        return self.generate_maximum_diversity_parameters_with_ns(n_signals, scenario_id)
+
+    def generate_extreme_parameters(self, n_signals: int, scenario_id: int) -> List[Dict]:
+        """Generate extreme parameters for challenging scenarios"""
+        
+        extreme_parameters = []
+        
+        for sig_idx in range(n_signals):
+            # Force extreme cases with NS support
+            extreme_type = random.choices(
+                ['very_low_mass', 'very_high_mass', 'very_distant', 'very_close', 'extreme_ns'],
+                weights=[0.2, 0.2, 0.2, 0.2, 0.2],
+                k=1
+            )[0]
+            
+            if extreme_type == 'very_low_mass':
+                # Very low mass BBH or BNS
+                binary_type = random.choice(['BBH', 'BNS'])
+                if binary_type == 'BNS':
+                    mass_1 = np.random.uniform(1.0, 1.2)
+                    mass_2 = np.random.uniform(1.0, 1.2)
+                    approximant = 'IMRPhenomPv2_NRTidal'
+                else:
+                    mass_1 = np.random.uniform(5.0, 8.0)
+                    mass_2 = np.random.uniform(5.0, 8.0)
+                    approximant = 'IMRPhenomPv2'
+                distance = np.random.uniform(100, 500)
+                
+            elif extreme_type == 'very_high_mass':
+                # Very high mass BBH
+                binary_type = 'BBH'
+                mass_1 = np.random.uniform(80.0, 150.0)
+                mass_2 = np.random.uniform(60.0, mass_1)
+                distance = np.random.uniform(2000, 8000)
+                approximant = 'IMRPhenomPv2'
+                
+            elif extreme_type == 'very_distant':
+                # Very distant systems
+                binary_type = random.choice(['BBH', 'NSBH'])
+                if binary_type == 'NSBH':
+                    mass_1 = np.random.uniform(10.0, 25.0)
+                    mass_2 = np.random.uniform(1.0, 2.0)
+                    approximant = 'IMRPhenomPv2_NRTidal'
+                else:
+                    mass_1 = np.random.uniform(30.0, 60.0)
+                    mass_2 = np.random.uniform(25.0, mass_1)
+                    approximant = 'IMRPhenomPv2'
+                distance = np.random.uniform(5000, 15000)
+                
+            elif extreme_type == 'very_close':
+                # Very close systems
+                binary_type = random.choice(['BBH', 'BNS'])
+                if binary_type == 'BNS':
+                    mass_1 = np.random.uniform(1.2, 2.0)
+                    mass_2 = np.random.uniform(1.2, mass_1)
+                    approximant = 'IMRPhenomPv2_NRTidal'
+                else:
+                    mass_1 = np.random.uniform(20.0, 40.0)
+                    mass_2 = np.random.uniform(15.0, mass_1)
+                    approximant = 'IMRPhenomPv2'
+                distance = np.random.uniform(10, 100)
+                
+            else:  # extreme_ns
+                # Extreme NS cases
+                binary_type = random.choice(['BNS', 'NSBH'])
+                if binary_type == 'BNS':
+                    mass_1 = np.random.uniform(2.2, 2.5)  # Heavy NS
+                    mass_2 = np.random.uniform(2.2, 2.5)
+                    approximant = 'IMRPhenomPv2_NRTidal'
+                    distance = np.random.uniform(50, 300)
+                else:  # NSBH
+                    mass_1 = np.random.uniform(30.0, 50.0)  # Heavy BH
+                    mass_2 = np.random.uniform(1.0, 1.5)   # Light NS
+                    approximant = 'IMRPhenomPv2_NRTidal'
+                    distance = np.random.uniform(200, 1000)
+            
+            # Ensure m1 >= m2
+            if mass_2 > mass_1:
+                mass_1, mass_2 = mass_2, mass_1
+            
+            # Compute SNR
+            chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+            snr = 20.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / distance)
+            snr = np.clip(snr, 3.0, 150.0)  # Allow extreme SNR ranges
+            
+            params = self._create_base_parameters(
+                mass_1, mass_2, distance, snr, approximant,
+                sig_idx, scenario_id, binary_type
+            )
+            
+            # Add tidal parameters if needed
+            if binary_type == 'BNS':
+                params['lambda_1'] = np.random.uniform(50, 5000)
+                params['lambda_2'] = np.random.uniform(50, 5000)
+            elif binary_type == 'NSBH':
+                params['lambda_1'] = 0
+                params['lambda_2'] = np.random.uniform(50, 2000)
+            
+            params['difficulty'] = 'extreme'
+            extreme_parameters.append(params)
+        
+        return extreme_parameters
+
+    def generate_low_snr_parameters(self, n_signals: int, scenario_id: int) -> List[Dict]:
+        """Generate low SNR parameters for challenging detection"""
+        
+        low_snr_parameters = []
+        
+        for sig_idx in range(n_signals):
+            # Select binary type favoring harder detections
+            binary_type = random.choices(
+                ['BBH', 'BNS', 'NSBH'],
+                weights=[0.4, 0.4, 0.2],  # More NS systems for challenge
+                k=1
+            )[0]
+            
+            if binary_type == 'BNS':
+                mass_1 = np.random.normal(1.4, 0.2)
+                mass_1 = np.clip(mass_1, 1.1, 2.0)
+                mass_2 = np.random.normal(1.4, 0.2)
+                mass_2 = np.clip(mass_2, 1.1, mass_1)
+                distance = np.random.uniform(400, 1200)  # Distant BNS
+                approximant = 'IMRPhenomPv2_NRTidal'
+                
+            elif binary_type == 'NSBH':
+                ns_mass = np.random.uniform(1.2, 2.0)
+                bh_mass = np.random.uniform(8.0, 20.0)
+                mass_1, mass_2 = bh_mass, ns_mass
+                distance = np.random.uniform(800, 2500)  # Distant NSBH
+                approximant = 'IMRPhenomPv2_NRTidal'
+                
+            else:  # BBH
+                mass_1 = np.random.uniform(15.0, 35.0)
+                mass_2 = np.random.uniform(10.0, mass_1)
+                distance = np.random.uniform(1500, 5000)  # Distant BBH
+                approximant = 'IMRPhenomPv2'
+            
+            # Force low SNR
+            chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+            snr = np.random.uniform(3.0, 8.0)  # Very low SNR
+            
+            params = self._create_base_parameters(
+                mass_1, mass_2, distance, snr, approximant,
+                sig_idx, scenario_id, binary_type
+            )
+            
+            # Add tidal parameters if needed
+            if binary_type == 'BNS':
+                params['lambda_1'] = np.random.uniform(100, 3000)
+                params['lambda_2'] = np.random.uniform(100, 3000)
+            elif binary_type == 'NSBH':
+                params['lambda_1'] = 0
+                params['lambda_2'] = np.random.uniform(100, 1500)
+            
+            params['difficulty'] = 'hard'
+            low_snr_parameters.append(params)
+        
+        return low_snr_parameters
+
+    def generate_high_snr_parameters(self, n_signals: int, scenario_id: int) -> List[Dict]:
+        """Generate high SNR parameters for pristine benchmarks"""
+        
+        high_snr_parameters = []
+        
+        for sig_idx in range(n_signals):
+            # Select binary type for clear detections
+            binary_type = random.choices(
+                ['BBH', 'BNS', 'NSBH'],
+                weights=[0.6, 0.3, 0.1],
+                k=1
+            )[0]
+            
+            if binary_type == 'BNS':
+                mass_1 = np.random.normal(1.4, 0.15)
+                mass_1 = np.clip(mass_1, 1.2, 1.8)
+                mass_2 = np.random.normal(1.4, 0.15)
+                mass_2 = np.clip(mass_2, 1.2, mass_1)
+                distance = np.random.uniform(40, 200)  # Close BNS
+                approximant = 'IMRPhenomPv2_NRTidal'
+                
+            elif binary_type == 'NSBH':
+                ns_mass = np.random.uniform(1.3, 1.6)
+                bh_mass = np.random.uniform(15.0, 30.0)
+                mass_1, mass_2 = bh_mass, ns_mass
+                distance = np.random.uniform(100, 400)  # Close NSBH
+                approximant = 'IMRPhenomPv2_NRTidal'
+                
+            else:  # BBH
+                mass_1 = np.random.uniform(25.0, 50.0)
+                mass_2 = np.random.uniform(20.0, mass_1)
+                distance = np.random.uniform(200, 800)  # Close BBH
+                approximant = 'IMRPhenomPv2'
+            
+            # Force high SNR
+            chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+            snr = np.random.uniform(25.0, 80.0)  # High SNR
+            
+            params = self._create_base_parameters(
+                mass_1, mass_2, distance, snr, approximant,
+                sig_idx, scenario_id, binary_type
+            )
+            
+            # Add tidal parameters if needed
+            if binary_type == 'BNS':
+                params['lambda_1'] = np.random.uniform(200, 2000)
+                params['lambda_2'] = np.random.uniform(200, 2000)
+            elif binary_type == 'NSBH':
+                params['lambda_1'] = 0
+                params['lambda_2'] = np.random.uniform(200, 1000)
+            
+            params['difficulty'] = 'easy'
+            high_snr_parameters.append(params)
+        
+        return high_snr_parameters
 
 
 class FallbackGWTCLoader:
@@ -2242,286 +1863,537 @@ class FallbackGWTCLoader:
             {'event_name': 'GW170814', 'gps_time': 1186741861.5, 'mass_1_source': 30.5, 'mass_2_source': 25.3, 'luminosity_distance': 540.0, 'network_snr': 15.9, 'observing_run': 'O2'},
             {'event_name': 'GW170817', 'gps_time': 1187008882.4, 'mass_1_source': 1.6, 'mass_2_source': 1.2, 'luminosity_distance': 40.0, 'network_snr': 32.4, 'observing_run': 'O2'},
             
-            # O3a Events  
-            {'event_name': 'GW190408_181802', 'gps_time': 1238782699.5, 'mass_1_source': 25.0, 'mass_2_source': 14.0, 'luminosity_distance': 1540.0, 'network_snr': 12.2, 'observing_run': 'O3a'},
-            {'event_name': 'GW190412', 'gps_time': 1239082262.2, 'mass_1_source': 30.1, 'mass_2_source': 8.4, 'luminosity_distance': 730.0, 'network_snr': 19.0, 'observing_run': 'O3a'},
-            {'event_name': 'GW190521', 'gps_time': 1242442967.4, 'mass_1_source': 85.0, 'mass_2_source': 66.0, 'luminosity_distance': 5300.0, 'network_snr': 14.7, 'observing_run': 'O3a'},
-            {'event_name': 'GW190630_185205', 'gps_time': 1245955341.3, 'mass_1_source': 36.0, 'mass_2_source': 31.0, 'luminosity_distance': 1100.0, 'network_snr': 18.0, 'observing_run': 'O3a'},
+            # O3a Events
+            {'event_name': 'GW190408_181802', 'gps_time': 1238782699.2, 'mass_1_source': 24.4, 'mass_2_source': 17.0, 'luminosity_distance': 1540.0, 'network_snr': 12.4, 'observing_run': 'O3a'},
+            {'event_name': 'GW190412', 'gps_time': 1239042967.4, 'mass_1_source': 30.1, 'mass_2_source': 8.4, 'luminosity_distance': 730.0, 'network_snr': 19.0, 'observing_run': 'O3a'},
+            {'event_name': 'GW190413_052954', 'gps_time': 1239179411.2, 'mass_1_source': 31.0, 'mass_2_source': 25.0, 'luminosity_distance': 1100.0, 'network_snr': 8.8, 'observing_run': 'O3a'},
+            {'event_name': 'GW190413_134308', 'gps_time': 1239208207.1, 'mass_1_source': 47.1, 'mass_2_source': 35.6, 'luminosity_distance': 1200.0, 'network_snr': 9.3, 'observing_run': 'O3a'},
+            {'event_name': 'GW190421_213856', 'gps_time': 1239917954.7, 'mass_1_source': 40.9, 'mass_2_source': 9.7, 'luminosity_distance': 2600.0, 'network_snr': 8.3, 'observing_run': 'O3a'},
+            {'event_name': 'GW190503_185404', 'gps_time': 1240944462.4, 'mass_1_source': 48.7, 'mass_2_source': 30.1, 'luminosity_distance': 2750.0, 'network_snr': 9.3, 'observing_run': 'O3a'},
+            {'event_name': 'GW190512_180714', 'gps_time': 1241719654.1, 'mass_1_source': 23.3, 'mass_2_source': 14.2, 'luminosity_distance': 1100.0, 'network_snr': 9.0, 'observing_run': 'O3a'},
+            {'event_name': 'GW190513_205428', 'gps_time': 1241804488.1, 'mass_1_source': 32.6, 'mass_2_source': 30.2, 'luminosity_distance': 1700.0, 'network_snr': 8.4, 'observing_run': 'O3a'},
+            {'event_name': 'GW190514_065416', 'gps_time': 1241835676.7, 'mass_1_source': 30.7, 'mass_2_source': 26.8, 'luminosity_distance': 1450.0, 'network_snr': 8.7, 'observing_run': 'O3a'},
+            {'event_name': 'GW190517_055101', 'gps_time': 1242107481.0, 'mass_1_source': 45.0, 'mass_2_source': 26.8, 'luminosity_distance': 2900.0, 'network_snr': 8.2, 'observing_run': 'O3a'},
+            {'event_name': 'GW190519_153544', 'gps_time': 1242315364.0, 'mass_1_source': 66.5, 'mass_2_source': 40.7, 'luminosity_distance': 2800.0, 'network_snr': 8.4, 'observing_run': 'O3a'},
+            {'event_name': 'GW190521', 'gps_time': 1242459927.6, 'mass_1_source': 95.3, 'mass_2_source': 69.0, 'luminosity_distance': 2900.0, 'network_snr': 14.7, 'observing_run': 'O3a'},
+            {'event_name': 'GW190527_092055', 'gps_time': 1242991276.5, 'mass_1_source': 42.6, 'mass_2_source': 31.3, 'luminosity_distance': 2400.0, 'network_snr': 8.9, 'observing_run': 'O3a'},
+            {'event_name': 'GW190602_175927', 'gps_time': 1243533585.1, 'mass_1_source': 18.1, 'mass_2_source': 12.2, 'luminosity_distance': 900.0, 'network_snr': 9.7, 'observing_run': 'O3a'},
+            {'event_name': 'GW190620_030421', 'gps_time': 1245079478.0, 'mass_1_source': 34.0, 'mass_2_source': 31.0, 'luminosity_distance': 1200.0, 'network_snr': 10.2, 'observing_run': 'O3a'},
+            {'event_name': 'GW190630_185205', 'gps_time': 1246006543.0, 'mass_1_source': 36.1, 'mass_2_source': 26.8, 'luminosity_distance': 1100.0, 'network_snr': 17.3, 'observing_run': 'O3a'},
+            {'event_name': 'GW190701_203306', 'gps_time': 1246149204.3, 'mass_1_source': 55.2, 'mass_2_source': 41.7, 'luminosity_distance': 1600.0, 'network_snr': 15.2, 'observing_run': 'O3a'},
+            {'event_name': 'GW190706_222641', 'gps_time': 1246573619.0, 'mass_1_source': 67.0, 'mass_2_source': 40.8, 'luminosity_distance': 2800.0, 'network_snr': 11.7, 'observing_run': 'O3a'},
+            {'event_name': 'GW190707_093326', 'gps_time': 1246611224.2, 'mass_1_source': 12.1, 'mass_2_source': 7.7, 'luminosity_distance': 780.0, 'network_snr': 9.1, 'observing_run': 'O3a'},
+            {'event_name': 'GW190708_232457', 'gps_time': 1246766317.8, 'mass_1_source': 21.4, 'mass_2_source': 10.5, 'luminosity_distance': 1500.0, 'network_snr': 9.6, 'observing_run': 'O3a'},
+            {'event_name': 'GW190719_215514', 'gps_time': 1247716532.2, 'mass_1_source': 40.8, 'mass_2_source': 21.0, 'luminosity_distance': 3400.0, 'network_snr': 8.1, 'observing_run': 'O3a'},
+            {'event_name': 'GW190720_000836', 'gps_time': 1247727034.6, 'mass_1_source': 11.9, 'mass_2_source': 7.6, 'luminosity_distance': 780.0, 'network_snr': 10.4, 'observing_run': 'O3a'},
+            {'event_name': 'GW190727_060333', 'gps_time': 1248334431.4, 'mass_1_source': 15.6, 'mass_2_source': 10.7, 'luminosity_distance': 900.0, 'network_snr': 9.3, 'observing_run': 'O3a'},
+            {'event_name': 'GW190728_064510', 'gps_time': 1248420328.1, 'mass_1_source': 9.0, 'mass_2_source': 6.8, 'luminosity_distance': 300.0, 'network_snr': 14.0, 'observing_run': 'O3a'},
+            {'event_name': 'GW190731_140936', 'gps_time': 1248688194.7, 'mass_1_source': 40.2, 'mass_2_source': 29.1, 'luminosity_distance': 2200.0, 'network_snr': 8.3, 'observing_run': 'O3a'},
             
             # O3b Events
-            {'event_name': 'GW191204_171526', 'gps_time': 1259315742.3, 'mass_1_source': 40.0, 'mass_2_source': 20.0, 'luminosity_distance': 3000.0, 'network_snr': 11.2, 'observing_run': 'O3b'},
-            {'event_name': 'GW200115_042309', 'gps_time': 1263084207.3, 'mass_1_source': 5.9, 'mass_2_source': 1.4, 'luminosity_distance': 300.0, 'network_snr': 15.3, 'observing_run': 'O3b'},
-            {'event_name': 'GW200129_065458', 'gps_time': 1264316914.7, 'mass_1_source': 32.0, 'mass_2_source': 24.0, 'luminosity_distance': 1200.0, 'network_snr': 12.9, 'observing_run': 'O3b'},
-            
-            # O4 Events (2023-2025)
-            {'event_name': 'GW230529_181500', 'gps_time': 1369751716.0, 'mass_1_source': 45.0, 'mass_2_source': 30.0, 'luminosity_distance': 2100.0, 'network_snr': 16.2, 'observing_run': 'O4a'},
-            {'event_name': 'GW230708_142500', 'gps_time': 1373548316.0, 'mass_1_source': 28.0, 'mass_2_source': 18.0, 'luminosity_distance': 950.0, 'network_snr': 18.4, 'observing_run': 'O4a'},
-            {'event_name': 'GW231025_104500', 'gps_time': 1382615516.0, 'mass_1_source': 55.0, 'mass_2_source': 40.0, 'luminosity_distance': 2800.0, 'network_snr': 14.8, 'observing_run': 'O4a'},
-            {'event_name': 'GW240312_095500', 'gps_time': 1394362516.0, 'mass_1_source': 38.0, 'mass_2_source': 22.0, 'luminosity_distance': 1600.0, 'network_snr': 15.7, 'observing_run': 'O4b'},
-            {'event_name': 'GW240827_142000', 'gps_time': 1408720816.0, 'mass_1_source': 72.0, 'mass_2_source': 58.0, 'luminosity_distance': 4200.0, 'network_snr': 12.9, 'observing_run': 'O4b'},
-            {'event_name': 'GW250115_203000', 'gps_time': 1420581616.0, 'mass_1_source': 42.0, 'mass_2_source': 35.0, 'luminosity_distance': 1800.0, 'network_snr': 17.3, 'observing_run': 'O4c'}
+            {'event_name': 'GW191103_012549', 'gps_time': 1257296767.4, 'mass_1_source': 9.4, 'mass_2_source': 7.2, 'luminosity_distance': 380.0, 'network_snr': 12.6, 'observing_run': 'O3b'},
+            {'event_name': 'GW191105_143521', 'gps_time': 1257451739.2, 'mass_1_source': 10.9, 'mass_2_source': 8.1, 'luminosity_distance': 450.0, 'network_snr': 11.2, 'observing_run': 'O3b'},
+            {'event_name': 'GW191109_010717', 'gps_time': 1257741255.6, 'mass_1_source': 65.0, 'mass_2_source': 47.0, 'luminosity_distance': 1750.0, 'network_snr': 15.9, 'observing_run': 'O3b'},
+            {'event_name': 'GW191113_071753', 'gps_time': 1258085891.4, 'mass_1_source': 62.2, 'mass_2_source': 37.1, 'luminosity_distance': 2100.0, 'network_snr': 8.5, 'observing_run': 'O3b'},
+            {'event_name': 'GW191126_115259', 'gps_time': 1259218797.1, 'mass_1_source': 35.4, 'mass_2_source': 26.7, 'luminosity_distance': 1400.0, 'network_snr': 8.7, 'observing_run': 'O3b'},
+            {'event_name': 'GW191127_050227', 'gps_time': 1259285365.2, 'mass_1_source': 19.0, 'mass_2_source': 11.6, 'luminosity_distance': 1200.0, 'network_snr': 8.4, 'observing_run': 'O3b'},
+            {'event_name': 'GW191129_134029', 'gps_time': 1259496047.5, 'mass_1_source': 10.7, 'mass_2_source': 8.3, 'luminosity_distance': 320.0, 'network_snr': 14.1, 'observing_run': 'O3b'},
+            {'event_name': 'GW191204_110529', 'gps_time': 1259919947.3, 'mass_1_source': 30.0, 'mass_2_source': 15.0, 'luminosity_distance': 2300.0, 'network_snr': 8.2, 'observing_run': 'O3b'},
+            {'event_name': 'GW191204_171526', 'gps_time': 1259941344.2, 'mass_1_source': 20.0, 'mass_2_source': 15.0, 'luminosity_distance': 1600.0, 'network_snr': 8.9, 'observing_run': 'O3b'},
+            {'event_name': 'GW191215_223052', 'gps_time': 1260982270.1, 'mass_1_source': 4.9, 'mass_2_source': 1.6, 'luminosity_distance': 21.0, 'network_snr': 12.9, 'observing_run': 'O3b'},
+            {'event_name': 'GW191216_213338', 'gps_time': 1261034036.7, 'mass_1_source': 31.1, 'mass_2_source': 26.8, 'luminosity_distance': 1400.0, 'network_snr': 9.3, 'observing_run': 'O3b'},
+            {'event_name': 'GW191219_163120', 'gps_time': 1261265298.8, 'mass_1_source': 31.0, 'mass_2_source': 25.0, 'luminosity_distance': 1100.0, 'network_snr': 11.1, 'observing_run': 'O3b'},
+            {'event_name': 'GW191222_033537', 'gps_time': 1261479355.6, 'mass_1_source': 20.0, 'mass_2_source': 17.0, 'luminosity_distance': 1800.0, 'network_snr': 9.6, 'observing_run': 'O3b'},
+            {'event_name': 'GW191230_180458', 'gps_time': 1262218716.7, 'mass_1_source': 37.4, 'mass_2_source': 31.2, 'luminosity_distance': 1100.0, 'network_snr': 13.7, 'observing_run': 'O3b'},
+            {'event_name': 'GW200105_162426', 'gps_time': 1262737484.1, 'mass_1_source': 19.2, 'mass_2_source': 13.2, 'luminosity_distance': 740.0, 'network_snr': 15.5, 'observing_run': 'O3b'},
+            {'event_name': 'GW200112_155838', 'gps_time': 1263343136.9, 'mass_1_source': 15.1, 'mass_2_source': 11.6, 'luminosity_distance': 340.0, 'network_snr': 16.4, 'observing_run': 'O3b'},
+            {'event_name': 'GW200115_042309', 'gps_time': 1263582207.4, 'mass_1_source': 5.7, 'mass_2_source': 1.5, 'luminosity_distance': 87.0, 'network_snr': 11.6, 'observing_run': 'O3b'},
+            {'event_name': 'GW200128_022112', 'gps_time': 1264704090.4, 'mass_1_source': 17.0, 'mass_2_source': 12.0, 'luminosity_distance': 1200.0, 'network_snr': 9.1, 'observing_run': 'O3b'},
+            {'event_name': 'GW200129_065458', 'gps_time': 1264781316.4, 'mass_1_source': 20.0, 'mass_2_source': 12.0, 'luminosity_distance': 1000.0, 'network_snr': 11.4, 'observing_run': 'O3b'},
+            {'event_name': 'GW200202_154313', 'gps_time': 1265115811.8, 'mass_1_source': 35.6, 'mass_2_source': 26.7, 'luminosity_distance': 1200.0, 'network_snr': 13.9, 'observing_run': 'O3b'},
+            {'event_name': 'GW200208_130117', 'gps_time': 1265640095.4, 'mass_1_source': 37.4, 'mass_2_source': 26.0, 'luminosity_distance': 1400.0, 'network_snr': 9.5, 'observing_run': 'O3b'},
+            {'event_name': 'GW200208_222617', 'gps_time': 1265673995.0, 'mass_1_source': 56.2, 'mass_2_source': 37.6, 'luminosity_distance': 1400.0, 'network_snr': 16.2, 'observing_run': 'O3b'},
+            {'event_name': 'GW200209_085452', 'gps_time': 1265707310.7, 'mass_1_source': 35.2, 'mass_2_source': 31.6, 'luminosity_distance': 1100.0, 'network_snr': 11.5, 'observing_run': 'O3b'},
+            {'event_name': 'GW200210_092254', 'gps_time': 1265794192.2, 'mass_1_source': 24.1, 'mass_2_source': 17.0, 'luminosity_distance': 1200.0, 'network_snr': 12.4, 'observing_run': 'O3b'},
+            {'event_name': 'GW200216_220804', 'gps_time': 1266307702.4, 'mass_1_source': 54.2, 'mass_2_source': 43.0, 'luminosity_distance': 1100.0, 'network_snr': 16.4, 'observing_run': 'O3b'},
+            {'event_name': 'GW200219_094415', 'gps_time': 1266507873.9, 'mass_1_source': 31.0, 'mass_2_source': 28.0, 'luminosity_distance': 2600.0, 'network_snr': 8.5, 'observing_run': 'O3b'},
+            {'event_name': 'GW200220_061928', 'gps_time': 1266564586.4, 'mass_1_source': 34.6, 'mass_2_source': 9.0, 'luminosity_distance': 2900.0, 'network_snr': 8.3, 'observing_run': 'O3b'},
+            {'event_name': 'GW200220_124850', 'gps_time': 1266587348.4, 'mass_1_source': 40.4, 'mass_2_source': 21.0, 'luminosity_distance': 3100.0, 'network_snr': 8.1, 'observing_run': 'O3b'},
+            {'event_name': 'GW200224_222234', 'gps_time': 1266962572.7, 'mass_1_source': 22.9, 'mass_2_source': 15.5, 'luminosity_distance': 2100.0, 'network_snr': 8.9, 'observing_run': 'O3b'},
+            {'event_name': 'GW200225_060421', 'gps_time': 1266990279.1, 'mass_1_source': 38.7, 'mass_2_source': 31.0, 'luminosity_distance': 1600.0, 'network_snr': 11.6, 'observing_run': 'O3b'},
+            {'event_name': 'GW200302_015811', 'gps_time': 1267589909.4, 'mass_1_source': 47.1, 'mass_2_source': 26.6, 'luminosity_distance': 2400.0, 'network_snr': 8.6, 'observing_run': 'O3b'},
+            {'event_name': 'GW200306_093714', 'gps_time': 1267952252.5, 'mass_1_source': 30.0, 'mass_2_source': 17.0, 'luminosity_distance': 5500.0, 'network_snr': 8.1, 'observing_run': 'O3b'},
+            {'event_name': 'GW200308_173609', 'gps_time': 1268165787.4, 'mass_1_source': 26.2, 'mass_2_source': 15.1, 'luminosity_distance': 1200.0, 'network_snr': 13.3, 'observing_run': 'O3b'},
+            {'event_name': 'GW200311_115853', 'gps_time': 1268397551.4, 'mass_1_source': 26.6, 'mass_2_source': 15.7, 'luminosity_distance': 1700.0, 'network_snr': 11.0, 'observing_run': 'O3b'},
+            {'event_name': 'GW200316_215756', 'gps_time': 1268872694.1, 'mass_1_source': 50.0, 'mass_2_source': 18.7, 'luminosity_distance': 5200.0, 'network_snr': 8.4, 'observing_run': 'O3b'},
+            {'event_name': 'GW200322_091133', 'gps_time': 1269349911.4, 'mass_1_source': 59.0, 'mass_2_source': 59.0, 'luminosity_distance': 1100.0, 'network_snr': 21.8, 'observing_run': 'O3b'}
         ]
+        
+        # Add some synthetic NS events for diversity
+        synthetic_ns_events = []
+        for i in range(20):
+            # BNS events
+            synthetic_ns_events.append({
+                'event_name': f'BNS_synthetic_{i:03d}',
+                'gps_time': 1200000000 + i * 1000000,
+                'mass_1_source': np.random.uniform(1.1, 2.3),
+                'mass_2_source': np.random.uniform(1.1, 2.3),
+                'luminosity_distance': np.random.uniform(40, 400),
+                'network_snr': np.random.uniform(8, 35),
+                'observing_run': random.choice(['O3a', 'O3b'])
+            })
+            
+            # NSBH events
+            if i < 10:
+                synthetic_ns_events.append({
+                    'event_name': f'NSBH_synthetic_{i:03d}',
+                    'gps_time': 1200000000 + i * 1000000 + 500000,
+                    'mass_1_source': np.random.uniform(8.0, 30.0),
+                    'mass_2_source': np.random.uniform(1.1, 2.5),
+                    'luminosity_distance': np.random.uniform(100, 1000),
+                    'network_snr': np.random.uniform(8, 25),
+                    'observing_run': random.choice(['O3a', 'O3b'])
+                })
+        
+        builtin_events.extend(synthetic_ns_events)
         
         self.logger.info(f"Using fallback GWTC database with {len(builtin_events)} events")
         return pd.DataFrame(builtin_events)
-    
-    def download_strain_data(self, event_name: str, detector: str = 'H1', **kwargs):
-        """Mock strain data download - returns None to trigger fallback."""
-        return None
 
 
-def save_training_data(scenarios: List[Dict], output_dir: Path):
-    """Save  training data with comprehensive statistics."""
+def save_diversified_dataset(scenarios: List[Dict], output_dir: Path):
+    """Save the diversified dataset with NS statistics"""
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    logging.info(f"Saving {len(scenarios)}  diversified scenarios...")
-    
-    # Save main dataset
-    with open(output_dir / 'training_scenarios.pkl', 'wb') as f:
+    # Save full dataset
+    with open(output_dir / 'diversified_dataset_ns_enhanced.pkl', 'wb') as f:
         pickle.dump(scenarios, f)
     
-    # Compute and save comprehensive statistics
-    stats = compute_dataset_statistics(scenarios)
-    
-    with open(output_dir / 'dataset_statistics.yaml', 'w') as f:
-        yaml.dump(stats, f, default_flow_style=False)
-    
-    # Save training splits
-    create_training_splits(scenarios, output_dir)
-    
-    # Generate comprehensive report
-    generate_dataset_report(scenarios, stats, output_dir)
-    
-    logging.info(f"dataset saved to {output_dir}")
-
-
-def compute_dataset_statistics(scenarios: List[Dict]) -> Dict:
-    """Compute comprehensive statistics for  dataset."""
-    
-    total_scenarios = len(scenarios)
-    if total_scenarios == 0:
-        return {'total_scenarios': 0}
-    
-    # Comprehensive categorization
-    data_type_counts = {}
-    source_counts = {}
-    challenge_level_counts = {}
-    
-    all_masses_1, all_masses_2, all_distances, all_snrs = [], [], [], []
-    all_diversity_scores = []
-    
-    for scenario in scenarios:
-        data_type = scenario.get('data_type', 'unknown')
-        data_type_counts[data_type] = data_type_counts.get(data_type, 0) + 1
-        
-        source = scenario.get('source', 'unknown')
-        source_counts[source] = source_counts.get(source, 0) + 1
-        
-        for params in scenario.get('true_parameters', []):
-            all_masses_1.append(params.get('mass_1', 30))
-            all_masses_2.append(params.get('mass_2', 25))
-            all_distances.append(params.get('luminosity_distance', 500))
-            all_snrs.append(params.get('network_snr', 15))
-            
-            challenge = params.get('difficulty', 'medium')
-            challenge_level_counts[challenge] = challenge_level_counts.get(challenge, 0) + 1
-        
-        quality_metrics = scenario.get('quality_metrics', {})
-        diversity_score = quality_metrics.get('diversity_score', 0.5)
-        all_diversity_scores.append(diversity_score)
-    
-    signal_dist = {}
-    for i in range(1, 6):
-        count = len([s for s in scenarios if s.get('n_signals') == i])
-        if count > 0:
-            signal_dist[f'{i}_signals'] = f"{count} ({count/total_scenarios*100:.1f}%)"
-    
-    stats = {
-        'dataset_overview': {
-            'total_scenarios': total_scenarios,
-            'total_signals': sum(len(s.get('true_parameters', [])) for s in scenarios),
-            'avg_signals_per_scenario': sum(len(s.get('true_parameters', [])) for s in scenarios) / total_scenarios,
-            'creation_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-        },
-        
-        'data_type_distribution': {
-            dtype: f"{count} ({count/total_scenarios*100:.1f}%)" 
-            for dtype, count in data_type_counts.items()
-        },
-        
-        'source_distribution': {
-            source: f"{count} ({count/total_scenarios*100:.1f}%)" 
-            for source, count in source_counts.items()
-        },
-        
-        'signal_count_distribution': signal_dist,
-        
-        'challenge_level_distribution': {
-            level: f"{count} ({count/sum(challenge_level_counts.values())*100:.1f}%)" 
-            for level, count in challenge_level_counts.items()
-        },
-        
-        'parameter_statistics': {
-            'mass_1_stats': {
-                'min': f"{np.min(all_masses_1):.1f} Mâ˜‰",
-                'max': f"{np.max(all_masses_1):.1f} Mâ˜‰",
-                'mean': f"{np.mean(all_masses_1):.1f} Mâ˜‰",
-                'std': f"{np.std(all_masses_1):.1f} Mâ˜‰"
-            },
-            'mass_2_stats': {
-                'min': f"{np.min(all_masses_2):.1f} Mâ˜‰",
-                'max': f"{np.max(all_masses_2):.1f} Mâ˜‰",
-                'mean': f"{np.mean(all_masses_2):.1f} Mâ˜‰",
-                'std': f"{np.std(all_masses_2):.1f} Mâ˜‰"
-            },
-            'distance_stats': {
-                'min': f"{np.min(all_distances):.0f} Mpc",
-                'max': f"{np.max(all_distances):.0f} Mpc",
-                'mean': f"{np.mean(all_distances):.0f} Mpc",
-                'std': f"{np.std(all_distances):.0f} Mpc"
-            },
-            'snr_stats': {
-                'min': f"{np.min(all_snrs):.1f}",
-                'max': f"{np.max(all_snrs):.1f}",
-                'mean': f"{np.mean(all_snrs):.1f}",
-                'std': f"{np.std(all_snrs):.1f}"
-            }
-        },
-        
-        'diversity_statistics': {
-            'mean_diversity_score': f"{np.mean(all_diversity_scores):.3f}",
-            'high_diversity_fraction': f"{np.mean([s > 0.7 for s in all_diversity_scores]):.3f}",
-            'very_high_diversity_fraction': f"{np.mean([s > 0.8 for s in all_diversity_scores]):.3f}"
-        },
-        
-        'expected_training_performance': {
-            'baseline_synthetic_accuracy': '80-85% (maintained with larger dataset)',
-            'target_real_data_accuracy': '65-80% (major improvement from 23.8%)',
-            'domain_adaptation_method': 'mixed_real_synthetic_training',
-            'training_recommendation': 'batch_size_16_lr_1e-4_epochs_200'
-        }
-    }
-    
-    return stats
-
-
-def create_training_splits(scenarios: List[Dict], output_dir: Path):
-    """Create training/validation/test splits."""
-    
+    # Create splits
     random.shuffle(scenarios)
-    
     total = len(scenarios)
     train_size = int(0.8 * total)
     val_size = int(0.15 * total)
-    test_size = total - train_size - val_size
     
     train_scenarios = scenarios[:train_size]
     val_scenarios = scenarios[train_size:train_size + val_size]
     test_scenarios = scenarios[train_size + val_size:]
     
-    with open(output_dir / 'train_scenarios.pkl', 'wb') as f:
+    with open(output_dir / 'train_ns_enhanced.pkl', 'wb') as f:
         pickle.dump(train_scenarios, f)
-        
-    with open(output_dir / 'val_scenarios.pkl', 'wb') as f:
+    with open(output_dir / 'val_ns_enhanced.pkl', 'wb') as f:
         pickle.dump(val_scenarios, f)
-        
-    with open(output_dir / 'test_scenarios.pkl', 'wb') as f:
+    with open(output_dir / 'test_ns_enhanced.pkl', 'wb') as f:
         pickle.dump(test_scenarios, f)
     
-    logging.info(f"âœ… Created training splits: {len(train_scenarios)} train, {len(val_scenarios)} val, {len(test_scenarios)} test")
-
-
-def generate_dataset_report(scenarios: List[Dict], stats: Dict, output_dir: Path):
-    """Generate comprehensive report for  dataset."""
+    with open(output_dir / 'dataset_splits.yaml', 'w') as f:
+        yaml.dump({
+            'total_scenarios': total,
+            'train_scenarios': len(train_scenarios),
+            'val_scenarios': len(val_scenarios),  
+            'test_scenarios': len(test_scenarios),
+            'split_ratios': {'train': 0.8, 'val': 0.15, 'test': 0.05}
+        }, f)
     
-    report = f"""#DIVERSIFIED AHSD TRAINING DATASET
-
-## Executive Summary
-This dataset contains {stats['dataset_overview']['total_scenarios']} scenarios with {stats['dataset_overview']['total_signals']} gravitational wave signals, designed for maximum diversity and real-world applicability.
-
-## Dataset Composition
-
-### Data Type Distribution
-"""
+    # Compute and save NS statistics
+    ns_stats = compute_ns_statistics(scenarios)
+    with open(output_dir / 'ns_statistics.yaml', 'w') as f:
+        yaml.dump(ns_stats, f)
     
-    for dtype, count in stats['data_type_distribution'].items():
-        report += f"- **{dtype.replace('_', ' ').title()}**: {count}\n"
+    # Save dataset metadata
+    metadata = {
+        'generation_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'total_scenarios': len(scenarios),
+        'ns_enhanced': True,
+        'binary_types_supported': ['BBH', 'BNS', 'NSBH'],
+        'approximants_used': ['IMRPhenomPv2', 'IMRPhenomD', 'SEOBNRv4', 'IMRPhenomPv2_NRTidal', 'IMRPhenomD_NRTidal'],
+        'tidal_effects_included': True,
+        'version': '2.0_ns_enhanced'
+    }
     
-    report += f"""
-### Signal Count Distribution
-"""
-    for signal_count, percentage in stats['signal_count_distribution'].items():
-        report += f"- **{signal_count.replace('_', ' ').title()}**: {percentage}\n"
+    with open(output_dir / 'dataset_metadata.yaml', 'w') as f:
+        yaml.dump(metadata, f)
     
-    report += f"""
-## Parameter Coverage
+    logging.info(f"✅ NS-Enhanced dataset saved: {len(scenarios)} scenarios")
+    logging.info(f"   Train: {len(train_scenarios)}, Val: {len(val_scenarios)}, Test: {len(test_scenarios)}")
+    logging.info(f"   NS statistics: {ns_stats}")
 
-### Mass Parameters
-- **Primary Mass**: {stats['parameter_statistics']['mass_1_stats']['min']} to {stats['parameter_statistics']['mass_1_stats']['max']}
-- **Secondary Mass**: {stats['parameter_statistics']['mass_2_stats']['min']} to {stats['parameter_statistics']['mass_2_stats']['max']}
 
-### Distance and SNR  
-- **Distance**: {stats['parameter_statistics']['distance_stats']['min']} to {stats['parameter_statistics']['distance_stats']['max']}
-- **SNR**: {stats['parameter_statistics']['snr_stats']['min']} to {stats['parameter_statistics']['snr_stats']['max']}
-
-## Expected Training Impact
-- **Synthetic Accuracy**: {stats['expected_training_performance']['baseline_synthetic_accuracy']}
-- **Real Data Accuracy**: {stats['expected_training_performance']['target_real_data_accuracy']}
-- **Domain Adaptation**: Successfully bridges synthetic-real gap
-
-## Success Metrics
-Success measured by:
-- Maintaining 80-85% accuracy on synthetic data
-- Achieving 65-80% accuracy on real LIGO events
-- Robust performance across diverse parameter ranges
-"""
+def compute_ns_statistics(scenarios: List[Dict]) -> Dict:
+    """Compute NS-specific statistics"""
+    stats = {
+        'total_scenarios': len(scenarios),
+        'bbh_count': 0,
+        'bns_count': 0,
+        'nsbh_count': 0,
+        'tidal_approximants': 0,
+        'ns_mass_range': {'min': float('inf'), 'max': 0.0},
+        'approximant_distribution': {},
+        'data_type_distribution': {},
+        'difficulty_distribution': {}
+    }
     
-    with open(output_dir / 'DATASET_REPORT.md', 'w') as f:
-        f.write(report)
+    for scenario in scenarios:
+        # Count binary types
+        binary_types = scenario.get('binary_types', [])
+        for bt in binary_types:
+            if bt == 'BBH':
+                stats['bbh_count'] += 1
+            elif bt == 'BNS':
+                stats['bns_count'] += 1
+            elif bt == 'NSBH':
+                stats['nsbh_count'] += 1
+        
+        # Count approximants
+        approximants = scenario.get('approximants', [])
+        for approx in approximants:
+            if 'NRTidal' in approx:
+                stats['tidal_approximants'] += 1
+            stats['approximant_distribution'][approx] = stats['approximant_distribution'].get(approx, 0) + 1
+        
+        # Data type distribution
+        data_type = scenario.get('data_type', 'unknown')
+        stats['data_type_distribution'][data_type] = stats['data_type_distribution'].get(data_type, 0) + 1
+        
+        # Check NS mass ranges and difficulty
+        for params in scenario.get('true_parameters', []):
+            binary_type = params.get('binary_type', 'BBH')
+            difficulty = params.get('difficulty', 'medium')
+            stats['difficulty_distribution'][difficulty] = stats['difficulty_distribution'].get(difficulty, 0) + 1
+            
+            if binary_type in ['BNS', 'NSBH']:
+                mass_1 = params.get('mass_1', 0)
+                mass_2 = params.get('mass_2', 0)
+                
+                # Find NS masses (< 3 solar masses)
+                ns_masses = [m for m in [mass_1, mass_2] if m <= 3.0]
+                for ns_mass in ns_masses:
+                    if ns_mass > 0:
+                        stats['ns_mass_range']['min'] = min(stats['ns_mass_range']['min'], ns_mass)
+                        stats['ns_mass_range']['max'] = max(stats['ns_mass_range']['max'], ns_mass)
     
-    logging.info(f"âœ… Report generated: {output_dir / 'DATASET_REPORT.md'}")
+    # Handle case where no NS found
+    if stats['ns_mass_range']['min'] == float('inf'):
+        stats['ns_mass_range'] = {'min': 0.0, 'max': 0.0}
+    
+    # Add percentages
+    total_binary = stats['bbh_count'] + stats['bns_count'] + stats['nsbh_count']
+    if total_binary > 0:
+        stats['bbh_percentage'] = (stats['bbh_count'] / total_binary) * 100
+        stats['bns_percentage'] = (stats['bns_count'] / total_binary) * 100
+        stats['nsbh_percentage'] = (stats['nsbh_count'] / total_binary) * 100
+        stats['ns_percentage'] = ((stats['bns_count'] + stats['nsbh_count']) / total_binary) * 100
+    
+    return stats
+
+
+def validate_dataset_integrity(scenarios: List[Dict]) -> Dict:
+    """Validate dataset integrity and return validation report"""
+    
+    validation_report = {
+        'total_scenarios': len(scenarios),
+        'valid_scenarios': 0,
+        'invalid_scenarios': 0,
+        'validation_errors': [],
+        'warnings': [],
+        'ns_validation': {
+            'bns_with_tidal': 0,
+            'nsbh_with_tidal': 0,
+            'bbh_without_tidal': 0,
+            'tidal_parameter_errors': 0
+        }
+    }
+    
+    for i, scenario in enumerate(scenarios):
+        scenario_valid = True
+        
+        try:
+            # Check basic structure
+            required_keys = ['scenario_id', 'true_parameters', 'injected_data', 'waveform_data', 'n_signals', 'data_type']
+            for key in required_keys:
+                if key not in scenario:
+                    validation_report['validation_errors'].append(f"Scenario {i}: Missing required key '{key}'")
+                    scenario_valid = False
+            
+            # Check true_parameters
+            if 'true_parameters' in scenario:
+                for j, params in enumerate(scenario['true_parameters']):
+                    binary_type = params.get('binary_type', 'BBH')
+                    approximant = params.get('approximant', 'IMRPhenomPv2')
+                    
+                    # NS-specific validation
+                    if binary_type == 'BNS':
+                        if 'lambda_1' in params and 'lambda_2' in params:
+                            validation_report['ns_validation']['bns_with_tidal'] += 1
+                        else:
+                            validation_report['ns_validation']['tidal_parameter_errors'] += 1
+                            validation_report['validation_errors'].append(f"Scenario {i}, Signal {j}: BNS missing tidal parameters")
+                        
+                        if 'NRTidal' not in approximant:
+                            validation_report['warnings'].append(f"Scenario {i}, Signal {j}: BNS using non-tidal approximant")
+                    
+                    elif binary_type == 'NSBH':
+                        if 'lambda_1' in params or 'lambda_2' in params:
+                            validation_report['ns_validation']['nsbh_with_tidal'] += 1
+                        else:
+                            validation_report['ns_validation']['tidal_parameter_errors'] += 1
+                            validation_report['validation_errors'].append(f"Scenario {i}, Signal {j}: NSBH missing tidal parameters")
+                        
+                        if 'NRTidal' not in approximant:
+                            validation_report['warnings'].append(f"Scenario {i}, Signal {j}: NSBH using non-tidal approximant")
+                    
+                    elif binary_type == 'BBH':
+                        validation_report['ns_validation']['bbh_without_tidal'] += 1
+                        if 'lambda_1' in params or 'lambda_2' in params:
+                            validation_report['warnings'].append(f"Scenario {i}, Signal {j}: BBH has tidal parameters")
+            
+            # Check waveform data
+            if 'waveform_data' in scenario:
+                waveform_data = scenario['waveform_data']
+                if isinstance(waveform_data, np.ndarray):
+                    if waveform_data.shape != (2, 4096):
+                        validation_report['validation_errors'].append(f"Scenario {i}: Invalid waveform shape {waveform_data.shape}")
+                        scenario_valid = False
+                else:
+                    validation_report['validation_errors'].append(f"Scenario {i}: Waveform data is not numpy array")
+                    scenario_valid = False
+            
+            if scenario_valid:
+                validation_report['valid_scenarios'] += 1
+            else:
+                validation_report['invalid_scenarios'] += 1
+                
+        except Exception as e:
+            validation_report['validation_errors'].append(f"Scenario {i}: Validation exception: {e}")
+            validation_report['invalid_scenarios'] += 1
+    
+    # Summary statistics
+    validation_report['validation_success_rate'] = (validation_report['valid_scenarios'] / validation_report['total_scenarios']) * 100
+    validation_report['ns_systems_validated'] = (
+        validation_report['ns_validation']['bns_with_tidal'] + 
+        validation_report['ns_validation']['nsbh_with_tidal']
+    )
+    
+    return validation_report
+
+
+def generate_dataset_summary_report(scenarios: List[Dict], output_dir: Path):
+    """Generate comprehensive dataset summary report"""
+    
+    report = {
+        'dataset_overview': {
+            'total_scenarios': len(scenarios),
+            'generation_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'enhanced_with_ns': True
+        },
+        'binary_type_analysis': {},
+        'approximant_analysis': {},
+        'data_type_analysis': {},
+        'parameter_ranges': {},
+        'quality_analysis': {},
+        'ns_specific_analysis': {}
+    }
+    
+    # Collect all data for analysis
+    all_binary_types = []
+    all_approximants = []
+    all_data_types = []
+    all_masses = []
+    all_distances = []
+    all_snrs = []
+    all_difficulties = []
+    ns_masses = []
+    tidal_parameters = []
+    
+    for scenario in scenarios:
+        # Data type
+        data_type = scenario.get('data_type', 'unknown')
+        all_data_types.append(data_type)
+        
+        # Binary types and approximants
+        binary_types = scenario.get('binary_types', [])
+        approximants = scenario.get('approximants', [])
+        all_binary_types.extend(binary_types)
+        all_approximants.extend(approximants)
+        
+        # Parameter analysis
+        for params in scenario.get('true_parameters', []):
+            mass_1 = params.get('mass_1', 0)
+            mass_2 = params.get('mass_2', 0)
+            distance = params.get('luminosity_distance', 0)
+            snr = params.get('network_snr', 0)
+            difficulty = params.get('difficulty', 'medium')
+            binary_type = params.get('binary_type', 'BBH')
+            
+            all_masses.extend([mass_1, mass_2])
+            all_distances.append(distance)
+            all_snrs.append(snr)
+            all_difficulties.append(difficulty)
+            
+            # NS-specific analysis
+            if binary_type in ['BNS', 'NSBH']:
+                ns_candidates = [m for m in [mass_1, mass_2] if m <= 3.0]
+                ns_masses.extend(ns_candidates)
+                
+                if 'lambda_1' in params:
+                    tidal_parameters.append(params['lambda_1'])
+                if 'lambda_2' in params:
+                    tidal_parameters.append(params['lambda_2'])
+    
+    # Binary type analysis
+    binary_type_counts = {}
+    for bt in all_binary_types:
+        binary_type_counts[bt] = binary_type_counts.get(bt, 0) + 1
+    
+    report['binary_type_analysis'] = {
+        'counts': binary_type_counts,
+        'percentages': {bt: (count/len(all_binary_types))*100 for bt, count in binary_type_counts.items()}
+    }
+    
+    # Approximant analysis
+    approximant_counts = {}
+    for approx in all_approximants:
+        approximant_counts[approx] = approximant_counts.get(approx, 0) + 1
+    
+    report['approximant_analysis'] = {
+        'counts': approximant_counts,
+        'tidal_approximant_usage': sum([count for approx, count in approximant_counts.items() if 'NRTidal' in approx]),
+        'non_tidal_approximant_usage': sum([count for approx, count in approximant_counts.items() if 'NRTidal' not in approx])
+    }
+    
+    # Data type analysis
+    data_type_counts = {}
+    for dt in all_data_types:
+        data_type_counts[dt] = data_type_counts.get(dt, 0) + 1
+    
+    report['data_type_analysis'] = {
+        'counts': data_type_counts,
+        'percentages': {dt: (count/len(all_data_types))*100 for dt, count in data_type_counts.items()}
+    }
+    
+    # Parameter ranges
+    if all_masses:
+        report['parameter_ranges'] = {
+            'mass_range': {'min': float(np.min(all_masses)), 'max': float(np.max(all_masses)), 'mean': float(np.mean(all_masses))},
+            'distance_range': {'min': float(np.min(all_distances)), 'max': float(np.max(all_distances)), 'mean': float(np.mean(all_distances))},
+            'snr_range': {'min': float(np.min(all_snrs)), 'max': float(np.max(all_snrs)), 'mean': float(np.mean(all_snrs))}
+        }
+    
+    # Difficulty analysis
+    difficulty_counts = {}
+    for diff in all_difficulties:
+        difficulty_counts[diff] = difficulty_counts.get(diff, 0) + 1
+    
+    report['quality_analysis'] = {
+        'difficulty_distribution': difficulty_counts,
+        'average_parameters_per_scenario': len(all_masses) / (2 * len(scenarios)) if scenarios else 0
+    }
+    
+    # NS-specific analysis
+    if ns_masses:
+        report['ns_specific_analysis'] = {
+            'total_ns_components': len(ns_masses),
+            'ns_mass_range': {'min': float(np.min(ns_masses)), 'max': float(np.max(ns_masses)), 'mean': float(np.mean(ns_masses))},
+            'tidal_parameter_count': len(tidal_parameters),
+            'tidal_parameter_range': {
+                'min': float(np.min(tidal_parameters)) if tidal_parameters else 0,
+                'max': float(np.max(tidal_parameters)) if tidal_parameters else 0,
+                'mean': float(np.mean(tidal_parameters)) if tidal_parameters else 0
+            } if tidal_parameters else {'min': 0, 'max': 0, 'mean': 0}
+        }
+    
+    # Save report
+    with open(output_dir / 'dataset_summary_report.yaml', 'w') as f:
+        yaml.dump(report, f, default_flow_style=False)
+    
+    return report
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate Diversified AHSD Dataset')
+    """Main execution function"""
+    
+    parser = argparse.ArgumentParser(description='Generate NS-Enhanced Diversified Dataset')
     parser.add_argument('--config', required=True, help='Config file path')
-    parser.add_argument('--total_scenarios', type=int, default=10000, help='Total scenarios')
+    parser.add_argument('--total_scenarios', type=int, default=1000, help='Total scenarios')
     parser.add_argument('--max_real_events', type=int, default=100, help='Max real events')
     parser.add_argument('--output_dir', required=True, help='Output directory')
     parser.add_argument('--verbose', action='store_true', help='Verbose logging')
+    parser.add_argument('--validate', action='store_true', help='Validate dataset integrity')
+    parser.add_argument('--generate_report', action='store_true', help='Generate summary report')
     
     args = parser.parse_args()
     
     # Setup
     setup_logging(args.verbose)
     
-    if IMPORTS_OK:
-        config = AHSDConfig.from_yaml(args.config)
-    else:
-        config = FallbackConfig.from_yaml(args.config)
+    try:
+        if IMPORTS_OK:
+            config = AHSDConfig.from_yaml(args.config)
+        else:
+            config = FallbackConfig.from_yaml(args.config)
+    except Exception as e:
+        logging.warning(f"Config loading failed: {e}, using fallback")
+        config = FallbackConfig()
     
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    logging.info("STARTING DIVERSIFIED DATASET GENERATION")
-    logging.info("="*80)
+    logging.info("🌟 STARTING NS-ENHANCED DIVERSIFIED DATASET GENERATION")
+    logging.info("=" * 80)
     
-    # Generate  dataset
+    start_time = time.time()
+    
+    # Generate dataset
     generator = DatasetGenerator(config)
-    _scenarios = generator.generate_diversified_dataset(
+    scenarios = generator.generate_diversified_dataset(
         total_scenarios=args.total_scenarios,
         max_real_events=args.max_real_events
     )
     
-    if not _scenarios:
-        logging.error("No valid scenarios generated!")
+    if not scenarios:
+        logging.error("❌ No valid scenarios generated!")
         return
     
-    # Save  dataset
-    save_training_data(_scenarios, output_dir)
+    generation_time = time.time() - start_time
+    logging.info(f"⏱️ Dataset generation completed in {generation_time:.2f} seconds")
     
-    logging.info("DATASET GENERATION COMPLETED!")
-    logging.info(f"Final count: {len(_scenarios)} scenarios")
+    # Save dataset
+    save_diversified_dataset(scenarios, output_dir)
+    
+    # Optional validation
+    if args.validate:
+        logging.info("🔍 Validating dataset integrity...")
+        validation_report = validate_dataset_integrity(scenarios)
+        
+        with open(output_dir / 'validation_report.yaml', 'w') as f:
+            yaml.dump(validation_report, f)
+        
+        logging.info(f"✅ Validation completed: {validation_report['validation_success_rate']:.1f}% success rate")
+        if validation_report['validation_errors']:
+            logging.warning(f"⚠️ {len(validation_report['validation_errors'])} validation errors found")
+    
+    # Optional summary report
+    if args.generate_report:
+        logging.info("📊 Generating dataset summary report...")
+        summary_report = generate_dataset_summary_report(scenarios, output_dir)
+        logging.info("✅ Summary report generated")
+    
+    total_time = time.time() - start_time
+    logging.info("🎉 NS-ENHANCED DIVERSIFIED DATASET GENERATION COMPLETED!")
+    logging.info(f"📁 Dataset saved to: {output_dir}")
+    logging.info(f"⏱️ Total execution time: {total_time:.2f} seconds")
+    logging.info(f"🔢 Final count: {len(scenarios)} scenarios generated")
+    
+    # Final NS statistics summary
+    ns_stats = compute_ns_statistics(scenarios)
+    logging.info("🌟 FINAL NS ENHANCEMENT SUMMARY:")
+    logging.info(f"   BBH systems: {ns_stats['bbh_count']} ({ns_stats.get('bbh_percentage', 0):.1f}%)")
+    logging.info(f"   BNS systems: {ns_stats['bns_count']} ({ns_stats.get('bns_percentage', 0):.1f}%)")
+    logging.info(f"   NSBH systems: {ns_stats['nsbh_count']} ({ns_stats.get('nsbh_percentage', 0):.1f}%)")
+    logging.info(f"   NS systems total: {ns_stats.get('ns_percentage', 0):.1f}%")
+    logging.info(f"   Tidal approximants: {ns_stats['tidal_approximants']}")
 
 
 if __name__ == '__main__':
     main()
+

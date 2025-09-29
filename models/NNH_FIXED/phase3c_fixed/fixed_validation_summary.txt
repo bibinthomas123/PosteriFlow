@@ -1,0 +1,54 @@
+FIXED AHSD SYSTEM VALIDATION SUMMARY
+==================================================
+
+Total Scenarios: 1000
+Successful Validations: 1000
+Pipeline Success Rate: 100.0%
+
+COMPONENT PERFORMANCE:
+-------------------------
+PriorityNet:
+  - Correlation: 1.000 ± 0.000
+  - Success Rate: 100.0%
+
+Neural PE:
+  - Accuracy: 0.576 ± 0.081
+  - Mean Error: 0.839
+  - Success Rate: 100.0%
+
+Subtractor:
+  - Efficiency: 0.668 ± 0.039
+  - Contamination Reduction: 0.406
+  - Positive Efficiency Rate: 100.0%
+  - Success Rate: 100.0%
+
+SIGNAL-TYPE PERFORMANCE:
+-------------------------
+BBH:
+  - Correlation: 1.000
+  - Accuracy: 0.547
+  - Efficiency: 0.647
+  - Overall Score: 0.713
+  - Sample Count: 700
+
+BNS:
+  - Correlation: 1.000
+  - Accuracy: 0.654
+  - Efficiency: 0.717
+  - Overall Score: 0.736
+  - Sample Count: 150
+
+NSBH:
+  - Correlation: 1.000
+  - Accuracy: 0.634
+  - Efficiency: 0.717
+  - Overall Score: 0.724
+  - Sample Count: 150
+
+SYSTEM PERFORMANCE:
+--------------------
+Overall Score: 0.718 ± 0.034
+Excellent (>0.8): 1.1%
+Good (>0.6): 100.0%
+Acceptable (>0.4): 100.0%
+Version: FIXED

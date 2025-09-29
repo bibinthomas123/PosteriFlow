@@ -1,0 +1,797 @@
+{
+  "GW150914": {
+    "event_info": {
+      "name": "GW150914",
+      "gps_time": 1126259462.4,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.039738,
+      "bandpass_used": [
+        35,
+        300
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        35,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 15.749807347655297,
+        "mass_2": 12.468763499855996,
+        "luminosity_distance": 968.1985569218533,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 86.09669317798917,
+      "h1_snr_improvement_db": 17.137637860025723,
+      "h1_peak_preservation": 0.05361078230679972,
+      "h1_raw_rms": 5.75706714366125,
+      "h1_cleaned_rms": 0.8004227089323985,
+      "l1_noise_reduction_percent": 88.11086900302745,
+      "l1_snr_improvement_db": 18.496997755417357,
+      "l1_peak_preservation": 0.09039858659285797,
+      "l1_raw_rms": 18.85282365574447,
+      "l1_cleaned_rms": 2.24143690105969,
+      "average_noise_reduction_percent": 87.1037810905083,
+      "average_snr_improvement_db": 17.81731780772154
+    },
+    "success": true
+  },
+  "GW151012": {
+    "event_info": {
+      "name": "GW151012",
+      "gps_time": 1128678900.4,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.01406,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 58.767126007254355,
+      "h1_snr_improvement_db": 7.695127863424601,
+      "h1_peak_preservation": 0.122241605429502,
+      "h1_raw_rms": 1.2125407269286153,
+      "h1_cleaned_rms": 0.499965390045198,
+      "l1_noise_reduction_percent": 88.30149126754496,
+      "l1_snr_improvement_db": 18.637389928399184,
+      "l1_peak_preservation": 0.19571672389374262,
+      "l1_raw_rms": 40.26516230363265,
+      "l1_cleaned_rms": 4.710423528227659,
+      "average_noise_reduction_percent": 73.53430863739966,
+      "average_snr_improvement_db": 13.166258895911893
+    },
+    "success": true
+  },
+  "GW151226": {
+    "event_info": {
+      "name": "GW151226",
+      "gps_time": 1135136350.6,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.017924,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 87.52434418457857,
+      "h1_snr_improvement_db": 18.078732305622566,
+      "h1_peak_preservation": 0.1371161357365479,
+      "h1_raw_rms": 10.19962917026038,
+      "h1_cleaned_rms": 1.2724706297310089,
+      "l1_noise_reduction_percent": 88.13558099926621,
+      "l1_snr_improvement_db": 18.515070485558823,
+      "l1_peak_preservation": 0.16049593165925993,
+      "l1_raw_rms": 22.495466516997116,
+      "l1_cleaned_rms": 2.668956403746314,
+      "average_noise_reduction_percent": 87.8299625919224,
+      "average_snr_improvement_db": 18.296901395590695
+    },
+    "success": true
+  },
+  "GW170104": {
+    "event_info": {
+      "name": "GW170104",
+      "gps_time": 1167559936.6,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.015184,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 87.00426563907763,
+      "h1_snr_improvement_db": 17.72398348849962,
+      "h1_peak_preservation": 0.15725871313251658,
+      "h1_raw_rms": 7.872885304338499,
+      "h1_cleaned_rms": 1.023139260691926,
+      "l1_noise_reduction_percent": 83.49054948404935,
+      "l1_snr_improvement_db": 15.645347622402246,
+      "l1_peak_preservation": 0.09735082847127999,
+      "l1_raw_rms": 3.825841890694951,
+      "l1_cleaned_rms": 0.6316254737627937,
+      "average_noise_reduction_percent": 85.24740756156349,
+      "average_snr_improvement_db": 16.684665555450934
+    },
+    "success": true
+  },
+  "GW170608": {
+    "event_info": {
+      "name": "GW170608",
+      "gps_time": 1180922494.5,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.01353,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 54.08802140523391,
+      "h1_snr_improvement_db": 6.761479814785099,
+      "h1_peak_preservation": 0.06673069156769697,
+      "h1_raw_rms": 0.9699542894219795,
+      "h1_cleaned_rms": 0.44532520573843476,
+      "l1_noise_reduction_percent": 79.23347024481531,
+      "l1_snr_improvement_db": 13.65272142615092,
+      "l1_peak_preservation": 0.14781159028176122,
+      "l1_raw_rms": 2.7398672621402618,
+      "l1_cleaned_rms": 0.5689753502449215,
+      "average_noise_reduction_percent": 66.6607458250246,
+      "average_snr_improvement_db": 10.20710062046801
+    },
+    "success": true
+  },
+  "GW170729": {
+    "event_info": {
+      "name": "GW170729",
+      "gps_time": 1185389807.3,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1",
+        "V1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.024989,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 88.28098474815792,
+      "h1_snr_improvement_db": 18.622177610486748,
+      "h1_peak_preservation": 0.16939416684256578,
+      "h1_raw_rms": 33.92669776707296,
+      "h1_cleaned_rms": 3.975874885769648,
+      "l1_noise_reduction_percent": 88.2598255513384,
+      "l1_snr_improvement_db": 18.60650899613226,
+      "l1_peak_preservation": 0.18510497434371345,
+      "l1_raw_rms": 46.066959425440125,
+      "l1_cleaned_rms": 5.408341399740831,
+      "average_noise_reduction_percent": 88.27040514974816,
+      "average_snr_improvement_db": 18.614343303309504
+    },
+    "success": true
+  },
+  "GW170809": {
+    "event_info": {
+      "name": "GW170809",
+      "gps_time": 1186302519.8,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1",
+        "V1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.044018,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 88.07286062594697,
+      "h1_snr_improvement_db": 18.46927411575634,
+      "h1_peak_preservation": 0.20751744962964128,
+      "h1_raw_rms": 17.42617394845055,
+      "h1_cleaned_rms": 2.078444054396617,
+      "l1_noise_reduction_percent": 79.74290935212682,
+      "l1_snr_improvement_db": 13.868458569745957,
+      "l1_peak_preservation": 0.04668687523659477,
+      "l1_raw_rms": 2.6285803066947793,
+      "l1_cleaned_rms": 0.5324738954793043,
+      "average_noise_reduction_percent": 83.90788498903689,
+      "average_snr_improvement_db": 16.168866342751148
+    },
+    "success": true
+  },
+  "GW170814": {
+    "event_info": {
+      "name": "GW170814",
+      "gps_time": 1186741861.5,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1",
+        "V1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.018469,
+      "bandpass_used": [
+        30,
+        300
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 13.749807347655297,
+        "mass_2": 10.868763499855994,
+        "luminosity_distance": 1020.1985569218533,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 88.26594404735434,
+      "h1_snr_improvement_db": 18.611036904518638,
+      "h1_peak_preservation": 0.19129897171173185,
+      "h1_raw_rms": 36.19843437613961,
+      "h1_cleaned_rms": 4.247544543677944,
+      "l1_noise_reduction_percent": 88.29250686640722,
+      "l1_snr_improvement_db": 18.630721765162605,
+      "l1_peak_preservation": 0.15256064243761835,
+      "l1_raw_rms": 117.98766880776638,
+      "l1_cleaned_rms": 13.813398224155442,
+      "average_noise_reduction_percent": 88.27922545688078,
+      "average_snr_improvement_db": 18.620879334840623
+    },
+    "success": true
+  },
+  "GW170818": {
+    "event_info": {
+      "name": "GW170818",
+      "gps_time": 1187058327.1,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1",
+        "V1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.015702,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 87.75285208714519,
+      "h1_snr_improvement_db": 18.239300740151137,
+      "h1_peak_preservation": 0.18371789847844525,
+      "h1_raw_rms": 14.36262367644335,
+      "h1_cleaned_rms": 1.7590117658207232,
+      "l1_noise_reduction_percent": 87.97660830241811,
+      "l1_snr_improvement_db": 18.39946008466103,
+      "l1_peak_preservation": 0.19881948962302148,
+      "l1_raw_rms": 15.587359293893535,
+      "l1_cleaned_rms": 1.8741292632142539,
+      "average_noise_reduction_percent": 87.86473019478166,
+      "average_snr_improvement_db": 18.319380412406083
+    },
+    "success": true
+  },
+  "GW170823": {
+    "event_info": {
+      "name": "GW170823",
+      "gps_time": 1187529256.5,
+      "detectors": [
+        "H1",
+        "L1"
+      ],
+      "available_detectors": [
+        "L1",
+        "H1",
+        "V1"
+      ]
+    },
+    "processing_info": {
+      "processing_time_seconds": 0.016767,
+      "bandpass_used": [
+        20,
+        400
+      ],
+      "whitening_applied": true,
+      "segment_duration": 4.0,
+      "frequency_band": [
+        30,
+        300
+      ]
+    },
+    "parameter_estimation": {
+      "physical_parameters": {
+        "mass_1": 2.2496789127588275,
+        "mass_2": 1.4479391664266585,
+        "luminosity_distance": 1340.330928203089,
+        "ra": 3.019485936086313,
+        "dec": -0.22823794826095645,
+        "geocent_time": 0.006254245992749929,
+        "theta_jn": 1.575540969136866,
+        "psi": 1.8464293098207187,
+        "phase": 2.6183559170566366
+      },
+      "normalized_parameters": [
+        -0.9842832684516907,
+        -0.9920224547386169,
+        0.13900350034236908,
+        -0.0388677753508091,
+        -0.14530079066753387,
+        0.012508491985499859,
+        0.003020533127710223,
+        0.1754734069108963,
+        -0.16655142605304718
+      ],
+      "uncertainties": [
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582,
+        0.009999999776482582
+      ],
+      "enhancement_applied": true
+    },
+    "signal_subtraction": {
+      "strength": 0.45039403438568115,
+      "h1_noise_reduction_percent": 88.30006683165111,
+      "h1_snr_improvement_db": 18.636332379948893,
+      "h1_peak_preservation": 0.07295709615139334,
+      "h1_raw_rms": 44.927226297239194,
+      "h1_cleaned_rms": 5.25645545116985,
+      "l1_noise_reduction_percent": 77.38975398004918,
+      "l1_snr_improvement_db": 12.91389424223408,
+      "l1_peak_preservation": 0.07499774401339268,
+      "l1_raw_rms": 2.437922017465477,
+      "l1_cleaned_rms": 0.5512201659234927,
+      "average_noise_reduction_percent": 82.84491040585014,
+      "average_snr_improvement_db": 15.775113311091488
+    },
+    "success": true
+  }
+}

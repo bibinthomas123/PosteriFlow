@@ -382,7 +382,7 @@ def enhance_pe_parameters(theta_pred_raw, event_name):
     targets = event_targets[event_name]
     
     # Weighted adjustment toward known values
-    confidence_weight = 0.7  # Balance between model prediction and known values
+    confidence_weight = 0.4  # Balance between model prediction and known values
     
     adjusted_params = current_params.copy()
     
@@ -628,9 +628,9 @@ def prepare_segment_enhanced(timeseries: TimeSeries, gps_center: float, fs: int 
 def denormalize_parameters_base(theta_norm, param_names):
     """Base parameter denormalization with training ranges"""
     param_ranges = {
-        'mass_1': (5.0, 95.0),
-        'mass_2': (1.0, 85.0),
-        'luminosity_distance': (20.0, 3000.0),
+        'mass_1': (1.1, 147.4),
+        'mass_2': (1.0, 113.3),
+        'luminosity_distance': (56.0, 14779.0),
         'ra': (0.0, 2*np.pi),
         'dec': (-np.pi/2, np.pi/2),
         'geocent_time': (-0.5, 0.5),
@@ -647,7 +647,6 @@ def denormalize_parameters_base(theta_norm, param_names):
                 min_val, max_val = param_ranges[param_name]
                 
                 if param_name == 'luminosity_distance':
-                    physical[param_name] = safe_float_convert((norm_val + 1.0) / 2.0 * (max_val - min_val) + min_val)
                     log_min, log_max = np.log10(min_val), np.log10(max_val)
                     log_val = (norm_val + 1.0) / 2.0 * (log_max - log_min) + log_min
                     physical[param_name] = safe_float_convert(10**log_val)

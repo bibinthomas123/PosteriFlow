@@ -1,0 +1,12 @@
+invalid_scenarios: 0
+ns_systems_validated: 5113
+ns_validation:
+  bbh_without_tidal: 24278
+  bns_with_tidal: 3056
+  nsbh_with_tidal: 2057
+  tidal_parameter_errors: 0
+total_scenarios: 15000
+valid_scenarios: 15000
+validation_errors: []
+validation_success_rate: 100.0
+warnings: []

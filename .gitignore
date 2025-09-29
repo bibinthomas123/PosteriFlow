@@ -75,3 +75,12 @@ github/
 *.npy
 
 github.pub
+github
+
+test.py
+
+*.sh
+
+*.out
+
+*.backup

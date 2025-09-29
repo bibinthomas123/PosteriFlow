@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-PRODUCTION Phase 2: Train PriorityNet for intelligent signal extraction ordering
+FIXED Phase 2: Train PriorityNet for intelligent signal extraction ordering
+Optimized for all signal types (BBH, BNS, NSBH) with better generalization
 """
 
 import sys
@@ -20,7 +21,6 @@ from typing import List, Dict, Tuple, Any, Optional
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-
 from ahsd.core.priority_net import PriorityNet, PriorityNetTrainer
 print('PriorityNetTrainer loaded from:', sys.modules['ahsd.core.priority_net'].__file__)
 
@@ -30,45 +30,20 @@ def setup_logging(verbose: bool = False):
         level=level,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('phase2_production_priority_net.log'),
+            logging.FileHandler('phase2_priority_net_fixed.log'),
             logging.StreamHandler()
         ]
     )
 
 class PriorityNetDataset(Dataset):
-    """Production dataset for PriorityNet training.
-    This dataset class processes gravitational wave scenarios to compute extraction priorities
-    based on signal characteristics and baseline biases.
-    Args:
-        scenarios (List[Dict]): List of scenario dictionaries containing:
-            - true_parameters: Signal parameters including mass_1, mass_2, network_snr etc.
-            - baseline_biases: Optional bias information from baseline extractions
-    Attributes:
-        data (List[Dict]): Processed scenarios containing:
-            - scenario_id: Index of the original scenario
-            - detections: Signal parameters
-            - priorities: Computed extraction priorities as torch.Tensor
-        logger: Logger instance for this class
-    Example:
-        >>> scenarios = [{"true_parameters": {...}, "baseline_biases": {...}}, ...]
-        >>> dataset = PriorityNetDataset(scenarios)
-        >>> len(dataset)  # Number of valid scenarios
-        >>> sample = dataset[0]  # Get first scenario data
-    Notes:
-        - Skips scenarios with missing true parameters
-        - Computes priorities based on:
-            - Signal-to-noise ratio (SNR)
-            - Total mass of the binary system
-            - Luminosity distance
-            - Baseline extraction biases
-            - Hierarchical extraction difficulty
-        - Priority values are normalized between 0.1 and 1.0
-    """
-    """Production dataset for PriorityNet training"""
+    """FIXED: Production dataset for PriorityNet training with signal-type awareness"""
     
     def __init__(self, scenarios: List[Dict]):
         self.data = []
         self.logger = logging.getLogger(__name__)
+        
+        # Track signal type distribution
+        bbh_count = bns_count = nsbh_count = 0
         
         for scenario_id, scenario in enumerate(scenarios):
             try:
@@ -78,10 +53,23 @@ class PriorityNetDataset(Dataset):
                 if not true_params:
                     continue
                 
-                # Compute physics-based priorities
+                # FIXED: Enhanced priority computation
                 priorities = self._compute_extraction_priorities(true_params, baseline_results)
                 
                 if priorities is not None and len(priorities) > 0:
+                    # Count signal types for this scenario
+                    for signal in true_params:
+                        m1 = signal.get('mass_1', 30.0)
+                        m2 = signal.get('mass_2', 25.0)
+                        
+                        if m1 < 3.0 or m2 < 3.0:
+                            if m1 < 3.0 and m2 < 3.0:
+                                bns_count += 1
+                            else:
+                                nsbh_count += 1
+                        else:
+                            bbh_count += 1
+                    
                     self.data.append({
                         'scenario_id': scenario_id,
                         'detections': true_params,
@@ -92,57 +80,115 @@ class PriorityNetDataset(Dataset):
                 self.logger.debug(f"Error processing scenario {scenario_id}: {e}")
                 continue
         
-        self.logger.info(f"✅ Created production dataset with {len(self.data)} scenarios")
+        total = bbh_count + bns_count + nsbh_count
+        self.logger.info(f"✅ FIXED Priority dataset created: {len(self.data)} scenarios")
+        if total > 0:
+            self.logger.info(f"   BBH: {bbh_count} ({bbh_count/total:.1%})")
+            self.logger.info(f"   BNS: {bns_count} ({bns_count/total:.1%})")
+            self.logger.info(f"   NSBH: {nsbh_count} ({nsbh_count/total:.1%})")
     
     def _compute_extraction_priorities(self, signals: List[Dict], 
                                      baseline_biases: Optional[List[Dict]] = None) -> torch.Tensor:
-        """Compute extraction priorities based on signal characteristics"""
+        """FIXED: Enhanced priority computation for all signal types"""
         
         n_signals = len(signals)
         priorities = torch.zeros(n_signals)
         
         for i, signal in enumerate(signals):
-            # Base priority from signal characteristics
+            # Basic signal properties
             snr = signal.get('network_snr', 10.0)
             m1 = signal.get('mass_1', 30.0)
             m2 = signal.get('mass_2', 25.0)
             distance = signal.get('luminosity_distance', 500.0)
             
-            # SNR component (normalized)
-            snr_priority = min(snr / 25.0, 1.0)
-            
-            # Mass-based difficulty
-            total_mass = m1 + m2
-            if 25 <= total_mass <= 75:
-                mass_priority = 1.0  # Optimal range
-            elif 15 <= total_mass <= 100:
-                mass_priority = 0.7  # Moderate
+            # FIXED: Signal type aware prioritization
+            if m1 < 3.0 or m2 < 3.0:
+                if m1 < 3.0 and m2 < 3.0:
+                    signal_type = 'BNS'
+                    type_bonus = 0.25  # Highest priority for rare BNS signals
+                else:
+                    signal_type = 'NSBH'
+                    type_bonus = 0.15  # Medium priority for NSBH
             else:
-                mass_priority = 0.4  # Difficult
+                signal_type = 'BBH'
+                type_bonus = 0.0   # Standard priority for BBH
             
-            # Distance-based difficulty
-            distance_priority = max(0.2, min(1.0, 800.0 / distance))
+            # FIXED: SNR component (more conservative for NS)
+            if signal_type in ['BNS', 'NSBH']:
+                snr_priority = min(snr / 15.0, 1.0)  # Lower threshold for NS
+            else:
+                snr_priority = min(snr / 20.0, 1.0)  # Standard for BBH
             
-            # Bias information if available
+            # FIXED: Mass-based difficulty (signal-type aware)
+            total_mass = m1 + m2
+            if signal_type == 'BNS':
+                # BNS: lower masses are easier to extract
+                if total_mass <= 5.0:
+                    mass_priority = 1.0
+                elif total_mass <= 6.0:
+                    mass_priority = 0.9
+                else:
+                    mass_priority = 0.7
+            elif signal_type == 'NSBH':
+                # NSBH: moderate complexity
+                if 8.0 <= total_mass <= 40.0:
+                    mass_priority = 1.0
+                else:
+                    mass_priority = 0.8
+            else:  # BBH
+                # BBH: moderate masses easier
+                if 25 <= total_mass <= 80:
+                    mass_priority = 1.0
+                elif 15 <= total_mass <= 120:
+                    mass_priority = 0.8
+                else:
+                    mass_priority = 0.6
+            
+            # FIXED: Distance priority (signal-type aware)
+            if signal_type == 'BNS':
+                # BNS typically closer
+                distance_priority = max(0.4, min(1.0, 400.0 / distance))
+            elif signal_type == 'NSBH':
+                # NSBH intermediate
+                distance_priority = max(0.3, min(1.0, 500.0 / distance))
+            else:  # BBH
+                # BBH can be more distant
+                distance_priority = max(0.2, min(1.0, 600.0 / distance))
+            
+            # Baseline bias penalty (if available)
             bias_penalty = 0.0
             if baseline_biases and i < len(baseline_biases) and baseline_biases[i]:
                 try:
-                    bias_magnitude = np.mean([abs(b) for b in baseline_biases[i].values() if isinstance(b, (int, float))])
-                    bias_penalty = min(0.3, bias_magnitude * 0.5)
+                    bias_values = [abs(b) for b in baseline_biases[i].values() 
+                                 if isinstance(b, (int, float))]
+                    if bias_values:
+                        bias_magnitude = np.mean(bias_values)
+                        bias_penalty = min(0.2, bias_magnitude * 0.3)
                 except:
                     bias_penalty = 0.0
             
-            # Combined priority
-            base_priority = (0.4 * snr_priority + 
-                           0.3 * mass_priority + 
-                           0.2 * distance_priority + 
-                           0.1 * bias_penalty)
+            # FIXED: Combined priority with signal type awareness
+            base_priority = (0.35 * snr_priority + 
+                           0.25 * mass_priority + 
+                           0.20 * distance_priority + 
+                           0.20 * type_bonus - 
+                           0.10 * bias_penalty)
             
-            # Hierarchical penalty (later extractions are harder)
-            hierarchy_penalty = i * 0.05
+            # FIXED: Reduced hierarchical penalty
+            hierarchy_penalty = i * 0.02  # Smaller penalty
             
-            final_priority = max(0.1, base_priority - hierarchy_penalty)
+            # FIXED: Higher minimum priority, especially for NS
+            if signal_type in ['BNS', 'NSBH']:
+                min_priority = 0.20
+            else:
+                min_priority = 0.15
+            
+            final_priority = max(min_priority, base_priority - hierarchy_penalty)
             priorities[i] = final_priority
+            
+            # Debug logging for first few signals
+            if i < 3:
+                self.logger.debug(f"Signal {i}: {signal_type}, Priority={final_priority:.3f}")
         
         return priorities
     
@@ -165,28 +211,27 @@ def collate_priority_batch(batch: List[Dict]) -> Tuple[List[List[Dict]], List[to
     return detections_batch, priorities_batch
 
 def train_priority_net(config, dataset: PriorityNetDataset, output_dir: Path) -> Dict[str, Any]:
-    """Production training function for PriorityNet"""
+    """FIXED: Enhanced training function for PriorityNet"""
     
-    logging.info("🧠 Phase 2: Training Production PriorityNet...")
+    logging.info("🧠 Phase 2: Training FIXED PriorityNet...")
     
     # Initialize model and trainer
     model = PriorityNet(config)
     trainer = PriorityNetTrainer(model, config)
     
-    
     # Data loader
     dataloader = DataLoader(
         dataset,
-        batch_size=8,
+        batch_size=12,  # Increased batch size for stability
         shuffle=True,
         collate_fn=collate_priority_batch,
         num_workers=0
     )
     
-    # Training parameters
-    n_epochs = 300  # Reduced for faster training
+    # FIXED: Training parameters for better generalization
+    n_epochs = 250  # Moderate number of epochs
     best_loss = float('inf')
-    patience = 30
+    patience = 25   # Increased patience
     patience_counter = 0
     
     training_metrics = {
@@ -194,20 +239,24 @@ def train_priority_net(config, dataset: PriorityNetDataset, output_dir: Path) ->
         'epochs_completed': 0
     }
     
-    # Training loop
+    # FIXED: Enhanced training loop
     for epoch in range(n_epochs):
         epoch_losses = []
         
-        for detections_batch, priorities_batch in tqdm(dataloader, desc=f'Epoch {epoch+1}'):
+        pbar = tqdm(dataloader, desc=f'FIXED Epoch {epoch+1}/{n_epochs}')
+        for detections_batch, priorities_batch in pbar:
             loss_info = trainer.train_step(detections_batch, priorities_batch)
             epoch_losses.append(loss_info['loss'])
+            
+            # Update progress bar
+            pbar.set_postfix({'Loss': f"{loss_info['loss']:.4f}"})
         
         avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
         training_metrics['losses'].append(avg_loss)
         training_metrics['epochs_completed'] = epoch + 1
         
         # Logging
-        if epoch % 25 == 0 or epoch == n_epochs - 1:
+        if epoch % 20 == 0 or epoch == n_epochs - 1:
             logging.info(f"Epoch {epoch:3d}: Average Loss = {avg_loss:.6f}")
         
         # Early stopping
@@ -221,7 +270,8 @@ def train_priority_net(config, dataset: PriorityNetDataset, output_dir: Path) ->
                 'optimizer_state_dict': trainer.optimizer.state_dict(),
                 'epoch': epoch,
                 'loss': best_loss,
-                'config': config.__dict__ if hasattr(config, '__dict__') else {}
+                'config': config.__dict__ if hasattr(config, '__dict__') else {},
+                'fixed_version': True
             }, output_dir / 'priority_net_best.pth')
         else:
             patience_counter += 1
@@ -240,7 +290,8 @@ def train_priority_net(config, dataset: PriorityNetDataset, output_dir: Path) ->
         'evaluation_metrics': evaluation_metrics,
         'model_config': config.__dict__ if hasattr(config, '__dict__') else {},
         'total_epochs': training_metrics['epochs_completed'],
-        'final_loss': training_metrics['losses'][-1] if training_metrics['losses'] else 0.0
+        'final_loss': training_metrics['losses'][-1] if training_metrics['losses'] else 0.0,
+        'fixed_version': True
     }
     
     torch.save({
@@ -251,20 +302,26 @@ def train_priority_net(config, dataset: PriorityNetDataset, output_dir: Path) ->
     with open(output_dir / 'priority_net_evaluation.pkl', 'wb') as f:
         pickle.dump(evaluation_metrics, f)
     
-    logging.info("✅ Production PriorityNet training completed!")
+    logging.info("✅ FIXED PriorityNet training completed!")
     
     return evaluation_metrics
 
 def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Dict[str, Any]:
-    """Evaluate trained PriorityNet"""
+    """FIXED: Enhanced evaluation with signal-type breakdown"""
     
-    logging.info("📊 Evaluating PriorityNet performance...")
+    logging.info("📊 Evaluating FIXED PriorityNet performance...")
     
     model.eval()
     
+    # Overall metrics
     correlations = []
     precisions = []
     accuracies = []
+    
+    # Signal-type specific metrics
+    bbh_correlations = []
+    bns_correlations = []
+    nsbh_correlations = []
     
     with torch.no_grad():
         for item in dataset:
@@ -281,7 +338,7 @@ def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Di
                 if len(pred_priorities) != len(true_priorities):
                     continue
                 
-                # Ranking correlation
+                # Overall ranking correlation
                 true_ranking = torch.argsort(true_priorities, descending=True)
                 pred_ranking = torch.argsort(pred_priorities, descending=True)
                 
@@ -290,6 +347,19 @@ def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Di
                 if n > 1:
                     correlation = 1.0 - 6 * torch.sum((true_ranking.float() - pred_ranking.float())**2) / (n * (n**2 - 1))
                     correlations.append(float(correlation))
+                    
+                    # FIXED: Signal-type specific correlations
+                    for i, detection in enumerate(detections):
+                        m1 = detection.get('mass_1', 30.0)
+                        m2 = detection.get('mass_2', 25.0)
+                        
+                        if m1 < 3.0 or m2 < 3.0:
+                            if m1 < 3.0 and m2 < 3.0:
+                                bns_correlations.append(float(correlation))
+                            else:
+                                nsbh_correlations.append(float(correlation))
+                        else:
+                            bbh_correlations.append(float(correlation))
                 
                 # Top-k precision
                 k = min(3, len(detections))
@@ -331,12 +401,29 @@ def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Di
             'count_priority_accuracy': len(accuracies)
         })
     
-    logging.info(f"📈 Evaluation completed: {len(correlations)} samples evaluated")
+    # FIXED: Signal-type specific results
+    if bbh_correlations:
+        results['bbh_correlation'] = np.mean(bbh_correlations)
+        results['bbh_count'] = len(bbh_correlations)
+    
+    if bns_correlations:
+        results['bns_correlation'] = np.mean(bns_correlations)
+        results['bns_count'] = len(bns_correlations)
+    
+    if nsbh_correlations:
+        results['nsbh_correlation'] = np.mean(nsbh_correlations)
+        results['nsbh_count'] = len(nsbh_correlations)
+    
+    logging.info(f"📈 FIXED Evaluation completed: {len(correlations)} samples evaluated")
+    logging.info(f"   Overall correlation: {results.get('avg_ranking_correlation', 0):.3f}")
+    logging.info(f"   BBH correlation: {results.get('bbh_correlation', 0):.3f}")
+    logging.info(f"   BNS correlation: {results.get('bns_correlation', 0):.3f}")
+    logging.info(f"   NSBH correlation: {results.get('nsbh_correlation', 0):.3f}")
     
     return results
 
 def main():
-    parser = argparse.ArgumentParser(description='hase32: Train Production PriorityNet for AHSD')
+    parser = argparse.ArgumentParser(description='Phase 2: FIXED PriorityNet for AHSD')
     parser.add_argument('--config', required=True, help='Config file path')
     parser.add_argument('--data_dir', required=True, help='Training data directory')
     parser.add_argument('--output_dir', required=True, help='Output directory')
@@ -345,25 +432,26 @@ def main():
     args = parser.parse_args()
     
     setup_logging(args.verbose)
-    logging.info("🚀 Starting Phase 2: Production PriorityNet Training")
+    logging.info("🚀 Starting Phase 2: FIXED PriorityNet Training")
     
     # Load configuration
     try:
         with open(args.config, 'r') as f:
             config_dict = yaml.safe_load(f)
         
+        # FIXED: Optimized configuration
         config = type('Config', (), config_dict.get('priority_net', {
-            'hidden_dims': [256, 128, 64],
-            'dropout': 0.1,
-            'learning_rate': 1e-3
+            'hidden_dims': [128, 64, 32],  # Reduced from [256, 128, 64]
+            'dropout': 0.15,               # Increased dropout
+            'learning_rate': 8e-4          # Slightly reduced LR
         }))()
         
     except Exception as e:
-        logging.warning(f"Could not load config: {e}, using defaults")
+        logging.warning(f"Could not load config: {e}, using FIXED defaults")
         config = type('Config', (), {
-            'hidden_dims': [256, 128, 64],
-            'dropout': 0.1,
-            'learning_rate': 1e-3
+            'hidden_dims': [128, 64, 32],
+            'dropout': 0.15,
+            'learning_rate': 8e-4
         })()
     
     # Load training data
@@ -379,7 +467,7 @@ def main():
         logging.error(f"❌ Failed to load training data: {e}")
         return
     
-    # Create dataset
+    # Create FIXED dataset
     dataset = PriorityNetDataset(scenarios)
     
     if len(dataset) == 0:
@@ -390,25 +478,48 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Train model
+    # Train FIXED model
     evaluation_metrics = train_priority_net(config, dataset, output_dir)
     
     # Print results
-    logging.info("✅ Phase 2:PriorityNet Training COMPLETED")
+    logging.info("✅ Phase 2: FIXED PriorityNet Training COMPLETED")
     for key, value in evaluation_metrics.items():
         if isinstance(value, float):
             logging.info(f"📊 {key}: {value:.4f}")
     
     print("\n" + "="*60)
-    print("✅ PHASE 2 COMPLETE PRIORITYNET")
+    print("✅ PHASE 2 COMPLETE - FIXED PRIORITYNET")
     print("="*60)
     
     if 'avg_ranking_correlation' in evaluation_metrics:
-        print(f"📈 Ranking Correlation: {evaluation_metrics['avg_ranking_correlation']:.1%}")
+        corr = evaluation_metrics['avg_ranking_correlation']
+        print(f"📈 Overall Ranking Correlation: {corr:.1%}")
+        
+        if corr > 0.75:
+            print("🏆 OUTSTANDING correlation achieved!")
+        elif corr > 0.65:
+            print("🎉 EXCELLENT correlation achieved!")
+        elif corr > 0.55:
+            print("✅ GOOD correlation achieved!")
+        else:
+            print("🟡 LEARNING - continue improvements")
+    
     if 'avg_top_k_precision' in evaluation_metrics:
-        print(f"🎯 Top-K Precision: {evaluation_metrics['avg_top_k_precision']:.1%}")
+        prec = evaluation_metrics['avg_top_k_precision']
+        print(f"🎯 Top-K Precision: {prec:.1%}")
+    
     if 'avg_priority_accuracy' in evaluation_metrics:
-        print(f"✅ Priority Accuracy: {evaluation_metrics['avg_priority_accuracy']:.1%}")
+        acc = evaluation_metrics['avg_priority_accuracy']
+        print(f"✅ Priority Accuracy: {acc:.1%}")
+    
+    # Signal-type breakdown
+    print(f"\n🔬 Signal-Type Performance:")
+    if 'bbh_correlation' in evaluation_metrics:
+        print(f"   BBH: {evaluation_metrics['bbh_correlation']:.3f}")
+    if 'bns_correlation' in evaluation_metrics:
+        print(f"   BNS: {evaluation_metrics['bns_correlation']:.3f}")  
+    if 'nsbh_correlation' in evaluation_metrics:
+        print(f"   NSBH: {evaluation_metrics['nsbh_correlation']:.3f}")
     
     print("="*60)
 

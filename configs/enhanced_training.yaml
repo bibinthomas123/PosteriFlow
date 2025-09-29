@@ -1,42 +1,141 @@
-# AHSD Experiment Configuration
-detectors:
-  - name: "H1"
-    psd_file: "aligo_O4_high_psd.txt"
-    sampling_rate: 4096
-    duration: 8.0
-  - name: "L1"
-    psd_file: "aligo_O4_high_psd.txt"
-    sampling_rate: 4096
-    duration: 8.0
-  - name: "V1"
-    psd_file: "virgo_O4_psd.txt"
-    sampling_rate: 4096
-    duration: 8.0
+# FIXED: Enhanced configuration for all signal types (BBH, BNS, NSBH)
+# Optimized to reduce overfitting and improve generalization
 
-waveform:
-  approximant: "IMRPhenomPv2"
-  f_lower: 20.0
-  f_ref: 20.0
-  duration: 8.0
+# Global settings
+experiment_name: "AHSD_Fixed_Universal"
+random_seed: 42
+device: "auto"
 
+# FIXED: Neural PE configuration
+neural_pe:
+  # Architecture - Much smaller to reduce overfitting
+  conv_channels: [32, 64, 96]        # Reduced from [64, 128, 256, 128]
+  conv_kernels: [32, 16, 8]          # Larger kernels for NS signals
+  conv_strides: [2, 2, 2]            # Consistent strides
+  hidden_dims: [256, 128, 64]        # Much smaller - reduces overfitting
+  feature_length: 32                 # Increased for NS signals
+  dropout: 0.15                      # Increased regularization
+  
+  # Training parameters - Conservative for better generalization
+  learning_rate: 0.0003              # Reduced from 0.0005
+  weight_decay: 0.0001               # Increased regularization
+  batch_size: 24                     # Increased for stability
+  epochs: 80                         # Reduced to prevent overfitting
+  patience: 20                       # Increased patience
+  
+  # Loss configuration
+  loss_weights:
+    mse_weight: 0.8                  # Primary loss
+    uncertainty_weight: 0.2          # Regularization
+    
+  # Signal-type specific weights
+  signal_type_weights:
+    BBH: 1.0                         # Standard weight
+    BNS: 1.8                         # Higher weight for rare BNS
+    NSBH: 1.5                        # Medium weight for NSBH
+  
+  # Optimization
+  optimizer: "AdamW"
+  scheduler: "ReduceLROnPlateau"
+  scheduler_params:
+    factor: 0.7
+    patience: 15
+    verbose: true
+
+# FIXED: Priority Net configuration  
 priority_net:
-  hidden_dims: [512, 256, 128, 64]  # Deeper network for better ranking
-  dropout: 0.25                  # Regularization to prevent overfitting
-  learning_rate: 0.0005
-  batch_size: 16                 # Smaller batch size for stability
+  # Architecture - Smaller to reduce overfitting
+  hidden_dims: [128, 64, 32]         # Reduced from [256, 128, 64]
+  dropout: 0.15                      # Increased dropout
+  
+  # Training parameters
+  learning_rate: 0.0008              # Slightly reduced
+  batch_size: 12                     # Moderate batch size
+  epochs: 250                        # Moderate epochs
+  patience: 25                       # Increased patience
+  
+  # Priority computation
+  priority_weights:
+    snr_weight: 0.35                 # SNR importance
+    mass_weight: 0.25                # Mass-based difficulty
+    distance_weight: 0.20            # Distance factor
+    signal_type_weight: 0.20         # Signal type bonus
+  
+  # Signal-type bonuses
+  signal_type_bonuses:
+    BBH: 0.0                         # Standard priority
+    BNS: 0.25                        # Highest priority (rare)
+    NSBH: 0.15                       # Medium priority
+  
+  # Hierarchy settings
+  hierarchy_penalty: 0.02            # Reduced penalty
+  min_priorities:
+    BBH: 0.15                        # Minimum BBH priority
+    BNS: 0.20                        # Higher minimum for NS
+    NSBH: 0.20                       # Higher minimum for NS
 
-adaptive_subtractor:
-  neural_pe:
-    flow_layers: 8
-    hidden_features: 256          # Increased capacity for complex noise modeling
-    num_blocks: 3
-  uncertainty_realizations: 200
+# FIXED: Subtractor configuration
+subtractor:
+  # Architecture - Reduced to prevent overfitting
+  conv_channels: [32, 64, 96]        # Reduced from [64, 128, 256]
+  detector_size: [512, 256]          # Reduced from [1024, 512]
+  adapter_size: [24, 8]              # Reduced from [32, 16]
+  
+  # Training parameters
+  learning_rate: 0.0005              # Moderate learning rate
+  weight_decay: 0.0002               # Increased regularization
+  batch_size: 16                     # Moderate batch size
+  epochs: 30                         # Conservative epochs
+  
+  # Subtraction parameters - VERY conservative
+  base_strength: 0.02                # Very low base strength
+  max_strength: 0.10                 # Low maximum strength
+  signal_preservation: 0.9           # High signal preservation
+  
+  # Loss weights - Emphasize signal preservation
+  loss_weights:
+    reconstruction: 0.2              # Lower weight on reconstruction
+    efficiency: 0.7                  # Higher weight on efficiency
+    preservation: 0.1                # Signal preservation bonus
 
-bias_corrector:
-  hidden_dims: [256, 128, 64]
-  training_epochs: 1500
+# Dataset configuration
+dataset:
+  # Signal type distribution (matches your data)
+  signal_distribution:
+    BBH: 0.826                       # 82.6% as in your data
+    BNS: 0.104                       # 10.4% as in your data  
+    NSBH: 0.070                      # 7.0% as in your data
+  
+  # Data augmentation
+  augmentation:
+    noise_scaling: [0.5, 2.0]        # Noise level variation
+    signal_scaling: [0.8, 1.2]       # Signal amplitude variation
+    time_shift: [-0.1, 0.1]          # Small time shifts
+  
+  # Validation split
+  validation_split: 0.15             # 15% for validation
+  test_split: 0.1                    # 10% for testing
 
-max_overlapping_signals: 5
-snr_threshold: 8.0
-seed: 42
+# Training monitoring
+monitoring:
+  save_frequency: 10                 # Save every 10 epochs
+  log_frequency: 5                   # Log every 5 epochs
+  early_stopping: true               # Enable early stopping
+  
+  # Metrics to track
+  metrics:
+    - "accuracy"
+    - "correlation"
+    - "efficiency"
+    - "signal_preservation"
+    - "parameter_error"
+  
+  # Signal-type specific tracking
+  track_by_signal_type: true
 
+# Output configuration
+output:
+  save_best_only: true               # Only save best models
+  save_intermediate: false           # Don't save all checkpoints
+  generate_plots: true               # Generate training plots
+  detailed_logging: true             # Detailed log files

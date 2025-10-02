@@ -307,7 +307,7 @@ def train_priority_net(config, dataset: PriorityNetDataset, output_dir: Path) ->
     return evaluation_metrics
 
 def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Dict[str, Any]:
-    """FIXED: Enhanced evaluation with signal-type breakdown"""
+    """FIXED: Robust evaluation that handles tuple/list outputs and tensor shapes"""
     
     logging.info("📊 Evaluating FIXED PriorityNet performance...")
     
@@ -323,36 +323,79 @@ def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Di
     bns_correlations = []
     nsbh_correlations = []
     
+    def to_1d_float_tensor(data: Any) -> torch.Tensor:
+        """Safely convert predictions/targets to a 1D float tensor."""
+        if isinstance(data, torch.Tensor):
+            t = data.detach().float().view(-1)
+            return t
+        if isinstance(data, (list, tuple)):
+            # If tuple/list where first element is a tensor, prefer it (e.g., (priorities, logits))
+            first = data[0]
+            if isinstance(first, torch.Tensor):
+                return first.detach().float().view(-1)
+            # If list/tuple of tensors, stack/concat
+            if all(isinstance(x, torch.Tensor) for x in data):
+                try:
+                    return torch.cat([x.detach().float().view(-1) for x in data], dim=0)
+                except Exception:
+                    return torch.stack([x.detach().float().view(-1) for x in data], dim=0).view(-1)
+            # Fallback: assume numeric list
+            try:
+                return torch.tensor(list(data), dtype=torch.float32).view(-1)
+            except Exception:
+                return torch.zeros(0, dtype=torch.float32)
+        # Numeric scalar
+        if isinstance(data, (int, float)):
+            return torch.tensor([float(data)], dtype=torch.float32)
+        # Last resort
+        try:
+            return torch.tensor(data, dtype=torch.float32).view(-1)
+        except Exception:
+            return torch.zeros(0, dtype=torch.float32)
+    
     with torch.no_grad():
         for item in dataset:
             detections = item['detections']
             true_priorities = item['priorities']
             
-            if len(detections) <= 1:
+            if not detections or len(detections) <= 1:
                 continue
             
             try:
-                # Get model predictions
-                pred_priorities = model.forward(detections)
+                # Predictions (support tuple/list outputs)
+                pred_priorities_raw = model.forward(detections)
+                pred_priorities = to_1d_float_tensor(pred_priorities_raw)
+                true_priorities_t = to_1d_float_tensor(true_priorities)
                 
-                if len(pred_priorities) != len(true_priorities):
+                # Align lengths
+                min_len = min(len(pred_priorities), len(true_priorities_t))
+                if min_len <= 1:
+                    continue
+                pred_priorities = pred_priorities[:min_len]
+                true_priorities_t = true_priorities_t[:min_len]
+                
+                # Validate finite values
+                if (torch.isnan(pred_priorities).any() or torch.isnan(true_priorities_t).any() or
+                    torch.isinf(pred_priorities).any() or torch.isinf(true_priorities_t).any()):
                     continue
                 
-                # Overall ranking correlation
-                true_ranking = torch.argsort(true_priorities, descending=True)
+                # Rankings
+                true_ranking = torch.argsort(true_priorities_t, descending=True)
                 pred_ranking = torch.argsort(pred_priorities, descending=True)
                 
                 # Spearman correlation approximation
                 n = len(true_ranking)
                 if n > 1:
-                    correlation = 1.0 - 6 * torch.sum((true_ranking.float() - pred_ranking.float())**2) / (n * (n**2 - 1))
-                    correlations.append(float(correlation))
+                    diff = (true_ranking.float() - pred_ranking.float())
+                    rank_diff_sq = torch.sum(diff * diff)
+                    denominator = n * (n**2 - 1)
+                    correlation = 1.0 - (6.0 * float(rank_diff_sq.item())) / float(denominator)
+                    correlations.append(float(max(-1.0, min(1.0, correlation))))
                     
-                    # FIXED: Signal-type specific correlations
-                    for i, detection in enumerate(detections):
-                        m1 = detection.get('mass_1', 30.0)
-                        m2 = detection.get('mass_2', 25.0)
-                        
+                    # Signal-type specific correlations
+                    for det in detections:
+                        m1 = det.get('mass_1', 30.0)
+                        m2 = det.get('mass_2', 25.0)
                         if m1 < 3.0 or m2 < 3.0:
                             if m1 < 3.0 and m2 < 3.0:
                                 bns_correlations.append(float(correlation))
@@ -362,16 +405,14 @@ def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Di
                             bbh_correlations.append(float(correlation))
                 
                 # Top-k precision
-                k = min(3, len(detections))
+                k = min(3, min_len)
                 true_top_k = set(true_ranking[:k].tolist())
                 pred_top_k = set(pred_ranking[:k].tolist())
-                precision = len(true_top_k & pred_top_k) / k
-                precisions.append(precision)
+                precisions.append(len(true_top_k & pred_top_k) / k)
                 
-                # Priority accuracy
-                priority_error = torch.mean(torch.abs(pred_priorities - true_priorities))
-                accuracy = 1.0 / (1.0 + priority_error)
-                accuracies.append(float(accuracy))
+                # Priority accuracy (MAE-based)
+                priority_error = torch.mean(torch.abs(pred_priorities - true_priorities_t))
+                accuracies.append(float((1.0 / (1.0 + float(priority_error.item())))))
                 
             except Exception as e:
                 logging.debug(f"Evaluation error: {e}")
@@ -382,37 +423,35 @@ def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset) -> Di
     
     if correlations:
         results.update({
-            'avg_ranking_correlation': np.mean(correlations),
-            'std_ranking_correlation': np.std(correlations),
-            'count_ranking_correlation': len(correlations)
+            'avg_ranking_correlation': float(np.mean(correlations)),
+            'std_ranking_correlation': float(np.std(correlations)),
+            'count_ranking_correlation': int(len(correlations))
         })
     
     if precisions:
         results.update({
-            'avg_top_k_precision': np.mean(precisions),
-            'std_top_k_precision': np.std(precisions),
-            'count_top_k_precision': len(precisions)
+            'avg_top_k_precision': float(np.mean(precisions)),
+            'std_top_k_precision': float(np.std(precisions)),
+            'count_top_k_precision': int(len(precisions))
         })
     
     if accuracies:
         results.update({
-            'avg_priority_accuracy': np.mean(accuracies),
-            'std_priority_accuracy': np.std(accuracies),
-            'count_priority_accuracy': len(accuracies)
+            'avg_priority_accuracy': float(np.mean(accuracies)),
+            'std_priority_accuracy': float(np.std(accuracies)),
+            'count_priority_accuracy': int(len(accuracies))
         })
     
-    # FIXED: Signal-type specific results
+    # Signal-type specific results
     if bbh_correlations:
-        results['bbh_correlation'] = np.mean(bbh_correlations)
-        results['bbh_count'] = len(bbh_correlations)
-    
+        results['bbh_correlation'] = float(np.mean(bbh_correlations))
+        results['bbh_count'] = int(len(bbh_correlations))
     if bns_correlations:
-        results['bns_correlation'] = np.mean(bns_correlations)
-        results['bns_count'] = len(bns_correlations)
-    
+        results['bns_correlation'] = float(np.mean(bns_correlations))
+        results['bns_count'] = int(len(bns_correlations))
     if nsbh_correlations:
-        results['nsbh_correlation'] = np.mean(nsbh_correlations)
-        results['nsbh_count'] = len(nsbh_correlations)
+        results['nsbh_correlation'] = float(np.mean(nsbh_correlations))
+        results['nsbh_count'] = int(len(nsbh_correlations))
     
     logging.info(f"📈 FIXED Evaluation completed: {len(correlations)} samples evaluated")
     logging.info(f"   Overall correlation: {results.get('avg_ranking_correlation', 0):.3f}")

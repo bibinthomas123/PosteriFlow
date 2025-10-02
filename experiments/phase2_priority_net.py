@@ -453,6 +453,18 @@ def main():
             'dropout': 0.15,
             'learning_rate': 8e-4
         })()
+
+    # Coerce critical hyperparameters to correct numeric types
+    try:
+        if hasattr(config, 'learning_rate'):
+            config.learning_rate = float(config.learning_rate)
+    except Exception:
+        config.learning_rate = 8e-4
+    try:
+        if hasattr(config, 'dropout'):
+            config.dropout = float(config.dropout)
+    except Exception:
+        config.dropout = 0.15
     
     # Load training data
     data_dir = Path(args.data_dir)

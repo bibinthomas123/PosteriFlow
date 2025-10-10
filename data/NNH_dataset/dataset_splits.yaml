@@ -1,8 +1,0 @@
-split_ratios:
-  test: 0.05
-  train: 0.8
-  val: 0.15
-test_scenarios: 750
-total_scenarios: 15000
-train_scenarios: 12000
-val_scenarios: 2250

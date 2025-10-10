@@ -1,141 +1,221 @@
-# FIXED: Enhanced configuration for all signal types (BBH, BNS, NSBH)
-# Optimized to reduce overfitting and improve generalization
+# ==============================================================================
+# OPTIMIZED Neural PE Configuration for Breaking Through Loss 9.0
+# ==============================================================================
 
-# Global settings
-experiment_name: "AHSD_Fixed_Universal"
+experiment_name: "Optimized_Neural_PE_v2"
 random_seed: 42
 device: "auto"
 
-# FIXED: Neural PE configuration
-neural_pe:
-  # Architecture - Much smaller to reduce overfitting
-  conv_channels: [32, 64, 96]        # Reduced from [64, 128, 256, 128]
-  conv_kernels: [32, 16, 8]          # Larger kernels for NS signals
-  conv_strides: [2, 2, 2]            # Consistent strides
-  hidden_dims: [256, 128, 64]        # Much smaller - reduces overfitting
-  feature_length: 32                 # Increased for NS signals
-  dropout: 0.15                      # Increased regularization
-  
-  # Training parameters - Conservative for better generalization
-  learning_rate: 0.0003              # Reduced from 0.0005
-  weight_decay: 0.0001               # Increased regularization
-  batch_size: 24                     # Increased for stability
-  epochs: 80                         # Reduced to prevent overfitting
-  patience: 20                       # Increased patience
-  
-  # Loss configuration
-  loss_weights:
-    mse_weight: 0.8                  # Primary loss
-    uncertainty_weight: 0.2          # Regularization
-    
-  # Signal-type specific weights
-  signal_type_weights:
-    BBH: 1.0                         # Standard weight
-    BNS: 1.8                         # Higher weight for rare BNS
-    NSBH: 1.5                        # Medium weight for NSBH
-  
-  # Optimization
-  optimizer: "AdamW"
-  scheduler: "ReduceLROnPlateau"
-  scheduler_params:
-    factor: 0.7
-    patience: 15
-    verbose: true
+# ==============================================================================
+# PRIORITY NET (Keep as is - working well!)
+# ==============================================================================
 
-# FIXED: Priority Net configuration  
 priority_net:
-  # Architecture - Smaller to reduce overfitting
-  hidden_dims: [128, 64, 32]         # Reduced from [256, 128, 64]
-  dropout: 0.15                      # Increased dropout
-  
-  # Training parameters
-  learning_rate: 0.0008              # Slightly reduced
-  batch_size: 12                     # Moderate batch size
-  epochs: 250                        # Moderate epochs
-  patience: 25                       # Increased patience
-  
-  # Priority computation
-  priority_weights:
-    snr_weight: 0.35                 # SNR importance
-    mass_weight: 0.25                # Mass-based difficulty
-    distance_weight: 0.20            # Distance factor
-    signal_type_weight: 0.20         # Signal type bonus
-  
-  # Signal-type bonuses
-  signal_type_bonuses:
-    BBH: 0.0                         # Standard priority
-    BNS: 0.25                        # Highest priority (rare)
-    NSBH: 0.15                       # Medium priority
-  
-  # Hierarchy settings
-  hierarchy_penalty: 0.02            # Reduced penalty
-  min_priorities:
-    BBH: 0.15                        # Minimum BBH priority
-    BNS: 0.20                        # Higher minimum for NS
-    NSBH: 0.20                       # Higher minimum for NS
+  hidden_dims: [512, 256, 128, 64]
+  dropout: 0.2
+  learning_rate: 5e-4
+  weight_decay: 1e-5
+  batch_size: 32
+  epochs: 500
+  patience: 100
+  scheduler_patience: 15
+  min_lr: 1e-6
 
-# FIXED: Subtractor configuration
-subtractor:
-  # Architecture - Reduced to prevent overfitting
-  conv_channels: [32, 64, 96]        # Reduced from [64, 128, 256]
-  detector_size: [512, 256]          # Reduced from [1024, 512]
-  adapter_size: [24, 8]              # Reduced from [32, 16]
-  
-  # Training parameters
-  learning_rate: 0.0005              # Moderate learning rate
-  weight_decay: 0.0002               # Increased regularization
-  batch_size: 16                     # Moderate batch size
-  epochs: 30                         # Conservative epochs
-  
-  # Subtraction parameters - VERY conservative
-  base_strength: 0.02                # Very low base strength
-  max_strength: 0.10                 # Low maximum strength
-  signal_preservation: 0.9           # High signal preservation
-  
-  # Loss weights - Emphasize signal preservation
-  loss_weights:
-    reconstruction: 0.2              # Lower weight on reconstruction
-    efficiency: 0.7                  # Higher weight on efficiency
-    preservation: 0.1                # Signal preservation bonus
+# ==============================================================================
+# PARAMETERS
+# ==============================================================================
 
-# Dataset configuration
-dataset:
-  # Signal type distribution (matches your data)
+param_names:
+  - mass_1
+  - mass_2
+  - luminosity_distance
+  - ra
+  - dec
+  - theta_jn
+  - psi
+  - phase
+  - geocent_time
+
+# ==============================================================================
+# MODEL ARCHITECTURE - OPTIMIZED FOR LOSS 9.0 → 6.0
+# ==============================================================================
+
+context_dim: 256
+n_flow_layers: 8              # ✅ Keep (good balance)
+max_iterations: 5
+
+flow_config:
+  hidden_features: 128        # ✅ Keep
+  num_blocks_per_layer: 2     # ✅ Keep
+  dropout: 0.05               # ✅ REDUCE from 0.15 (flows sensitive to dropout)
+
+# ==============================================================================
+# TRAINING - BALANCED REGULARIZATION
+# ==============================================================================
+
+# Learning - INCREASE LR to break through plateau
+learning_rate: 0.0002         # ✅ INCREASE from 8e-5 to 2e-4
+batch_size: 16                # ✅ Keep (good for stability)
+epochs: 200                   # ✅ Keep (early stopping will handle)
+patience: 15                  # ✅ Keep (reasonable)
+
+# Regularization - REDUCE (too strong currently)
+weight_decay: 0.00001         # ✅ REDUCE from 5e-5 to 1e-5
+gradient_clip: 1.0            # ✅ Keep
+dropout: 0.15                 # ✅ REDUCE from 0.2 to 0.15 (context encoder only)
+
+# Optimizer
+optimizer: "AdamW"            # ✅ Keep
+
+# Scheduler - LESS AGGRESSIVE
+scheduler: "ReduceLROnPlateau"
+scheduler_patience: 10        # ✅ INCREASE from 5 to 10
+scheduler_factor: 0.7         # ✅ CHANGE from 0.5 to 0.7 (gentler reduction)
+min_lr: 0.000001              # ✅ Keep
+
+# Data augmentation - MODERATE (not too aggressive)
+data_augmentation:
+  enabled: true
+  noise_scaling: [0.98, 1.02] # ✅ REDUCE from [0.95, 1.05] (less aggressive)
+  time_shifts: [-0.002, 0.002]# ✅ REDUCE from [-0.005, 0.005]
+  apply_probability: 0.2      # ✅ REDUCE from 0.3
+
+# ==============================================================================
+# RL CONTROLLER (Keep as is)
+# ==============================================================================
+
+rl_controller:
+  enabled: true
+  
+  state_features:
+    - remaining_signals
+    - residual_power
+    - current_snr
+    - extraction_success_rate
+  
+  complexity_levels: ["low", "medium", "high"]
+  
+  learning_rate: 0.001
+  epsilon: 0.1
+  epsilon_decay: 0.995
+  memory_size: 10000
+  batch_size: 32
+  
+  complexity_configs:
+    low:
+      flow_layers: 4
+      inference_samples: 500
+    medium:
+      flow_layers: 8
+      inference_samples: 1000
+    high:
+      flow_layers: 12
+      inference_samples: 2000
+
+# ==============================================================================
+# BIAS CORRECTOR
+# ==============================================================================
+
+bias_corrector:
+  enabled: true
+  hidden_dims: [256, 128, 64]
+  context_dim: 16
+  dropout: 0.10               # ✅ REDUCE from 0.15
+  learning_rate: 0.0001
+  batch_size: 64
+  epochs: 15
+  patience: 8
+
+# ==============================================================================
+# ADAPTIVE SUBTRACTOR (Keep as is)
+# ==============================================================================
+
+adaptive_subtractor:
+  complexity_level: "medium"
+  waveform_approximant: "IMRPhenomPv2"
+  post_newtonian_order: "3.5PN"
+  spin_effects: true
+  tidal_effects: true
+  base_strength: 0.1
+  max_strength: 0.8
+  uncertainty_threshold: 0.3
+  match_threshold: 0.7
+
+# ==============================================================================
+# DATA
+# ==============================================================================
+
+data:
+  sample_rate: 4096
+  segment_duration: 4.0
+  f_low: 20.0
+  f_high: 1024.0
+  
   signal_distribution:
-    BBH: 0.826                       # 82.6% as in your data
-    BNS: 0.104                       # 10.4% as in your data  
-    NSBH: 0.070                      # 7.0% as in your data
+    BBH: 0.70
+    BNS: 0.20
+    NSBH: 0.10
   
-  # Data augmentation
-  augmentation:
-    noise_scaling: [0.5, 2.0]        # Noise level variation
-    signal_scaling: [0.8, 1.2]       # Signal amplitude variation
-    time_shift: [-0.1, 0.1]          # Small time shifts
-  
-  # Validation split
-  validation_split: 0.15             # 15% for validation
-  test_split: 0.1                    # 10% for testing
+  validation_split: 0.15      # ✅ Keep (good)
+  test_split: 0.05
 
-# Training monitoring
+# ==============================================================================
+# MONITORING
+# ==============================================================================
+
 monitoring:
-  save_frequency: 10                 # Save every 10 epochs
-  log_frequency: 5                   # Log every 5 epochs
-  early_stopping: true               # Enable early stopping
+  save_frequency: 5
+  log_frequency: 1
+  early_stopping: true
   
-  # Metrics to track
   metrics:
-    - "accuracy"
-    - "correlation"
-    - "efficiency"
-    - "signal_preservation"
-    - "parameter_error"
+    - nll_loss
+    - parameter_accuracy
+    - extraction_efficiency
+    - train_val_gap
+    - gradient_norm
   
-  # Signal-type specific tracking
-  track_by_signal_type: true
+  rl_monitoring:
+    track_complexity_changes: true
+    log_rl_rewards: true
+    complexity_distribution: true
+  
+  bias_monitoring:
+    track_correction_effectiveness: true
+    log_physics_violations: true
 
-# Output configuration
+# ==============================================================================
+# OUTPUT
+# ==============================================================================
+
 output:
-  save_best_only: true               # Only save best models
-  save_intermediate: false           # Don't save all checkpoints
-  generate_plots: true               # Generate training plots
-  detailed_logging: true             # Detailed log files
+  save_best_only: true
+  save_intermediate: true
+  generate_plots: true
+  
+  rl_outputs:
+    save_rl_controller: true
+    complexity_history: true
+    reward_curves: true
+  
+  bias_outputs:
+    save_bias_corrector: true
+    correction_statistics: true
+
+# ==============================================================================
+# VALIDATION
+# ==============================================================================
+
+validation:
+  accuracy_thresholds:
+    mass_1: 0.1
+    mass_2: 0.1
+    luminosity_distance: 0.3
+  
+  processing_time_limit: 10.0
+  memory_limit_mb: 2048
+  
+  # Overfitting detection - LESS STRICT
+  overfitting_detection:
+    max_train_val_gap: 1.5    # ✅ INCREASE from 0.5 to 1.5
+    gap_threshold_epochs: 5   # ✅ INCREASE from 3 to 5

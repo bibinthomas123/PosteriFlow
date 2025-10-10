@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
- PriorityNet for intelligent signal extraction ordering
+Enhanced PriorityNet for intelligent signal extraction ordering in overlapping GW scenarios.
+Includes temporal encoding, multi-detector coherence, and uncertainty quantification.
 """
 
 import torch
@@ -10,51 +11,267 @@ import numpy as np
 from typing import List, Dict, Tuple, Any, Optional
 import logging
 
-class SignalFeatureExtractor(nn.Module):
-    """ signal feature extractor"""
-    
+
+class TemporalStrainEncoder(nn.Module):
+    """CNN + BiLSTM + Attention encoder for whitened strain segments."""
+
+    def __init__(self, input_length: int = 2048, n_detectors: int = 2, hidden_dim: int = 128):
+        super().__init__()
+
+        # Multi-scale CNN for time-frequency features
+        # Architecture based on LIGO ML pipelines (2048 Hz, 1s segments)
+        self.conv_blocks = nn.ModuleList([
+            self._conv_block(n_detectors, 32, kernel_size=64, stride=4),
+            self._conv_block(32, 64, kernel_size=32, stride=4),
+            self._conv_block(64, 128, kernel_size=16, stride=2),
+            self._conv_block(128, 128, kernel_size=8, stride=2),
+        ])
+
+        # Calculate sequence length after convolutions
+        seq_len = input_length
+        for _ in range(4):
+            seq_len = seq_len // 4 if seq_len > 64 else seq_len // 2
+        self.seq_len = max(seq_len, 8)
+
+        # BiLSTM for temporal dependencies (captures chirp evolution)
+        self.bilstm = nn.LSTM(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=2,
+            batch_first=True,
+            bidirectional=True,
+            dropout=0.2
+        )
+
+        # Multi-head self-attention for long-range dependencies
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim * 2,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
+
+        # Projection to fixed dimension
+        self.projection = nn.Sequential(
+            nn.Linear(hidden_dim * 2, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 64)
+        )
+
+    def _conv_block(self, in_channels, out_channels, kernel_size, stride):
+        """Convolutional block with normalization."""
+        return nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding=kernel_size//2),
+            nn.BatchNorm1d(out_channels),
+            nn.GELU(),
+            nn.Dropout(0.1)
+        )
+
+    def forward(self, strain_segments: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            strain_segments: [batch, n_detectors, time_samples]
+        Returns:
+            encoded: [batch, 64] temporal features
+        """
+        x = strain_segments
+
+        # Multi-scale convolution
+        for conv_block in self.conv_blocks:
+            x = conv_block(x)
+
+        # Reshape for LSTM: [batch, seq_len, features]
+        x = x.transpose(1, 2)
+
+        # BiLSTM encoding
+        lstm_out, _ = self.bilstm(x)
+
+        # Self-attention
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+
+        # Global average pooling + max pooling
+        avg_pool = torch.mean(attn_out, dim=1)
+        max_pool, _ = torch.max(attn_out, dim=1)
+        combined = avg_pool + max_pool
+
+        # Project to fixed dimension
+        encoded = self.projection(combined)
+
+        return encoded
+
+
+class CrossSignalAnalyzer(nn.Module):
+    """Computes pairwise overlap features for multi-signal scenarios."""
+
+    def __init__(self):
+        super().__init__()
+
+        # Learnable overlap feature extractor
+        self.overlap_net = nn.Sequential(
+            nn.Linear(8, 32),
+            nn.LayerNorm(32),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(32, 16)
+        )
+
+    def forward(self, params_batch: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            params_batch: [n_signals, 15] normalized parameters
+        Returns:
+            overlap_features: [n_signals, 16] cross-signal features
+        """
+        n_signals = params_batch.shape[0]
+
+        if n_signals < 2:
+            # No overlap for single signal
+            return torch.zeros(n_signals, 16, device=params_batch.device)
+
+        overlap_scores = []
+
+        for i in range(n_signals):
+            # Compute overlap metrics with all other signals
+            pairwise_features = []
+
+            for j in range(n_signals):
+                if i == j:
+                    continue
+
+                # Time separation (from geocent_time)
+                dt = torch.abs(params_batch[i, 5] - params_batch[j, 5])
+
+                # Sky position separation (RA, Dec)
+                dra = torch.abs(params_batch[i, 3] - params_batch[j, 3])
+                ddec = torch.abs(params_batch[i, 4] - params_batch[j, 4])
+                sky_sep = torch.sqrt(dra**2 + ddec**2)
+
+                # Mass similarity (chirp mass overlap indicator)
+                m1_i = params_batch[i, 0] * 95 + 5
+                m2_i = params_batch[i, 1] * 95 + 5
+                m1_j = params_batch[j, 0] * 95 + 5
+                m2_j = params_batch[j, 1] * 95 + 5
+
+                mc_i = (m1_i * m2_i)**(3/5) / (m1_i + m2_i)**(1/5)
+                mc_j = (m1_j * m2_j)**(3/5) / (m1_j + m2_j)**(1/5)
+                mass_similarity = 1.0 / (1.0 + torch.abs(mc_i - mc_j) / 30.0)
+
+                # Frequency overlap estimate
+                f_isco_i = 220.0 / (m1_i + m2_i)
+                f_isco_j = 220.0 / (m1_j + m2_j)
+                freq_overlap = torch.exp(-torch.abs(f_isco_i - f_isco_j) / 100.0)
+
+                # Distance ratio (SNR confusion indicator)
+                dist_i = params_batch[i, 2] * 2950 + 50
+                dist_j = params_batch[j, 2] * 2950 + 50
+                dist_ratio = torch.minimum(dist_i, dist_j) / torch.maximum(dist_i, dist_j)
+
+                # Polarization angles
+                dpsi = torch.abs(params_batch[i, 7] - params_batch[j, 7])
+
+                pairwise_features.append(torch.stack([
+                    dt, sky_sep, mass_similarity, freq_overlap, 
+                    dist_ratio, dpsi, dra, ddec
+                ]))
+
+            if len(pairwise_features) > 0:
+                # Average overlap with all other signals
+                pairwise_tensor = torch.stack(pairwise_features)
+                mean_overlap = torch.mean(pairwise_tensor, dim=0)
+                overlap_scores.append(mean_overlap)
+            else:
+                overlap_scores.append(torch.zeros(8, device=params_batch.device))
+
+        overlap_tensor = torch.stack(overlap_scores)
+        overlap_features = self.overlap_net(overlap_tensor)
+
+        return overlap_features
+
+
+class EnhancedSignalFeatureExtractor(nn.Module):
+    """Enhanced feature extractor with deeper architecture and layer normalization."""
+
     def __init__(self, input_dim: int = 15):
         super().__init__()
-        
-        #  effective feature processing network
+
+        # Deeper physics-aware feature processing
         self.feature_processor = nn.Sequential(
-            nn.Linear(15, 128),
-            nn.ReLU(),
+            nn.Linear(15, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
             nn.Dropout(0.1),
+
+            nn.Linear(256, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(0.1),
+
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(0.1),
+
             nn.Linear(128, 64),
-            nn.ReLU(),
+            nn.LayerNorm(64),
+            nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(64, 32)  
+
+            nn.Linear(64, 32)
         )
-        
+
+        # Physics-derived features extractor
+        self.physics_encoder = nn.Sequential(
+            nn.Linear(8, 32),
+            nn.LayerNorm(32),
+            nn.GELU(),
+            nn.Linear(32, 16)
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Simple forward pass"""
-        return self.feature_processor(x)
-    
+        """
+        Args:
+            x: [batch, 15] normalized parameters
+        Returns:
+            features: [batch, 48] (32 from network + 16 from physics)
+        """
+        # Network-learned features
+        network_features = self.feature_processor(x)
+
+        # Physics-derived features
+        physics_features = self._compute_physics_features(x)
+        physics_encoded = self.physics_encoder(physics_features)
+
+        # Concatenate both feature types
+        combined = torch.cat([network_features, physics_encoded], dim=1)
+
+        return combined
+
     def _compute_physics_features(self, params: torch.Tensor) -> torch.Tensor:
-        """Compute derived physics quantities"""
-        
+        """Compute derived physics quantities."""
+
         batch_size = params.shape[0]
-        physics_features = torch.zeros(batch_size, 8)
-        
+        physics_features = torch.zeros(batch_size, 8, device=params.device)
+
         try:
             # Extract basic parameters (denormalized)
             m1 = params[:, 0] * 95 + 5  # [5, 100] solar masses
             m2 = params[:, 1] * 95 + 5
             distance = params[:, 2] * 2950 + 50  # [50, 3000] Mpc
-            
+
             # Derived quantities
             total_mass = m1 + m2
             chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
             mass_ratio = torch.minimum(m1, m2) / torch.maximum(m1, m2)
             eta = m1 * m2 / (total_mass**2)
-            
-            # SNR estimation
+
+            # SNR estimation (approximate)
             estimated_snr = 8.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / torch.clamp(distance, min=50.0))
-            
+
             # Frequency estimates
             f_isco = 220.0 / total_mass
-            
+
             # Effective spin (if available)
             if params.shape[1] >= 11:
                 a1 = params[:, 9] * 0.99  # [0, 0.99]
@@ -62,114 +279,187 @@ class SignalFeatureExtractor(nn.Module):
                 chi_eff = (m1 * a1 + m2 * a2) / total_mass
             else:
                 chi_eff = torch.zeros_like(m1)
-            
-            # Detection difficulty
-            difficulty = torch.log(distance / 100.0) - torch.log(estimated_snr / 10.0)
-            
-            # Normalize features for network
-            physics_features[:, 0] = chirp_mass / 50.0
+
+            # Detection difficulty score
+            difficulty = torch.log(distance / 100.0) - torch.log(estimated_snr / 10.0 + 1e-6)
+
+            # Normalize features
+            physics_features[:, 0] = torch.clamp(chirp_mass / 50.0, 0, 1)
             physics_features[:, 1] = mass_ratio
             physics_features[:, 2] = eta * 4
             physics_features[:, 3] = torch.clamp(estimated_snr / 50.0, 0, 1)
             physics_features[:, 4] = torch.clamp(f_isco / 1000.0, 0, 1)
             physics_features[:, 5] = torch.clamp((chi_eff + 1) / 2, 0, 1)
             physics_features[:, 6] = torch.clamp((difficulty + 5) / 10, 0, 1)
-            physics_features[:, 7] = total_mass / 200.0
-            
+            physics_features[:, 7] = torch.clamp(total_mass / 200.0, 0, 1)
+
         except Exception as e:
             logging.debug(f"Physics feature computation failed: {e}")
             physics_features.fill_(0.5)
-        
+
         return physics_features
 
-class PriorityNet(nn.Module):
-    """PriorityNet for signal ranking"""
-    
-    def __init__(self, config=None):
+
+class EnhancedPriorityNet(nn.Module):
+    """Enhanced PriorityNet with temporal encoding and uncertainty quantification."""
+
+    def __init__(self, config=None, use_strain: bool = True):
         super().__init__()
-        
+
         self.config = config or self._default_config()
-        
-        # Feature extraction
-        self.signal_encoder = SignalFeatureExtractor()
-        
-        # Simple priority prediction
-        self.priority_predictor = nn.Sequential(
-            nn.Linear(32, 64),
-            nn.ReLU(),
+        self.use_strain = use_strain
+
+        # Temporal strain encoder (optional, for when strain data is available)
+        if self.use_strain:
+            self.strain_encoder = TemporalStrainEncoder(
+                input_length=2048,  # 1s at 2048 Hz
+                n_detectors=2,      # H1, L1 (can extend to 3 for Virgo)
+                hidden_dim=128
+            )
+            temporal_dim = 64
+        else:
+            temporal_dim = 0
+
+        # Cross-signal overlap analyzer
+        self.cross_signal_analyzer = CrossSignalAnalyzer()
+
+        # Enhanced metadata feature extraction
+        self.signal_encoder = EnhancedSignalFeatureExtractor()
+
+        # Fusion layer (combines temporal + metadata + overlap features)
+        fusion_input_dim = 48 + 16 + temporal_dim  # metadata + overlap + temporal
+
+        self.fusion_layer = nn.Sequential(
+            nn.Linear(fusion_input_dim, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
             nn.Dropout(0.1),
+
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(0.1)
+        )
+
+        # Priority prediction head (outputs priority + uncertainty)
+        self.priority_head = nn.Sequential(
             nn.Linear(64, 32),
-            nn.ReLU(),
+            nn.LayerNorm(32),
+            nn.GELU(),
             nn.Dropout(0.1),
             nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),
-            nn.Sigmoid()  # Output in [0, 1]
+            nn.GELU(),
+            nn.Linear(16, 2)  # [priority, log_uncertainty]
         )
-        
-        logging.info("PriorityNet initialized successfully")
-        
+
+        logging.info(f"Enhanced PriorityNet initialized (use_strain={use_strain})")
+
     def _default_config(self):
         return type('Config', (), {
             'hidden_dims': [256, 128, 64],
             'dropout': 0.1,
-            'learning_rate': 1e-3
+            'learning_rate': 1e-3,
+            'use_strain': True
         })()
-    
-    def forward(self, detections: List[Dict]) -> torch.Tensor:
-        """Forward pass for list of detection dictionaries"""
-        
+
+    def forward(self, detections: List[Dict], strain_segments: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass with uncertainty quantification.
+
+        Args:
+            detections: List of detection dictionaries with parameters
+            strain_segments: Optional [n_signals, n_detectors, time_samples] whitened strain
+
+        Returns:
+            priorities: [n_signals] priority scores
+            uncertainties: [n_signals] uncertainty estimates
+        """
+
         if not detections:
-            return torch.empty(0)
-        
+            return torch.empty(0), torch.empty(0)
+
         try:
-            # Convert to tensor
+            # Convert metadata to tensor
             signal_tensor = self._detections_to_tensor(detections)
-            
+
             if signal_tensor is None or signal_tensor.numel() == 0:
-                return torch.zeros(len(detections))
-            
-            # Extract features
-            features = self.signal_encoder(signal_tensor)
-            
-            # Predict priorities
-            priorities = self.priority_predictor(features)
-            
-            return priorities.squeeze(-1)
-            
+                n = len(detections)
+                return torch.zeros(n), torch.ones(n)
+
+            # Extract metadata features
+            metadata_features = self.signal_encoder(signal_tensor)
+
+            # Extract cross-signal overlap features
+            overlap_features = self.cross_signal_analyzer(signal_tensor)
+
+            # Extract temporal features from strain (if available)
+            if self.use_strain and strain_segments is not None:
+                temporal_features = self.strain_encoder(strain_segments)
+            else:
+                temporal_features = torch.zeros(
+                    signal_tensor.shape[0], 0, 
+                    device=signal_tensor.device
+                )
+
+            # Fuse all features
+            if temporal_features.shape[1] > 0:
+                combined_features = torch.cat([
+                    metadata_features, overlap_features, temporal_features
+                ], dim=1)
+            else:
+                combined_features = torch.cat([
+                    metadata_features, overlap_features
+                ], dim=1)
+
+            fused = self.fusion_layer(combined_features)
+
+            # Predict priority and uncertainty
+            output = self.priority_head(fused)
+            priorities = torch.sigmoid(output[:, 0])  # [0, 1]
+            log_uncertainties = output[:, 1]
+            uncertainties = torch.exp(log_uncertainties)  # Convert to positive
+
+            return priorities, uncertainties
+
         except Exception as e:
-            logging.debug(f"Forward pass error: {e}")
-            return torch.zeros(len(detections))
-    
-    def rank_detections(self, detections: List[Dict]) -> List[int]:
-        """Rank detections by priority"""
-        
+            logging.error(f"Forward pass error: {e}")
+            n = len(detections)
+            return torch.zeros(n), torch.ones(n)
+
+    def rank_detections(self, detections: List[Dict], strain_segments: Optional[torch.Tensor] = None) -> List[int]:
+        """Rank detections by priority, accounting for uncertainty."""
+
         if not detections:
             return []
-        
+
         try:
             with torch.no_grad():
-                scores = self.forward(detections)
-                
-                if scores.numel() == 0 or len(scores) != len(detections):
+                priorities, uncertainties = self.forward(detections, strain_segments)
+
+                if priorities.numel() == 0 or len(priorities) != len(detections):
                     return list(range(len(detections)))
-                
+
+                # Uncertainty-aware ranking: penalize high uncertainty
+                # Use UCB-like approach: score = priority - beta * uncertainty
+                beta = 0.1  # Exploration parameter
+                scores = priorities - beta * uncertainties
+
                 ranked_indices = torch.argsort(scores, descending=True).tolist()
                 return ranked_indices
-                
+
         except Exception as e:
             logging.warning(f"Ranking failed: {e}")
             return self._snr_fallback_ranking(detections)
-    
+
     def _detections_to_tensor(self, detections: List[Dict]) -> torch.Tensor:
-        """Convert detection dictionaries to tensor format"""
-        
+        """Convert detection dictionaries to tensor format."""
+
         param_names = [
             'mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
             'geocent_time', 'theta_jn', 'psi', 'phase', 'a_1', 'a_2',
             'tilt_1', 'tilt_2', 'phi_12', 'phi_jl'
         ]
-        
+
         ranges = {
             'mass_1': (5.0, 100.0), 'mass_2': (5.0, 100.0),
             'luminosity_distance': (50.0, 3000.0),
@@ -181,7 +471,7 @@ class PriorityNet(nn.Module):
             'tilt_1': (0.0, np.pi), 'tilt_2': (0.0, np.pi),
             'phi_12': (0.0, 2*np.pi), 'phi_jl': (0.0, 2*np.pi)
         }
-        
+
         defaults = {
             'mass_1': 35.0, 'mass_2': 30.0, 'luminosity_distance': 500.0,
             'ra': 1.0, 'dec': 0.0, 'geocent_time': 0.0,
@@ -189,50 +479,50 @@ class PriorityNet(nn.Module):
             'a_1': 0.0, 'a_2': 0.0, 'tilt_1': 0.0, 'tilt_2': 0.0,
             'phi_12': 0.0, 'phi_jl': 0.0
         }
-        
+
         try:
             tensor_data = []
-            
+
             for detection in detections:
                 signal_params = []
-                
+
                 for param_name in param_names:
                     try:
                         value = detection.get(param_name, defaults[param_name])
-                        
+
                         if isinstance(value, dict):
                             value = value.get('median', value.get('mean', defaults[param_name]))
-                        
+
                         value = float(value)
-                        
+
                         if not np.isfinite(value):
                             value = defaults[param_name]
-                        
+
                         # Normalize to [0, 1]
                         min_val, max_val = ranges[param_name]
                         normalized = (value - min_val) / (max_val - min_val)
                         normalized = np.clip(normalized, 0.0, 1.0)
-                        
+
                         signal_params.append(normalized)
-                        
+
                     except:
                         min_val, max_val = ranges[param_name]
                         default_val = defaults[param_name]
                         normalized = (default_val - min_val) / (max_val - min_val)
                         signal_params.append(np.clip(normalized, 0.0, 1.0))
-                
+
                 tensor_data.append(signal_params)
-            
+
             return torch.tensor(tensor_data, dtype=torch.float32)
-            
+
         except Exception as e:
             logging.error(f"Tensor conversion failed: {e}")
             n_detections = len(detections)
             return torch.full((n_detections, 15), 0.5, dtype=torch.float32)
-    
+
     def _snr_fallback_ranking(self, detections: List[Dict]) -> List[int]:
-        """Fallback SNR-based ranking"""
-        
+        """Fallback SNR-based ranking."""
+
         try:
             snr_scores = []
             for i, detection in enumerate(detections):
@@ -240,138 +530,251 @@ class PriorityNet(nn.Module):
                 if not np.isfinite(snr):
                     snr = 0.0
                 snr_scores.append((i, snr))
-            
+
             snr_scores.sort(key=lambda x: x[1], reverse=True)
             return [idx for idx, _ in snr_scores]
-            
+
         except:
             return list(range(len(detections)))
 
-class CombinedPriorityLoss(nn.Module):
-    """ loss function for priority training"""
-    
-    def __init__(self, ranking_weight=0.6, mse_weight=0.4):
+
+class AdaptiveRankingLoss(nn.Module):
+    """Adaptive pairwise ranking loss with learned margins."""
+
+    def __init__(self, base_margin: float = 0.1):
+        super().__init__()
+        self.base_margin = base_margin
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor, 
+                uncertainties: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Compute adaptive ranking loss with uncertainty weighting.
+
+        Args:
+            predictions: [n] predicted priorities
+            targets: [n] ground truth priorities
+            uncertainties: [n] optional uncertainty estimates
+        """
+        n_samples = predictions.shape[0]
+
+        if n_samples < 2:
+            return torch.tensor(0.0, device=predictions.device, requires_grad=True)
+
+        loss = 0.0
+        count = 0
+
+        for i in range(n_samples):
+            for j in range(i + 1, n_samples):
+                # Adaptive margin based on target separation
+                target_diff = torch.abs(targets[i] - targets[j])
+                margin = self.base_margin * torch.clamp(target_diff, min=0.1, max=1.0)
+
+                # Uncertainty weighting (down-weight uncertain predictions)
+                if uncertainties is not None:
+                    weight = 1.0 / (1.0 + uncertainties[i] + uncertainties[j])
+                else:
+                    weight = 1.0
+
+                # Ranking constraint
+                if targets[i] > targets[j]:
+                    diff = predictions[j] - predictions[i] + margin
+                    loss += weight * torch.clamp(diff, min=0.0)
+                    count += 1
+                elif targets[j] > targets[i]:
+                    diff = predictions[i] - predictions[j] + margin
+                    loss += weight * torch.clamp(diff, min=0.0)
+                    count += 1
+
+        return loss / max(count, 1)
+
+
+class EnhancedPriorityLoss(nn.Module):
+    """Enhanced loss with adaptive ranking, MSE, and uncertainty regularization."""
+
+    def __init__(self, ranking_weight: float = 0.5, mse_weight: float = 0.4, 
+                 uncertainty_weight: float = 0.1):
         super().__init__()
         self.ranking_weight = ranking_weight
         self.mse_weight = mse_weight
-        
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        self.uncertainty_weight = uncertainty_weight
+        self.ranking_loss_fn = AdaptiveRankingLoss()
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor,
+                uncertainties: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Combined loss with uncertainty regularization.
+
+        Returns:
+            Dict with total loss and individual components
+        """
         # MSE component
-        mse_loss = nn.functional.mse_loss(predictions, targets)
-        
-        # Ranking loss component
-        ranking_loss = self._compute_ranking_loss(predictions, targets)
-        
+        mse_loss = F.mse_loss(predictions, targets)
+
+        # Adaptive ranking loss
+        ranking_loss = self.ranking_loss_fn(predictions, targets, uncertainties)
+
+        # Uncertainty regularization (penalize overconfidence and underconfidence)
+        # Encourage uncertainty to be correlated with prediction error
+        pred_error = torch.abs(predictions - targets)
+        uncertainty_loss = F.mse_loss(uncertainties, pred_error.detach())
+
         # Combined loss
         total_loss = (self.mse_weight * mse_loss + 
-                     self.ranking_weight * ranking_loss)
-        
-        return total_loss
-    
-    def _compute_ranking_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Compute pairwise ranking loss"""
-        
-        n_samples = predictions.shape[0]
-        if n_samples < 2:
-            return torch.tensor(0.0, requires_grad=True)
-        
-        loss = 0.0
-        count = 0
-        
-        for i in range(n_samples):
-            for j in range(i + 1, n_samples):
-                if targets[i] > targets[j]:
-                    diff = predictions[j] - predictions[i] + 0.1
-                    loss += torch.clamp(diff, min=0.0)
-                    count += 1
-                elif targets[j] > targets[i]:
-                    diff = predictions[i] - predictions[j] + 0.1
-                    loss += torch.clamp(diff, min=0.0)
-                    count += 1
-        
-        return loss / max(count, 1)
+                     self.ranking_weight * ranking_loss +
+                     self.uncertainty_weight * uncertainty_loss)
 
-class PriorityNetTrainer:
-    """ trainer for PriorityNet"""
-    
-    def __init__(self, model: PriorityNet, config=None):
+        return {
+            'total': total_loss,
+            'mse': mse_loss.detach(),
+            'ranking': ranking_loss.detach(),
+            'uncertainty': uncertainty_loss.detach()
+        }
+
+
+class EnhancedPriorityNetTrainer:
+    """Trainer for Enhanced PriorityNet with improved stability."""
+
+    def __init__(self, model: EnhancedPriorityNet, config=None):
         self.model = model
         self.config = config
-        
-        # Extract learning rate from config if available
+
+        # Extract learning rate
         if config and hasattr(config, 'learning_rate'):
             lr = config.learning_rate
-        elif config and hasattr(config, '__dict__') and 'learning_rate' in config.__dict__:
-            lr = config.__dict__['learning_rate']
         else:
             lr = 1e-3
-            
+
         self.optimizer = torch.optim.AdamW(
             model.parameters(), 
             lr=lr, 
             weight_decay=1e-4
         )
+
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=500, eta_min=1e-6
         )
-        self.criterion = CombinedPriorityLoss()
-        
-    def train_step(self, detections_batch: List[List[Dict]], priorities_batch: List[torch.Tensor]) -> Dict[str, float]:
-        """Single training step over a batch of batches (as expected by the training script)"""
+
+        self.criterion = EnhancedPriorityLoss()
+
+    def train_step(self, detections_batch: List[List[Dict]], 
+                  priorities_batch: List[torch.Tensor],
+                  strain_batch: Optional[List[torch.Tensor]] = None) -> Dict[str, float]:
+        """
+        Single training step with optional strain data.
+
+        Args:
+            detections_batch: List of detection lists
+            priorities_batch: List of target priority tensors
+            strain_batch: Optional list of strain segment tensors
+        """
         self.model.train()
         self.optimizer.zero_grad()
-        total_loss = 0.0
+
+        total_losses = {'total': 0.0, 'mse': 0.0, 'ranking': 0.0, 'uncertainty': 0.0}
         valid_batches = 0
-        for detections, target_priorities in zip(detections_batch, priorities_batch):
+        accumulated_loss_tensor = None  
+
+        for idx, (detections, target_priorities) in enumerate(zip(detections_batch, priorities_batch)):
             if not detections or len(target_priorities) == 0:
                 continue
+
             try:
-                predicted_priorities = self.model(detections)
+                # Get strain segments if available
+                strain_segments = strain_batch[idx] if strain_batch is not None else None
+
+                # Forward pass
+                predicted_priorities, uncertainties = self.model(detections, strain_segments)
+
                 if predicted_priorities.numel() == 0:
                     continue
+
+                # Match lengths
                 min_len = min(len(predicted_priorities), len(target_priorities))
                 if min_len == 0:
                     continue
+
                 pred_slice = predicted_priorities[:min_len]
                 target_slice = target_priorities[:min_len]
-                loss = self.criterion(pred_slice, target_slice)
-                total_loss += loss
+                unc_slice = uncertainties[:min_len]
+
+                # Compute loss
+                losses = self.criterion(pred_slice, target_slice, unc_slice)
+                if accumulated_loss_tensor is None:
+                    accumulated_loss_tensor = losses['total']
+                else:
+                    accumulated_loss_tensor = accumulated_loss_tensor + losses['total']
+                    
+                total_losses['total'] += float(losses['total'].item())
+                total_losses['mse'] += float(losses['mse'].item())
+                total_losses['ranking'] += float(losses['ranking'].item())
+                total_losses['uncertainty'] += float(losses['uncertainty'].item())
                 valid_batches += 1
+
             except Exception as e:
                 logging.debug(f"Training step error: {e}")
                 continue
-        if valid_batches > 0:
-            avg_loss = total_loss / valid_batches
-            avg_loss.backward()
+
+        if valid_batches > 0 and accumulated_loss_tensor is not None:
+            avg_loss_tensor = accumulated_loss_tensor / valid_batches
+            avg_loss_tensor.backward()
+
+            # Gradient clipping for stability
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+
             self.optimizer.step()
-            return {'loss': float(avg_loss)}
+
+            return {
+                'loss': total_losses['total'] / valid_batches,
+                'mse': float(total_losses['mse'] / valid_batches),
+                'ranking': float(total_losses['ranking'] / valid_batches),
+                'uncertainty': float(total_losses['uncertainty'] / valid_batches)
+            }
         else:
-            return {'loss': 0.0}
-        
-        
-        
+            return {'loss': 0.0, 'mse': 0.0, 'ranking': 0.0, 'uncertainty': 0.0}
+
     def train_epoch(self, data_loader) -> Dict[str, float]:
-        """Train for one epoch"""
-        
-        total_loss = 0.0
+        """Train for one epoch."""
+
+        epoch_losses = {'total': 0.0, 'mse': 0.0, 'ranking': 0.0, 'uncertainty': 0.0}
         num_batches = 0
-        
+
         for batch in data_loader:
-            detections, priorities = batch
-            
-            # Skip empty batches
+            # Handle different batch formats
+            if len(batch) == 2:
+                detections, priorities = batch
+                strain_segments = None
+            elif len(batch) == 3:
+                detections, priorities, strain_segments = batch
+            else:
+                continue
+
             if not detections or len(priorities) == 0:
                 continue
-                
-            loss_info = self.train_step(detections, priorities)
-            total_loss += loss_info['loss']
+
+            loss_info = self.train_step(detections, priorities, strain_segments)
+
+            epoch_losses['total'] += loss_info['loss']
+            epoch_losses['mse'] += loss_info['mse']
+            epoch_losses['ranking'] += loss_info['ranking']
+            epoch_losses['uncertainty'] += loss_info['uncertainty']
             num_batches += 1
-            
-        # Step the learning rate scheduler once per epoch
+
+        # Step scheduler
         self.scheduler.step()
-        
+
         if num_batches > 0:
-            return {'epoch_loss': total_loss / num_batches}
+            return {
+                'epoch_loss': epoch_losses['total'] / num_batches,
+                'epoch_mse': epoch_losses['mse'] / num_batches,
+                'epoch_ranking': epoch_losses['ranking'] / num_batches,
+                'epoch_uncertainty': epoch_losses['uncertainty'] / num_batches,
+                'lr': self.optimizer.param_groups[0]['lr']
+            }
         else:
-            return {'epoch_loss': 0.0}
+            return {'epoch_loss': 0.0, 'epoch_mse': 0.0, 'epoch_ranking': 0.0, 
+                   'epoch_uncertainty': 0.0, 'lr': 0.0}
+
+
+# Backward compatibility: alias old class names
+PriorityNet = EnhancedPriorityNet
+PriorityNetTrainer = EnhancedPriorityNetTrainer

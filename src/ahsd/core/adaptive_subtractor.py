@@ -75,7 +75,7 @@ class NeuralPE:
         self.complexity_level = 'medium'
         self.logger = logging.getLogger(__name__)
         
-        # ✅ REAL LOGIC: Parameter bounds for physics-based estimates
+        # âœ… REAL LOGIC: Parameter bounds for physics-based estimates
         self.param_bounds = self._get_parameter_bounds()
         self.context_features_dim = 256
         
@@ -293,7 +293,7 @@ class NeuralPE:
             snr = context.get('estimated_snr', 10.0)
             
             # Post-Newtonian relation: f_peak ~ (G*M_chirp)^(-5/8)
-            # Higher frequency → lower total mass
+            # Higher frequency â†’ lower total mass
             if peak_freq > 200:
                 base_total_mass = np.random.uniform(20, 40)
             elif peak_freq > 120:
@@ -331,7 +331,7 @@ class NeuralPE:
         try:
             snr = context.get('estimated_snr', 10.0)
             
-            # Distance scaling: SNR ∝ 1/distance (for fixed intrinsic parameters)
+            # Distance scaling: SNR âˆ 1/distance (for fixed intrinsic parameters)
             # Use empirical relation for LIGO sensitivity
             optimal_snr = 8.0  # Reference SNR
             reference_distance = 400.0  # Mpc
@@ -375,7 +375,7 @@ class NeuralPE:
                 base_time = 0.0
             
             # Time uncertainty based on correlation quality
-            # Better correlation → more precise time estimate
+            # Better correlation â†’ more precise time estimate
             time_uncertainty = 0.01 * (1.0 - corr_quality)**0.5  # 0-10ms uncertainty
             time_offset = base_time + np.random.normal(0, time_uncertainty)
             
@@ -486,10 +486,10 @@ class NeuralPE:
             
             # Higher frequency evolution can indicate spin effects
             if peak_freq > 150:
-                # Rapid frequency evolution → possible high spin
+                # Rapid frequency evolution â†’ possible high spin
                 base_spin = np.random.uniform(0.2, 0.8)
             elif spectral_consistency > 0.8:
-                # Very consistent spectrum → low spin (less precession)
+                # Very consistent spectrum â†’ low spin (less precession)
                 base_spin = np.random.uniform(0.0, 0.3)
             else:
                 # Moderate spin
@@ -509,12 +509,12 @@ class NeuralPE:
         try:
             spectral_consistency = context.get('spectral_consistency', 0.5)
             
-            # Lower spectral consistency can indicate precession → non-aligned spins
+            # Lower spectral consistency can indicate precession â†’ non-aligned spins
             if spectral_consistency < 0.4:
-                # Significant precession → large tilt angles
+                # Significant precession â†’ large tilt angles
                 base_tilt = np.random.uniform(np.pi/4, 3*np.pi/4)
             elif spectral_consistency > 0.8:
-                # Low precession → aligned spins
+                # Low precession â†’ aligned spins
                 base_tilt = np.random.uniform(0, np.pi/6)
             else:
                 # Moderate precession
@@ -791,7 +791,7 @@ class UncertaintyAwareSubtractor:
             time_to_merger = np.maximum(time_to_merger, dt * 0.1)  # Avoid singularity
             
             # 3.5PN frequency evolution (more accurate than 2.5PN)
-            # f(t) = (1/8π) * (5/(256*η))^(3/8) * (G*M_chirp/c^3)^(-5/8) * (tc-t)^(-3/8)
+            # f(t) = (1/8Ï€) * (5/(256*Î·))^(3/8) * (G*M_chirp/c^3)^(-5/8) * (tc-t)^(-3/8)
             
             frequency_factor = (5.0/(256.0*eta))**(3/8) / (8*np.pi) * (M_chirp_s)**(-5/8)
             frequency = frequency_factor * (time_to_merger)**(-3/8)
@@ -882,7 +882,7 @@ class UncertaintyAwareSubtractor:
                 F_cross = 0.8 * np.sin(2*psi + ra) * np.cos(dec)
                 
             elif detector == 'L1':
-                # Livingston detector orientation (90° rotated from Hanford)
+                # Livingston detector orientation (90Â° rotated from Hanford)
                 F_plus = 0.8 * np.cos(2*psi + ra + np.pi/2) * (1 + np.sin(dec)**2)
                 F_cross = 0.8 * np.sin(2*psi + ra + np.pi/2) * np.cos(dec)
                 
@@ -1053,7 +1053,7 @@ class UncertaintyAwareSubtractor:
                         # Relative uncertainty
                         relative_unc = param_unc / param_val
                         
-                        # Exponential weighting (higher uncertainty → lower weight)
+                        # Exponential weighting (higher uncertainty â†’ lower weight)
                         if param in ['mass_1', 'mass_2']:
                             # Mass uncertainties are critical for waveform accuracy
                             weight = np.exp(-3 * relative_unc)
@@ -1103,7 +1103,7 @@ class AdaptiveSubtractor:
         self.max_iterations = 3  # Maximum iterative refinement
         self.convergence_threshold = 0.01  # Convergence criterion
         
-        self.logger.info("✅ AdaptiveSubtractor initialized with REAL physics-based logic")
+        self.logger.info("âœ… AdaptiveSubtractor initialized with REAL physics-based logic")
     
     def extract_and_subtract(self, data: Dict[str, Any], 
                            detection_idx: int) -> Tuple[Dict[str, np.ndarray], Dict, Dict]:

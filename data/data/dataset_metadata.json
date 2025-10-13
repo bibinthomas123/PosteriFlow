@@ -1,0 +1,105 @@
+{
+  "generation_summary": {
+    "total_samples": 120,
+    "generation_timestamp": 1760297447.6435952,
+    "generation_time_seconds": 40.15342664718628,
+    "samples_per_second": 2.9885369698182136,
+    "dataset_version": "CompleteRealistic_v1.0",
+    "generator_version": "CompleteRealisticGWDatasetGenerator_v1.0"
+  },
+  "technical_capabilities": {
+    "pycbc_available": true,
+    "lal_available": true,
+    "detector_psds_loaded": 3,
+    "real_events_loaded": 85,
+    "approximants_supported": {
+      "BBH": {
+        "non_precessing": [
+          "IMRPhenomD"
+        ],
+        "precessing": [
+          "IMRPhenomPv2"
+        ],
+        "tidal": []
+      },
+      "BNS": {
+        "non_precessing": [
+          "TaylorF2"
+        ],
+        "precessing": [],
+        "tidal": [
+          "IMRPhenomD_NRTidal"
+        ]
+      },
+      "NSBH": {
+        "non_precessing": [
+          "SEOBNRv4_ROM_NRTidal"
+        ],
+        "precessing": [],
+        "tidal": [
+          "IMRPhenomD_NRTidal"
+        ]
+      }
+    }
+  },
+  "distribution_analysis": {
+    "event_types": {
+      "BBH": 31,
+      "BNS": 19,
+      "NSBH": 24,
+      "noise": 2
+    },
+    "snr_distribution": {
+      "weak": 7,
+      "low": 17,
+      "medium": 18,
+      "high": 12,
+      "loud": 20
+    },
+    "approximants_used": {
+      "IMRPhenomD": 31,
+      "IMRPhenomD_NRTidal": 19,
+      "IMRPhenomPv2": 21,
+      "IMRPhenomPv2_NRTidal": 3
+    },
+    "detector_networks": {
+      "H1+L1+V1": 49,
+      "H1+L1": 27
+    },
+    "edge_cases": {
+      "short_bbh": 1,
+      "long_bns": 0,
+      "extreme_mass": 0,
+      "high_spin": 0,
+      "eccentric": 0
+    },
+    "overlap_cases": 2
+  },
+  "quality_metrics": {
+    "success_rate": 1.0,
+    "pycbc_usage_rate": 0.9736842105263158,
+    "fallback_usage_rate": 0.0,
+    "average_generation_time": 0
+  },
+  "dataset_characteristics": {
+    "snr_coverage": "7-50 (complete range)",
+    "detector_networks": "H1+L1+V1 (realistic combinations)",
+    "overlap_percentage": 1.6666666666666667,
+    "edge_case_percentage": 0.8333333333333334,
+    "duration_per_sample": "4.0 seconds",
+    "sample_rate": "4096 Hz",
+    "total_data_hours": 0.13333333333333333
+  },
+  "neural_pe_readiness": {
+    "complete_metadata": true,
+    "parameter_coverage": "comprehensive",
+    "mass_ranges": {
+      "BBH": "5-100 solar masses",
+      "BNS": "1-3 solar masses",
+      "NSBH": "BH: 3-100, NS: 1-2 solar masses"
+    },
+    "spin_coverage": "0-0.99 (realistic distributions)",
+    "distance_ranges": "10 Mpc - 20 Gpc",
+    "sky_coverage": "full sky (uniform distribution)"
+  }
+}

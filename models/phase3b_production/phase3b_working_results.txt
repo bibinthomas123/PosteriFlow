@@ -1,8 +1,0 @@
-PHASE 3B WORKING SUBTRACTOR RESULTS
-==================================================
-Final Efficiency: 0.6742
-Best Efficiency: 0.6742
-Neural PE Accuracy: 0.802
-Training Status: SUCCESS
-Contamination: STRONG & DETECTABLE
-Version: WORKING

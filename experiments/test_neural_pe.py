@@ -16,10 +16,11 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List, Dict, Tuple
 from scipy import stats, integrate
-from scipy.spatial.distance import wasserstein_distance
+from scipy.stats import wasserstein_distance
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+import sys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +29,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+project_root = Path(__file__).parent.parent
+sys.path.insert(0,str(project_root))
 # ============================================================================
 # DATASET LOADER
 # ============================================================================

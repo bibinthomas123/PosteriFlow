@@ -46,7 +46,6 @@ def test_priority_net(model_path, test_data_dir, output_dir):
         dataset_path=test_data_dir,
         split='test',
         max_samples=None,
-        shuffle_globally=False
     )
     
     test_scenarios = test_loader.convert_to_priority_scenarios(create_overlaps=True)

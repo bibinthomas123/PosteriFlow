@@ -1,39 +1,39 @@
 {
-  "total_samples": 76,
-  "successful_samples": 76,
-  "failed_samples": 27,
-  "pycbc_successes": 74,
+  "total_samples": 2203,
+  "successful_samples": 2203,
+  "failed_samples": 776,
+  "pycbc_successes": 2128,
   "fallback_used": 0,
   "event_types": {
-    "BBH": 31,
-    "BNS": 19,
-    "NSBH": 24,
-    "noise": 2
+    "BBH": 884,
+    "BNS": 850,
+    "NSBH": 394,
+    "noise": 75
   },
   "snr_distribution": {
-    "weak": 7,
-    "low": 17,
-    "medium": 18,
-    "high": 12,
-    "loud": 20
+    "weak": 224,
+    "low": 550,
+    "medium": 562,
+    "high": 479,
+    "loud": 313
   },
-  "overlap_cases": 2,
+  "overlap_cases": 75,
   "edge_cases": {
-    "short_bbh": 1,
+    "short_bbh": 43,
     "long_bns": 0,
-    "extreme_mass": 0,
+    "extreme_mass": 110,
     "high_spin": 0,
     "eccentric": 0
   },
   "approximants_used": {
-    "IMRPhenomD": 31,
-    "IMRPhenomD_NRTidal": 19,
-    "IMRPhenomPv2": 21,
-    "IMRPhenomPv2_NRTidal": 3
+    "IMRPhenomD": 884,
+    "IMRPhenomD_NRTidal": 850,
+    "IMRPhenomPv2": 369,
+    "IMRPhenomPv2_NRTidal": 25
   },
   "detector_networks": {
-    "H1+L1+V1": 49,
-    "H1+L1": 27
+    "H1+L1+V1": 1317,
+    "H1+L1": 886
   },
   "generation_times": [],
   "noise_augmentation_k": 1

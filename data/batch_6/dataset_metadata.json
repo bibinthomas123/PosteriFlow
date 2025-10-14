@@ -1,0 +1,105 @@
+{
+  "generation_summary": {
+    "total_samples": 2002,
+    "generation_timestamp": 1760374932.6189296,
+    "generation_time_seconds": 1566.7429239749908,
+    "samples_per_second": 1.2778101431731483,
+    "dataset_version": "CompleteRealistic_v1.0",
+    "generator_version": "CompleteRealisticGWDatasetGenerator_v1.0"
+  },
+  "technical_capabilities": {
+    "pycbc_available": true,
+    "lal_available": true,
+    "detector_psds_loaded": 3,
+    "real_events_loaded": 85,
+    "approximants_supported": {
+      "BBH": {
+        "non_precessing": [
+          "IMRPhenomD"
+        ],
+        "precessing": [
+          "IMRPhenomPv2"
+        ],
+        "tidal": []
+      },
+      "BNS": {
+        "non_precessing": [
+          "TaylorF2"
+        ],
+        "precessing": [],
+        "tidal": [
+          "IMRPhenomD_NRTidal"
+        ]
+      },
+      "NSBH": {
+        "non_precessing": [
+          "SEOBNRv4_ROM_NRTidal"
+        ],
+        "precessing": [],
+        "tidal": [
+          "IMRPhenomD_NRTidal"
+        ]
+      }
+    }
+  },
+  "distribution_analysis": {
+    "event_types": {
+      "BBH": 1195,
+      "BNS": 1040,
+      "NSBH": 480,
+      "noise": 100
+    },
+    "snr_distribution": {
+      "weak": 299,
+      "low": 714,
+      "medium": 749,
+      "high": 559,
+      "loud": 394
+    },
+    "approximants_used": {
+      "IMRPhenomD": 1195,
+      "IMRPhenomD_NRTidal": 1040,
+      "IMRPhenomPv2": 438,
+      "IMRPhenomPv2_NRTidal": 42
+    },
+    "detector_networks": {
+      "H1+L1+V1": 1706,
+      "H1+L1": 1109
+    },
+    "edge_cases": {
+      "short_bbh": 70,
+      "long_bns": 0,
+      "extreme_mass": 124,
+      "high_spin": 0,
+      "eccentric": 0
+    },
+    "overlap_cases": 100
+  },
+  "quality_metrics": {
+    "success_rate": 1.0,
+    "pycbc_usage_rate": 0.9644760213143873,
+    "fallback_usage_rate": 0.0,
+    "average_generation_time": 0
+  },
+  "dataset_characteristics": {
+    "snr_coverage": "7-50 (complete range)",
+    "detector_networks": "H1+L1+V1 (realistic combinations)",
+    "overlap_percentage": 4.9950049950049955,
+    "edge_case_percentage": 9.69030969030969,
+    "duration_per_sample": "4.0 seconds",
+    "sample_rate": "4096 Hz",
+    "total_data_hours": 2.2244444444444444
+  },
+  "neural_pe_readiness": {
+    "complete_metadata": true,
+    "parameter_coverage": "comprehensive",
+    "mass_ranges": {
+      "BBH": "5-100 solar masses",
+      "BNS": "1-3 solar masses",
+      "NSBH": "BH: 3-100, NS: 1-2 solar masses"
+    },
+    "spin_coverage": "0-0.99 (realistic distributions)",
+    "distance_ranges": "10 Mpc - 20 Gpc",
+    "sky_coverage": "full sky (uniform distribution)"
+  }
+}

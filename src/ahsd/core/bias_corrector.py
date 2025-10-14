@@ -181,6 +181,7 @@ class BiasEstimator(nn.Module):
         
         return all_corrections, uncertainties
 
+
 class BiasCorrector:
     """
     BiasCorrector is a comprehensive class for correcting hierarchical biases in parameter estimation, 
@@ -262,6 +263,13 @@ class BiasCorrector:
         self.bias_estimator = BiasEstimator(self.n_params)
         
         self.logger = logging.getLogger(__name__)
+        # âœ… FIX: Initialize with correct shapes for 9 parameters
+        self.bias_corrections = np.zeros(self.n_params)  # Shape: (9,)
+        self.scale_corrections = np.ones(self.n_params)   # Shape: (9,)
+        
+        # âœ… FIX: Covariance matrix should be (9, 9) not (2, 2)
+        self.covariance_corrections = np.eye(self.n_params)  # Shape: (9, 9)
+        
         
         #  Comprehensive statistics tracking
         self.correction_history = []
@@ -1025,7 +1033,7 @@ class BiasCorrector:
             'validation_samples': len(val_data)
         }
         
-        self.logger.info(f"✅ Bias estimator training completed successfully in {training_history['epochs_completed']} epochs")
+        self.logger.info(f"âœ… Bias estimator training completed successfully in {training_history['epochs_completed']} epochs")
         
         return final_metrics
     

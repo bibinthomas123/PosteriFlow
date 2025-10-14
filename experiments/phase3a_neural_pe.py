@@ -510,14 +510,12 @@ def main():
             dataset_path=args.data_dir,
             split='train',
             max_samples=None,
-            shuffle_globally=True
         )
         
         val_data_loader = ChunkedGWDataLoader(
             dataset_path=args.data_dir,
             split='validation',
             max_samples=None,
-            shuffle_globally=False
         )
         
         train_dataset = OverlapGWDataset(train_data_loader, param_names, config)

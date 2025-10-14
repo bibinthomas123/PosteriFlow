@@ -1,9 +1,9 @@
 {
   "generation_summary": {
-    "total_samples": 120,
-    "generation_timestamp": 1760297447.6435952,
-    "generation_time_seconds": 40.15342664718628,
-    "samples_per_second": 2.9885369698182136,
+    "total_samples": 1502,
+    "generation_timestamp": 1760357128.430146,
+    "generation_time_seconds": 1191.8830723762512,
+    "samples_per_second": 1.260190730794985,
     "dataset_version": "CompleteRealistic_v1.0",
     "generator_version": "CompleteRealisticGWDatasetGenerator_v1.0"
   },
@@ -44,51 +44,51 @@
   },
   "distribution_analysis": {
     "event_types": {
-      "BBH": 31,
-      "BNS": 19,
-      "NSBH": 24,
-      "noise": 2
+      "BBH": 884,
+      "BNS": 850,
+      "NSBH": 394,
+      "noise": 75
     },
     "snr_distribution": {
-      "weak": 7,
-      "low": 17,
-      "medium": 18,
-      "high": 12,
-      "loud": 20
+      "weak": 224,
+      "low": 550,
+      "medium": 562,
+      "high": 479,
+      "loud": 313
     },
     "approximants_used": {
-      "IMRPhenomD": 31,
-      "IMRPhenomD_NRTidal": 19,
-      "IMRPhenomPv2": 21,
-      "IMRPhenomPv2_NRTidal": 3
+      "IMRPhenomD": 884,
+      "IMRPhenomD_NRTidal": 850,
+      "IMRPhenomPv2": 369,
+      "IMRPhenomPv2_NRTidal": 25
     },
     "detector_networks": {
-      "H1+L1+V1": 49,
-      "H1+L1": 27
+      "H1+L1+V1": 1317,
+      "H1+L1": 886
     },
     "edge_cases": {
-      "short_bbh": 1,
+      "short_bbh": 43,
       "long_bns": 0,
-      "extreme_mass": 0,
+      "extreme_mass": 110,
       "high_spin": 0,
       "eccentric": 0
     },
-    "overlap_cases": 2
+    "overlap_cases": 75
   },
   "quality_metrics": {
     "success_rate": 1.0,
-    "pycbc_usage_rate": 0.9736842105263158,
+    "pycbc_usage_rate": 0.9659555152065366,
     "fallback_usage_rate": 0.0,
     "average_generation_time": 0
   },
   "dataset_characteristics": {
     "snr_coverage": "7-50 (complete range)",
     "detector_networks": "H1+L1+V1 (realistic combinations)",
-    "overlap_percentage": 1.6666666666666667,
-    "edge_case_percentage": 0.8333333333333334,
+    "overlap_percentage": 4.993342210386151,
+    "edge_case_percentage": 10.186418109187748,
     "duration_per_sample": "4.0 seconds",
     "sample_rate": "4096 Hz",
-    "total_data_hours": 0.13333333333333333
+    "total_data_hours": 1.6688888888888889
   },
   "neural_pe_readiness": {
     "complete_metadata": true,

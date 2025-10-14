@@ -1,0 +1,40 @@
+{
+  "total_samples": 2805,
+  "successful_samples": 2805,
+  "failed_samples": 903,
+  "pycbc_successes": 2705,
+  "fallback_used": 0,
+  "event_types": {
+    "BBH": 1187,
+    "BNS": 1017,
+    "NSBH": 501,
+    "noise": 100
+  },
+  "snr_distribution": {
+    "weak": 299,
+    "low": 714,
+    "medium": 704,
+    "high": 566,
+    "loud": 422
+  },
+  "overlap_cases": 100,
+  "edge_cases": {
+    "short_bbh": 45,
+    "long_bns": 0,
+    "extreme_mass": 134,
+    "high_spin": 0,
+    "eccentric": 0
+  },
+  "approximants_used": {
+    "IMRPhenomD": 1187,
+    "IMRPhenomD_NRTidal": 1017,
+    "IMRPhenomPv2": 464,
+    "IMRPhenomPv2_NRTidal": 37
+  },
+  "detector_networks": {
+    "H1+L1": 1079,
+    "H1+L1+V1": 1726
+  },
+  "generation_times": [],
+  "noise_augmentation_k": 1
+}

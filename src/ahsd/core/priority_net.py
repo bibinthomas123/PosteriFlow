@@ -190,7 +190,7 @@ class CrossSignalAnalyzer(nn.Module):
         return overlap_features
 
 
-class EnhancedSignalFeatureExtractor(nn.Module):
+class SignalFeatureExtractor(nn.Module):
     """Enhanced feature extractor with deeper architecture and layer normalization."""
 
     def __init__(self, input_dim: int = 15):
@@ -324,7 +324,7 @@ class EnhancedPriorityNet(nn.Module):
         self.cross_signal_analyzer = CrossSignalAnalyzer()
 
         # Enhanced metadata feature extraction
-        self.signal_encoder = EnhancedSignalFeatureExtractor()
+        self.signal_encoder = SignalFeatureExtractor()
 
         # Fusion layer (combines temporal + metadata + overlap features)
         fusion_input_dim = 48 + 16 + temporal_dim  # metadata + overlap + temporal

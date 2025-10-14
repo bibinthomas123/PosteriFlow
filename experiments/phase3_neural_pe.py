@@ -27,7 +27,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-
+import json
 from ahsd.models.overlap_neuralpe import OverlapNeuralPE
 from experiments.phase2_priority_net import ChunkedGWDataLoader
 
@@ -56,19 +56,15 @@ def setup_logging(output_dir: Path, verbose: bool = False):
         ]
     )
 
-    logging.getLogger('ahsd').setLevel(logging.INFO)
-    logging.getLogger('ahsd.core').setLevel(logging.INFO)
-    logging.getLogger('ahsd.core.bias_corrector').setLevel(logging.INFO)
-    logging.getLogger('ahsd.core.adaptive_subtractor').setLevel(logging.INFO)
-    logging.getLogger('ahsd.models.neural_pe').setLevel(logging.INFO)
 
 class OverlapGWDataset(Dataset):
     """Dataset for training OverlapNeuralPE with optional data augmentation."""
     
-    def __init__(self, data_loader: ChunkedGWDataLoader, param_names: List[str], config: Dict[str, Any]):
+    def __init__(self, data_loader: ChunkedGWDataLoader, param_names: List[str], config: Dict[str, Any], param_scalers = None ):
         self.param_names = param_names
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self.param_scalers = param_scalers
         
         # ✅ Read augmentation config
         aug_config = config.get('data_augmentation', {})
@@ -111,44 +107,92 @@ class OverlapGWDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         
+        # Extract strain data
         strain_dict = sample.get('whitened_data', {})
         h1_strain = strain_dict.get('H1', np.zeros(4096))
         l1_strain = strain_dict.get('L1', np.zeros(4096))
         strain_data = np.stack([h1_strain, l1_strain], axis=0)
         
-        # ✅ Apply augmentation
+        # ✅ FIX: Resize to fixed length BEFORE augmentation
+        target_length = 16384
+        if strain_data.shape[1] != target_length:
+            if strain_data.shape[1] > target_length:
+                # Crop from center
+                start_idx = (strain_data.shape[1] - target_length) // 2
+                strain_data = strain_data[:, start_idx:start_idx + target_length]
+            else:
+                # Pad with zeros
+                padding = target_length - strain_data.shape[1]
+                pad_left = padding // 2
+                pad_right = padding - pad_left
+                strain_data = np.pad(strain_data, ((0, 0), (pad_left, pad_right)), mode='constant')
+        
+        # Apply augmentation AFTER resizing
         strain_data = self._apply_augmentation(strain_data)
         
+        # Extract metadata
         metadata = sample.get('metadata', {})
         signal_params_list = metadata.get('signal_parameters', [])
         
+        # Scale parameters
         all_params = []
-        for sig_params in signal_params_list:
-            param_vector = []
-            for pname in self.param_names:
-                param_vector.append(sig_params.get(pname, 0.0))
-            all_params.append(param_vector)
+        if signal_params_list and len(signal_params_list) > 0:
+            for sig_params in signal_params_list:
+                param_vector = self._scale_parameters(sig_params)
+                all_params.append(param_vector)
         
+        # Pad to max_signals
         max_signals = 5
         while len(all_params) < max_signals:
             all_params.append([0.0] * len(self.param_names))
         all_params = all_params[:max_signals]
         
         return {
-            'strain_data': torch.tensor(strain_data, dtype=torch.float32),
+            'strain_data': torch.tensor(strain_data, dtype=torch.float32),  # Always [2, 16384]
             'parameters': torch.tensor(all_params, dtype=torch.float32),
-            'n_signals': len(signal_params_list),
+            'n_signals': len(signal_params_list) if signal_params_list else 0,
             'metadata': metadata
         }
+        
+    def _scale_parameters(self, params_dict):
+        """Scale parameters using loaded scalers."""
+        if self.param_scalers is None:
+            return [params_dict.get(name, 0.0) for name in self.param_names]
+        
+        scaled = []
+        for name in self.param_names:
+            value = params_dict.get(name, 0.0)
+            
+            if name not in self.param_scalers:
+                scaled.append(value)
+                continue
+            
+            scaler = self.param_scalers[name]
+            
+            if scaler['type'] == 'log':
+                # Log scaling
+                log_val = np.log(max(value, 1e-10))
+                scaled_val = (log_val - scaler['min']) / (scaler['max'] - scaler['min'] + 1e-10)
+            elif scaler['type'] == 'standard':
+                # Standard scaling
+                scaled_val = (value - scaler['mean']) / (scaler['std'] + 1e-10)
+            else:
+                scaled_val = value
+            
+            scaled.append(scaled_val)
+        
+        return scaled
 
-def collate_fn(batch: List[Dict]) -> Tuple:
-    """Collate batch items."""
+
+def collate_fn(batch):
+    """Simple collate - data already fixed-size from __getitem__."""
     strain_data = torch.stack([item['strain_data'] for item in batch])
     parameters = torch.stack([item['parameters'] for item in batch])
-    n_signals = [item['n_signals'] for item in batch]
+    n_signals = torch.tensor([item['n_signals'] for item in batch])
     metadata = [item['metadata'] for item in batch]
     
     return strain_data, parameters, n_signals, metadata
+
 
 
 class OverlapNeuralPETrainer:
@@ -159,6 +203,7 @@ class OverlapNeuralPETrainer:
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.use_wandb = use_wandb and WANDB_AVAILABLE
+        self.accumulation_steps = 4 
         
         # ✅ ALL VALUES FROM CONFIG - NO HARDCODING
         self.learning_rate = config.get('learning_rate', 1e-4)
@@ -232,6 +277,7 @@ class OverlapNeuralPETrainer:
         
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
         
+        self.optimizer.zero_grad()
         for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(progress_bar):
             strain_data = strain_data.to(self.device)
             parameters = parameters.to(self.device)
@@ -242,8 +288,8 @@ class OverlapNeuralPETrainer:
             loss_dict = self.model.compute_loss(strain_data, target_params)
             
             # Backward pass
-            self.optimizer.zero_grad()
-            loss_dict['total_loss'].backward()
+            loss = loss_dict['total_loss'] / self.accumulation_steps
+            loss.backward()
             
             # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
@@ -449,23 +495,13 @@ def main():
         'mass_1', 'mass_2', 'luminosity_distance',
         'ra', 'dec', 'theta_jn', 'psi', 'phase', 'geocent_time'
     ])
+    scaler_path = os.path.join(args.data_dir, 'parameter_scalers.json')
+    with open(scaler_path, 'r') as f:
+        param_scalers = json.load(f)
+    
+    logger.info(f"✅ Loaded parameter scalers from {scaler_path}")
     
     logger.info(f"Parameters: {param_names}")
-    
-    # ✅ Log augmentation config
-    aug_config = config.get('data_augmentation', {})
-    if aug_config.get('enabled', False):
-        logger.info(f"📊 Data augmentation enabled:")
-        logger.info(f"  Noise scaling: {aug_config.get('noise_scaling')}")
-        logger.info(f"  Time shifts: {aug_config.get('time_shifts')}")
-        logger.info(f"  Apply probability: {aug_config.get('apply_probability')}")
-    
-    # ✅ Log dropout config
-    dropout = config.get('dropout', 0.1)
-    flow_dropout = config.get('flow_config', {}).get('dropout', 0.15)
-    logger.info(f"🔧 Regularization:")
-    logger.info(f"  Dropout: {dropout}")
-    logger.info(f"  Flow dropout: {flow_dropout}")
     
     # ✅ WANDB: Initialize with full config
     use_wandb = not args.no_wandb and WANDB_AVAILABLE
@@ -475,10 +511,7 @@ def main():
             'data_dir': args.data_dir,
             'priority_net': args.priority_net,
             'output_dir': str(output_dir),
-            'param_names': param_names,
-            'augmentation_enabled': aug_config.get('enabled', False),
-            'dropout': dropout,
-            'flow_dropout': flow_dropout
+            'param_names': param_names
         }
         
         wandb.init(
@@ -509,19 +542,17 @@ def main():
         train_data_loader = ChunkedGWDataLoader(
             dataset_path=args.data_dir,
             split='train',
-            max_samples=None,
-            shuffle_globally=True
+            max_samples=None
         )
         
         val_data_loader = ChunkedGWDataLoader(
             dataset_path=args.data_dir,
             split='validation',
-            max_samples=None,
-            shuffle_globally=False
+            max_samples=None
         )
         
-        train_dataset = OverlapGWDataset(train_data_loader, param_names, config)
-        val_dataset = OverlapGWDataset(val_data_loader, param_names, config)
+        train_dataset = OverlapGWDataset(train_data_loader, param_names,config=config)
+        val_dataset = OverlapGWDataset(val_data_loader, param_names, config = config)
         
         # Create data loaders
         batch_size = config.get('batch_size', 16)
@@ -531,8 +562,8 @@ def main():
             batch_size=batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            num_workers=4,
-            pin_memory=True
+            num_workers=1,
+            pin_memory=False
         )
         
         val_loader = DataLoader(
@@ -540,9 +571,22 @@ def main():
             batch_size=batch_size,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=4,
-            pin_memory=True
+            num_workers=1,
+            pin_memory=False
         )
+        aug_config = config.get('data_augmentation', {})
+        if aug_config.get('enabled', False):
+            logger.info(f"📊 Data augmentation enabled:")
+            logger.info(f"  Noise scaling: {aug_config.get('noise_scaling')}")
+            logger.info(f"  Time shifts: {aug_config.get('time_shifts')}")
+            logger.info(f"  Apply probability: {aug_config.get('apply_probability')}")
+        
+        # ✅ Log dropout config
+        dropout = config.get('dropout', 0.1)
+        flow_dropout = config.get('flow_config', {}).get('dropout', 0.15)
+        logger.info(f"🔧 Regularization:")
+        logger.info(f"  Dropout: {dropout}")
+        logger.info(f"  Flow dropout: {flow_dropout}")
         
         # Train
         trainer = OverlapNeuralPETrainer(model, config, use_wandb=use_wandb)
@@ -554,6 +598,7 @@ def main():
             yaml.dump(history, f)
         
         logger.info(f"🎉 All done! Results saved to {output_dir}")
+        
         
         # ✅ WANDB: Save history artifact
         if use_wandb:

@@ -1,6 +1,6 @@
 {
-  "n_samples": 95,
-  "n_chunks": 1,
+  "n_samples": 752,
+  "n_chunks": 8,
   "chunk_size": 100,
   "file_pattern": "chunk_XXXX.pkl",
   "noise_augmentation_applied": 1

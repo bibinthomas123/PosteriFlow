@@ -1,0 +1,158 @@
+{
+  "BBH": {
+    "mass_1": {
+      "type": "zscore",
+      "mean": 33.25763869427267,
+      "std": 15.352853047328791
+    },
+    "mass_2": {
+      "type": "zscore",
+      "mean": 20.30453835083118,
+      "std": 12.20822571129665
+    },
+    "total_mass": {
+      "type": "zscore",
+      "mean": 53.56217704510385,
+      "std": 24.80077209798175
+    },
+    "chirp_mass": {
+      "type": "zscore",
+      "mean": 21.76384751941852,
+      "std": 10.789341252409889
+    },
+    "luminosity_distance": {
+      "type": "log",
+      "min": 5.489835340146588,
+      "max": 7.60055811661528
+    },
+    "a1": {
+      "type": "tanh",
+      "min": 0.014882751310206142,
+      "max": 0.8350325511319903
+    },
+    "a2": {
+      "type": "tanh",
+      "min": 0.004311477757121379,
+      "max": 0.8742398919354278
+    },
+    "theta_jn": {
+      "type": "angle"
+    },
+    "ra": {
+      "type": "angle"
+    },
+    "dec": {
+      "type": "angle"
+    },
+    "psi": {
+      "type": "angle"
+    },
+    "phase": {
+      "type": "angle"
+    }
+  },
+  "BNS": {
+    "mass_1": {
+      "type": "zscore",
+      "mean": 1.495958122030493,
+      "std": 0.14049708450953416
+    },
+    "mass_2": {
+      "type": "zscore",
+      "mean": 1.314414234912543,
+      "std": 0.1453704321002705
+    },
+    "total_mass": {
+      "type": "zscore",
+      "mean": 2.8103723569430357,
+      "std": 0.2500095329731635
+    },
+    "chirp_mass": {
+      "type": "zscore",
+      "mean": 1.218352440240771,
+      "std": 0.10974312630154057
+    },
+    "luminosity_distance": {
+      "type": "log",
+      "min": 3.45178952854493,
+      "max": 5.703719131467169
+    },
+    "a1": {
+      "type": "tanh",
+      "min": 0.00015352632239895028,
+      "max": 0.04964675085358634
+    },
+    "a2": {
+      "type": "tanh",
+      "min": 0.00010825403821127511,
+      "max": 0.049910940732675595
+    },
+    "theta_jn": {
+      "type": "angle"
+    },
+    "ra": {
+      "type": "angle"
+    },
+    "dec": {
+      "type": "angle"
+    },
+    "psi": {
+      "type": "angle"
+    },
+    "phase": {
+      "type": "angle"
+    }
+  },
+  "NSBH": {
+    "mass_1": {
+      "type": "zscore",
+      "mean": 29.07712381258149,
+      "std": 20.911955721392
+    },
+    "mass_2": {
+      "type": "zscore",
+      "mean": 1.580445284971029,
+      "std": 0.2310145949442591
+    },
+    "total_mass": {
+      "type": "zscore",
+      "mean": 30.65756909755252,
+      "std": 20.931317068666367
+    },
+    "chirp_mass": {
+      "type": "zscore",
+      "mean": 4.664623612485543,
+      "std": 1.6044481953538634
+    },
+    "luminosity_distance": {
+      "type": "log",
+      "min": 3.503498486773245,
+      "max": 6.684318776378346
+    },
+    "a1": {
+      "type": "tanh",
+      "min": 0.0,
+      "max": 0.9784257813659061
+    },
+    "a2": {
+      "type": "tanh",
+      "min": 1.2735098614008456e-05,
+      "max": 0.0498380192022195
+    },
+    "theta_jn": {
+      "type": "angle"
+    },
+    "ra": {
+      "type": "angle"
+    },
+    "dec": {
+      "type": "angle"
+    },
+    "psi": {
+      "type": "angle"
+    },
+    "phase": {
+      "type": "angle"
+    }
+  }
+}

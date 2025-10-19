@@ -16,8 +16,8 @@ priority_net:
   learning_rate: 5e-4
   weight_decay: 1e-5
   batch_size: 32
-  epochs: 500
-  patience: 100
+  epochs: 170
+  patience: 20
   scheduler_patience: 15
   min_lr: 1e-6
 
@@ -55,7 +55,7 @@ flow_config:
 
 # Learning - INCREASE LR to break through plateau
 learning_rate: 0.0002         # ✅ INCREASE from 8e-5 to 2e-4
-batch_size: 4                # ✅ Keep (good for stability) was 16
+batch_size: 16                # ✅ Keep (good for stability) was 16
 epochs: 200                   # ✅ Keep (early stopping will handle)
 patience: 15                  # ✅ Keep (reasonable)
 

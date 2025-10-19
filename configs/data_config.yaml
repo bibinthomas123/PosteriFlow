@@ -1,47 +1,76 @@
-# Data Configuration for AHSD
+# Production Dataset Configuration
+# AHSD Overlapping GW Dataset Generation - OPTIMIZED FOR NPE & PRIORITYNET
 
-# Data paths and sources
-data_sources:
-  gwtc_catalog: "GWTC-4"  # Latest catalog version
-  strain_data_source: "losc"  # LIGO Open Science Center
-  
-# File paths
-data_directories:
-  raw_data: "data/raw"
-  processed_data: "data/processed" 
-  cache_data: "data/cache"
-  
-# Data processing parameters
-processing:
-  # Strain data parameters
-  segment_duration: 32  # seconds
-  analysis_duration: 4   # seconds  
-  overlap: 2            # seconds
-  
-  # Quality cuts
-  min_snr: 8.0
-  max_far: 1.0e-6  # False alarm rate threshold
-  
-  # Detector requirements
-  required_detectors: ["H1", "L1"]
-  optional_detectors: ["V1"]
-  
-# Injection parameters  
-injection:
-  # SNR ranges for synthetic signals
-  snr_range: [8, 25]
-  
-  # Parameter ranges (based on GWTC observations)
-  mass_range: [5, 100]  # Solar masses
-  distance_range: [50, 3000]  # Mpc
-  spin_range: [0, 0.99]
-  
-  # Overlapping signal parameters
-  max_overlapping: 5
-  time_overlap_window: 1.0  # seconds
-  
-# Background estimation
-background:
-  estimation_method: "off_source"
-  background_duration: 100  # seconds before/after event
-  psd_estimation_duration: 32  # seconds
+
+# Dataset Size
+n_samples: 45000 # Increased from 40000 for better statistical power
+
+
+# Output Configuration
+output_dir: "data/dataset"
+output_format: "pkl"  # pkl is faster for loading than HDF5
+save_complete: true
+save_batch_size: 500  # Good batch size
+
+
+# Train/Val/Test splits
+create_splits: true
+train_frac: 0.8   
+val_frac: 0.1     
+test_frac: 0.1    
+
+
+# Data Acquisition
+sample_rate: 4096  # Hz - Keep for compatibility with LIGO data
+duration: 4.0  # seconds - Good for capturing merger signals
+
+
+# Detector Network
+detectors:
+  - H1
+  - L1
+  - V1  # 3-detector network improves localization and parameter estimation
+
+
+# Signal Configuration
+overlap_fraction: 0.40  # INCREASED from 0.40 → 0.50 (50% overlapping signals for better PriorityNet training)
+edge_case_fraction: 0.20  # INCREASED from 0.15 → 0.20 (more diverse, challenging cases for robustness)
+
+
+# Event Type Distribution
+event_distribution:
+  BBH: 0.50   # Slightly reduced to balance with BNS/NSBH
+  BNS: 0.30   # INCREASED - BNS are harder to detect and estimate, important for NPE
+  NSBH: 0.15  # Keep
+  noise: 0.05 # Keep noise-only samples for false alarm training
+
+
+# SNR Distribution - REBALANCED FOR BETTER TRAINING
+snr_distribution:
+  weak: 0.20      # INCREASED from 0.15 → 0.20 (more low-SNR = harder, realistic scenarios)
+  low: 0.35       # Keep
+  medium: 0.25    # DECREASED from 0.30 → 0.25 
+  high: 0.15      # Keep
+  loud: 0.05      # Keep (useful for sanity checks and confidence calibration)
+
+
+# Processing Options
+add_glitches: true   # Essential for realistic training
+preprocess: true     # Whitening improves NPE convergence
+validate_output: true  # Always validate
+
+
+# Reproducibility
+random_seed: 42
+
+
+# Advanced Options
+strict_snr_validation: true
+include_metadata: true
+
+
+# Chunking
+chunk_size: 100  
+
+
+noise_augmentation_k: 5  

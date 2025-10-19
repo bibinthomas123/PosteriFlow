@@ -263,11 +263,11 @@ class BiasCorrector:
         self.bias_estimator = BiasEstimator(self.n_params)
         
         self.logger = logging.getLogger(__name__)
-        # âœ… FIX: Initialize with correct shapes for 9 parameters
+        #  FIX: Initialize with correct shapes for 9 parameters
         self.bias_corrections = np.zeros(self.n_params)  # Shape: (9,)
         self.scale_corrections = np.ones(self.n_params)   # Shape: (9,)
         
-        # âœ… FIX: Covariance matrix should be (9, 9) not (2, 2)
+        #  FIX: Covariance matrix should be (9, 9) not (2, 2)
         self.covariance_corrections = np.eye(self.n_params)  # Shape: (9, 9)
         
         
@@ -307,6 +307,35 @@ class BiasCorrector:
         }
         
         self.logger.info(f"BiasCorrector initialized for {self.n_params} parameters")
+    
+    
+    def forward(self, params: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass for integration with OverlapNeuralPE.
+        
+        Args:
+            params: [batch, param_dim] normalized parameters
+            context: [batch, context_dim] context features
+            
+        Returns:
+            corrections: [batch, param_dim] bias corrections
+            uncertainties: [batch, param_dim] correction uncertainties
+            confidence: [batch] correction confidence scores
+        """
+        # Concatenate params and context
+        combined = torch.cat([params, context], dim=1)
+        
+        # Get bias estimates
+        bias_pred, uncertainty, confidence = self.bias_estimator(combined)
+        
+        # Apply learned scaling
+        corrections = bias_pred * self.correction_scales
+        
+        # Clamp to reasonable range
+        corrections = torch.clamp(corrections, -0.2, 0.2)  # Max 20% correction
+        
+        return corrections, uncertainty, confidence
+    
     
     def _initialize_physics_bounds(self) -> Dict[str, Dict[str, float]]:
         """Initialize physics-based parameter bounds and priors"""
@@ -1033,7 +1062,7 @@ class BiasCorrector:
             'validation_samples': len(val_data)
         }
         
-        self.logger.info(f"âœ… Bias estimator training completed successfully in {training_history['epochs_completed']} epochs")
+        self.logger.info(f" Bias estimator training completed successfully in {training_history['epochs_completed']} epochs")
         
         return final_metrics
     

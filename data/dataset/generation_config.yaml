@@ -1,0 +1,32 @@
+add_glitches: true
+create_splits: true
+detectors:
+- H1
+- L1
+- V1
+duration: 4.0
+edge_case_fraction: 0.2
+event_distribution:
+  BBH: 0.5
+  BNS: 0.3
+  NSBH: 0.15
+  noise: 0.05
+n_samples: 45000
+output_dir: data/dataset
+output_format: pkl
+overlap_fraction: 0.4
+preprocess: true
+random_seed: 42
+sample_rate: 4096
+save_batch_size: 500
+save_complete: true
+snr_distribution:
+  high: 0.15
+  loud: 0.05
+  low: 0.35
+  medium: 0.25
+  weak: 0.2
+test_frac: 0.1
+train_frac: 0.8
+val_frac: 0.1
+validate_output: true

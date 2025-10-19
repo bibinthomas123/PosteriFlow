@@ -21,7 +21,9 @@ keywords = [
     "parameter-estimation",
     "neural-networks",
     "overlapping-signals",
-    "astrophysics"
+    "astrophysics",
+    "dataset-generation",
+    "ahsd"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -48,10 +50,12 @@ dependencies = [
     # GW Analysis
     "pycbc>=2.3.0",
     "lalsuite>=7.3",
+    "gwpy>=3.0.0",
     
     # Data Processing
     "pandas>=2.0.0",
     "h5py>=3.8.0",
+    "tables>=3.8.0",
     
     # Visualization
     "matplotlib>=3.7.0",
@@ -62,6 +66,7 @@ dependencies = [
     "pyyaml>=6.0",
     "scikit-learn>=1.2.0",
     "astropy>=5.2.0",
+    "requests>=2.28.0",
 ]
 
 [project.optional-dependencies]
@@ -73,11 +78,14 @@ dev = [
     "mypy>=0.900",
     "isort>=5.0",
     "pre-commit>=3.0",
+    "jupyter>=1.0.0",
+    "ipython>=8.0.0",
 ]
 docs = [
     "sphinx>=6.0",
     "sphinx-rtd-theme>=1.2",
     "sphinx-autodoc-typehints>=1.20",
+    "myst-parser>=1.0",
 ]
 all = [
     "PosteriFlow[dev,docs]",
@@ -90,17 +98,22 @@ Documentation = "https://github.com/bibinthomas123/PosteriFlow/wiki"
 "Bug Tracker" = "https://github.com/bibinthomas123/PosteriFlow/issues"
 
 [project.scripts]
-ahsd-analyze = "experiments.real_data_pipeline:main"
-ahsd-train = "experiments.train_neuralpe:main"
-ahsd-test = "experiments.test_neuralpe:main"
-ahsd-generate-data = "data_generation.generate_dataset:main"
+ahsd-analyze = "ahsd.experiments.real_data_pipeline:main"
+ahsd-generate = "ahsd.data.scripts.generate_dataset:main"
+ahsd-validate = "ahsd.data.scripts.validate_dataset:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = {find = {where = ["src"]}}
+packages = {find = {where = ["src"], include = ["ahsd*"]}}
 
 [tool.setuptools.package-data]
-ahsd = ["*.yaml", "*.json", "configs/*.yaml"]
+ahsd = [
+    "*.yaml", 
+    "*.json", 
+    "configs/*.yaml",
+    "data/configs/*.yaml",
+    "data/psds/*.npz"
+]
 
 [tool.black]
 line-length = 100

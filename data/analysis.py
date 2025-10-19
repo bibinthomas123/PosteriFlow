@@ -42,29 +42,37 @@ def load_dataset(data_dir):
 
     return all_samples
 
-
 def extract_parameters(samples):
-    """Extract physical parameters from all samples including overlaps."""
+    """
+    Extract physical parameters from all samples (supports both single and overlapping events).
+    Compatible with AHSD/PyCBC dataset structures.
+    Returns: pandas DataFrame
+    """
     params_list = []
-
     for sample in samples:
-        metadata = sample['metadata']
-
-        # Skip noise-only
-        if metadata.get('event_type') == 'noise':
+        # Skip if parameters are missing or None (e.g., some noise samples)
+        if 'parameters' not in sample or sample['parameters'] is None:
             continue
 
-        # Get signal parameters (handle both single and overlap)
-        sig_params_list = metadata.get('signal_parameters', [{}])
-        if not isinstance(sig_params_list, list):
-            sig_params_list = [sig_params_list]
+        # Handle both list of dicts (overlap) and single dict (single signal)
+        if isinstance(sample['parameters'], list):
+            sig_params_list = sample['parameters']
+        else:
+            sig_params_list = [sample['parameters']]
 
-        is_overlap = metadata.get('is_overlap', False)
+        is_overlap = sample.get('is_overlap', False)
         num_signals = len(sig_params_list) if is_overlap else 1
 
-        # Extract first signal parameters
+        # Only extract the first signal's parameters (for population stats)
         sig_params = sig_params_list[0] if sig_params_list else {}
 
+        # Use sample-level 'type' as a fallback for event type
+        event_type = sig_params.get('type', sample.get('type', 'unknown'))
+        # Use SNR from signal params if available, else fallback to sample level or NaN
+        network_snr = sig_params.get('target_snr',
+                        sample.get('network_snr', np.nan))
+
+        # Compose the parameter dictionary
         params = {
             'mass_1': sig_params.get('mass_1', np.nan),
             'mass_2': sig_params.get('mass_2', np.nan),
@@ -82,16 +90,14 @@ def extract_parameters(samples):
             'theta_jn': sig_params.get('theta_jn', np.nan),
             'lambda_1': sig_params.get('lambda_1', np.nan),
             'lambda_2': sig_params.get('lambda_2', np.nan),
-            'event_type': metadata.get('event_type', 'unknown'),
+            'event_type': event_type,
             'is_overlap': is_overlap,
             'num_signals': num_signals,
-            'network_snr': metadata.get('network_snr', np.nan)
+            'network_snr': network_snr
         }
-
         params_list.append(params)
 
     return pd.DataFrame(params_list)
-
 
 def check_physics_correctness(df):
     """Validate physics relationships in the dataset."""

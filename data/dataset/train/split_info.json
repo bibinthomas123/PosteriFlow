@@ -1,0 +1,20 @@
+{
+  "split_name": "train",
+  "n_samples": 35999,
+  "n_chunks": 360,
+  "chunk_size": 100,
+  "compressed": false,
+  "file_pattern": "chunk_XXXX.pkl",
+  "split": "train",
+  "sample_rate": 4096,
+  "duration": 4.0,
+  "detectors": [
+    "H1",
+    "L1",
+    "V1"
+  ],
+  "parent_dataset_size": 45000,
+  "augmentation_factor": 1,
+  "original_samples": 35999,
+  "total_samples": 35999
+}

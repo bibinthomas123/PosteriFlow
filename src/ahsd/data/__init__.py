@@ -1,15 +1,34 @@
 """
-Data loading, preprocessing, and injection utilities.
+AHSD Data Module
+===============
+Complete gravitational wave dataset generation and management for AHSD pipeline.
+
+Main Components:
+- Dataset generation with overlapping signals
+- PSD management and noise generation
+- Waveform injection and parameter sampling
+- GWTC catalog integration
+- Preprocessing and quality validation
 """
 
-from .gwtc_loader import GWTCDataLoader
+from .dataset_generator import GWDatasetGenerator
+from .parameter_sampler import ParameterSampler
+from .psd_manager import PSDManager
+from .waveform_generator import WaveformGenerator
+from .injection import SignalInjector
 from .preprocessing import DataPreprocessor
-from .injection import RealDataSignalInjector
-from .simulation import OverlappingSignalSimulator
+from .gwtc_loader import GWTCLoader
+from .noise_generator import NoiseGenerator
 
 __all__ = [
-    "GWTCDataLoader",
-    "DataPreprocessor",
-    "RealDataSignalInjector",
-    "OverlappingSignalSimulator"
+    'GWDatasetGenerator',
+    'ParameterSampler',
+    'PSDManager',
+    'WaveformGenerator',
+    'SignalInjector',
+    'DataPreprocessor',
+    'GWTCLoader',
+    'NoiseGenerator'
 ]
+
+__version__ = '1.0.0'

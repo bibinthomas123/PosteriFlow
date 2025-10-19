@@ -75,7 +75,7 @@ class NeuralPE:
         self.complexity_level = 'medium'
         self.logger = logging.getLogger(__name__)
         
-        # âœ… REAL LOGIC: Parameter bounds for physics-based estimates
+        #  REAL LOGIC: Parameter bounds for physics-based estimates
         self.param_bounds = self._get_parameter_bounds()
         self.context_features_dim = 256
         
@@ -1103,7 +1103,7 @@ class AdaptiveSubtractor:
         self.max_iterations = 3  # Maximum iterative refinement
         self.convergence_threshold = 0.01  # Convergence criterion
         
-        self.logger.info("âœ… AdaptiveSubtractor initialized with REAL physics-based logic")
+        self.logger.info(" AdaptiveSubtractor initialized with REAL physics-based logic")
     
     def extract_and_subtract(self, data: Dict[str, Any], 
                            detection_idx: int) -> Tuple[Dict[str, np.ndarray], Dict, Dict]:

@@ -5,8 +5,6 @@ A deep learning pipeline for analyzing overlapping gravitational wave signals
 using real LIGO-Virgo-KAGRA data.
 """
 
-"""AHSD Package initialization."""
-
 __version__ = "1.0.0"
 
 try:
@@ -16,6 +14,7 @@ try:
     from .core.adaptive_subtractor import AdaptiveSubtractor
     from .core.bias_corrector import BiasCorrector
     from .core.ahsd_pipeline import AHSDPipeline
+    from . import data  
     
     __all__ = [
         'AHSDConfig',
@@ -23,7 +22,8 @@ try:
         'PriorityNet',
         'AdaptiveSubtractor',
         'BiasCorrector',
-        'AHSDPipeline'
+        'AHSDPipeline',
+        'data'  
     ]
     
 except ImportError as e:

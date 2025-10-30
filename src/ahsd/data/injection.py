@@ -14,7 +14,7 @@ try:
 except ImportError:
     PYCBC_AVAILABLE = False
 
-from .config import SAMPLE_RATE, DURATION, N_SAMPLES
+from .config import SAMPLE_RATE, DURATION
 from .waveform_generator import WaveformGenerator
 
 class SignalInjector:
@@ -266,8 +266,9 @@ class SignalInjector:
             snr_regime = 'medium'  # Can be randomized
             params = sampler.sample_bbh_parameters(snr_regime, is_edge_case=False)
             
-            # Random SNR
-            params['target_snr'] = np.random.uniform(*snr_range)
+            # Random SNR (do not overwrite if already set by caller/sampler)
+            if 'target_snr' not in params:
+                params['target_snr'] = np.random.uniform(*snr_range)
             
             # Time offset for overlap
             if i == 0:

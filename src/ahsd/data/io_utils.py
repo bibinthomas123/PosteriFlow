@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import yaml
 import gzip
+import time
+from datetime import datetime, timezone
 
 class DatasetWriter:
     """
@@ -276,10 +278,10 @@ class DatasetWriter:
                      chunk_size: int = 100,
                      compress: bool = True) -> Path:
         """
-        Save dataset split in chunks
+        Save dataset split in chunks with comprehensive metadata.
         
         Args:
-            split_name: 'train', 'val', or 'test'
+            split_name: 'train', 'validation', or 'test'
             samples: List of samples for this split
             metadata: Split metadata
             chunk_size: Samples per chunk file
@@ -296,6 +298,7 @@ class DatasetWriter:
         
         self.logger.info(f"Saving {split_name} split: {len(samples)} samples in {n_chunks} chunks")
         
+        # Save chunks
         for chunk_idx in range(n_chunks):
             start_idx = chunk_idx * chunk_size
             end_idx = min((chunk_idx + 1) * chunk_size, len(samples))
@@ -313,27 +316,34 @@ class DatasetWriter:
             
             self.logger.debug(f"  Chunk {chunk_idx+1}/{n_chunks}: {len(chunk_samples)} samples")
         
-        # Save split metadata
+        # Prepare comprehensive metadata
         split_metadata = {
-            'split_name': split_name,
+            'split': split_name,  
             'n_samples': len(samples),
             'n_chunks': n_chunks,
             'chunk_size': chunk_size,
             'compressed': compress,
-            'file_pattern': 'chunk_XXXX.pkl.gz' if compress else 'chunk_XXXX.pkl'
+            'file_pattern': 'chunk_XXXX.pkl.gz' if compress else 'chunk_XXXX.pkl',
+            'created_at': datetime.now(timezone.utc).isoformat(),  # ✅ UTC ISO format
+            'chunk_files': [f'chunk_{i:04d}.pkl' + ('.gz' if compress else '') 
+                        for i in range(n_chunks)]
         }
         
         if metadata:
             split_metadata.update(metadata)
         
-        metadata_file = split_dir / 'split_info.json'
-        with open(metadata_file, 'w') as f:
+        json_file = split_dir / 'split_info.json'
+        with open(json_file, 'w') as f:
             json.dump(split_metadata, f, indent=2, default=str)
         
+        pkl_file = split_dir / f'{split_name}_metadata.pkl'
+        with open(pkl_file, 'wb') as f:
+            pickle.dump(split_metadata, f)
+        
         self.logger.info(f"✓ {split_name} split saved ({n_chunks} chunks)")
+        self.logger.info(f"  - Metadata: {json_file.name}, {pkl_file.name}")
         
         return split_dir
-
 
 class DatasetReader:
     """
@@ -522,28 +532,185 @@ class MetadataManager:
         self.logger = logging.getLogger(__name__)
         
     def create_metadata(self,
-                    n_samples: int,
-                    config: Dict,
-                    statistics: Dict = None) -> Dict:
-        """Create comprehensive metadata dictionary"""
+                   n_samples: int,
+                   config: Dict,
+                   statistics: Dict = None) -> Dict:
+        """
+        Create comprehensive dataset metadata dictionary.
         
-        import time
-        from datetime import datetime
+        Includes creation timestamp (UTC), configuration, version info,
+        system details, and optional statistics.
         
+        Args:
+            n_samples: Total number of samples in dataset
+            config: Generation configuration dictionary
+            statistics: Optional statistics dict (sample counts, distributions, etc.)
+        
+        Returns:
+            Metadata dictionary with all relevant dataset information
+        
+        Example:
+            >>> metadata = gen.create_metadata(
+            ...     n_samples=50000,
+            ...     config={'duration': 4.0, 'sample_rate': 4096},
+            ...     statistics={'mean_snr': 18.5, 'n_overlaps': 15000}
+            ... )
+        """
+        
+        from datetime import datetime, timezone
+        import sys
+        import platform
+        
+        # ========================================================================
+        # CORE METADATA
+        # ========================================================================
         metadata = {
-            'creation_time': datetime.now().isoformat(),
-            'timestamp': time.time(),
+            # Timestamps
+            'creation_time': datetime.now(timezone.utc).isoformat(),  # ✅ UTC ISO format
+            'creation_timestamp_utc': datetime.now(timezone.utc).timestamp(),  # Unix timestamp
+            
+            # Dataset info
             'n_samples': n_samples,
-            'configuration': config.copy() if config else {},
-            'version': '1.0.0',
             'format': 'AHSD-GW-Dataset',
-            'format_version': '1.0.0'  
+            'format_version': '1.0.0',
+            'schema_version': '1.0.0',
+            
+            # Configuration
+            'configuration': config.copy() if config else {},
+            
+            # Generator info
+            'generator': {
+                'name': 'GWDatasetGenerator',
+                'version': '1.0.0',
+                'class': self.__class__.__name__
+            }
         }
         
+        # ========================================================================
+        # SYSTEM INFORMATION (for reproducibility)
+        # ========================================================================
+        metadata['system_info'] = {
+            'platform': sys.platform,
+            'platform_version': platform.platform(),
+            'python_version': sys.version.split()[0],
+            'python_implementation': platform.python_implementation(),
+            'machine': platform.machine(),
+            'processor': platform.processor()
+        }
+        
+        # ========================================================================
+        # GIT INFORMATION (optional, for reproducibility)
+        # ========================================================================
+        git_commit = self._get_git_commit()
+        if git_commit:
+            metadata['git_info'] = {
+                'commit': git_commit,
+                'branch': self._get_git_branch(),
+                'dirty': self._is_git_dirty()
+            }
+        
+        # ========================================================================
+        # DETECTOR CONFIGURATION
+        # ========================================================================
+        metadata['detector_config'] = {
+            'detectors': self.detectors,
+            'duration': self.duration,
+            'sample_rate': self.sample_rate,
+            'n_samples_per_segment': int(self.duration * self.sample_rate)
+        }
+        
+        # ========================================================================
+        # STATISTICS (optional)
+        # ========================================================================
         if statistics:
             metadata['statistics'] = statistics
         
+        # ========================================================================
+        # PACKAGE VERSIONS (for reproducibility)
+        # ========================================================================
+        metadata['dependencies'] = self._get_package_versions()
+        
         return metadata
+
+
+    # ========================================================================
+    # HELPER METHODS FOR METADATA
+    # ========================================================================
+
+    def _get_git_commit(self) -> Optional[str]:
+        """Get current git commit hash."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['git', 'rev-parse', 'HEAD'],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            return result.stdout.strip()
+        except Exception:
+            return None
+
+
+    def _get_git_branch(self) -> Optional[str]:
+        """Get current git branch name."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            return result.stdout.strip()
+        except Exception:
+            return None
+
+
+    def _is_git_dirty(self) -> bool:
+        """Check if git working directory has uncommitted changes."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['git', 'status', '--porcelain'],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5
+            )
+            return len(result.stdout.strip()) > 0
+        except Exception:
+            return False
+
+
+    def _get_package_versions(self) -> Dict[str, str]:
+        """Get versions of key dependencies."""
+        versions = {}
+        
+        packages = [
+            'numpy',
+            'scipy',
+            'pycbc',
+            'lalsuite',
+            'h5py',
+            'torch',
+            'gwpy'
+        ]
+        
+        for package in packages:
+            try:
+                import importlib
+                mod = importlib.import_module(package)
+                versions[package] = getattr(mod, '__version__', 'unknown')
+            except ImportError:
+                versions[package] = 'not_installed'
+            except Exception:
+                versions[package] = 'unknown'
+        
+        return versions
+
 
     def compute_dataset_statistics(self, samples: List[Dict]) -> Dict:
         """Compute comprehensive dataset statistics"""

@@ -17,19 +17,23 @@ from pathlib import Path
 import logging
 from tqdm import tqdm
 import yaml
-from typing import List, Dict, Tuple, Any, Optional, Union
+from typing import List, Dict, Tuple, Any, Optional, Union, Iterator
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import json
 import random
-
-
+from datetime import datetime
+from scipy.stats import spearmanr, kendalltau
+import time
+import traceback
+import gc
+import math
+from torch.utils.data import WeightedRandomSampler
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from ahsd.core.priority_net import PriorityNet, PriorityNetTrainer
-print('PriorityNetTrainer loaded from:', sys.modules['ahsd.core.priority_net'].__file__)
 
 def setup_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
@@ -42,6 +46,130 @@ def setup_logging(verbose: bool = False):
         ]
     )
 
+
+EDGE_TYPE_TO_ID = {
+    None: 0,  # No edge case
+    'cosmological_distance': 1,
+    'detector_dropout': 2,
+    'eccentric': 3,
+    'extreme_mass_ratio': 4,
+    'extreme_spins': 5,
+    'heavy_overlaps': 6,
+    'heavy_tailed_regions': 7,
+    'high_mass_ratio': 8,
+    'low_snr_threshold': 9,
+    'multimodal_posteriors': 10,
+    'partial_overlap': 11,
+    'precessing': 12,
+    'psd_drift': 13,
+    'short_duration_high_mass': 14,
+    'sky_position_extremes': 15,
+    'strong_glitches': 16,
+    'subtle_ranking': 17,
+}
+
+def encode_edge_type(edge_type):
+    """
+    Convert edge case type string to integer ID.
+    
+    Args:
+        edge_type: String edge case type or None
+    
+    Returns:
+        Integer ID (0 for None/unknown, 1-17 for known types)
+    """
+    return EDGE_TYPE_TO_ID.get(edge_type, 0)
+
+
+# ============================================================================
+# FIXED: Priority Calculation
+# ============================================================================
+
+def calculate_priority(signal: Dict[str, Any], is_overlap: bool = False) -> float:
+    """
+    Calculate priority based on SNR and signal characteristics.
+    FIXED to work with your data structure!
+    """
+    # Step 1: Get target SNR (it's directly in signal dict!)
+    target_snr = signal.get('target_snr', 0.0)
+    
+    # Fallback to network_snr if exists
+    if target_snr == 0.0:
+        target_snr = signal.get('network_snr', 0.0)
+    
+    # Try detector-specific SNRs
+    if target_snr == 0.0:
+        h1_data = signal.get('H1', {})
+        l1_data = signal.get('L1', {})
+        if isinstance(h1_data, dict) and isinstance(l1_data, dict):
+            h1_snr = float(h1_data.get('optimal_snr', 0.0))
+            l1_snr = float(l1_data.get('optimal_snr', 0.0))
+            target_snr = np.sqrt(h1_snr**2 + l1_snr**2)
+    
+    target_snr = float(target_snr)
+    
+    if target_snr < 8.0:
+        return 0.0
+    
+    base_priority = target_snr
+    edge_bonus = 0.0
+    
+    # High mass ratio
+    try:
+        mass_1 = float(signal.get('mass_1', 10.0))
+        mass_2 = float(signal.get('mass_2', 10.0))
+        if mass_1 > 0 and mass_2 > 0:
+            q = max(mass_1, mass_2) / min(mass_1, mass_2)
+            if q > 8.0:
+                edge_bonus += 0.1
+    except:
+        pass
+    
+    # High spin (check both 'a1' and 'a_1')
+    try:
+        a1 = abs(float(signal.get('a1', signal.get('a_1', 0.0))))
+        a2 = abs(float(signal.get('a2', signal.get('a_2', 0.0))))
+        if max(a1, a2) > 0.8:
+            edge_bonus += 0.15
+    except:
+        pass
+    
+    # Eccentric
+    try:
+        eccentricity = float(signal.get('eccentricity', 0.0))
+        if eccentricity > 0.1:
+            edge_bonus += 0.2
+    except:
+        pass
+    
+    # Very high SNR
+    if target_snr > 30.0:
+        edge_bonus += 0.1
+    
+    edge_bonus = min(edge_bonus, 0.5)
+    overlap_penalty = 0.9 if is_overlap else 1.0
+    priority = base_priority * (1.0 + edge_bonus) * overlap_penalty
+    
+    return float(priority)
+
+
+
+
+def create_weighted_sampler(dataset, n_signals_threshold=5, oversample_factor=1.35):
+    """Create sampler that oversamples n≥5 scenarios by oversample_factor."""
+    weights = []
+    for i in range(len(dataset)):
+        try:
+            sample = dataset[i]
+            n = len(sample.get('detections', []))
+            weight = oversample_factor if n >= n_signals_threshold else 1.0
+            weights.append(weight)
+        except:
+            weights.append(1.0)
+        
+    return WeightedRandomSampler(weights, num_samples=len(dataset), replacement=True)
+
+
 class ChunkedGWDataLoader:
     """
     Data loader for your 20K chunked GW dataset structure
@@ -49,7 +177,7 @@ class ChunkedGWDataLoader:
     """
     
     def __init__(self, dataset_path: str, split: str = 'train', 
-                 max_samples: Optional[int] = None):
+                 max_samples: Optional[int] = None, verbose: bool = True):        
         """
         Initialize chunked GW dataset loader
         
@@ -63,15 +191,40 @@ class ChunkedGWDataLoader:
         self.split = split
         self.max_samples = max_samples
         self.logger = logging.getLogger(__name__)
+        self.verbose = verbose
         
         # Load split information
         self._load_split_info()
         
         # Load all samples from chunks
-        self.samples = self._load_all_samples()
+        # self.samples = self._load_all_samples()
         
-        self.logger.info(f" {split.upper()} dataset loaded: {len(self.samples)} samples")
+        # self.logger.info(f" {split.upper()} dataset loaded: {len(self.samples)} samples")
 
+        self.last_processed = 0
+        self.verbose = verbose
+        
+        
+    @property
+    def count(self) -> int:
+        if not hasattr(self, '_count_cache'):
+            self._count_cache = self.count_samples(ignore_max=False)
+        return self._count_cache
+
+    def count_samples(self, ignore_max: bool = False, cap: Optional[int] = None) -> int:
+        """Count samples by streaming (respects max unless ignore_max=True)."""
+        old_max = self.max_samples
+        if ignore_max:
+            self.max_samples = None
+        cnt = 0
+        for _ in self.iter_all_samples():
+            cnt += 1
+            if cap is not None and cnt >= cap:
+                break
+        self.max_samples = old_max
+        return cnt
+    
+    
     def _load_split_info(self):
         """Load split information"""
         
@@ -97,41 +250,39 @@ class ChunkedGWDataLoader:
         self.chunk_size = self.split_info['chunk_size']
         
         self.logger.info(f" {self.split}: {self.n_chunks} chunks, {self.chunk_size} samples per chunk")
+        
+        
+    def iter_all_samples(self) -> Iterator[Dict]:
+        """Stream samples from chunks."""
+        total_yielded = 0
+        self.logger.info(f"Loading {self.split} chunks (streaming)...")
 
-    def _load_all_samples(self) -> List[Dict]:
-        """Load all samples from chunks"""
-        
-        all_samples = []
-        total_loaded = 0
-        
-        self.logger.info(f" Loading {self.split} chunks...")
-        
-        for chunk_id in tqdm(range(self.n_chunks), desc=f"Loading {self.split}"):
+        for chunk_id in range(self.n_chunks):
             chunk_file = self.dataset_path / self.split / f'chunk_{chunk_id:04d}.pkl'
-            
-            if chunk_file.exists():
-                try:
-                    with open(chunk_file, 'rb') as f:
-                        chunk_data = pickle.load(f)
-                    
-                    for sample in chunk_data:
-                        all_samples.append(sample)
-                        total_loaded += 1
-                        
-                        # Check max samples limit
-                        if self.max_samples and total_loaded >= self.max_samples:
-                            self.logger.info(f"â¹ï¸ Reached max samples limit: {self.max_samples}")
-                            return all_samples
-                            
-                except Exception as e:
-                    self.logger.warning(f"Failed to load chunk {chunk_id}: {e}")
-                    continue
-            else:
+
+            if not chunk_file.exists():
                 self.logger.warning(f"Chunk file not found: {chunk_file}")
-        
-        return all_samples
-    
-    
+                continue
+
+            try:
+                with open(chunk_file, 'rb') as f:
+                    chunk_data = pickle.load(f)
+
+                for sample in chunk_data:
+                    yield sample
+                    total_yielded += 1
+
+                    if self.max_samples and total_yielded >= self.max_samples:
+                        self.logger.info(f"Reached max samples limit: {self.max_samples}")
+                        return
+
+                # Let chunk_data go out of scope, or explicitly free
+                del chunk_data
+
+            except Exception as e:
+                self.logger.warning(f"Failed to load chunk {chunk_id}: {e}")
+                continue
+            
     def _convert_noise_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:
         """ Convert noise sample to PriorityNet scenario"""
         
@@ -179,262 +330,105 @@ class ChunkedGWDataLoader:
             return None
 
 
-    def convert_to_priority_scenarios(self, create_overlaps: bool = True,
-                                   overlap_probability: float = 0.3) -> List[Dict]:
+
+    def convert_to_priority_scenarios(
+        self,
+        limit: Optional[int] = None,
+        create_overlaps: bool = False,
+        overlap_probability: float = 0.3,
+        reservoir_max: int = 2000,      # bounded memory for singles used to create overlaps
+        seed: Optional[int] = None
+    ) -> List[Dict]:
         """
-        Convert GW samples to PriorityNet training scenarios with artificial overlaps
-        for ALL splits (train, validation, test)
+        Streaming conversion without materializing self.samples.
+        Uses a bounded reservoir of single samples to create artificial overlaps.
         """
-        
-        self.logger.info(" Converting GW samples to PriorityNet scenarios...")
-        
-        scenarios = []
-        single_signal_samples = []
-        multi_signal_samples = []
-        noise_samples = []
-        overlap_samples = []
-        
-        # Separate samples by type
-        for sample in self.samples:
-            metadata = sample.get('metadata', {})
-            event_type = metadata.get('event_type', 'unknown')
-            overlap_type = metadata.get('overlap_type', 'single')
-            n_signals = metadata.get('n_signals', 1)
-            
-            if event_type == 'noise':
-                noise_samples.append(sample)
-            elif event_type == 'overlap' or overlap_type == 'multi_signal' or n_signals > 1:
-                overlap_samples.append(sample)
-            elif n_signals == 1:
-                single_signal_samples.append(sample)
+        assert 0.0 <= overlap_probability <= 1.0
+
+        scenarios: List[Dict] = []
+        failed_count = 0
+        success_count = 0
+
+        # Stats and bounded reservoir for single samples
+        singles_seen = 0
+        artificial_created = 0
+        reservoir: List[Dict] = []
+        rng = random.Random(seed) if seed is not None else random
+
+        def maybe_add_to_reservoir(sample: Dict):
+            nonlocal reservoir, singles_seen
+            # Reservoir sampling (Algorithm R): uniform subset of singles with O(k) memory
+            if len(reservoir) < reservoir_max:
+                reservoir.append(sample)
             else:
-                multi_signal_samples.append(sample)
-        
-        self.logger.info(f" Found {len(single_signal_samples)} single-signal, "
-                        f"{len(multi_signal_samples)} multi-signal, "
-                        f"{len(noise_samples)} noise, "
-                        f"{len(overlap_samples)} overlap samples")
-        
-        # Convert noise samples
-        for sample in tqdm(noise_samples, desc="Converting noise"):
-            scenario = self._convert_noise_sample_to_scenario(sample)
-            if scenario:
-                scenarios.append(scenario)
-        
-        # Convert single-signal samples
-        for sample in tqdm(single_signal_samples, desc="Converting single signals"):
-            scenario = self._convert_single_sample_to_scenario(sample)
-            if scenario:
-                scenarios.append(scenario)
-        
-        # Convert multi-signal samples
-        for sample in tqdm(multi_signal_samples, desc="Converting multi signals"):
-            scenario = self._convert_multi_sample_to_scenario(sample)
-            if scenario:
-                scenarios.append(scenario)
-        
-        # Convert original overlap samples
-        for sample in tqdm(overlap_samples, desc="Converting overlaps"):
-            scenario = self._convert_overlap_sample_to_scenario(sample)
-            if scenario:
-                scenarios.append(scenario)
-        
-        #   Create artificial overlaps for ALL splits (not just training)
-        if create_overlaps and len(single_signal_samples) >= 2:
-            self.logger.info(f" Creating artificial overlap scenarios for {self.split}...")
-            
-            #  Split-specific overlap counts
-            if self.split == 'train':
-                n_artificial_overlaps = min(6000, len(single_signal_samples) // 2)
-            elif self.split == 'validation':
-                n_artificial_overlaps = min(400, len(single_signal_samples) // 2)
-            elif self.split == 'test':
-                n_artificial_overlaps = min(400, len(single_signal_samples) // 2)
+                # Replace with decreasing probability
+                j = rng.randint(0, singles_seen)  # inclusive
+                if j < reservoir_max:
+                    reservoir[j] = sample
+
+        # Stream from chunks; do not use self.samples
+        iterator = self.iter_all_samples()  # implement Fix 1 generator on your class
+        processed = 0
+
+        pbar = tqdm(iterator, desc="Converting (streaming)", disable=not self.verbose, total=limit)
+        for sample in pbar:
+            if limit is not None and processed >= limit:
+                break
+            processed += 1
+
+            if not isinstance(sample, Dict):
+                failed_count += 1
+                continue
+
+            # Convert singles vs overlaps
+            if sample.get('type') == 'overlap':
+                scenario = self._convert_overlap_sample_to_scenario(sample)
+                if scenario is not None:
+                    scenarios.append(scenario)
+                    success_count += 1
+                else:
+                    failed_count += 1
             else:
-                n_artificial_overlaps = 0
+                # Single sample path
+                scenario = self._convert_single_sample_to_scenario(sample)
+                singles_seen += 1 if scenario is not None else 0
+
+                if scenario is not None:
+                    scenarios.append(scenario)
+                    success_count += 1
+                    # Maintain bounded reservoir of singles
+                    maybe_add_to_reservoir(sample)
+                else:
+                    failed_count += 1
+
+            # Incremental creation of artificial overlaps to match probability target
+            if create_overlaps and overlap_probability > 0.0 and len(reservoir) >= 2:
+                target = int(singles_seen * overlap_probability)
+                while artificial_created < target:
+                    # Reuse your existing method which draws internally from provided singles
+                    artificial_scenario = self._create_artificial_overlap_scenario(reservoir)
+                    if artificial_scenario is not None:
+                        scenarios.append(artificial_scenario)
+                        success_count += 1
+                    artificial_created += 1
+
+        print(f"Total processed: {processed}")
+        print(f"Singles seen: {singles_seen}")
+        print(f"Artificial overlaps created: {artificial_created}")
+        print(f"\nConversion complete:")
+        print(f"  Success: {success_count}")
+        print(f"  Failed: {failed_count}")
+        if (success_count + failed_count) > 0:
+            print(f"  Success rate: {success_count/(success_count+failed_count)*100:.1f}%")
+
+        # Warn on high failure rate
+        if processed > 0 and failed_count > 0.5 * processed:
+            print(f"\n⚠️  WARNING: High failure rate ({failed_count}/{processed})")
+            print("  Check dataset structure with inspect_dataset.py")
             
-            if n_artificial_overlaps > 0:
-                self.logger.info(f"   Target: {n_artificial_overlaps} artificial overlaps")
-                created_count = 0
-                attempts = 0
-                max_attempts = n_artificial_overlaps * 2  # Allow 2x attempts
-                
-                pbar = tqdm(total=n_artificial_overlaps, desc="Creating artificial overlaps")
-                
-                while created_count < n_artificial_overlaps and attempts < max_attempts:
-                    attempts += 1
-                    
-                    # Create artificial overlap
-                    scenario = self._create_artificial_overlap_scenario(single_signal_samples)
-                    if scenario:
-                        scenarios.append(scenario)
-                        created_count += 1
-                        pbar.update(1)
-                
-                pbar.close()
-                
-                self.logger.info(f" Created {created_count} artificial overlap scenarios ({attempts} attempts)")
-        
-        self.logger.info(f" Created {len(scenarios)} total PriorityNet scenarios")
-        
+        self.proccessed = processed
         return scenarios
 
-    def _convert_overlap_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:
-        """ Convert original overlap sample to PriorityNet scenario"""
-        
-        try:
-            metadata = sample.get('metadata', {})
-            signal_parameters = metadata.get('signal_parameters', [])
-            
-            if len(signal_parameters) < 1:
-                return None
-            
-            # Convert each signal to PriorityNet format
-            true_parameters = []
-            
-            # Get total network SNR and distribute among signals
-            total_network_snr = metadata.get('network_snr', 20.0)
-            n_signals = len(signal_parameters)
-            
-            for i, sig_param in enumerate(signal_parameters):
-                # Distribute SNR among signals (approximate)
-                if n_signals > 1:
-                    individual_snr = total_network_snr / np.sqrt(n_signals)
-                else:
-                    individual_snr = total_network_snr
-                
-                # Use original event type if available, otherwise classify by masses
-                original_event_type = sig_param.get('event_type', metadata.get('event_type', 'overlap'))
-                if original_event_type == 'overlap':
-                    # Classify by masses for overlap cases
-                    m1, m2 = sig_param.get('mass_1', 30.0), sig_param.get('mass_2', 25.0)
-                    if m1 <= 3.0 and m2 <= 3.0:
-                        original_event_type = 'BNS'
-                    elif (m1 <= 3.0 and m2 > 3.0) or (m1 > 3.0 and m2 <= 3.0):
-                        original_event_type = 'NSBH'
-                    else:
-                        original_event_type = 'BBH'
-                
-                priority_param = {
-                    'mass_1': sig_param.get('mass_1', 30.0),
-                    'mass_2': sig_param.get('mass_2', 25.0),
-                    'luminosity_distance': sig_param.get('luminosity_distance', 500.0),
-                    'network_snr': individual_snr,
-                    'individual_snrs': {det: individual_snr * 0.8 for det in metadata.get('detector_network', ['H1', 'L1'])},
-                    'ra': sig_param.get('ra', 0.0),
-                    'dec': sig_param.get('dec', 0.0),
-                    'theta_jn': sig_param.get('theta_jn', 0.0),
-                    'psi': sig_param.get('psi', 0.0),
-                    'phase': sig_param.get('phase', 0.0),
-                    'geocent_time': sig_param.get('geocent_time', i * 0.5),
-                    'a1': sig_param.get('a1', 0.0),
-                    'a2': sig_param.get('a2', 0.0),
-                    'approximant': sig_param.get('approximant', 'IMRPhenomD'),
-                    'event_type': original_event_type,  #  Proper event type
-                    'edge_case': sig_param.get('edge_case', False),
-                    'edge_case_type': sig_param.get('edge_case_type'),
-                    'detector_network': metadata.get('detector_network', ['H1', 'L1']),
-                    'sample_id': f"{sample.get('sample_id', 'unknown')}_signal_{i}",
-                    # Overlap-specific information
-                    'is_overlap': True,
-                    'overlap_index': i,
-                    'n_overlapping_signals': n_signals,
-                    'time_separation': sig_param.get('geocent_time', i * 0.5),
-                    'snr_in_overlap': individual_snr
-                }
-                true_parameters.append(priority_param)
-            
-            scenario = {
-                'scenario_id': sample.get('sample_id', 'unknown'),
-                'true_parameters': true_parameters,
-                'baseline_biases': [],
-                'detector_data': sample.get('detector_data', {}),
-                'whitened_data': sample.get('whitened_data', {}),
-                'metadata': {
-                    **metadata,
-                    'scenario_type': 'original_overlap',
-                    'n_signals': n_signals
-                }
-            }
-            
-            return scenario
-            
-        except Exception as e:
-            self.logger.debug(f"Failed to convert overlap sample: {e}")
-            return None
-    
-    def _convert_single_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:
-        """ Convert single GW sample to PriorityNet scenario"""
-        
-        try:
-            metadata = sample.get('metadata', {})
-            signal_parameters = metadata.get('signal_parameters', [])
-            
-            #  Handle samples without signal_parameters (shouldn't happen for non-noise)
-            if not signal_parameters:
-                # Check if this is actually a mislabeled noise sample
-                event_type = metadata.get('event_type', 'unknown')
-                if event_type == 'noise':
-                    return self._convert_noise_sample_to_scenario(sample)
-                else:
-                    self.logger.warning(f"Non-noise sample without signal_parameters: {sample.get('sample_id')}")
-                    return None
-            
-            # Convert to PriorityNet format
-            true_parameters = []
-            
-            for sig_param in signal_parameters:
-                #  Use original event_type from metadata, not mass-based classification
-                original_event_type = metadata.get('event_type', 'BBH')
-                
-                priority_param = {
-                    'mass_1': sig_param.get('mass_1', 30.0),
-                    'mass_2': sig_param.get('mass_2', 25.0),
-                    'luminosity_distance': sig_param.get('luminosity_distance', 500.0),
-                    'network_snr': metadata.get('network_snr', 10.0),
-                    'individual_snrs': metadata.get('individual_snrs', {}),
-                    'ra': sig_param.get('ra', 0.0),
-                    'dec': sig_param.get('dec', 0.0),
-                    'theta_jn': sig_param.get('theta_jn', 0.0),
-                    'psi': sig_param.get('psi', 0.0),
-                    'phase': sig_param.get('phase', 0.0),
-                    'geocent_time': sig_param.get('geocent_time', 0.0),
-                    'a1': sig_param.get('a1', 0.0),
-                    'a2': sig_param.get('a2', 0.0),
-                    'tilt1': sig_param.get('tilt1', 0.0),
-                    'tilt2': sig_param.get('tilt2', 0.0),
-                    'approximant': sig_param.get('approximant', 'IMRPhenomD'),
-                    'event_type': original_event_type,  #  Use original classification
-                    'edge_case': sig_param.get('edge_case', False),
-                    'edge_case_type': sig_param.get('edge_case_type'),
-                    'detector_network': metadata.get('detector_network', ['H1', 'L1']),
-                    'sample_id': sample.get('sample_id', 'unknown'),
-                    # Additional parameters
-                    'total_mass': sig_param.get('total_mass', sig_param.get('mass_1', 30.0) + sig_param.get('mass_2', 25.0)),
-                    'chirp_mass': sig_param.get('chirp_mass', 0.0),
-                    'effective_spin': sig_param.get('effective_spin', 0.0),
-                    'lambda_1': sig_param.get('lambda_1', 0),
-                    'lambda_2': sig_param.get('lambda_2', 0),
-                    'distance_mpc': sig_param.get('luminosity_distance', 500.0),
-                    'snr_regime': metadata.get('snr_regime', 'medium'),
-                    'difficulty_assessment': metadata.get('difficulty_assessment', 'medium')
-                }
-                true_parameters.append(priority_param)
-            
-            scenario = {
-                'scenario_id': sample.get('sample_id', 'unknown'),
-                'true_parameters': true_parameters,
-                'baseline_biases': [],  # Could be computed if needed
-                'detector_data': sample.get('detector_data', {}),
-                'whitened_data': sample.get('whitened_data', {}),
-                'metadata': metadata
-            }
-            
-            return scenario
-            
-        except Exception as e:
-            self.logger.debug(f"Failed to convert single sample {sample.get('sample_id', 'unknown')}: {e}")
-            return None
 
     def _convert_multi_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:
         """ Convert multi-signal GW sample to PriorityNet scenario (legacy support)"""
@@ -457,154 +451,408 @@ class ChunkedGWDataLoader:
             self.logger.debug(f"Failed to convert multi-sample: {e}")
             return None
     
-    def _create_artificial_overlap_scenario(self, single_samples: List[Dict]) -> Optional[Dict]:
-        """Create artificial overlap scenario (without whitened_data requirement)"""
         
+
+
+    def _extract_priorities_from_dataset(self, sample: Dict, signal_params: List[Dict]) -> Optional[List[float]]:
+        """
+        Extract priorities aligned to signal_params from the dataset.
+
+        Order of precedence:
+        1) sample['priorities'] (scalar or list)
+        2) per-parameter keys in each param dict: ['priority', 'target_priority', 'label_priority', 'priority_score']
+
+        Returns:
+            list[float] with length == len(signal_params), or None if unavailable/mismatched.
+        """
+        p = sample.get('priorities')
+        if isinstance(p, (int, float, np.floating)):
+            p = [float(p)]
+        if isinstance(p, list) and all(isinstance(v, (int, float, np.floating)) for v in p):
+            if len(p) == len(signal_params):
+                return [float(v) for v in p]
+            if len(signal_params) == 1 and len(p) >= 1:
+                return [float(p[0])]
+
+        keys = ['priority', 'target_priority', 'label_priority', 'priority_score']
+        vals = []
+        for par in signal_params:
+            if not isinstance(par, dict):
+                return None
+            v = next((par[k] for k in keys if k in par), None)
+            if not isinstance(v, (int, float, np.floating)):
+                return None
+            vals.append(float(v))
+
+        return vals if len(vals) == len(signal_params) else None
+    
+    def _resolve_edge_type(self, sample: Dict) -> tuple[Optional[str], Optional[int]]:
+        """
+        Resolve (edge_case_type, edge_type_id) from dataset metadata or auto-classify.
+        
+        Auto-classification uses existing EDGE_TYPE_TO_ID vocabulary:
+        - extreme_mass_ratio: q > 8
+        - extreme_spins: |a| > 0.8
+        - eccentric: e > 0.1
+        - high_mass_ratio: total mass > 100 M☉
+        - low_snr_threshold: SNR < 10
+        - heavy_overlaps: 5+ signals
+        - partial_overlap: 2-4 signals
+        - None: singles or unclassified
+        """
+        md = sample.get('metadata') or {}
+        
+        # Prefer dataset-provided edge type
+        edge_type_id = sample.get('edge_type_id', md.get('edge_type_id'))
+        if edge_type_id is not None:
+            edge_case_type = sample.get('edge_case_type', md.get('edge_case_type', 'unknown'))
+            try:
+                return edge_case_type, int(edge_type_id)
+            except Exception:
+                pass
+        
+        edge_case_type = sample.get('edge_case_type', md.get('edge_case_type'))
+        if edge_case_type:
+            return edge_case_type, encode_edge_type(edge_case_type)
+        
+        # Auto-classify from signal properties
+        is_overlap = sample.get('is_overlap') or sample.get('type') == 'overlap'
+        signal_params = md.get('signal_parameters', sample.get('parameters', []))
+        if isinstance(signal_params, dict):
+            signal_params = [signal_params]
+        
+        if not signal_params:
+            return None, encode_edge_type(None)
+        
+        try:
+            n_signals = len(signal_params)
+            
+            # Extract properties from first signal (representative)
+            params = signal_params[0]
+            m1 = params.get('mass_1', 30.0)
+            m2 = params.get('mass_2', 30.0)
+            a1 = abs(params.get('a_1', 0.0))
+            a2 = abs(params.get('a_2', 0.0))
+            ecc = params.get('eccentricity', 0.0)
+            snr = params.get('network_snr', params.get('target_snr', 15.0))
+            
+            total_mass = m1 + m2
+            q = max(m1, m2) / min(m1, m2) if min(m1, m2) > 0 else 1.0
+            
+            # Classify by priority (most specific first)
+            if n_signals >= 5:
+                return 'heavy_overlaps', encode_edge_type('heavy_overlaps')
+            if ecc > 0.1:
+                return 'eccentric', encode_edge_type('eccentric')
+            if q > 8.0:
+                return 'extreme_mass_ratio', encode_edge_type('extreme_mass_ratio')
+            if max(a1, a2) > 0.8:
+                return 'extreme_spins', encode_edge_type('extreme_spins')
+            if total_mass > 100.0:
+                return 'high_mass_ratio', encode_edge_type('high_mass_ratio')
+            if snr < 10.0:
+                return 'low_snr_threshold', encode_edge_type('low_snr_threshold')
+            if 2 <= n_signals <= 4:
+                return 'partial_overlap', encode_edge_type('partial_overlap')
+            
+        except Exception as e:
+            self.logger.debug(f"Edge type classification failed: {e}")
+        
+        # Default: none
+        return None, encode_edge_type(None)
+
+    def _convert_single_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:
+        """
+        Convert a single, labeled sample into a PriorityNet scenario using dataset-provided priorities.
+
+        Behavior:
+        - Skips noise samples to keep schema consistent.
+        - Reads priorities from sample['priorities'] (or per-parameter fields); drops the sample if labels are missing/mismatched.
+        - Ensures edge_type_id is an int by preferring dataset ID, otherwise using a default 'none' class.
+        """
+        if not isinstance(sample, dict):
+            return None
+
+        sample_type = sample.get('type', 'unknown')
+        if hasattr(sample_type, 'item'):
+            sample_type = sample_type.item()
+        sample_type = str(sample_type)
+
+        if sample_type == 'noise':
+            return None
+
+        if sample.get('is_overlap') or sample_type == 'overlap':
+            signal_params = (sample.get('metadata') or {}).get('signal_parameters')
+        else:
+            signal_params = sample.get('parameters')
+            if signal_params is None:
+                signal_params = (sample.get('metadata') or {}).get('signal_parameters')
+
+        if signal_params is None:
+            self._missing_params_count = getattr(self, '_missing_params_count', 0) + 1
+            if self._missing_params_count in (1,) or self._missing_params_count % 1000 == 0:
+                self.logger.warning(
+                    f"Missing signal_parameters (count: {self._missing_params_count}). "
+                    f"Sample type: {sample_type}, is_overlap: {sample.get('is_overlap')}"
+                )
+            return None
+
+        if isinstance(signal_params, dict):
+            signal_params = [signal_params]
+        elif not isinstance(signal_params, list):
+            return None
+
+        try:
+            priorities = self._extract_priorities_from_dataset(sample, signal_params)
+            if priorities is None:
+                return None
+
+            detections = [params for params in signal_params]
+            edge_case_type, edge_type_id = self._resolve_edge_type(sample)
+            if edge_type_id is None:
+                # If type exists but ID is None, encode the type
+                if edge_case_type:
+                    edge_type_id = encode_edge_type(edge_case_type)
+                else:
+                    edge_type_id = encode_edge_type('none')
+
+
+            return {
+                'detections': detections,
+                'priorities': torch.tensor(priorities, dtype=torch.float32),
+                'sample_type': sample_type,
+                'sample_id': sample.get('sample_id', sample.get('id', 'unknown')),
+                'is_edge_case': sample.get('is_edge_case', False),
+                'edge_case_type': edge_case_type,
+                'edge_type_id': int(edge_type_id)
+            }
+        except Exception as e:
+            self._conversion_error_count = getattr(self, '_conversion_error_count', 0) + 1
+            if self._conversion_error_count <= 10:
+                self.logger.debug(f"Conversion error: {e}")
+            return None
+
+    def _convert_overlap_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:
+        """
+        Convert a labeled overlap sample to a PriorityNet scenario using dataset-provided priorities.
+
+        Behavior:
+        - Resolves signal parameters from metadata.signal_parameters or parameters.
+        - Reads priorities from sample['priorities'] (or per-parameter fields); drops the sample if labels are missing/mismatched.
+        - Ensures edge_type_id is an int by preferring dataset ID, otherwise using a default 'none' class.
+        """
+        if not isinstance(sample, dict):
+            return None
+
+        metadata = sample.get('metadata', {}) or {}
+        signal_params = metadata.get('signal_parameters', [])
+        if not signal_params:
+            signal_params = sample.get('parameters', [])
+
+        if isinstance(signal_params, dict):
+            signal_params = [signal_params]
+        if not signal_params:
+            return None
+
+        try:
+            priorities = self._extract_priorities_from_dataset(sample, signal_params)
+            if priorities is None:
+                return None
+
+            detections = [params for params in signal_params]
+            edge_case_type, edge_type_id = self._resolve_edge_type(sample)
+            if edge_type_id is None:
+                # If type exists but ID is None, encode the type
+                if edge_case_type:
+                    edge_type_id = encode_edge_type(edge_case_type)
+                else:
+                    edge_type_id = encode_edge_type('none')
+
+            return {
+                'detections': detections,
+                'priorities': torch.tensor(priorities, dtype=torch.float32),
+                'sample_type': 'overlap',
+                'sample_id': sample.get('sample_id', sample.get('id', 'unknown')),
+                'is_edge_case': sample.get('is_edge_case', False),
+                'edge_case_type': edge_case_type,
+                'edge_type_id': int(edge_type_id)
+            }
+        except Exception as e:
+            self.logger.debug(f"Overlap conversion error: {e}")
+            return None
+
+    def _create_artificial_overlap_scenario(self, single_samples: List[Dict]) -> Optional[Dict]:
+        """
+        Create a synthetic overlap scenario by mixing detector strains from sampled singles.
+
+        Behavior:
+        - Samples 2–3 singles, aligns detector strain lengths, and sums scaled strains.
+        - Builds detections from first signal of each single and computes priorities on-the-fly for synthetic labels.
+        - Returns a labeled scenario with 'detections', 'priorities', and 'detector_data'.
+        """
         try:
             n_signals = random.choice([2, 3])
             if len(single_samples) < n_signals:
                 return None
-                
-            selected_samples = random.sample(single_samples, n_signals)
-            
-            combined_parameters = []
+
+            selected = random.sample(single_samples, n_signals)
+            first_det = selected[0].get('detector_data', {})
+            if not isinstance(first_det, dict) or not first_det:
+                return None
+            detectors = list(first_det.keys())
+
             combined_detector_data = {}
-            # REMOVE: combined_whitened_data = {}  # ← Remove this
-            
-            detectors = list(selected_samples[0].get('detector_data', {}).keys())
-            
-            # Initialize combined data
-            for detector in detectors:
-                combined_detector_data[detector] = np.zeros_like(
-                    selected_samples[0]['detector_data'][detector]['strain'])  # ← Access 'strain' properly
-                # REMOVE: combined_whitened_data[detector] = ...  # ← Remove this
-            
-            # Combine samples
-            for i, sample in enumerate(selected_samples):
-                metadata = sample.get('metadata', {})
-                signal_params = metadata.get('signal_parameters', [])
-                
-                if signal_params:
-                    sig_param = signal_params[0]
-                    
-                    time_offset = i * random.uniform(0.2, 1.0)
-                    snr_reduction = random.uniform(0.6, 0.8)
-                    
-                    original_event_type = metadata.get('event_type', 'BBH')
-                    
-                    priority_param = {
-                        'mass_1': sig_param.get('mass_1', 30.0),
-                        'mass_2': sig_param.get('mass_2', 25.0),
-                        'luminosity_distance': sig_param.get('luminosity_distance', 500.0),
-                        'network_snr': metadata.get('network_snr', 10.0) * snr_reduction,
-                        'individual_snrs': {det: metadata.get('network_snr', 10.0) * snr_reduction * 0.8 
-                                        for det in detectors},
-                        'ra': sig_param.get('ra', 0.0),
-                        'dec': sig_param.get('dec', 0.0),
-                        'theta_jn': sig_param.get('theta_jn', 0.0),
-                        'psi': sig_param.get('psi', 0.0),
-                        'phase': sig_param.get('phase', 0.0),
-                        'geocent_time': time_offset,
-                        'a1': sig_param.get('a1', 0.0),
-                        'a2': sig_param.get('a2', 0.0),
-                        'approximant': sig_param.get('approximant', 'IMRPhenomD'),
-                        'event_type': original_event_type,
-                        'edge_case': sig_param.get('edge_case', False),
-                        'detector_network': detectors,
-                        'sample_id': f"artificial_overlap_{i}",
-                        'is_overlap': True,
-                        'artificial': True,
-                        'overlap_index': i,
-                        'n_overlapping_signals': n_signals
-                    }
-                    combined_parameters.append(priority_param)
-                    
-                    # Add detector data
-                    for detector in detectors:
-                        if detector in sample.get('detector_data', {}):
-                            detector_strain = sample['detector_data'][detector].get('strain', 
-                                            sample['detector_data'][detector])  # Handle both dict and array
-                            if isinstance(detector_strain, dict):
-                                detector_strain = detector_strain.get('strain', np.zeros(4096))
-                            combined_detector_data[detector] += detector_strain * snr_reduction
-                            # REMOVE: combined_whitened_data reference
-            
-            scenario = {
-                'scenario_id': f"artificial_overlap_{random.randint(1000, 9999)}",
-                'true_parameters': combined_parameters,
-                'baseline_biases': [],
+            for det in detectors:
+                base = selected[0]['detector_data'][det]
+                base_strain = base.get('strain') if isinstance(base, dict) else base
+                if base_strain is None:
+                    return None
+                base_strain = np.asarray(base_strain)
+                combined_detector_data[det] = np.zeros_like(base_strain, dtype=base_strain.dtype)
+
+            detections = []
+            for i, s in enumerate(selected):
+                md = s.get('metadata', {}) or {}
+                sp = md.get('signal_parameters')
+                if sp is None:
+                    sp = s.get('parameters')
+                if sp is None:
+                    continue
+                if isinstance(sp, dict):
+                    sp = [sp]
+                if not isinstance(sp, list) or len(sp) == 0:
+                    continue
+
+                sig = sp[0]
+                snr_reduction = random.uniform(0.6, 0.8)
+                for det in detectors:
+                    det_blob = s.get('detector_data', {}).get(det)
+                    if det_blob is None:
+                        continue
+                    det_strain = det_blob.get('strain') if isinstance(det_blob, dict) else det_blob
+                    if det_strain is None:
+                        continue
+                    det_strain = np.asarray(det_strain)
+                    m = min(len(combined_detector_data[det]), len(det_strain))
+                    if m <= 0:
+                        continue
+                    combined_detector_data[det][:m] += det_strain[:m] * snr_reduction
+
+                det_params = {
+                    'mass_1': sig.get('mass_1', 30.0),
+                    'mass_2': sig.get('mass_2', 25.0),
+                    'luminosity_distance': sig.get('luminosity_distance', 500.0),
+                    'network_snr': float(md.get('network_snr', sig.get('network_snr', 10.0))) * snr_reduction,
+                    'ra': sig.get('ra', 0.0),
+                    'dec': sig.get('dec', 0.0),
+                    'theta_jn': sig.get('theta_jn', 0.0),
+                    'psi': sig.get('psi', 0.0),
+                    'phase': sig.get('phase', 0.0),
+                    'geocent_time': i * random.uniform(0.2, 1.0),
+                    'a1': sig.get('a1', 0.0),
+                    'a2': sig.get('a2', 0.0),
+                    'approximant': sig.get('approximant', 'IMRPhenomD'),
+                    'event_type': s.get('event_type') or md.get('event_type') or sig.get('event_type') or 'BBH',
+                    'detector_network': detectors,
+                    'is_overlap': True,
+                    'artificial': True
+                }
+                detections.append(det_params)
+
+            if not detections:
+                return None
+
+            priorities = [calculate_priority(p, is_overlap=True) for p in detections]
+            scenario_id = f"artificial_overlap_{random.randint(1000, 9999)}"
+
+            return {
+                'detections': detections,
+                'priorities': torch.tensor(priorities, dtype=torch.float32),
+                'sample_type': 'overlap',
+                'sample_id': scenario_id,
+                'is_edge_case': False,
+                'edge_case_type': 'heavy_overlaps',
+                'edge_type_id': int(encode_edge_type('heavy_overlaps')),
                 'detector_data': combined_detector_data,
-                # REMOVE: 'whitened_data': combined_whitened_data,  # ← Remove this line
                 'metadata': {
                     'event_type': 'overlap',
-                    'n_signals': len(combined_parameters),
+                    'n_signals': len(detections),
                     'overlap_type': 'multi_signal',
                     'detector_network': detectors,
-                    'network_snr': sum(p['network_snr'] for p in combined_parameters),
                     'artificial': True,
                     'scenario_type': 'artificial_overlap'
                 }
             }
-            
-            return scenario
-            
         except Exception as e:
             self.logger.debug(f"Failed to create artificial overlap: {e}")
             return None
 
-    
 class PriorityNetDataset(Dataset):
     """Enhanced PriorityNet dataset with signal-type awareness"""
     
     def __init__(self, scenarios: List[Dict], split_name: str = 'train'):
+        """
+        Initialize PriorityNet dataset from converted scenarios.
+        
+        Args:
+            scenarios: List of scenario dicts from convert_to_priority_scenarios
+            split_name: Name of dataset split ('train', 'validation', 'test')
+        """
+        
         self.data = []
         self.split_name = split_name
+        self.normalize_priorities = True
         self.logger = logging.getLogger(__name__)
         
         bbh_count = bns_count = nsbh_count = noise_count = overlap_count = 0
         
+        self.logger.info(f"📊 Processing {len(scenarios)} scenarios for {split_name} dataset...")
+        
         for scenario_id, scenario in enumerate(scenarios):
             try:
-                true_params = scenario.get('true_parameters', [])
-                baseline_results = scenario.get('baseline_biases', [])
+                # ✅ NEW: Use 'detections' and 'priorities' fields from convert_to_priority_scenarios
+                detections = scenario.get('detections', [])
+                priorities = scenario.get('priorities', None)
                 
-                if not true_params:
+                if not detections or priorities is None:
+                    if scenario_id < 5:  # Log first few failures
+                        self.logger.warning(
+                            f"  Scenario {scenario_id} missing data. "
+                            f"Has detections: {bool(detections)}, "
+                            f"Has priorities: {priorities is not None}, "
+                            f"Keys: {list(scenario.keys())}"
+                        )
                     continue
                 
-                #   Extract ALL detections, not just first
-                detections = []
-                class_ids = []
-                
-                for signal in true_params:  # Process ALL signals
-                    # Extract detection parameters
-                    detection = {
-                        'mass_1': signal.get('mass_1', 30.0),
-                        'mass_2': signal.get('mass_2', 25.0),
-                        'luminosity_distance': signal.get('luminosity_distance', 500.0),
-                        'network_snr': signal.get('network_snr', 10.0),
-                        'individual_snrs': signal.get('individual_snrs', {}),
-                        'ra': signal.get('ra', 0.0),
-                        'dec': signal.get('dec', 0.0),
-                        'theta_jn': signal.get('theta_jn', 0.0),
-                        'psi': signal.get('psi', 0.0),
-                        'phase': signal.get('phase', 0.0),
-                        'geocent_time': signal.get('geocent_time', 0.0),
-                        'a_1': signal.get('a_1', 0.0),
-                        'a_2': signal.get('a_2', 0.0),
-                        'tilt_1': signal.get('tilt_1', 0.0),
-                        'tilt_2': signal.get('tilt_2', 0.0),
-                        'phi_12': signal.get('phi_12', 0.0),
-                        'phi_jl': signal.get('phi_jl', 0.0),
-                        'approximant': signal.get('approximant', 'IMRPhenomD'),
-                        'event_type': signal.get('event_type', 'BBH'),
-                        'edge_case': signal.get('edge_case', False),
-                        'detector_network': signal.get('detector_network', ['H1', 'L1']),
-                        'sample_id': signal.get('sample_id', 'unknown')
-                    }
-                    detections.append(detection)
+                # Ensure priorities is tensor
+                if not isinstance(priorities, torch.Tensor):
+                    priorities = scenario['priorities']
+                    if isinstance(priorities, torch.Tensor):
+                        priorities = priorities.numpy()
+                    elif isinstance(priorities, list):
+                        priorities = np.array(priorities)
                     
-                    # Get event type for classification
-                    evt_raw = signal.get('event_type', None)
+                    if self.normalize_priorities:
+                        priorities = self._normalize_priorities(priorities)
+                    
+                    priorities_tensor = torch.tensor(priorities, dtype=torch.float32)
+                
+                # Verify length match
+                if len(detections) != len(priorities):
+                    self.logger.warning(
+                        f"  Scenario {scenario_id} length mismatch: "
+                        f"{len(detections)} detections vs {len(priorities)} priorities"
+                    )
+                    continue
+                
+                # Clean priorities (no NaN/Inf)
+                priorities = torch.where(torch.isnan(priorities), torch.tensor(0.5), priorities)
+                priorities = torch.where(torch.isinf(priorities), torch.tensor(1.0), priorities)
+                
+                # ✅ Extract class IDs from detections
+                class_ids = []
+                for detection in detections:
+                    evt_raw = detection.get('event_type', detection.get('type', None))
                     evt = str(evt_raw).strip().lower() if evt_raw is not None else None
                     
                     if evt and 'bbh' in evt:
@@ -622,33 +870,20 @@ class PriorityNetDataset(Dataset):
                     
                     class_ids.append(class_id)
                 
-                #   Compute priorities for ALL detections
-                priorities = self._compute_extraction_priorities(true_params, baseline_results)
-                
-                if priorities is None or len(priorities) == 0:
-                    continue
-                
-                #  Verify all have same length
-                if len(detections) != len(priorities) or len(detections) != len(class_ids):
-                    self.logger.warning(f"Length mismatch in scenario {scenario_id}: "
-                                      f"detections={len(detections)}, priorities={len(priorities)}, "
-                                      f"class_ids={len(class_ids)}")
-                    continue
-                
-                # Ensure priorities are tensor
-                if not isinstance(priorities, torch.Tensor):
-                    priorities = torch.tensor(priorities, dtype=torch.float32)
-                
-                # Clean priorities (no NaN/Inf)
-                priorities = torch.where(torch.isnan(priorities), torch.tensor(0.5), priorities)
-                priorities = torch.where(torch.isinf(priorities), torch.tensor(1.0), priorities)
+                # ✅ Get edge case information
+                edge_type_id = scenario.get('edge_type_id', 0)
+                is_edge_case = scenario.get('is_edge_case', False)
+                edge_case_type = scenario.get('edge_case_type', None)
                 
                 # Store complete scenario
                 scenario_data = {
-                    'scenario_id': scenario.get('scenario_id', f'scenario_{scenario_id}'),
-                    'detections': detections,  #  ALL detections
-                    'priorities': priorities,   #  ALL priorities
-                    'class_ids': torch.tensor(class_ids, dtype=torch.long),  #  ALL class IDs
+                    'scenario_id': scenario.get('sample_id', f'scenario_{scenario_id}'),
+                    'detections': detections,
+                    'priorities': priorities,
+                    'class_ids': torch.tensor(class_ids, dtype=torch.long),
+                    'edge_type_id': edge_type_id, 
+                    'is_edge_case': is_edge_case,
+                    'edge_case_type': edge_case_type,
                     'metadata': scenario.get('metadata', {})
                 }
                 
@@ -659,408 +894,464 @@ class PriorityNetDataset(Dataset):
                     overlap_count += 1
                 
             except Exception as e:
-                self.logger.warning(f"Error processing scenario {scenario_id}: {e}")
+                if scenario_id < 5:
+                    self.logger.warning(f"  Error processing scenario {scenario_id}: {e}")
                 continue
         
         # Log statistics
         total = bbh_count + bns_count + nsbh_count + noise_count
-        self.logger.info(f" {split_name.upper()} PriorityNet dataset created: {len(self.data)} scenarios")
-        self.logger.info(f"   BBH: {bbh_count} ({bbh_count/max(total,1)*100:.1f}%)")
-        self.logger.info(f"   BNS: {bns_count} ({bns_count/max(total,1)*100:.1f}%)")
-        self.logger.info(f"   NSBH: {nsbh_count} ({nsbh_count/max(total,1)*100:.1f}%)")
-        self.logger.info(f"   Noise: {noise_count} ({noise_count/max(total,1)*100:.1f}%)")
-        self.logger.info(f"   Overlap: {overlap_count} ({overlap_count/max(len(self.data),1)*100:.1f}%)")
-    
-    def _compute_extraction_priorities(self, signals: List[Dict], 
-                                baseline_biases: Optional[List[Dict]] = None) -> torch.Tensor:
-        """
-        COMPLETE  Enhanced priority computation for all signal types
+        self.logger.info(f"\n📈 {split_name.upper()} PriorityNet dataset created: {len(self.data)} scenarios")
+        if total > 0:
+            self.logger.info(f"   BBH: {bbh_count} ({bbh_count/total*100:.1f}%)")
+            self.logger.info(f"   BNS: {bns_count} ({bns_count/total*100:.1f}%)")
+            self.logger.info(f"   NSBH: {nsbh_count} ({nsbh_count/total*100:.1f}%)")
+            self.logger.info(f"   Noise: {noise_count} ({noise_count/total*100:.1f}%)")
+        if len(self.data) > 0:
+            self.logger.info(f"   Overlap: {overlap_count} ({overlap_count/len(self.data)*100:.1f}%)")
         
-        Handles:
-        - Noise samples (lowest priority)
-        - BBH, BNS, NSBH with optimized parameters
-        - Overlap scenarios
-        - Edge cases
-        - Original event type preservation
-        - Distance/mass/SNR scaling
-        - Bias corrections
-        """
-        
-        n_signals = len(signals)
-        priorities = torch.zeros(n_signals)
-         
-        for i, signal in enumerate(signals):
-            try:
-                #  Use original event_type, handle noise properly (normalize to upper)
-                evt_raw = signal.get('event_type', 'BBH')
-                event_type = str(evt_raw).strip().upper() if evt_raw is not None else 'BBH'
-                
-                # Handle noise samples - give them lowest but non-zero priority
-                if event_type == 'NOISE':
-                    # Noise gets consistent low priority  with small random variation
-                    priorities[i] = 0.0 
-                    
-                    # Do not proceed to further classification/logging for noise
-                    continue
-                
-                # Basic signal properties with safety checks (robust casting)
-                def _as_float(val, default):
-                    try:
-                        return float(val)
-                    except Exception:
-                        return float(default)
-                    
-                    
-                snr = max(0.1, _as_float(signal.get('network_snr', 10.0), 10.0))
-                m1 = max(0.1, _as_float(signal.get('mass_1', 30.0), 30.0))
-                m2 = max(0.1, _as_float(signal.get('mass_2', 25.0), 25.0))
-                distance = max(1.0, _as_float(signal.get('luminosity_distance', 500.0), 500.0))
-                
-                # Ensure proper mass ordering
-                if m2 > m1:
-                    m1, m2 = m2, m1
-                
-                # Use original event type instead of mass-based classification
-                if event_type not in ['BBH', 'BNS', 'NSBH']:
-                    # Fallback to mass-based classification for unknown/invalid types
-                    if m1 <= 3.0 and m2 <= 3.0:
-                        signal_type = 'BNS'
-                    elif (m1 <= 3.0 and m2 > 3.0) or (m1 > 3.0 and m2 <= 3.0):
-                        signal_type = 'NSBH'
-                    else:
-                        signal_type = 'BBH'
-                    
-                    # Avoid misleading logs for noise which is handled above
-                    if event_type not in ['NOISE']:
-                        self.logger.debug(f"Signal {i}: Unknown event_type '{event_type}', classified as {signal_type}")
-                else:
-                    signal_type = event_type
-                
-                # Derived quantities with safety checks
-                total_mass = m1 + m2
-                if total_mass > 0:
-                    chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
-                    mass_ratio = m2 / m1
-                    symmetric_mass_ratio = (m1 * m2) / total_mass**2
-                else:
-                    chirp_mass = 1.0
-                    mass_ratio = 0.5
-                    symmetric_mass_ratio = 0.25
-                
-                #  ENHANCED: SNR priority with logarithmic scaling for high SNR
-                if snr >= 50.0:
-                    snr_priority = 1.4 + 0.1 * np.log10(snr / 50.0)  # Extra bonus for very high SNR
-                elif snr >= 20.0:
-                    snr_priority = 1.0 + 0.15 * np.log10(snr / 20.0)  # Bonus for high SNR
-                elif snr >= 12.0:
-                    snr_priority = snr / 12.0  # Linear scaling in medium range
-                elif snr >= 8.0:
-                    snr_priority = 0.7 + 0.3 * (snr - 8.0) / 4.0  # Gentle scaling for low SNR
-                else:
-                    snr_priority = 0.4 + 0.3 * snr / 8.0  # Very low SNR handling
-                
-                snr_priority = min(snr_priority, 1.5)  # Cap at 1.5
-                
-                #  ENHANCED: Mass priority optimized for each signal type
-                if signal_type == 'BNS':
-                    # BNS: Favor canonical masses, don't heavily penalize outliers
-                    if 2.0 <= total_mass <= 3.5:  # Canonical BNS range
-                        mass_priority = 1.0
-                    elif 1.8 <= total_mass < 2.0:  # Light BNS
-                        mass_priority = 0.95
-                    elif 3.5 < total_mass <= 4.5:  # Heavy BNS
-                        mass_priority = 0.9
-                    elif 4.5 < total_mass <= 6.0:  # Very heavy BNS (still detectable)
-                        mass_priority = 0.8
-                    else:  # Extreme cases
-                        mass_priority = 0.7
-                        
-                elif signal_type == 'NSBH':
-                    # NSBH: Wide mass range acceptance
-                    if 4.0 <= total_mass <= 35.0:  # Standard NSBH
-                        mass_priority = 1.0
-                    elif 2.5 <= total_mass < 4.0:  # Light NSBH
-                        mass_priority = 0.9
-                    elif 35.0 < total_mass <= 80.0:  # Heavy NSBH
-                        mass_priority = 0.95
-                    elif 80.0 < total_mass <= 150.0:  # Very heavy NSBH
-                        mass_priority = 0.85
-                    else:  # Extreme cases
-                        mass_priority = 0.75
-                        
-                else:  # BBH
-                    #  ENHANCED: Excellent support for all BBH masses
-                    if 15.0 <= total_mass <= 50.0:  # Stellar mass BBH (optimal)
-                        mass_priority = 1.0
-                    elif 50.0 < total_mass <= 100.0:  # Intermediate mass BBH
-                        mass_priority = 1.05  # Slight bonus for intermediate mass
-                    elif 100.0 < total_mass <= 200.0:  # Heavy BBH (GW190521-like)
-                        mass_priority = 1.1   # Bonus for heavy BBH (astrophysically interesting)
-                    elif 200.0 < total_mass <= 400.0:  # Very heavy BBH
-                        mass_priority = 1.0   # Still very valuable
-                    elif 8.0 <= total_mass < 15.0:  # Light BBH
-                        mass_priority = 0.95
-                    elif 5.0 <= total_mass < 8.0:  # Very light BBH
-                        mass_priority = 0.9
-                    else:  # Extreme masses
-                        mass_priority = 0.8
-                
-                #  ENHANCED: Distance priority with better distant signal support
-                if chirp_mass > 0:
-                    # Chirp mass scaling for detection range
-                    chirp_mass_factor = (chirp_mass / 30.0)**(5/6)
-                    
-                    # Signal-type dependent horizon scaling
-                    if signal_type == 'BBH':
-                        base_horizon = 1000.0  # BBH detectable further
-                    elif signal_type == 'NSBH':
-                        base_horizon = 800.0   # NSBH intermediate
-                    else:  # BNS
-                        base_horizon = 200.0   # BNS closer detection
-                    
-                    effective_horizon = base_horizon * chirp_mass_factor
-                else:
-                    effective_horizon = 500.0
-                
-                if distance <= effective_horizon:
-                    distance_priority = 1.0
-                elif distance <= 2.0 * effective_horizon:
-                    # Gradual falloff for distant signals
-                    distance_priority = 0.6 + 0.4 * (2.0 * effective_horizon - distance) / effective_horizon
-                elif distance <= 5.0 * effective_horizon:
-                    # Extended range for very high mass systems
-                    distance_priority = 0.3 + 0.3 * (5.0 * effective_horizon - distance) / (3.0 * effective_horizon)
-                else:
-                    # Very distant signals still get some priority
-                    distance_priority = max(0.1, effective_horizon / distance)
-                
-                #  ENHANCED: Advanced detectability factors
-                base_detectability = 1.0
-                
-                # Chirp mass bonus (higher chirp mass = louder signal)
-                if chirp_mass >= 60.0:  # Very high chirp mass
-                    chirp_bonus = 0.2
-                elif chirp_mass >= 40.0:  # High chirp mass
-                    chirp_bonus = 0.15
-                elif chirp_mass >= 25.0:  # Moderate high chirp mass
-                    chirp_bonus = 0.1
-                elif chirp_mass >= 15.0:  # Standard chirp mass
-                    chirp_bonus = 0.05
-                elif chirp_mass >= 5.0:   # Low chirp mass
-                    chirp_bonus = 0.02
-                else:  # Very low chirp mass
-                    chirp_bonus = 0.0
-                
-                # Mass ratio factor (symmetric masses generally easier to detect)
-                if mass_ratio >= 0.9:  # Nearly equal masses
-                    mass_ratio_bonus = 0.08
-                elif mass_ratio >= 0.8:  # Close to equal
-                    mass_ratio_bonus = 0.05
-                elif mass_ratio >= 0.6:  # Moderate asymmetry
-                    mass_ratio_bonus = 0.03
-                elif mass_ratio >= 0.4:  # High asymmetry
-                    mass_ratio_bonus = 0.01
-                elif mass_ratio >= 0.2:  # Very high asymmetry
-                    mass_ratio_bonus = 0.0
-                else:  # Extreme asymmetry
-                    mass_ratio_bonus = -0.02  # Small penalty for extreme asymmetry
-                
-                # Symmetric mass ratio factor (peaks at 0.25)
-                eta_factor = 4.0 * symmetric_mass_ratio * (1.0 - symmetric_mass_ratio)
-                eta_bonus = 0.05 * eta_factor
-                
-                detectability = base_detectability + chirp_bonus + mass_ratio_bonus + eta_bonus
-                
-                #  ENHANCED: Special handling for extreme and interesting cases
-                extreme_bonus = 0.0
-                
-                # Very high mass bonus (interesting astrophysics)
-                if total_mass >= 150.0:
-                    extreme_bonus += 0.15  # Very interesting for astrophysics
-                elif total_mass >= 80.0:
-                    extreme_bonus += 0.1   # High mass bonus
-                elif total_mass >= 50.0:
-                    extreme_bonus += 0.05  # Moderate mass bonus
-                
-                # Very distant but high SNR bonus (rare but important)
-                if distance >= 3000.0 and snr >= 15.0:
-                    extreme_bonus += 0.15  # Exceptional detection
-                elif distance >= 2000.0 and snr >= 12.0:
-                    extreme_bonus += 0.1   # Very good distant detection
-                elif distance >= 1000.0 and snr >= 10.0:
-                    extreme_bonus += 0.05  # Good distant detection
-                
-                # Very high SNR bonus (regardless of other factors)
-                if snr >= 100.0:
-                    extreme_bonus += 0.2   # Exceptional SNR
-                elif snr >= 50.0:
-                    extreme_bonus += 0.15  # Very high SNR
-                elif snr >= 30.0:
-                    extreme_bonus += 0.1   # High SNR bonus
-                
-                # Low frequency bonus (longer inspiral, more information)
-                f_lower = _as_float(signal.get('f_lower', 20.0), 20.0)
-                if f_lower <= 10.0:
-                    extreme_bonus += 0.1   # Very low frequency start
-                elif f_lower <= 15.0:
-                    extreme_bonus += 0.05  # Low frequency start
-                
-                # Edge case bonus
-                if signal.get('edge_case', False):
-                    edge_case_type = signal.get('edge_case_type', 'unknown')
-                    if edge_case_type in ['high_spin', 'eccentric']:
-                        extreme_bonus += 0.08  # Higher bonus for challenging cases
-                    elif edge_case_type in ['short_bbh', 'long_bns']:
-                        extreme_bonus += 0.06  # Medium bonus
-                    else:
-                        extreme_bonus += 0.04  # Standard edge case bonus
-                
-                # Overlap handling bonus
-                if signal.get('is_overlap', False):
-                    n_overlapping = signal.get('n_overlapping_signals', 1)
-                    if n_overlapping >= 3:
-                        extreme_bonus += 0.1   # Complex overlap scenario
-                    elif n_overlapping == 2:
-                        extreme_bonus += 0.05  # Standard overlap
-                    
-                    # Time separation factor
-                    time_sep = abs(signal.get('time_separation', 0.0))
-                    if time_sep < 0.5:
-                        extreme_bonus += 0.05  # Close in time (harder)
-                
-                # Spin magnitude bonus
-                a1 = _as_float(signal.get('a1', 0.0), 0.0)
-                a2 = _as_float(signal.get('a2', 0.0), 0.0)
-                max_spin = max(abs(a1), abs(a2))
-                if max_spin >= 0.9:
-                    extreme_bonus += 0.08  # Very high spin
-                elif max_spin >= 0.7:
-                    extreme_bonus += 0.05  # High spin
-                elif max_spin >= 0.5:
-                    extreme_bonus += 0.02  # Moderate spin
-                
-                # Tidal parameter bonus (for BNS/NSBH)
-                if signal_type in ['BNS', 'NSBH']:
-                    lambda_1 = _as_float(signal.get('lambda_1', 0), 0.0)
-                    lambda_2 = _as_float(signal.get('lambda_2', 0), 0.0)
-                    max_lambda = max(lambda_1, lambda_2)
-                    if max_lambda > 1000:
-                        extreme_bonus += 0.05  # High tidal deformability
-                    elif max_lambda > 500:
-                        extreme_bonus += 0.03  # Moderate tidal effects
-                
-                #  ENHANCED: Baseline bias penalty (if available)
-                bias_penalty = 0.0
-                if baseline_biases and i < len(baseline_biases) and baseline_biases[i]:
-                    try:
-                        bias_values = [abs(float(b)) for b in baseline_biases[i].values() 
-                                    if isinstance(b, (int, float)) and not np.isnan(float(b))]
-                        if bias_values:
-                            bias_magnitude = np.mean(bias_values)
-                            # Scale penalty based on bias severity
-                            if bias_magnitude > 0.5:
-                                bias_penalty = 0.15  # Severe bias
-                            elif bias_magnitude > 0.3:
-                                bias_penalty = 0.12  # High bias
-                            elif bias_magnitude > 0.1:
-                                bias_penalty = 0.08  # Moderate bias
-                            else:
-                                bias_penalty = 0.04  # Small bias
-                    except Exception as e:
-                        self.logger.debug(f"Bias calculation error for signal {i}: {e}")
-                        bias_penalty = 0.0
-                
-                #  ENHANCED: SNR regime bonus/penalty
-                snr_regime = signal.get('snr_regime', 'medium')
-                snr_regime_modifier = 0.0
-                if snr_regime == 'loud':
-                    snr_regime_modifier = 0.05   # Loud signals get small bonus
-                elif snr_regime == 'weak':
-                    snr_regime_modifier = 0.03   # Weak signals get small bonus (challenging)
-                elif snr_regime == 'low':
-                    snr_regime_modifier = 0.02   # Low SNR get small bonus
-                
-                #  OPTIMIZED: Final priority formula
-                # Weights: SNR is most important, then distance, then mass
-                base_priority = (
-                    0.40 * snr_priority +      # SNR weight slightly reduced
-                    0.30 * distance_priority + # Distance weight increased
-                    0.25 * mass_priority +     # Mass weight
-                    0.05 * detectability       # Detectability factors
-                ) * (1.0 + extreme_bonus + snr_regime_modifier) - bias_penalty
-                
-                #  REDUCED: Even smaller hierarchy penalty to avoid artificial ordering
-                hierarchy_penalty = i * 0.002  # Very small penalty
-                
-                #  ENHANCED: Adaptive minimum priority based on signal quality
-                if snr >= 15.0:
-                    min_priority = 0.4  # High SNR signals
-                elif snr >= 10.0:
-                    min_priority = 0.35  # Medium SNR signals
-                elif snr >= 8.0:
-                    min_priority = 0.3   # Low SNR signals
-                else:
-                    min_priority = 0.25  # Very low SNR signals
-                
-                # Special minimum for edge cases and overlaps
-                if signal.get('edge_case', False) or signal.get('is_overlap', False):
-                    min_priority = max(min_priority, 0.35)
-                
-                final_priority = max(min_priority, base_priority - hierarchy_penalty)
-                
-                # Ensure reasonable bounds
-                final_priority = min(max(final_priority, 0.1), 2.0)
-                
-                priorities[i] = final_priority
-                
-                # Enhanced debug logging for first few samples
-                # if i < 5 or (i < 20 and event_type in ['noise', 'overlap']):
-                #     self.logger.debug(
-                #         f"Signal {i}: {signal_type}, M={total_mass:.1f}, D={distance:.0f}, "
-                #         f"SNR={snr:.1f}, P={final_priority:.3f} "
-                #         f"(SNR:{snr_priority:.2f}, Mass:{mass_priority:.2f}, Dist:{distance_priority:.2f})"
-                #     )
+        if len(self.data) == 0:
+            self.logger.error(f"❌ NO VALID SCENARIOS FOR {split_name.upper()} DATASET!")
             
-            except Exception as e:
-                self.logger.warning(f"Error computing priority for signal {i}: {e}")
-                # Assign safe default priority
-                priorities[i] = 0.5
-                continue
+        if self.normalize_priorities:
+            self._compute_priority_stats()
+            
+    def _compute_priority_stats(self):
+        """Compute global priority statistics for normalization."""
+        all_priorities = []
+        for item in self.data:
+            priorities = item.get('priorities')
+            if isinstance(priorities, torch.Tensor):
+                priorities = priorities.numpy()
+            elif isinstance(priorities, list):
+                priorities = np.array(priorities)
+            if priorities is not None:
+                all_priorities.extend([float(p) for p in priorities if p > 0])
         
-        # Final validation and normalization
-        priorities = torch.clamp(priorities, min=0.01, max=2.0)
+        all_priorities = np.array(all_priorities)
         
-        # Ensure no NaN or infinite values
-        priorities = torch.where(torch.isnan(priorities), torch.tensor(0.5), priorities)
-        priorities = torch.where(torch.isinf(priorities), torch.tensor(1.0), priorities)
+        if len(all_priorities) > 0:
+            # ✅ CRITICAL FIX: Use RAW priorities, not log!
+            self.priority_min = float(all_priorities.min())
+            self.priority_max = float(all_priorities.max())
+            
+            self.logger.info(f"📊 Priority stats ({self.split_name}):")
+            self.logger.info(f"   Raw: [{self.priority_min:.2f}, {self.priority_max:.2f}]")
+            self.logger.info(f"   Mean: {all_priorities.mean():.2f} ± {all_priorities.std():.2f}")
+        else:
+            self.priority_min = 0.0
+            self.priority_max = 100.0  # Safe default
+
+    
+    def _normalize_priorities(self, priorities: np.ndarray) -> np.ndarray:
+        """Normalize priorities to [0.05, 0.95] using direct min-max """
+        priorities = np.asarray(priorities, dtype=np.float32)
+        priorities = np.maximum(priorities, 1e-6)
         
-        return priorities
+        # ✅ Direct normalization (NO log transform!)
+        if self.priority_max > self.priority_min:
+            normalized = (priorities - self.priority_min) / (self.priority_max - self.priority_min)
+        else:
+            normalized = np.ones_like(priorities) * 0.5
+        
+        normalized = np.clip(normalized, 0.0, 1.0)
+        normalized = normalized * 0.90 + 0.05  # [0.05, 0.95]
+        return normalized
+
+    # Legacy function - not used in current pipeline
+
+    # def _compute_extraction_priorities(self, signals: List[Dict], 
+    #                             baseline_biases: Optional[List[Dict]] = None) -> torch.Tensor:
+    #     """
+    #     COMPLETE  Enhanced priority computation for all signal types
+        
+    #     Handles:
+    #     - Noise samples (lowest priority)
+    #     - BBH, BNS, NSBH with optimized parameters
+    #     - Overlap scenarios
+    #     - Edge cases
+    #     - Original event type preservation
+    #     - Distance/mass/SNR scaling
+    #     - Bias corrections
+    #     """
+        
+    #     n_signals = len(signals)
+    #     priorities = torch.zeros(n_signals)
+         
+    #     for i, signal in enumerate(signals):
+    #         try:
+    #             #  Use original event_type, handle noise properly (normalize to upper)
+    #             evt_raw = signal.get('event_type', 'BBH')
+    #             event_type = str(evt_raw).strip().upper() if evt_raw is not None else 'BBH'
+                
+    #             # Handle noise samples - give them lowest but non-zero priority
+    #             if event_type == 'NOISE':
+    #                 # Noise gets consistent low priority  with small random variation
+    #                 priorities[i] = 0.0 
+                    
+    #                 # Do not proceed to further classification/logging for noise
+    #                 continue
+                
+    #             # Basic signal properties with safety checks (robust casting)
+    #             def _as_float(val, default):
+    #                 try:
+    #                     return float(val)
+    #                 except Exception:
+    #                     return float(default)
+                    
+                    
+    #             snr = max(0.1, _as_float(signal.get('network_snr', 10.0), 10.0))
+    #             m1 = max(0.1, _as_float(signal.get('mass_1', 30.0), 30.0))
+    #             m2 = max(0.1, _as_float(signal.get('mass_2', 25.0), 25.0))
+    #             distance = max(1.0, _as_float(signal.get('luminosity_distance', 500.0), 500.0))
+                
+    #             # Ensure proper mass ordering
+    #             if m2 > m1:
+    #                 m1, m2 = m2, m1
+                
+    #             # Use original event type instead of mass-based classification
+    #             if event_type not in ['BBH', 'BNS', 'NSBH']:
+    #                 # Fallback to mass-based classification for unknown/invalid types
+    #                 if m1 <= 3.0 and m2 <= 3.0:
+    #                     signal_type = 'BNS'
+    #                 elif (m1 <= 3.0 and m2 > 3.0) or (m1 > 3.0 and m2 <= 3.0):
+    #                     signal_type = 'NSBH'
+    #                 else:
+    #                     signal_type = 'BBH'
+                    
+    #                 # Avoid misleading logs for noise which is handled above
+    #                 if event_type not in ['NOISE']:
+    #                     self.logger.debug(f"Signal {i}: Unknown event_type '{event_type}', classified as {signal_type}")
+    #             else:
+    #                 signal_type = event_type
+                
+    #             # Derived quantities with safety checks
+    #             total_mass = m1 + m2
+    #             if total_mass > 0:
+    #                 chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
+    #                 mass_ratio = m2 / m1
+    #                 symmetric_mass_ratio = (m1 * m2) / total_mass**2
+    #             else:
+    #                 chirp_mass = 1.0
+    #                 mass_ratio = 0.5
+    #                 symmetric_mass_ratio = 0.25
+                
+    #             #  ENHANCED: SNR priority with logarithmic scaling for high SNR
+    #             if snr >= 50.0:
+    #                 snr_priority = 1.4 + 0.1 * np.log10(snr / 50.0)  # Extra bonus for very high SNR
+    #             elif snr >= 20.0:
+    #                 snr_priority = 1.0 + 0.15 * np.log10(snr / 20.0)  # Bonus for high SNR
+    #             elif snr >= 12.0:
+    #                 snr_priority = snr / 12.0  # Linear scaling in medium range
+    #             elif snr >= 8.0:
+    #                 snr_priority = 0.7 + 0.3 * (snr - 8.0) / 4.0  # Gentle scaling for low SNR
+    #             else:
+    #                 snr_priority = 0.4 + 0.3 * snr / 8.0  # Very low SNR handling
+                
+    #             snr_priority = min(snr_priority, 1.5)  # Cap at 1.5
+                
+    #             #  ENHANCED: Mass priority optimized for each signal type
+    #             if signal_type == 'BNS':
+    #                 # BNS: Favor canonical masses, don't heavily penalize outliers
+    #                 if 2.0 <= total_mass <= 3.5:  # Canonical BNS range
+    #                     mass_priority = 1.0
+    #                 elif 1.8 <= total_mass < 2.0:  # Light BNS
+    #                     mass_priority = 0.95
+    #                 elif 3.5 < total_mass <= 4.5:  # Heavy BNS
+    #                     mass_priority = 0.9
+    #                 elif 4.5 < total_mass <= 6.0:  # Very heavy BNS (still detectable)
+    #                     mass_priority = 0.8
+    #                 else:  # Extreme cases
+    #                     mass_priority = 0.7
+                        
+    #             elif signal_type == 'NSBH':
+    #                 # NSBH: Wide mass range acceptance
+    #                 if 4.0 <= total_mass <= 35.0:  # Standard NSBH
+    #                     mass_priority = 1.0
+    #                 elif 2.5 <= total_mass < 4.0:  # Light NSBH
+    #                     mass_priority = 0.9
+    #                 elif 35.0 < total_mass <= 80.0:  # Heavy NSBH
+    #                     mass_priority = 0.95
+    #                 elif 80.0 < total_mass <= 150.0:  # Very heavy NSBH
+    #                     mass_priority = 0.85
+    #                 else:  # Extreme cases
+    #                     mass_priority = 0.75
+                        
+    #             else:  # BBH
+    #                 #  ENHANCED: Excellent support for all BBH masses
+    #                 if 15.0 <= total_mass <= 50.0:  # Stellar mass BBH (optimal)
+    #                     mass_priority = 1.0
+    #                 elif 50.0 < total_mass <= 100.0:  # Intermediate mass BBH
+    #                     mass_priority = 1.05  # Slight bonus for intermediate mass
+    #                 elif 100.0 < total_mass <= 200.0:  # Heavy BBH (GW190521-like)
+    #                     mass_priority = 1.1   # Bonus for heavy BBH (astrophysically interesting)
+    #                 elif 200.0 < total_mass <= 400.0:  # Very heavy BBH
+    #                     mass_priority = 1.0   # Still very valuable
+    #                 elif 8.0 <= total_mass < 15.0:  # Light BBH
+    #                     mass_priority = 0.95
+    #                 elif 5.0 <= total_mass < 8.0:  # Very light BBH
+    #                     mass_priority = 0.9
+    #                 else:  # Extreme masses
+    #                     mass_priority = 0.8
+                
+    #             #  ENHANCED: Distance priority with better distant signal support
+    #             if chirp_mass > 0:
+    #                 # Chirp mass scaling for detection range
+    #                 chirp_mass_factor = (chirp_mass / 30.0)**(5/6)
+                    
+    #                 # Signal-type dependent horizon scaling
+    #                 if signal_type == 'BBH':
+    #                     base_horizon = 1000.0  # BBH detectable further
+    #                 elif signal_type == 'NSBH':
+    #                     base_horizon = 800.0   # NSBH intermediate
+    #                 else:  # BNS
+    #                     base_horizon = 200.0   # BNS closer detection
+                    
+    #                 effective_horizon = base_horizon * chirp_mass_factor
+    #             else:
+    #                 effective_horizon = 500.0
+                
+    #             if distance <= effective_horizon:
+    #                 distance_priority = 1.0
+    #             elif distance <= 2.0 * effective_horizon:
+    #                 # Gradual falloff for distant signals
+    #                 distance_priority = 0.6 + 0.4 * (2.0 * effective_horizon - distance) / effective_horizon
+    #             elif distance <= 5.0 * effective_horizon:
+    #                 # Extended range for very high mass systems
+    #                 distance_priority = 0.3 + 0.3 * (5.0 * effective_horizon - distance) / (3.0 * effective_horizon)
+    #             else:
+    #                 # Very distant signals still get some priority
+    #                 distance_priority = max(0.1, effective_horizon / distance)
+                
+    #             #  ENHANCED: Advanced detectability factors
+    #             base_detectability = 1.0
+                
+    #             # Chirp mass bonus (higher chirp mass = louder signal)
+    #             if chirp_mass >= 60.0:  # Very high chirp mass
+    #                 chirp_bonus = 0.2
+    #             elif chirp_mass >= 40.0:  # High chirp mass
+    #                 chirp_bonus = 0.15
+    #             elif chirp_mass >= 25.0:  # Moderate high chirp mass
+    #                 chirp_bonus = 0.1
+    #             elif chirp_mass >= 15.0:  # Standard chirp mass
+    #                 chirp_bonus = 0.05
+    #             elif chirp_mass >= 5.0:   # Low chirp mass
+    #                 chirp_bonus = 0.02
+    #             else:  # Very low chirp mass
+    #                 chirp_bonus = 0.0
+                
+    #             # Mass ratio factor (symmetric masses generally easier to detect)
+    #             if mass_ratio >= 0.9:  # Nearly equal masses
+    #                 mass_ratio_bonus = 0.08
+    #             elif mass_ratio >= 0.8:  # Close to equal
+    #                 mass_ratio_bonus = 0.05
+    #             elif mass_ratio >= 0.6:  # Moderate asymmetry
+    #                 mass_ratio_bonus = 0.03
+    #             elif mass_ratio >= 0.4:  # High asymmetry
+    #                 mass_ratio_bonus = 0.01
+    #             elif mass_ratio >= 0.2:  # Very high asymmetry
+    #                 mass_ratio_bonus = 0.0
+    #             else:  # Extreme asymmetry
+    #                 mass_ratio_bonus = -0.02  # Small penalty for extreme asymmetry
+                
+    #             # Symmetric mass ratio factor (peaks at 0.25)
+    #             eta_factor = 4.0 * symmetric_mass_ratio * (1.0 - symmetric_mass_ratio)
+    #             eta_bonus = 0.05 * eta_factor
+                
+    #             detectability = base_detectability + chirp_bonus + mass_ratio_bonus + eta_bonus
+                
+    #             #  ENHANCED: Special handling for extreme and interesting cases
+    #             extreme_bonus = 0.0
+                
+    #             # Very high mass bonus (interesting astrophysics)
+    #             if total_mass >= 150.0:
+    #                 extreme_bonus += 0.15  # Very interesting for astrophysics
+    #             elif total_mass >= 80.0:
+    #                 extreme_bonus += 0.1   # High mass bonus
+    #             elif total_mass >= 50.0:
+    #                 extreme_bonus += 0.05  # Moderate mass bonus
+                
+    #             # Very distant but high SNR bonus (rare but important)
+    #             if distance >= 3000.0 and snr >= 15.0:
+    #                 extreme_bonus += 0.15  # Exceptional detection
+    #             elif distance >= 2000.0 and snr >= 12.0:
+    #                 extreme_bonus += 0.1   # Very good distant detection
+    #             elif distance >= 1000.0 and snr >= 10.0:
+    #                 extreme_bonus += 0.05  # Good distant detection
+                
+    #             # Very high SNR bonus (regardless of other factors)
+    #             if snr >= 100.0:
+    #                 extreme_bonus += 0.2   # Exceptional SNR
+    #             elif snr >= 50.0:
+    #                 extreme_bonus += 0.15  # Very high SNR
+    #             elif snr >= 30.0:
+    #                 extreme_bonus += 0.1   # High SNR bonus
+                
+    #             # Low frequency bonus (longer inspiral, more information)
+    #             f_lower = _as_float(signal.get('f_lower', 20.0), 20.0)
+    #             if f_lower <= 10.0:
+    #                 extreme_bonus += 0.1   # Very low frequency start
+    #             elif f_lower <= 15.0:
+    #                 extreme_bonus += 0.05  # Low frequency start
+                
+    #             # Edge case bonus
+    #             if signal.get('edge_case', False):
+    #                 edge_case_type = signal.get('edge_case_type', 'unknown')
+    #                 if edge_case_type in ['high_spin', 'eccentric']:
+    #                     extreme_bonus += 0.08  # Higher bonus for challenging cases
+    #                 elif edge_case_type in ['short_bbh', 'long_bns']:
+    #                     extreme_bonus += 0.06  # Medium bonus
+    #                 else:
+    #                     extreme_bonus += 0.04  # Standard edge case bonus
+                
+    #             # Overlap handling bonus
+    #             if signal.get('is_overlap', False):
+    #                 n_overlapping = signal.get('n_overlapping_signals', 1)
+    #                 if n_overlapping >= 3:
+    #                     extreme_bonus += 0.1   # Complex overlap scenario
+    #                 elif n_overlapping == 2:
+    #                     extreme_bonus += 0.05  # Standard overlap
+                    
+    #                 # Time separation factor
+    #                 time_sep = abs(signal.get('time_separation', 0.0))
+    #                 if time_sep < 0.5:
+    #                     extreme_bonus += 0.05  # Close in time (harder)
+                
+    #             # Spin magnitude bonus
+    #             a1 = _as_float(signal.get('a1', 0.0), 0.0)
+    #             a2 = _as_float(signal.get('a2', 0.0), 0.0)
+    #             max_spin = max(abs(a1), abs(a2))
+    #             if max_spin >= 0.9:
+    #                 extreme_bonus += 0.08  # Very high spin
+    #             elif max_spin >= 0.7:
+    #                 extreme_bonus += 0.05  # High spin
+    #             elif max_spin >= 0.5:
+    #                 extreme_bonus += 0.02  # Moderate spin
+                
+    #             # Tidal parameter bonus (for BNS/NSBH)
+    #             if signal_type in ['BNS', 'NSBH']:
+    #                 lambda_1 = _as_float(signal.get('lambda_1', 0), 0.0)
+    #                 lambda_2 = _as_float(signal.get('lambda_2', 0), 0.0)
+    #                 max_lambda = max(lambda_1, lambda_2)
+    #                 if max_lambda > 1000:
+    #                     extreme_bonus += 0.05  # High tidal deformability
+    #                 elif max_lambda > 500:
+    #                     extreme_bonus += 0.03  # Moderate tidal effects
+                
+    #             #  ENHANCED: Baseline bias penalty (if available)
+    #             bias_penalty = 0.0
+    #             if baseline_biases and i < len(baseline_biases) and baseline_biases[i]:
+    #                 try:
+    #                     bias_values = [abs(float(b)) for b in baseline_biases[i].values() 
+    #                                 if isinstance(b, (int, float)) and not np.isnan(float(b))]
+    #                     if bias_values:
+    #                         bias_magnitude = np.mean(bias_values)
+    #                         # Scale penalty based on bias severity
+    #                         if bias_magnitude > 0.5:
+    #                             bias_penalty = 0.15  # Severe bias
+    #                         elif bias_magnitude > 0.3:
+    #                             bias_penalty = 0.12  # High bias
+    #                         elif bias_magnitude > 0.1:
+    #                             bias_penalty = 0.08  # Moderate bias
+    #                         else:
+    #                             bias_penalty = 0.04  # Small bias
+    #                 except Exception as e:
+    #                     self.logger.debug(f"Bias calculation error for signal {i}: {e}")
+    #                     bias_penalty = 0.0
+                
+    #             #  ENHANCED: SNR regime bonus/penalty
+    #             snr_regime = signal.get('snr_regime', 'medium')
+    #             snr_regime_modifier = 0.0
+    #             if snr_regime == 'loud':
+    #                 snr_regime_modifier = 0.05   # Loud signals get small bonus
+    #             elif snr_regime == 'weak':
+    #                 snr_regime_modifier = 0.03   # Weak signals get small bonus (challenging)
+    #             elif snr_regime == 'low':
+    #                 snr_regime_modifier = 0.02   # Low SNR get small bonus
+                
+    #             #  OPTIMIZED: Final priority formula
+    #             # Weights: SNR is most important, then distance, then mass
+    #             base_priority = (
+    #                 0.40 * snr_priority +      # SNR weight slightly reduced
+    #                 0.30 * distance_priority + # Distance weight increased
+    #                 0.25 * mass_priority +     # Mass weight
+    #                 0.05 * detectability       # Detectability factors
+    #             ) * (1.0 + extreme_bonus + snr_regime_modifier) - bias_penalty
+                
+    #             #  REDUCED: Even smaller hierarchy penalty to avoid artificial ordering
+    #             hierarchy_penalty = i * 0.002  # Very small penalty
+                
+    #             #  ENHANCED: Adaptive minimum priority based on signal quality
+    #             if snr >= 15.0:
+    #                 min_priority = 0.4  # High SNR signals
+    #             elif snr >= 10.0:
+    #                 min_priority = 0.35  # Medium SNR signals
+    #             elif snr >= 8.0:
+    #                 min_priority = 0.3   # Low SNR signals
+    #             else:
+    #                 min_priority = 0.25  # Very low SNR signals
+                
+    #             # Special minimum for edge cases and overlaps
+    #             if signal.get('edge_case', False) or signal.get('is_overlap', False):
+    #                 min_priority = max(min_priority, 0.35)
+                
+    #             final_priority = max(min_priority, base_priority - hierarchy_penalty)
+                
+    #             # Ensure reasonable bounds
+    #             final_priority = min(max(final_priority, 0.1), 1.0)
+                
+    #             priorities[i] = final_priority
+            
+            
+    #         except Exception as e:
+    #             self.logger.warning(f"Error computing priority for signal {i}: {e}")
+    #             # Assign safe default priority
+    #             priorities[i] = 0.5
+    #             continue
+        
+    #     # Final validation and normalization
+    #     priorities = torch.clamp(priorities, min=0.01, max=1.0)
+        
+    #     # Ensure no NaN or infinite values
+    #     priorities = torch.where(torch.isnan(priorities), torch.tensor(0.5), priorities)
+    #     priorities = torch.where(torch.isinf(priorities), torch.tensor(1.0), priorities)
+        
+    #     return priorities
 
     def __len__(self):
         return len(self.data)
     
     def __getitem__(self, idx):
-        """ Ensure proper tensor types returned"""
+        """Get a single scenario with NORMALIZED priorities."""
         
-        item = self.data[idx].copy()  
+        scenario = self.data[idx]
         
-        #   Ensure priorities are proper tensors
-        priorities = item.get('priorities')
-        if not isinstance(priorities, torch.Tensor):
-            if isinstance(priorities, (list, tuple)):
-                item['priorities'] = torch.tensor(priorities, dtype=torch.float32)
-            else:
-                item['priorities'] = torch.tensor([priorities], dtype=torch.float32)
+        detections = scenario['detections']
+        priorities = scenario['priorities']
         
-        #   Ensure class_ids are proper tensors  
-        class_ids = item.get('class_ids')
-        if not isinstance(class_ids, torch.Tensor):
-            if isinstance(class_ids, (list, tuple)):
-                item['class_ids'] = torch.tensor(class_ids, dtype=torch.long)
-            else:
-                item['class_ids'] = torch.tensor([class_ids], dtype=torch.long)
+        # ✅ Convert to numpy if needed
+        if isinstance(priorities, torch.Tensor):
+            priorities = priorities.numpy()
         
-        return item
+        # ✅ NORMALIZE using dataset-wide stats (computed in __init__)
+        if self.normalize_priorities:
+            priorities = self._normalize_priorities(priorities)
+        
+        # Convert back to tensor
+        priorities = torch.tensor(priorities, dtype=torch.float32)
+        
+        class_ids = scenario['class_ids']
+        edge_type_id = scenario.get('edge_type_id', 0)
+        
+        n_detections = len(detections)
+        edge_type_ids = torch.full((n_detections,), edge_type_id, dtype=torch.long)
+        
+        return {
+            'detections': detections,
+            'priorities': priorities,  # ✅ Now properly normalized [0.05-0.95]
+            'class_ids': class_ids,
+            'edge_type_ids': edge_type_ids,
+            'scenario_id': scenario['scenario_id']
+        }
 
 
 
@@ -1075,19 +1366,483 @@ def _config_get(cfg: Any, key: str, default: Any) -> Any:
         pass
     return default
 
-def collate_priority_batch(batch: List[Dict]) -> Tuple[List[List[Dict]], List[torch.Tensor], List[torch.Tensor]]:
-    """Collate function for variable-length sequences"""
-    
+
+def collate_priority_batch(batch):
+    """
+    Collate function for PriorityNet datasets with optional SNR per signal.
+
+    Accepts either dict samples or tuple samples; ensures edge_type_ids is present.
+    Optionally passes through per-signal snr_values tensors when available.
+
+    Args:
+        batch: Iterable of samples where each sample is a dict with keys:
+               - 'detections': List[Dict]
+               - 'priorities': torch.Tensor [n]
+               - 'edge_type_ids': Optional[torch.LongTensor [n]]
+               - 'snr_values': Optional[torch.Tensor [n]]
+               or a tuple (detections, priorities, [edge_type_ids], [snr_values])
+
+    Returns:
+        Tuple of 4 lists:
+          detections_batch: List[List[Dict]]
+          priorities_batch: List[torch.Tensor]
+          edge_type_ids_batch: List[torch.LongTensor]
+          snr_values_batch: List[Optional[torch.Tensor]]
+    """
     detections_batch = []
     priorities_batch = []
-    class_batch = []
-    
+    edge_type_ids_batch = []
+    snr_values_batch = []
+
     for item in batch:
-        detections_batch.append(item['detections'])
-        priorities_batch.append(item['priorities'])
-        class_batch.append(item.get('class_ids', torch.zeros(len(item['detections']), dtype=torch.long)))
+        if isinstance(item, dict):
+            dets = item['detections']
+            prios = item['priorities']
+            
+            # ✅ Use dataset-provided edge_type_id as scalar, or None
+            edge_id_scalar = item.get('edge_type_id', None)  # single int per scenario
+            if edge_id_scalar is not None:
+                # Expand to per-signal tensor for model API
+                edge_ids = torch.full((len(dets),), edge_id_scalar, dtype=torch.long)
+            else:
+                edge_ids = None  # Let model handle via zeros internally
+            
+            snr_vals = item.get('snr_values', None)
+
+            detections_batch.append(dets)
+            priorities_batch.append(prios)
+            edge_type_ids_batch.append(edge_ids)
+            snr_values_batch.append(snr_vals)
+        else:
+            # Tuple format: (detections, priorities, [edge_type_ids], [snr_values])
+            dets = item[0]
+            prios = item[1]
+            edge_ids = item[2] if len(item) > 2 else None
+            snr_vals = item[3] if len(item) > 3 else None
+
+            detections_batch.append(dets)
+            priorities_batch.append(prios)
+            edge_type_ids_batch.append(edge_ids)
+            snr_values_batch.append(snr_vals)
+
+    return detections_batch, priorities_batch, edge_type_ids_batch, snr_values_batch
+
+
+
+def train_priority_net_with_validation(
+        config,
+        train_dataset,
+        val_dataset,
+        output_dir: Path,
+        resume_state: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+    """
+    PriorityNet training with warmup ramp, validation, resume support,
+    and per-epoch rank diagnostics (overall Spearman; per-bucket Spearman/Kendall).
+    """
+    import time
+    import numpy as np
+    import torch
+    from torch.utils.data import DataLoader
+    from tqdm import tqdm
+    from scipy.stats import spearmanr, kendalltau
+    import logging
+
+    logging.info("🧠  Training PriorityNet with validation...")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Resume or init
+    if resume_state is not None:
+        model = resume_state['model']
+        trainer = resume_state['trainer']
+        start_epoch = resume_state['start_epoch']
+        best_val_loss = resume_state['best_val_loss']
+        patience_counter = resume_state['patience_counter']
+        training_metrics = resume_state['training_metrics']
+        logging.info(f"🔄 Resuming training from epoch {start_epoch}")
+        logging.info(f"   Previous best val loss: {best_val_loss:.2e}")
+    else:
+        # Ensure config is available to PriorityNet (dict or object)
+        prio_cfg = config.get('priority_net', config) if hasattr(config, 'get') else config
+        model = PriorityNet(prio_cfg, use_strain=True, use_edge_conditioning=True, n_edge_types=17).to(device)
+        trainer = PriorityNetTrainer(model, prio_cfg)
+        start_epoch = 0
+        best_val_loss = float('inf')
+        patience_counter = 0
+        training_metrics = {
+            'train_losses': [],
+            'val_losses': [],
+            'train_ranking_losses': [],
+            'train_priority_losses': [],
+            'val_ranking_losses': [],
+            'val_priority_losses': [],
+            'grad_norms': [],
+            'learning_rates': [],
+            'val_spearman': [],
+            'epochs_completed': 0,
+            'best_epoch': 0,
+            'warmup_epochs': getattr(prio_cfg, 'warmup_epochs', 10)
+        }
+
+    # Read top-level training settings with safe fallback
+    prio_cfg = config.get('priority_net', config) if hasattr(config, 'get') else config
+    batch_size = getattr(prio_cfg, 'batch_size', 32) if not isinstance(prio_cfg, dict) else prio_cfg.get('batch_size', 32)
+    n_epochs = getattr(prio_cfg, 'epochs', 250) if not isinstance(prio_cfg, dict) else prio_cfg.get('epochs', 250)
+    patience = getattr(prio_cfg, 'patience', 30) if not isinstance(prio_cfg, dict) else prio_cfg.get('patience', 30)
+    warmup_epochs = getattr(prio_cfg, 'warmup_epochs', 5) if not isinstance(prio_cfg, dict) else prio_cfg.get('warmup_epochs', 5)
+
+    logging.info("📝 Training configuration:")
+    logging.info(f"   Epochs: {start_epoch + 1} → {n_epochs}")
+    logging.info(f"   Batch size: {batch_size}")
+    logging.info(f"   Patience: {patience}")
     
-    return detections_batch, priorities_batch, class_batch
+    train_sampler = create_weighted_sampler(train_dataset, n_signals_threshold=5, oversample_factor=1.35)
+    # Efficient data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        collate_fn=collate_priority_batch,
+        num_workers=2,
+        pin_memory=True,
+        persistent_workers=True,
+        sampler = train_sampler
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_priority_batch,
+        num_workers=2,
+        pin_memory=True,
+        persistent_workers=True
+    )
+
+    training_start_time = time.time()
+    
+    # Affine calibration state (scoped to this training run)
+    affine_mode = False
+    affine_epochs_left = 0
+    prev_prev_mae = None
+    prev_mae = None
+
+    # Track best scheduler metric (MAE) for optional patience logic alignment
+    best_metric = float('inf')
+
+    for epoch in range(start_epoch, n_epochs):
+        epoch_start_time = time.time()
+
+        # Train
+        model.train()
+        train_losses, train_ranking_losses, train_priority_losses, train_grad_norms = [], [], [], []
+
+        train_pbar = tqdm(train_loader, desc=f'Train Epoch {epoch + 1}/{n_epochs}')
+        for batch in train_pbar:
+            # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch])
+            detections_batch = batch[0]
+            priorities_batch = batch[1]
+            edge_type_ids_batch = batch[2] if len(batch) > 2 else None
+            strain_batch = batch[3] if len(batch) > 3 else None
+            snr_values_batch = batch[4] if len(batch) > 4 else None  # ALWAYS DEFINED
+
+            try:
+                loss_info = trainer.train_step(
+                    detections_batch, priorities_batch,
+                    strain_batch=strain_batch,
+                    edge_type_ids_batch=edge_type_ids_batch,
+                    snr_values_batch=snr_values_batch
+                )
+            except TypeError:
+                # Backward compatibility if train_step has old signature
+                loss_info = trainer.train_step(detections_batch, priorities_batch)
+
+            train_losses.append(loss_info['loss'])
+            train_ranking_losses.append(loss_info.get('ranking_loss', 0.0))
+            train_priority_losses.append(loss_info.get('priority_loss', 0.0))
+            train_grad_norms.append(loss_info.get('grad_norm', 0.0))
+            train_pbar.set_postfix({
+                'Loss': f"{loss_info['loss']:.2e}",
+                'Prior': f"{loss_info.get('priority_loss', 0):.2e}",
+                'Grad': f"{loss_info.get('grad_norm', 0):.2e}"
+            })
+
+
+        avg_train_loss = float(np.mean(train_losses)) if train_losses else 0.0
+        avg_ranking_loss = float(np.mean(train_ranking_losses)) if train_ranking_losses else 0.0
+        avg_priority_loss = float(np.mean(train_priority_losses)) if train_priority_losses else 0.0
+        avg_grad_norm = float(np.mean(train_grad_norms)) if train_grad_norms else 0.0
+
+        training_metrics['train_losses'].append(avg_train_loss)
+        training_metrics['train_ranking_losses'].append(avg_ranking_loss)
+        training_metrics['train_priority_losses'].append(avg_priority_loss)
+        training_metrics['grad_norms'].append(avg_grad_norm)
+
+        # Validation
+        model.eval()
+        val_ranking_losses, val_priority_losses = [], []
+        with torch.no_grad():
+            val_pbar = tqdm(val_loader, desc=f'Val Epoch {epoch + 1}/{n_epochs}')
+            for batch in val_pbar:
+                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch])
+                detections_batch = batch[0]
+                priorities_batch = batch[1]
+                edge_type_ids_batch = batch[2] if len(batch) > 2 else None
+                strain_batch = batch[3] if len(batch) > 3 else None
+                snr_values_batch = batch[4] if len(batch) > 4 else None
+
+                batch_ranking = 0.0
+                batch_priority = 0.0
+                valid_batches = 0
+
+                for idx, (detections, target_priorities) in enumerate(zip(detections_batch, priorities_batch)):
+                    if not detections or len(target_priorities) == 0:
+                        continue
+
+                    # Per-scenario aux
+                    strain_segments = None if strain_batch is None else strain_batch[idx]
+                    edge_ids_item = None if edge_type_ids_batch is None else edge_type_ids_batch[idx]
+
+                    # Ensure consistent strain shape when missing
+                    if strain_segments is None:
+                        n = len(detections)
+                        strain_segments = torch.zeros((n, 3, 2048), dtype=torch.float32)
+
+                    try:
+                        predicted_priorities, uncertainties = model(
+                            detections,
+                            strain_segments=strain_segments,
+                            edge_type_ids=edge_ids_item
+                        )
+                    except Exception as e:
+                        logging.debug(f"Validation step error: {e}")
+                        continue
+
+                    min_len = min(len(predicted_priorities), len(target_priorities))
+                    if min_len == 0:
+                        continue
+
+                    pred_slice = predicted_priorities[:min_len]
+                    target_slice = target_priorities[:min_len].to(pred_slice.device)
+                    unc_slice = uncertainties[:min_len]
+
+                    # Use the class-based loss fn for consistency
+                    # losses = trainer.loss_fn(pred_slice, target_slice, unc_slice)
+                    snr_vals = None if snr_values_batch is None else snr_values_batch[idx]
+                    if snr_vals is not None:
+                        snr_vals = snr_vals[:min_len].to(pred_slice.device)
+                    losses = trainer.loss_fn(pred_slice, target_slice, unc_slice, snr_values=snr_vals)
+                    batch_ranking += float(losses['ranking'])
+                    batch_priority += float(losses['mse'])
+                    valid_batches += 1
+
+                if valid_batches > 0:
+                    val_ranking_losses.append(batch_ranking / valid_batches)
+                    val_priority_losses.append(batch_priority / valid_batches)
+                    val_pbar.set_postfix({
+                        'Rank': f"{batch_ranking / valid_batches:.2e}",
+                        'Prior': f"{batch_priority / valid_batches:.2e}"
+                    })
+
+        avg_val_ranking = float(np.mean(val_ranking_losses)) if val_ranking_losses else 0.0
+        avg_val_priority = float(np.mean(val_priority_losses)) if val_priority_losses else 0.0
+        avg_val_loss = avg_val_ranking + avg_val_priority
+
+        training_metrics['val_losses'].append(avg_val_loss)
+        training_metrics['val_ranking_losses'].append(avg_val_ranking)
+        training_metrics['val_priority_losses'].append(avg_val_priority)
+        training_metrics['epochs_completed'] = epoch + 1
+
+        current_lr = trainer.optimizer.param_groups[0]['lr']
+        training_metrics['learning_rates'].append(float(current_lr))
+
+        # Per-epoch Spearman (overall) + per-bucket Spearman/Kendall over full val set
+        val_corr = float('nan')
+        with torch.no_grad():
+            sample_preds, sample_targets = [], []
+            buckets = {'1': {'preds': [], 'tgts': []},
+                       '2': {'preds': [], 'tgts': []},
+                       '3-4': {'preds': [], 'tgts': []},
+                       '5+': {'preds': [], 'tgts': []}}
+
+            for batch in val_loader:
+                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch])
+                detections_batch = batch[0]
+                priorities_batch = batch[1]
+                edge_type_ids_batch = batch[2] if len(batch) > 2 else None
+                strain_batch = batch[3] if len(batch) > 3 else None
+                snr_values_batch = batch[4] if len(batch) > 4 else None
+
+                for i, (detections, priorities) in enumerate(zip(detections_batch, priorities_batch)):
+                    n = len(priorities)
+                    key = '1' if n == 1 else ('2' if n == 2 else ('3-4' if 3 <= n <= 4 else '5+'))
+                    if n < 2:
+                        continue
+
+                    strain_segments = None if strain_batch is None else strain_batch[i]
+                    edge_ids_item = None if edge_type_ids_batch is None else edge_type_ids_batch[i]
+
+                    if strain_segments is None:
+                        strain_segments = torch.zeros((len(detections), 3, 2048), dtype=torch.float32)
+
+                    try:
+                        pred, _ = model(
+                            detections,
+                            strain_segments=strain_segments,
+                            edge_type_ids=edge_ids_item
+                        )
+                        pred_np = pred.detach().cpu().numpy() if isinstance(pred, torch.Tensor) else np.asarray(pred)
+                        tgt_np = priorities.detach().cpu().numpy() if isinstance(priorities, torch.Tensor) else np.asarray(priorities)
+                        m = min(len(pred_np), len(tgt_np))
+                        if m < 2:
+                            continue
+                        p = pred_np[:m].ravel(); t = tgt_np[:m].ravel()
+                        sample_preds.extend(p); sample_targets.extend(t)
+                        buckets[key]['preds'].extend(p); buckets[key]['tgts'].extend(t)
+
+                        # Optional: collect SNR if you want bucket-aware diagnostics
+                        # snr_vals = None if snr_values_batch is None else snr_values_batch[i]
+                        # if snr_vals is not None: snr_vals = snr_vals[:m].cpu().numpy()
+
+                    except Exception as e:
+                        logging.debug(f"Per-epoch corr forward failed: {e}")
+                        continue
+
+
+        if len(sample_preds) >= 10:
+            preds_np = np.asarray(sample_preds)
+            tgts_np  = np.asarray(sample_targets)
+
+            corr, pval = spearmanr(preds_np, tgts_np)
+            if np.isfinite(corr):
+                val_corr = float(corr)
+            
+            mae = float(np.mean(np.abs(preds_np - tgts_np)))
+            rmse = float(np.sqrt(np.mean((preds_np - tgts_np) ** 2)))
+            spearman_ok = np.isfinite(val_corr) and (val_corr >= 0.88)
+            # Require two-epoch plateau and higher rank
+            plateau = (prev_mae is not None and prev_prev_mae is not None) and ((prev_prev_mae - prev_mae) < 1e-4) and ((prev_mae - mae) < 1e-4)
+            spearman_ok = np.isfinite(val_corr) and (val_corr >= 0.90)
+            if spearman_ok and plateau and not affine_mode:
+                logging.info("🎯 Entering 1-epoch affine calibration (prio_gain/bias only)")
+                trainer.set_affine_calibration(enable=True, base_lr=trainer.optimizer.param_groups[0]['lr'])
+                affine_mode = True
+                affine_epochs_left = 1
+
+            prev_prev_mae = prev_mae
+            prev_mae = mae
+
+            if hasattr(trainer, 'loss_fn') and hasattr(trainer.loss_fn, 'lambda_calib'):
+                if mae < 0.02 and preds_np.max() < 0.55:  # calibration saturation detected
+                    trainer.loss_fn.lambda_calib = 3e-4  # 3× stronger calibration pull
+                else:
+                    trainer.loss_fn.lambda_calib = 1e-4
+                
+            logging.info(
+                f"   📈 Eval (epoch): MAE={mae:.3e}, RMSE={rmse:.3e}, "
+                f"predictions=[{preds_np.min():.3e}, {preds_np.max():.3e}], std ={preds_np.std():.3e}; "
+                f"targets=[{tgts_np.min():.3e}, {tgts_np.max():.3e}]"
+            )
+            logging.info(f"   📊 Per-epoch Spearman: {corr:.3f} (p={pval:.7f})")
+
+            for key, buf in buckets.items():
+                preds, tgts = buf['preds'], buf['tgts']
+                if len(preds) >= 10 and len(tgts) >= 10:
+                    try:
+                        sp, sp_p = spearmanr(preds, tgts)
+                        kt, kt_p = kendalltau(preds, tgts, variant='b')
+                        logging.info(f"   🔎 Bucket {key}: Spearman={sp:.3f} (p={sp_p:.1e}), Kendallτ={kt:.3f} (p={kt_p:.1e})")
+                    except Exception as e:
+                        logging.debug(f"Bucket {key} corr failed: {e}")
+
+        training_metrics['val_spearman'].append(val_corr)
+
+        epoch_time = time.time() - epoch_start_time
+        total_time = time.time() - training_start_time
+        logging.info(
+            f"Epoch {epoch+1}/{n_epochs}: "
+            f"Train={avg_train_loss:.6e}, Val={avg_val_loss:.6e}, "
+            f"LR={current_lr:.2e}, Time={epoch_time:.1f}s"
+        )
+
+        # Warmup and LR scheduling (gate plateau during warmup; step on epoch MAE)
+        old_lr = trainer.optimizer.param_groups[0]['lr']
+
+        # Build scheduler metric (prefer MAE)
+        scheduler_metric = avg_val_loss
+        if 'mae' in locals():
+            scheduler_metric = mae
+
+        if hasattr(trainer, 'warmup_scheduler') and epoch < warmup_epochs:
+            trainer.warmup_scheduler.step()
+            new_lr = trainer.optimizer.param_groups[0]['lr']
+            if new_lr != old_lr:
+                logging.info(f"   🔼 Warmup LR: {old_lr:.2e} → {new_lr:.2e}")
+        else:
+            if isinstance(trainer.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                logging.info(f"📊 LR Scheduler: ReduceLROnPlateau monitoring metric={scheduler_metric:.6e}")
+
+                # Optional: track best metric similarly to early stopping
+                if scheduler_metric < (best_metric - 1e-6):
+                    best_metric = scheduler_metric
+
+                trainer.scheduler.step(scheduler_metric)
+                new_lr = trainer.optimizer.param_groups[0]['lr']
+                if new_lr < old_lr:
+                    logging.info(f"🔻 Learning rate REDUCED: {old_lr:.2e} → {new_lr:.2e} (patience triggered!)")
+                    patience_counter = 0  # reset early-stopping patience on LR drop
+                else:
+                    num_bad_epochs = trainer.scheduler.num_bad_epochs
+                    patience_sched = trainer.scheduler.patience
+                    logging.info(f"   ✅ LR unchanged: {old_lr:.2e} (bad epochs: {num_bad_epochs}/{patience_sched})")
+            else:
+                logging.info(f"📊 LR Scheduler: {type(trainer.scheduler).__name__} (step-based)")
+                trainer.scheduler.step()
+                new_lr = trainer.optimizer.param_groups[0]['lr']
+                if new_lr != old_lr:
+                    logging.info(f"🔻 Learning rate changed: {old_lr:.2e} → {new_lr:.2e}")
+                    
+        # Exit affine mode after the configured short window
+        if affine_mode:
+            affine_epochs_left -= 1
+            if affine_epochs_left <= 0:
+                logging.info("✅ Exiting affine calibration; restoring full training")
+                trainer.set_affine_calibration(enable=False)
+                affine_mode = False
+
+
+        # Save best model / early stopping (based on val loss for continuity)
+        if avg_val_loss < best_val_loss - 1e-6:
+            improvement = best_val_loss - avg_val_loss
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            training_metrics['best_epoch'] = epoch + 1
+
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': trainer.optimizer.state_dict(),
+                'scheduler_state_dict': trainer.scheduler.state_dict(),
+                'best_val_loss': best_val_loss,
+                'train_loss': avg_train_loss,
+                'val_loss': avg_val_loss,
+                'training_metrics': training_metrics,
+                'total_training_time': total_time
+            }
+            torch.save(checkpoint, output_dir / 'priority_net_best.pth')
+            logging.info(f"✅ Best model saved (val_loss: {avg_val_loss:.2e}, improvement: {improvement:.2e})")
+        else:
+            patience_counter += 1
+            logging.info(f"   No improvement for {patience_counter} epochs ({patience - patience_counter} remaining)")
+            if patience_counter >= patience:
+                logging.info(f"⏹️  Early stopping at epoch {epoch+1}")
+                break
+
+    logging.info(f"🎉 Training completed! Best epoch: {training_metrics['best_epoch']}, Best val loss: {best_val_loss:.2e}")
+    return training_metrics
+
 
 def create_data_splits(scenarios: List[Dict], train_ratio: float = 0.7, 
                       val_ratio: float = 0.15, test_ratio: float = 0.15) -> Tuple[List[Dict], List[Dict], List[Dict]]:
@@ -1117,642 +1872,97 @@ def create_data_splits(scenarios: List[Dict], train_ratio: float = 0.7,
     return train_scenarios, val_scenarios, test_scenarios
 
 
-def train_priority_net_with_validation(
-    config, 
-    train_dataset, 
-    val_dataset, 
-    output_dir: Path,
-    resume_state: Optional[Dict] = None
-) -> Dict[str, Any]:
-    """
-    Enhanced PriorityNet training with validation and resume support.
-    
-    Args:
-        config: Training configuration object
-        train_dataset: Training dataset
-        val_dataset: Validation dataset
-        output_dir: Directory to save models and results
-        resume_state: Optional dict containing checkpoint state for resuming
-            {
-                'start_epoch': int,
-                'best_val_loss': float,
-                'patience_counter': int,
-                'training_metrics': dict,
-                'model': loaded model,
-                'trainer': loaded trainer
-            }
-    
-    Returns:
-        training_metrics: Dict with training history
-    """
-    
-    logging.info("🧠  Training PriorityNet with validation...")
-    
-    # Check if we're resuming from checkpoint
-    if resume_state is not None:
-        model = resume_state['model']
-        trainer = resume_state['trainer']
-        start_epoch = resume_state['start_epoch']
-        best_val_loss = resume_state['best_val_loss']
-        patience_counter = resume_state['patience_counter']
-        training_metrics = resume_state['training_metrics']
-        
-        logging.info(f"🔄 Resuming training from epoch {start_epoch}")
-        logging.info(f"   Previous best val loss: {best_val_loss:.6f}")
-        logging.info(f"   Best epoch: {training_metrics.get('best_epoch', 'N/A')}")
-        logging.info(f"   Patience counter: {patience_counter}")
-    else:
-        # Fresh training - initialize model and trainer
-        model = PriorityNet(config)
-        trainer = PriorityNetTrainer(model, config)
-        start_epoch = 0
-        best_val_loss = float('inf')
-        patience_counter = 0
-        training_metrics = {
-            'train_losses': [],
-            'val_losses': [],
-            'train_ranking_losses': [],
-            'train_priority_losses': [],
-            'val_ranking_losses': [],
-            'val_priority_losses': [],
-            'grad_norms': [],
-            'epochs_completed': 0,
-            'best_epoch': 0
-        }
-        logging.info(f"🆕 Starting fresh training")
-
-    batch_size = getattr(config, 'batch_size', 8)
-    n_epochs = getattr(config, 'epochs', 200)
-    patience = getattr(config, 'patience', 25)
-    
-    logging.info(f"📝 Training configuration:")
-    logging.info(f"   Epochs: {start_epoch + 1} → {n_epochs}")
-    logging.info(f"   Batch size: {batch_size}")
-    logging.info(f"   Patience: {patience}")
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=collate_priority_batch,
-        num_workers=0
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=collate_priority_batch,
-        num_workers=0
-    )
-
-    # Training loop - starts from start_epoch
-    for epoch in range(start_epoch, n_epochs):
-        model.train()
-        train_losses = []
-        train_ranking_losses = []
-        train_priority_losses = []
-        train_grad_norms = []
-
-        train_pbar = tqdm(train_loader, desc=f'Train Epoch {epoch + 1}/{n_epochs}')
-        for detections_batch, priorities_batch, class_batch in train_pbar:
-            loss_info = trainer.train_step(detections_batch, priorities_batch)
-
-            train_losses.append(loss_info['loss'])
-            train_ranking_losses.append(loss_info.get('ranking_loss', 0))
-            train_priority_losses.append(loss_info.get('priority_loss', 0))
-            train_grad_norms.append(loss_info.get('grad_norm', 0))
-
-            train_pbar.set_postfix({
-                'Loss': f"{loss_info['loss']:.4f}",
-                'Rank': f"{loss_info.get('ranking_loss', 0):.3f}",
-                'Prior': f"{loss_info.get('priority_loss', 0):.3f}",
-                'Grad': f"{loss_info.get('grad_norm', 0):.1e}",
-                'Valid': loss_info.get('valid_batches', 0)
-            })
-
-        avg_train_loss = np.mean(train_losses) if train_losses else 0.0
-        avg_ranking_loss = np.mean(train_ranking_losses) if train_ranking_losses else 0.0
-        avg_priority_loss = np.mean(train_priority_losses) if train_priority_losses else 0.0
-        avg_grad_norm = np.mean(train_grad_norms) if train_grad_norms else 0.0
-
-        training_metrics['train_losses'].append(avg_train_loss)
-        training_metrics.setdefault('train_ranking_losses', []).append(avg_ranking_loss)
-        training_metrics.setdefault('train_priority_losses', []).append(avg_priority_loss)
-        training_metrics.setdefault('grad_norms', []).append(avg_grad_norm)
-
-        # Validation
-        model.eval()
-        val_losses = []
-        val_ranking_losses = []
-        val_priority_losses = []
-
-        with torch.no_grad():
-            val_pbar = tqdm(val_loader, desc=f'Val Epoch {epoch + 1}/{n_epochs}')
-            for detections_batch, priorities_batch, class_batch in val_pbar:
-                batch_total = 0.0
-                batch_ranking = 0.0
-                batch_priority = 0.0
-                valid_batches = 0
-
-                for detections, target_priorities in zip(detections_batch, priorities_batch):
-                    if not detections or len(target_priorities) == 0:
-                        continue
-                    try:
-                        predicted_priorities, uncertainties = model(detections)
-                        
-                        if predicted_priorities.numel() == 0:
-                            continue
-                        
-                        min_len = min(len(predicted_priorities), len(target_priorities))
-                        if min_len == 0:
-                            continue
-                        
-                        pred_slice = predicted_priorities[:min_len]
-                        target_slice = target_priorities[:min_len].to(pred_slice.device)
-                        unc_slice = uncertainties[:min_len]
-
-                        # Use criterion to compute losses
-                        losses = trainer.criterion(pred_slice, target_slice, unc_slice)
-                        
-                        combined_loss = losses['total']
-                        ranking_loss = losses['ranking']
-                        priority_loss = losses['mse']
-
-                        batch_total += float(combined_loss)
-                        batch_ranking += float(ranking_loss)
-                        batch_priority += float(priority_loss)
-                        valid_batches += 1
-
-                    except Exception as e:
-                        logging.debug(f"Validation step error: {e}")
-                        continue
-
-                if valid_batches > 0:
-                    avg_batch_loss = batch_total / valid_batches
-                    avg_batch_ranking = batch_ranking / valid_batches
-                    avg_batch_priority = batch_priority / valid_batches
-
-                    val_losses.append(avg_batch_loss)
-                    val_ranking_losses.append(avg_batch_ranking)
-                    val_priority_losses.append(avg_batch_priority)
-
-                    val_pbar.set_postfix({
-                        'Loss': f"{avg_batch_loss:.4f}",
-                        'Rank': f"{avg_batch_ranking:.3f}",
-                        'Prior': f"{avg_batch_priority:.3f}",
-                        'Valid': valid_batches
-                    })
-
-        avg_val_loss = np.mean(val_losses) if val_losses else 0.0
-        avg_val_ranking = np.mean(val_ranking_losses) if val_ranking_losses else 0.0
-        avg_val_priority = np.mean(val_priority_losses) if val_priority_losses else 0.0
-
-        training_metrics['val_losses'].append(avg_val_loss)
-        training_metrics.setdefault('val_ranking_losses', []).append(avg_val_ranking)
-        training_metrics.setdefault('val_priority_losses', []).append(avg_val_priority)
-        training_metrics['epochs_completed'] = epoch + 1
-
-        logging.info(
-            f"Epoch {epoch:3d}: Train={avg_train_loss:.6f} (R:{avg_ranking_loss:.4f}, P:{avg_priority_loss:.4f}), "
-            f"Val={avg_val_loss:.6f} (R:{avg_val_ranking:.4f}, P:{avg_val_priority:.4f}), Grad={avg_grad_norm:.2e}"
-        )
-
-        # Check for improvement and save checkpoint
-        if avg_val_loss < best_val_loss - 1e-6:
-            improvement = best_val_loss - avg_val_loss
-            best_val_loss = avg_val_loss
-            training_metrics['best_epoch'] = epoch
-            patience_counter = 0
-
-            # Save complete checkpoint
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': trainer.optimizer.state_dict(),
-                'scheduler_state_dict': trainer.scheduler.state_dict() if hasattr(trainer, 'scheduler') else None,
-                'epoch': epoch,
-                'train_loss': avg_train_loss,
-                'val_loss': avg_val_loss,
-                'train_ranking_loss': avg_ranking_loss,
-                'train_priority_loss': avg_priority_loss,
-                'val_ranking_loss': avg_val_ranking,
-                'val_priority_loss': avg_val_priority,
-                'grad_norm': avg_grad_norm,
-                'config': config.__dict__ if hasattr(config, '__dict__') else {},
-                'training_metrics': training_metrics,
-                'patience_counter': patience_counter
-            }, output_dir / 'priority_net_best.pth')
-
-            logging.info(f"✅ Best model saved at epoch {epoch} "
-                         f"(val_loss: {avg_val_loss:.6f}, improvement: {improvement:.6f})")
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                logging.info(f"🛑 Early stopping at epoch {epoch} "
-                             f"(best epoch: {training_metrics['best_epoch']}, "
-                             f"best val loss: {best_val_loss:.6f})")
-                break
-
-        # Learning rate scheduling
-        if hasattr(trainer, 'scheduler') and trainer.scheduler is not None:
-            if isinstance(trainer.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                trainer.scheduler.step(avg_val_loss)
-                current_lr = trainer.optimizer.param_groups[0]['lr']
-                if epoch > start_epoch and current_lr != training_metrics.get('last_lr', current_lr):
-                    logging.info(f"📉 Learning rate reduced to {current_lr:.2e}")
-                training_metrics['last_lr'] = current_lr
-            else:
-                # For CosineAnnealingLR or other schedulers
-                trainer.scheduler.step()
-                current_lr = trainer.optimizer.param_groups[0]['lr']
-                if epoch > start_epoch and epoch % 10 == 0:  # Log every 10 epochs
-                    logging.info(f"📉 Learning rate: {current_lr:.2e}")
-                training_metrics['last_lr'] = current_lr
-
-    # Training completed
-    logging.info(f"🎉 Training completed!")
-    logging.info(f"   Total epochs: {training_metrics['epochs_completed']}")
-    logging.info(f"   Best epoch: {training_metrics['best_epoch']}")
-    logging.info(f"   Best val loss: {best_val_loss:.6f}")
-    
-    # Plot training curves
-    try:
-        plot_enhanced_training_curves(training_metrics, output_dir)
-    except Exception as e:
-        logging.warning(f"Could not plot training curves: {e}")
-    
-    return training_metrics
-
-def plot_enhanced_training_curves(metrics: Dict, output_dir: Path):
-    """
-    Plot comprehensive training diagnostics with 6 subplots
-    """
-    
-    import matplotlib.pyplot as plt
-    import numpy as np
-    
-    epochs = range(1, len(metrics['train_losses']) + 1)
-    
-    # Create figure with 2 rows, 3 columns
+def plot_enhanced_training_curves(training_metrics: Dict, output_dir: Path):
+    """Plot comprehensive training curves with warmup phase highlighted."""
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    fig.suptitle('PriorityNet Training Diagnostics', fontsize=16, fontweight='bold')
-    
-    # ========================================
-    # 1. Overall Loss (top-left)
-    # ========================================
+
+    warmup_epochs = training_metrics.get('warmup_epochs', 10)
+    best_epoch = training_metrics.get('best_epoch', 0)
+
+    # Extract commonly used sequences with safe defaults
+    epochs = training_metrics.get('epochs', list(range(len(training_metrics.get('val_losses', [])))))
+    lrs = training_metrics.get('lrs', None)
+    val_losses = training_metrics.get('val_losses', training_metrics.get('val_losses', []))
+
+    # Plot 1: Total Loss
     ax = axes[0, 0]
-    ax.plot(epochs, metrics['train_losses'], 'b-', label='Training Loss', alpha=0.7, linewidth=2)
-    ax.plot(epochs, metrics['val_losses'], 'r-', label='Validation Loss', alpha=0.7, linewidth=2)
-    
-    if 'best_epoch' in metrics:
-        best_epoch = metrics['best_epoch'] + 1
-        ax.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.5, linewidth=2, label=f'Best Epoch ({best_epoch})')
-    
-    ax.set_xlabel('Epoch', fontsize=11)
-    ax.set_ylabel('Loss', fontsize=11)
-    ax.set_title('Overall Training Loss', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=9)
+    ax.plot(epochs, val_losses, label='Val', linewidth=2)
+    ax.axvline(warmup_epochs, color='gray', linestyle='--', alpha=0.5, label='Warmup End')
+    ax.axvline(best_epoch, color='green', linestyle='--', alpha=0.5, label='Best Model')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Total Loss')
+    ax.set_title('Total Loss')
+    ax.legend()
     ax.grid(True, alpha=0.3)
-    
-    # ========================================
-    # 2. Loss Components (top-middle)
-    # ========================================
+
+    # Ranking Loss
     ax = axes[0, 1]
-    if 'train_ranking_losses' in metrics and metrics['train_ranking_losses']:
-        ax.plot(epochs, metrics['train_ranking_losses'], 'b-', label='Ranking Loss', alpha=0.7, linewidth=2)
-        ax.plot(epochs, metrics['train_priority_losses'], 'r-', label='Priority Loss', alpha=0.7, linewidth=2)
-        ax.set_xlabel('Epoch', fontsize=11)
-        ax.set_ylabel('Loss', fontsize=11)
-        ax.set_title('Loss Components (Training)', fontsize=12, fontweight='bold')
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
-    else:
-        ax.text(0.5, 0.5, 'Loss components\nnot tracked', 
-                ha='center', va='center', fontsize=12)
-        ax.set_title('Loss Components', fontsize=12, fontweight='bold')
-    
-    # ========================================
-    # 3. Gradient Norms (top-right)
-    # ========================================
+    ax.plot(epochs, training_metrics.get('val_ranking_losses', []), label='Val', linewidth=2)
+    ax.axvline(warmup_epochs, color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(best_epoch, color='green', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Ranking Loss')
+    ax.set_title('Ranking Loss')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Priority Loss
     ax = axes[0, 2]
-    if 'grad_norms' in metrics and metrics['grad_norms']:
-        ax.plot(epochs, metrics['grad_norms'], 'purple', alpha=0.7, linewidth=2)
-        ax.axhline(y=1e-6, color='red', linestyle='--', alpha=0.5, linewidth=1.5, label='Vanishing (1e-6)')
-        ax.axhline(y=100, color='orange', linestyle='--', alpha=0.5, linewidth=1.5, label='Exploding (100)')
-        ax.set_xlabel('Epoch', fontsize=11)
-        ax.set_ylabel('Gradient Norm (log scale)', fontsize=11)
-        ax.set_title('Gradient Norms', fontsize=12, fontweight='bold')
-        ax.set_yscale('log')
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
-    else:
-        ax.text(0.5, 0.5, 'Gradient norms\nnot tracked', 
-                ha='center', va='center', fontsize=12)
-        ax.set_title('Gradient Norms', fontsize=12, fontweight='bold')
-    
-    # ========================================
-    # 4. Generalization Gap (bottom-left)
-    # ========================================
+    ax.plot(epochs, training_metrics.get('val_priority_losses', []), label='Val', linewidth=2)
+    ax.axvline(warmup_epochs, color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(best_epoch, color='green', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Priority Loss (MSE)')
+    ax.set_title('Priority Loss')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    # Gradient Norms (training stability)
     ax = axes[1, 0]
-    loss_diff = np.array(metrics['val_losses']) - np.array(metrics['train_losses'])
-    ax.plot(epochs, loss_diff, 'purple', alpha=0.7, linewidth=2)
-    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=1.5)
-    ax.fill_between(epochs, 0, loss_diff, where=(loss_diff >= 0), alpha=0.3, color='red', label='Overfitting')
-    ax.fill_between(epochs, 0, loss_diff, where=(loss_diff < 0), alpha=0.3, color='green', label='Underfitting')
-    ax.set_xlabel('Epoch', fontsize=11)
-    ax.set_ylabel('Val Loss - Train Loss', fontsize=11)
-    ax.set_title('Generalization Gap', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=9)
+    grad_norms = training_metrics.get('grad_norms', [])
+    if grad_norms:
+        ax.plot(epochs, grad_norms, linewidth=2, color='purple')
+    ax.axvline(warmup_epochs, color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(best_epoch, color='green', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Gradient Norm')
+    ax.set_title('Gradient Norm (Training Stability)')
+    ax.set_yscale('log')
     ax.grid(True, alpha=0.3)
-    
-    # ========================================
-    # 5. Loss Ratio (bottom-middle)
-    # ========================================
+
+    # Learning Rate Schedule
     ax = axes[1, 1]
-    loss_ratio = np.array(metrics['val_losses']) / (np.array(metrics['train_losses']) + 1e-10)
-    ax.plot(epochs, loss_ratio, 'orange', alpha=0.7, linewidth=2)
-    ax.axhline(y=1.0, color='black', linestyle='--', alpha=0.5, linewidth=1.5, label='Ideal (1.0)')
-    ax.fill_between(epochs, 1.0, loss_ratio, where=(loss_ratio >= 1.0), alpha=0.2, color='red')
-    ax.fill_between(epochs, loss_ratio, 1.0, where=(loss_ratio < 1.0), alpha=0.2, color='green')
-    ax.set_xlabel('Epoch', fontsize=11)
-    ax.set_ylabel('Val Loss / Train Loss', fontsize=11)
-    ax.set_title('Loss Ratio (Val/Train)', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=9)
+    if lrs:
+        ax.plot(epochs, lrs, linewidth=2, color='orange')
+        ax.axvline(warmup_epochs, color='gray', linestyle='--', alpha=0.5)
+        ax.axvline(best_epoch, color='green', linestyle='--', alpha=0.5)
+        try:
+            ax.axhspan(lrs[0] * 0.1, lrs[0], alpha=0.2, color='yellow', label='Warmup Range')
+        except Exception:
+            pass
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Learning Rate')
+    ax.set_title('Learning Rate Schedule')
+    ax.set_yscale('log')
+    ax.legend()
     ax.grid(True, alpha=0.3)
-    ax.set_ylim([0.5, 2.0])  # Reasonable range
-    
-    # ========================================
-    # 6. Per-Epoch Improvement (bottom-right)
-    # ========================================
+
+    # Validation Loss (Zoomed)
     ax = axes[1, 2]
-    train_improvements = -np.diff(metrics['train_losses'], prepend=metrics['train_losses'][0])
-    val_improvements = -np.diff(metrics['val_losses'], prepend=metrics['val_losses'][0])
-    
-    ax.plot(epochs, train_improvements, 'b-', label='Train Improvement', alpha=0.7, linewidth=2)
-    ax.plot(epochs, val_improvements, 'r-', label='Val Improvement', alpha=0.7, linewidth=2)
-    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=1.5)
-    ax.set_xlabel('Epoch', fontsize=11)
-    ax.set_ylabel('Loss Improvement', fontsize=11)
-    ax.set_title('Per-Epoch Improvement', fontsize=12, fontweight='bold')
-    ax.legend(fontsize=9)
+    ax.plot(epochs, val_losses, linewidth=2, color='red')
+    ax.axvline(warmup_epochs, color='gray', linestyle='--', alpha=0.5)
+    ax.axvline(best_epoch, color='green', linestyle='--', alpha=0.5)
+    if val_losses:
+        ax.legend([f'Best: {min(val_losses):.4f}'])
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Validation Loss')
+    ax.set_title('Validation Loss (Zoomed)')
     ax.grid(True, alpha=0.3)
-    
-    # ========================================
-    # Finalize and save
-    # ========================================
-    plt.tight_layout(rect=[0, 0, 1, 0.97])  # Leave space for suptitle
-    
-    save_path = output_dir / 'training_curves_enhanced.png'
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    logging.info(f" Enhanced training curves saved to {save_path}")
-    
-    # ========================================
-    # Also create simplified version
-    # ========================================
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    
-    # Simple loss plot
-    ax = axes[0]
-    ax.plot(epochs, metrics['train_losses'], 'b-', label='Training Loss', linewidth=2)
-    ax.plot(epochs, metrics['val_losses'], 'r-', label='Validation Loss', linewidth=2)
-    if 'best_epoch' in metrics:
-        ax.axvline(x=metrics['best_epoch'] + 1, color='g', linestyle='--', alpha=0.5, linewidth=2, label='Best Epoch')
-    ax.set_xlabel('Epoch', fontsize=12)
-    ax.set_ylabel('Loss', fontsize=12)
-    ax.set_title('Training and Validation Loss', fontsize=13, fontweight='bold')
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-    
-    # Simple gap plot
-    ax = axes[1]
-    loss_diff = np.array(metrics['val_losses']) - np.array(metrics['train_losses'])
-    ax.plot(epochs, loss_diff, 'purple', linewidth=2)
-    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3, linewidth=1.5)
-    ax.set_xlabel('Epoch', fontsize=12)
-    ax.set_ylabel('Val Loss - Train Loss', fontsize=12)
-    ax.set_title('Generalization Gap', fontsize=13, fontweight='bold')
-    ax.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
-    
-    save_path_simple = output_dir / 'training_curves.png'
-    plt.savefig(save_path_simple, dpi=200, bbox_inches='tight')
     plt.close()
     
-    logging.info(f" Simple training curves saved to {save_path_simple}")
-
-# def evaluate_priority_net(model: PriorityNet, dataset: PriorityNetDataset,
-#                          split_name: str) -> Dict[str, Any]:
-#     """
-#     FINAL FIX: Robust evaluation for PriorityNet
-#     - Handles variable-length (jagged) model outputs
-#     - Converts all priorities to flat 1D numpy float arrays
-#     - Aligns lengths safely and computes Spearman correlation
-#     - Skips invalid samples gracefully with debug logs
-#     """
-    
-#     logging.info(f" Evaluating PriorityNet on {split_name} set...")
-    
-#     model.eval()
-    
-#     correlations = []
-#     precisions = []
-#     accuracies = []
-#     successful_evaluations = 0
-#     total_attempts = 0
-    
-#     # Helper: normalize model outputs to 1D float array
-#     def flatten_pred_priorities(pred_output) -> np.ndarray:
-#         """
-#         Normalize arbitrary PriorityNet model outputs into flat 1D numpy array.
-#         Handles torch.Tensor, list/tuple, nested structures.
-#         """
-#         scalars = []
-        
-#         def collect(x):
-#             if isinstance(x, torch.Tensor):
-#                 if x.numel() == 0:
-#                     return
-#                 # Take first element if multi-element tensor
-#                 scalars.append(float(x.flatten()[0].item()))
-#                 return
-            
-#             if isinstance(x, np.ndarray):
-#                 if x.size == 0:
-#                     return
-#                 scalars.append(float(x.flatten()[0]))
-#                 return
-            
-#             if isinstance(x, (list, tuple)):
-#                 for elem in x:
-#                     collect(elem)
-#                 return
-            
-#             if isinstance(x, (int, float)):
-#                 scalars.append(float(x))
-#                 return
-        
-#         collect(pred_output)
-#         return np.asarray(scalars, dtype=np.float32)
-    
-#     # Import scipy stats
-#     from scipy.stats import spearmanr, kendalltau
-    
-#     with torch.no_grad():
-#         for item_idx, item in enumerate(tqdm(dataset, desc=f"Evaluating {split_name}")):
-#             total_attempts += 1
-            
-#             try:
-#                 detections = item['detections']
-                
-#                 # Skip single detection scenarios (ranking undefined)
-#                 if len(detections) <= 1:
-#                     continue
-                
-#                 # True priorities -> 1D numpy float array
-#                 try:
-#                     tp = item['priorities']
-#                     if isinstance(tp, torch.Tensor):
-#                         true_priorities = tp.detach().cpu().numpy().astype(np.float32).flatten()
-#                     elif isinstance(tp, (list, tuple, np.ndarray)):
-#                         true_priorities = np.asarray(tp, dtype=np.float32).flatten()
-#                     else:
-#                         true_priorities = np.asarray([float(tp)], dtype=np.float32)
-#                 except Exception as e:
-#                     logging.debug(f"True priorities extraction error {item_idx}: {e}")
-#                     continue
-                
-#                 # Predictions -> flatten robustly (handles jagged outputs)
-#                 try:
-#                     raw_pred = model.forward(detections)
-#                     pred_priorities = flatten_pred_priorities(raw_pred)
-#                 except Exception as e:
-#                     logging.debug(f"Model prediction error {item_idx}: {e}")
-#                     continue
-                
-#                 # Align lengths safely
-#                 try:
-#                     true_priorities = np.atleast_1d(true_priorities).astype(np.float32)
-#                     pred_priorities = np.atleast_1d(pred_priorities).astype(np.float32)
-                    
-#                     m = min(len(true_priorities), len(pred_priorities))
-#                     if m <= 1:
-#                         continue
-                    
-#                     true_priorities = true_priorities[:m]
-#                     pred_priorities = pred_priorities[:m]
-                    
-#                     #   Only check finiteness
-#                     if not (np.isfinite(true_priorities).all() and np.isfinite(pred_priorities).all()):
-#                         continue
-                    
-#                 except Exception as e:
-#                     logging.debug(f"Array processing error {item_idx}: {e}")
-#                     continue
-                
-#                 #   Normalize predictions and use Kendall for m==2
-#                 try:
-#                     # Normalize predictions per-sample
-#                     pred_priorities = (pred_priorities - pred_priorities.mean()) / (pred_priorities.std() + 1e-8)
-                    
-#                     # Use Kendall tau for pairs, Spearman for larger sets
-#                     if m == 2:
-#                         tau, _ = kendalltau(true_priorities, pred_priorities)
-#                         corr = 0.0 if np.isnan(tau) else float(tau)
-#                     else:
-#                         corr, _ = spearmanr(true_priorities, pred_priorities)
-#                         if np.isnan(corr) or np.isinf(corr):
-#                             tr = np.argsort(np.argsort(true_priorities))
-#                             pr = np.argsort(np.argsort(pred_priorities))
-#                             corr = np.corrcoef(tr, pr)[0, 1]
-#                             if np.isnan(corr):
-#                                 corr = 0.0
-                    
-#                     correlations.append(float(corr))
-                    
-#                     #   Use k=1 for pairs
-#                     k = 1 if m == 2 else min(3, m)
-#                     if k > 0:
-#                         tr_idx = np.argsort(true_priorities)[::-1][:k]
-#                         pr_idx = np.argsort(pred_priorities)[::-1][:k]
-#                         precision = len(set(tr_idx) & set(pr_idx)) / k
-#                         precisions.append(float(precision))
-                    
-#                     # Priority accuracy (MSE-based transformed)
-#                     pe = np.mean(np.abs(pred_priorities - true_priorities))
-#                     acc = 1.0 / (1.0 + float(pe))
-#                     accuracies.append(float(acc))
-                    
-#                     successful_evaluations += 1
-                    
-#                     if successful_evaluations <= 5:
-#                         logging.debug(f" Sample {item_idx}: len={m}, corr={corr:.3f}")
-#                         logging.debug(f"   true[:3]={true_priorities[:3]}, pred[:3]={pred_priorities[:3]}")
-                    
-#                 except Exception as e:
-#                     logging.debug(f"Correlation calculation error {item_idx}: {e}")
-#                     continue
-                
-#             except Exception as e:
-#                 logging.debug(f"General evaluation error {item_idx}: {e}")
-#                 continue
-    
-#     # Compile results
-#     results = {
-#         'split': split_name,
-#         'n_samples': successful_evaluations,
-#         'total_attempts': total_attempts,
-#         'success_rate': successful_evaluations / max(total_attempts, 1)
-#     }
-    
-#     if correlations:
-#         cor = np.asarray(correlations, dtype=np.float32)
-#         results.update({
-#             'avg_ranking_correlation': float(np.mean(cor)),
-#             'std_ranking_correlation': float(np.std(cor)),
-#             'median_ranking_correlation': float(np.median(cor)),
-#             'min_correlation': float(np.min(cor)),
-#             'max_correlation': float(np.max(cor))
-#         })
-    
-#     if precisions:
-#         pr = np.asarray(precisions, dtype=np.float32)
-#         results.update({
-#             'avg_top_k_precision': float(np.mean(pr)),
-#             'std_top_k_precision': float(np.std(pr))
-#         })
-    
-#     if accuracies:
-#         ac = np.asarray(accuracies, dtype=np.float32)
-#         results.update({
-#             'avg_priority_accuracy': float(np.mean(ac)),
-#             'std_priority_accuracy': float(np.std(ac))
-#         })
-    
-#     # Log summary
-#     logging.info(f"{split_name.upper()} evaluation: {successful_evaluations}/{total_attempts} successful")
-#     if correlations:
-#         logging.info(f"   Average correlation: {results['avg_ranking_correlation']:.3f} Â± {results['std_ranking_correlation']:.3f}")
-#         logging.info(f"   Range: [{results['min_correlation']:.3f}, {results['max_correlation']:.3f}]")
-#     else:
-#         logging.warning("   âŒ No successful correlations computed")
-    
-#     return results
-
-import numpy as np
-import torch
-
-from scipy.stats import spearmanr, kendalltau
-import os, time
-
-def evaluate_priority_net(
-    model, 
-    dataset, 
-    split_name="test", 
-    debug_plots=False, 
-    out_dir="outputs/priority_net"
-):
+def evaluate_priority_net(model,dataset,split_name="test",debug_plots=False,out_dir="outputs/priority_net"):
     """
     Enhanced evaluation for PriorityNet with proper model forward pass.
     """
@@ -1847,9 +2057,7 @@ def evaluate_priority_net(
                 p_z = (pred_priorities - p_mean) / (p_std + 1e-8)
                 
                 # Compute correlations
-                try:
-                    from scipy.stats import spearmanr, kendalltau
-                    
+                try:                    
                     sp_corr, _ = spearmanr(t_z, p_z)
                     kd_corr, _ = kendalltau(t_z, p_z)
                     
@@ -1896,7 +2104,6 @@ def evaluate_priority_net(
             except Exception as e:
                 if item_idx < 5:
                     logging.error(f"General error at {item_idx}: {e}")
-                    import traceback
                     logging.error(traceback.format_exc())
                 continue
     
@@ -1952,220 +2159,420 @@ def evaluate_priority_net(
     
     return results
 
-def load_checkpoint_if_exists(checkpoint_path, config):
+
+
+def load_checkpoint(checkpoint_path: Optional[str], config, device=None) -> Optional[Dict[str, Any]]:
     """
-    Load checkpoint and prepare resume state.
-    
+    Load a PriorityNet training checkpoint safely (backward-compatible).
+
+    Tolerates missing or unexpected keys caused by architectural evolution
+    (e.g., new heads like overlap_head) by filtering/merging the model state
+    and loading with strict=False. Optimizer and scheduler states are restored
+    when present. Designed for unattended (nohup) resume.
+
     Args:
-        checkpoint_path: Path to checkpoint file (or None)
-        config: Training configuration
-    
+        checkpoint_path: Path to checkpoint file (or None to start fresh).
+        config: Training configuration (dict or object) used to rebuild model/trainer.
+        device: Optional torch.device; inferred from CUDA availability by default.
+
     Returns:
-        resume_state dict or None if starting fresh
+        Dict with resume state: model, trainer, start_epoch, best_val_loss, patience_counter,
+        training_metrics, checkpoint_path; or None if no checkpoint or on failure.
     """
-    
+    # Check if checkpoint exists
     if checkpoint_path is None or not Path(checkpoint_path).exists():
+        logging.info("No checkpoint found, starting fresh training")
         return None
-    
-    logging.info(f"📥 Loading checkpoint from: {checkpoint_path}")
-    
+
+    logging.info(f"📂 Found checkpoint: {checkpoint_path}")
+    logging.info(f"🔄 Auto-resuming training...")
+
     try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        
-        # Initialize model and trainer
-        model = PriorityNet(config)
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+        # Create model and move to device
+        model = PriorityNet(
+            config,
+            use_strain=True,
+            use_edge_conditioning=True,
+            n_edge_types=17
+        ).to(device)
+
+        # Backward-compatible state load: filter + strict=False
+        pretrained = checkpoint.get('model_state_dict', {})
+        current_sd = model.state_dict()
+        filtered = {k: v for k, v in pretrained.items() if k in current_sd and current_sd[k].shape == v.shape}
+        missing = [k for k in current_sd.keys() if k not in filtered]
+        unexpected = [k for k in pretrained.keys() if k not in current_sd]
+
+        # Merge filtered weights and load
+        current_sd.update(filtered)
+        model.load_state_dict(current_sd, strict=False)
+
+        if missing:
+            logging.warning(f"⚠️ Missing keys (left at init): {missing[:12]}{' ...' if len(missing)>12 else ''}")
+        if unexpected:
+            logging.warning(f"⚠️ Unexpected keys (ignored): {unexpected[:12]}{' ...' if len(unexpected)>12 else ''}")
+
+        # Create trainer
         trainer = PriorityNetTrainer(model, config)
-        
-        # Load states
-        model.load_state_dict(checkpoint['model_state_dict'])
-        trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        
-        # Load scheduler if available
-        if 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict'] is not None:
-            if hasattr(trainer, 'scheduler') and trainer.scheduler is not None:
-                try:
-                    trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-                    logging.info("   ✅ Scheduler state loaded")
-                except Exception as e:
-                    logging.warning(f"   ⚠️ Could not load scheduler state: {e}")
-        
+
+        # Load optimizer and scheduler states when available
+        if 'optimizer_state_dict' in checkpoint and trainer.optimizer is not None:
+            try:
+                trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            except Exception as e:
+                logging.warning(f"Optimizer state not loaded: {e}")
+
+        if 'scheduler_state_dict' in checkpoint and trainer.scheduler is not None:
+            try:
+                trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            except Exception as e:
+                logging.warning(f"Scheduler state not loaded: {e}")
+
         # Extract training state
         start_epoch = checkpoint.get('epoch', 0) + 1
-        best_val_loss = checkpoint.get('val_loss', float('inf'))
+        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         patience_counter = checkpoint.get('patience_counter', 0)
-        training_metrics = checkpoint.get('training_metrics', {})
-        
-        # Ensure all metric lists exist
-        for key in ['train_losses', 'val_losses', 'train_ranking_losses', 
-                    'train_priority_losses', 'val_ranking_losses', 
-                    'val_priority_losses', 'grad_norms']:
-            if key not in training_metrics:
-                training_metrics[key] = []
-        
-        if 'epochs_completed' not in training_metrics:
-            training_metrics['epochs_completed'] = start_epoch
-        if 'best_epoch' not in training_metrics:
-            training_metrics['best_epoch'] = checkpoint.get('epoch', 0)
-        
-        logging.info(f"   ✅ Model weights loaded")
-        logging.info(f"   ✅ Optimizer state loaded")
-        logging.info(f"   📊 Resuming from epoch {start_epoch}")
-        logging.info(f"   📈 Previous best val loss: {best_val_loss:.6f}")
-        logging.info(f"   🎯 Best epoch: {training_metrics['best_epoch']}")
-        logging.info(f"   ⏳ Patience counter: {patience_counter}")
-        
+        training_metrics = checkpoint.get('training_metrics', {
+            'train_losses': [],
+            'val_losses': [],
+            'train_ranking_losses': [],
+            'val_ranking_losses': [],
+            'train_priority_losses': [],
+            'val_priority_losses': [],
+            'grad_norms': [],
+            'learning_rates': [],
+            'warmup_epochs': getattr(config, 'warmup_epochs', 5) if not hasattr(config, 'get') else config.get('warmup_epochs', 5),
+            'best_epoch': 0,
+            'epochs_completed': 0
+        })
+
+        logging.info(f"✅ Checkpoint loaded successfully!")
+        logging.info(f"   📍 Resuming from epoch {start_epoch}")
+        logging.info(f"   📊 Best validation loss: {best_val_loss:.2e}")
+        patience_val = getattr(config, 'patience', 30) if not hasattr(config, 'get') else config.get('patience', 30)
+        logging.info(f"   ⏱️  Patience counter: {patience_counter}/{patience_val}")
+
         return {
             'model': model,
             'trainer': trainer,
             'start_epoch': start_epoch,
             'best_val_loss': best_val_loss,
             'patience_counter': patience_counter,
-            'training_metrics': training_metrics
+            'training_metrics': training_metrics,
+            'checkpoint_path': checkpoint_path
         }
-        
+
     except Exception as e:
         logging.error(f"❌ Failed to load checkpoint: {e}")
-        logging.warning("⚠️ Starting fresh training instead")
-        import traceback
-        traceback.print_exc()
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        logging.warning("⚠️ Starting from scratch instead")
         return None
 
 
+def load_enhanced_config(config_path: Path) -> object:
+    """
+    Load and validate comprehensive training configuration.
+    Supports nested configs and provides sensible defaults.
+    
+    Args:
+        config_path: Path to YAML config file
+    
+    Returns:
+        Config object with all training parameters
+    """
+    try:
+        with open(config_path, 'r') as f:
+            config_dict = yaml.safe_load(f)
+        
+        # Extract priority_net config (handles both flat and nested structures)
+        if 'priority_net' in config_dict:
+            pn_config = config_dict['priority_net']
+        else:
+            pn_config = config_dict
+        
+        # ✅ Extract nested sub-configs with defaults
+        loss_config = pn_config.get('loss', {})
+        gradient_config = pn_config.get('gradient', {})
+        attention_config = pn_config.get('attention', {})
+        overlap_config = pn_config.get('overlap', {})
+        
+        # ✅ COMPLETE parameter dictionary with all defaults
+        params = {
+            # Basic architecture
+            'hidden_dims': pn_config.get('hidden_dims', [512, 384, 256, 128]),
+            'dropout': float(pn_config.get('dropout', 0.2)),
+            
+            # Optimizer settings
+            'learning_rate': float(pn_config.get('learning_rate', 5e-4)),
+            'weight_decay': float(pn_config.get('weight_decay', 1e-5)),
+            
+            # Training settings
+            'batch_size': int(pn_config.get('batch_size', 32)),
+            'epochs': int(pn_config.get('epochs', 250)),
+            'patience': int(pn_config.get('patience', 20)),
+            
+            # ✅ NEW: Warmup settings
+            'warmup_epochs': int(pn_config.get('warmup_epochs', 10)),
+            'warmup_start_factor': float(pn_config.get('warmup_start_factor', 0.1)),
+            
+            # Learning rate schedule
+            'scheduler_patience': int(pn_config.get('scheduler_patience', 8)),
+            'scheduler_factor': float(pn_config.get('scheduler_factor', 0.5)),
+            'min_lr': float(pn_config.get('min_lr', 1e-6)),
+            
+            # ✅ NEW: Loss configuration
+            'ranking_weight': float(pn_config.get('ranking_weight', 0.3)),
+            'mse_weight': float(pn_config.get('mse_weight', 0.6)),
+            'uncertainty_weight': float(pn_config.get('uncertainty_weight', 0.1)),
+            'use_snr_weighting': bool(pn_config.get('use_snr_weighting', True)),
+            'loss_scale_factor': float(pn_config.get('loss_scale_factor', 0.001)),
+            
+            # ✅ NEW: Gradient management
+            'gradient_clip_norm': float(pn_config.get('clip_norm', 1.0)),
+            'gradient_log_threshold': float(pn_config.get('log_threshold', 0.5)),
+            
+            # ✅ NEW: Attention settings
+            'attention_num_heads': int(pn_config.get('num_heads', 4)),
+            'attention_dropout': float(pn_config.get('dropout', 0.1)),
+            'use_modal_fusion': bool(pn_config.get('use_modal_fusion', False)),
+            
+            # ✅ NEW: Overlap settings
+            'overlap_use_attention': bool(pn_config.get('use_attention', False)),
+            'overlap_importance_hidden': int(pn_config.get('importance_net_hidden', 16)),
+            
+            # Architecture flags
+            'use_strain': bool(pn_config.get('use_strain', True)),
+            'use_edge_conditioning': bool(pn_config.get('use_edge_conditioning', True)),
+            'n_edge_types': int(pn_config.get('n_edge_types', 17)),
+        }
+        
+        # Create config object
+        config = type('EnhancedConfig', (), params)()
+        
+        # ✅ Log ALL loaded parameters for verification
+        logging.info("\n" + "="*80)
+        logging.info("📋 COMPLETE CONFIGURATION")
+        logging.info("="*80)
+        
+        logging.info("\n🏗️  ARCHITECTURE:")
+        logging.info(f"   hidden_dims: {config.hidden_dims}")
+        logging.info(f"   dropout: {config.dropout}")
+        logging.info(f"   use_strain: {config.use_strain}")
+        logging.info(f"   use_edge_conditioning: {config.use_edge_conditioning}")
+        logging.info(f"   n_edge_types: {config.n_edge_types}")
+        
+        logging.info("\n🎯 OPTIMIZER:")
+        logging.info(f"   learning_rate: {config.learning_rate:.2e}")
+        logging.info(f"   weight_decay: {config.weight_decay:.2e}")
+        logging.info(f"   warmup_epochs: {config.warmup_epochs}")
+        logging.info(f"   warmup_start_factor: {config.warmup_start_factor}")
+        
+        logging.info("\n📊 TRAINING:")
+        logging.info(f"   batch_size: {config.batch_size}")
+        logging.info(f"   epochs: {config.epochs}")
+        logging.info(f"   patience: {config.patience}")
+        logging.info(f"   scheduler_patience: {config.scheduler_patience}")
+        logging.info(f"   scheduler_factor: {config.scheduler_factor}")
+        logging.info(f"   min_lr: {config.min_lr:.2e}")
+        
+        logging.info("\n🎲 LOSS FUNCTION:")
+        logging.info(f"   ranking_weight: {config.ranking_weight}")
+        logging.info(f"   mse_weight: {config.mse_weight}")
+        logging.info(f"   uncertainty_weight: {config.uncertainty_weight}")
+        logging.info(f"   use_snr_weighting: {config.use_snr_weighting}")
+        logging.info(f"   loss_scale_factor: {config.loss_scale_factor}")
+        
+        logging.info("\n🔄 GRADIENT:")
+        logging.info(f"   clip_norm: {config.gradient_clip_norm}")
+        logging.info(f"   log_threshold: {config.gradient_log_threshold}")
+        
+        if config.use_modal_fusion:
+            logging.info("\n✨ ATTENTION (ENABLED):")
+            logging.info(f"   num_heads: {config.attention_num_heads}")
+            logging.info(f"   dropout: {config.attention_dropout}")
+        
+        if config.overlap_use_attention:
+            logging.info("\n🔗 OVERLAP ATTENTION (ENABLED):")
+            logging.info(f"   importance_hidden: {config.overlap_importance_hidden}")
+        
+        logging.info("="*80 + "\n")
+        
+        return config
+        
+    except FileNotFoundError:
+        logging.error(f"❌ Config file not found: {config_path}")
+        raise
+    except yaml.YAMLError as e:
+        logging.error(f"❌ YAML parsing error: {e}")
+        raise
+    except Exception as e:
+        raise
+
+
+def validate_config(config: object) -> bool:
+    """
+    Validate configuration parameters.
+    
+    Args:
+        config: Config object
+    
+    Returns:
+        True if valid, raises ValueError if invalid
+    """
+    # Validate learning rate
+    if not (1e-6 <= config.learning_rate <= 1e-2):
+        raise ValueError(f"Learning rate {config.learning_rate} out of range [1e-6, 1e-2]")
+    
+    # Validate batch size
+    if config.batch_size < 1 or config.batch_size > 512:
+        raise ValueError(f"Batch size {config.batch_size} out of range [1, 512]")
+    
+    # Validate loss weights sum to ~1.0
+    weight_sum = config.ranking_weight + config.mse_weight + config.uncertainty_weight
+    if abs(weight_sum - 1.0) > 0.01:
+        logging.warning(f"⚠️  Loss weights sum to {weight_sum:.3f}, not 1.0")
+    
+    # Validate warmup
+    if config.warmup_epochs >= config.epochs:
+        raise ValueError(f"Warmup epochs ({config.warmup_epochs}) must be < total epochs ({config.epochs})")
+    
+    # Validate patience
+    if config.patience > config.epochs // 2:
+        logging.warning(f"⚠️  Patience ({config.patience}) is > half of epochs ({config.epochs})")
+    
+    logging.info("✅ Configuration validated successfully\n")
+    return True
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Complete Phase 2: PriorityNet with Integrated Dataset Loading')
+    """Main training function with automatic checkpoint resumption."""
+    
+    # ========================================================================
+    # ARGUMENT PARSING
+    # ========================================================================
+    parser = argparse.ArgumentParser(
+        description='Complete Phase 2: PriorityNet with Integrated Dataset Loading'
+    )
     parser.add_argument('--config', required=True, help='Config file path')
     parser.add_argument('--dataset_path', required=True, help='Path to newDataset directory')
     parser.add_argument('--output_dir', required=True, help='Output directory')
-    parser.add_argument('--max_samples', type=int, default=None, help='Maximum samples per split (None = all)')
-    parser.add_argument('--create_overlaps', action='store_true', help='Create artificial overlap scenarios')
-    parser.add_argument('--train_ratio', type=float, default=0.7, help='Training scenarios ratio')
-    parser.add_argument('--val_ratio', type=float, default=0.15, help='Validation scenarios ratio')
-    parser.add_argument('--test_ratio', type=float, default=0.15, help='Test scenarios ratio')
+    parser.add_argument('--max_samples', type=int, default=None, 
+                       help='Maximum samples per split (None = all)')
+    parser.add_argument('--create_overlaps', action='store_true', 
+                       help='Create artificial overlap scenarios')
+    parser.add_argument('--train_ratio', type=float, default=0.7, 
+                       help='Training scenarios ratio')
+    parser.add_argument('--val_ratio', type=float, default=0.15, 
+                       help='Validation scenarios ratio')
+    parser.add_argument('--test_ratio', type=float, default=0.15, 
+                       help='Test scenarios ratio')
     parser.add_argument('--resume', type=str, default=None, 
-                       help='Path to checkpoint file to resume training from')
+                       help='Path to checkpoint file to resume from')
+    parser.add_argument('--no-resume', action='store_true', 
+                       help='Start training from scratch even if checkpoint exists')
     parser.add_argument('--verbose', action='store_true', help='Verbose logging')
     
     args = parser.parse_args()
     
     setup_logging(args.verbose)
-    logging.info(" Starting Complete Phase 2: PriorityNet with Integrated Dataset Loading")
+    logging.info("🚀 Starting Complete Phase 2: PriorityNet with Integrated Dataset Loading")
     
-    # Validate arguments
+    # ========================================================================
+    # VALIDATE ARGUMENTS
+    # ========================================================================
     if not Path(args.dataset_path).exists():
-        logging.error(f"âŒ Dataset path not found: {args.dataset_path}")
+        logging.error(f"❌ Dataset path not found: {args.dataset_path}")
         return
     
     if abs(args.train_ratio + args.val_ratio + args.test_ratio - 1.0) > 1e-6:
-        logging.error("âŒ Split ratios must sum to 1.0")
+        logging.error("❌ Split ratios must sum to 1.0")
         return
     
-    # Load configuration
+    # ========================================================================
+    # LOAD CONFIGURATION
+    # ========================================================================
     try:
-        with open(args.config, 'r') as f:
-            config_dict = yaml.safe_load(f)
-        
-        #   Extract priority_net config with proper defaults
-        priority_config = config_dict.get('priority_net', {})
-        
-        # Set defaults
-        defaults = {
-            'hidden_dims': [256, 128, 64, 32],
-            'dropout': 0.1,
-            'learning_rate': 1e-3,
-            'weight_decay': 1e-5,
-            'batch_size': 32,
-            'epochs': 200,
-            'patience': 30,
-            'scheduler_patience': 15,
-            'min_lr': 1e-6
-        }
-        
-        # Merge with config, ensuring proper types
-        final_config = {}
-        for key, default_value in defaults.items():
-            config_value = priority_config.get(key, default_value)
-            
-            #  Type conversion based on default type
-            if isinstance(default_value, (int, float)):
-                try:
-                    final_config[key] = type(default_value)(float(config_value))
-                except (ValueError, TypeError):
-                    final_config[key] = default_value
-                    logging.warning(f"Using default for {key}: {default_value}")
-            elif isinstance(default_value, list):
-                if isinstance(config_value, (list, tuple)):
-                    final_config[key] = list(config_value)
-                else:
-                    final_config[key] = default_value
-            else:
-                final_config[key] = config_value
-        
-        #  Log loaded config for verification
-        logging.info("ðŸ“‹ PriorityNet Configuration:")
-        logging.info(f"   hidden_dims: {final_config['hidden_dims']}")
-        logging.info(f"   dropout: {final_config['dropout']}")
-        logging.info(f"   learning_rate: {final_config['learning_rate']:.2e}")
-        logging.info(f"   weight_decay: {final_config['weight_decay']:.2e}")
-        logging.info(f"   batch_size: {final_config['batch_size']}")
-        logging.info(f"   epochs: {final_config['epochs']}")
-        logging.info(f"   patience: {final_config['patience']}")
-        
-        # Create config object
-        config = type('Config', (), final_config)()
-        
+        config = load_enhanced_config(Path(args.config))
+        validate_config(config)
     except Exception as e:
-        logging.error(f"Could not load config: {e}, using defaults")
-        # Fallback defaults
+        logging.error(f"❌ Failed to load config: {e}")
+        logging.error("Using fallback defaults (NOT RECOMMENDED)")
+        
         config = type('Config', (), {
-            'hidden_dims': [256, 128, 64, 32],
-            'dropout': 0.1,
-            'learning_rate': 1e-3,
-            'weight_decay': 1e-5,
+            'hidden_dims': [640, 512, 384, 256],
+            'dropout': 0.15,
+            'learning_rate': 3e-4,
+            'weight_decay': 1.5e-5,
             'batch_size': 32,
-            'epochs': 200,
-            'patience': 30
+            'epochs': 250,
+            'patience': 30,
+            'warmup_epochs': 10,
+            'warmup_start_factor': 0.1,
+            'scheduler_patience': 12,
+            'scheduler_factor': 0.5,
+            'min_lr': 5e-7,
+            'ranking_weight': 0.4,
+            'mse_weight': 0.5,
+            'uncertainty_weight': 0.1,
+            'use_snr_weighting': True,
+            'gradient_clip_norm': 1.5,
+            'use_strain': True,
+            'use_edge_conditioning': True,
+            'n_edge_types': 17,
+            'label_smoothing': 0.05
         })()
-
     
-    # Load GW datasets
-    logging.info(" Loading GW datasets...")
+    # ========================================================================
+    # LOAD GW DATASETS
+    # ========================================================================
+    logging.info("📂 Loading GW datasets...")
     
     train_loader = ChunkedGWDataLoader(args.dataset_path, split='train', max_samples=args.max_samples)
     val_loader = ChunkedGWDataLoader(args.dataset_path, split='validation', max_samples=args.max_samples)
     test_loader = ChunkedGWDataLoader(args.dataset_path, split='test', max_samples=args.max_samples)
     
-    # Convert to PriorityNet scenarios
-    logging.info(" Converting to PriorityNet scenarios...")
+    # ========================================================================
+    # CONVERT TO PRIORITYNET SCENARIOS
+    # ========================================================================
+    logging.info("🔄 Converting to PriorityNet scenarios...")
     
     train_scenarios = train_loader.convert_to_priority_scenarios(
         create_overlaps=args.create_overlaps, overlap_probability=0.3
     )
     val_scenarios = val_loader.convert_to_priority_scenarios(
-        create_overlaps=False  # Don't create artificial overlaps for validation
+        create_overlaps=False
     )
     test_scenarios = test_loader.convert_to_priority_scenarios(
-        create_overlaps=False  # Don't create artificial overlaps for test
+        create_overlaps=False
     )
     
-    # Create PriorityNet datasets
+    # ========================================================================
+    # CREATE PRIORITYNET DATASETS
+    # ========================================================================
     train_dataset = PriorityNetDataset(train_scenarios, "train")
     val_dataset = PriorityNetDataset(val_scenarios, "validation")
     test_dataset = PriorityNetDataset(test_scenarios, "test")
     
     if len(train_dataset) == 0:
-        logging.error("âŒ No valid training scenarios for PriorityNet")
+        logging.error("❌ No valid training scenarios for PriorityNet")
         return
     
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    
+    # ========================================================================
+    # MULTI-DETECTION DIAGNOSTIC
+    # ========================================================================
     logging.info("\n" + "="*80)
     logging.info("MULTI-DETECTION DIAGNOSTIC")
     logging.info("="*80)
 
-    # Check actual detection counts
     multi_det_count = 0
     single_det_count = 0
     detection_counts = {}
@@ -2179,42 +2586,63 @@ def main():
         elif n_det == 1:
             single_det_count += 1
 
-    logging.info(f"\n Detection Count Distribution:")
+    logging.info(f"\n📊 Detection Count Distribution:")
     for n_det in sorted(detection_counts.keys()):
         count = detection_counts[n_det]
         pct = count / len(train_dataset) * 100
         logging.info(f"   {n_det} detection(s): {count} ({pct:.1f}%)")
 
-    logging.info(f" Summary:")
+    logging.info(f"\n📈 Summary:")
     logging.info(f"   Multi-detection (2+): {multi_det_count} ({multi_det_count/len(train_dataset)*100:.1f}%)")
     logging.info(f"   Single-detection (1): {single_det_count} ({single_det_count/len(train_dataset)*100:.1f}%)")
 
     if multi_det_count < len(train_dataset) * 0.1:
-        logging.error(f" CRITICAL: Only {multi_det_count/len(train_dataset)*100:.1f}% multi-detection!")
+        logging.error(f"🔴 CRITICAL: Only {multi_det_count/len(train_dataset)*100:.1f}% multi-detection!")
         logging.error("   Ranking loss will be ZERO most of the time.")
         logging.error("   STOP and fix before training!")
     elif multi_det_count < len(train_dataset) * 0.3:
-        logging.warning(f" WARNING: Only {multi_det_count/len(train_dataset)*100:.1f}% multi-detection.")
+        logging.warning(f"🟡 WARNING: Only {multi_det_count/len(train_dataset)*100:.1f}% multi-detection.")
         logging.warning("   Ranking supervision will be limited but training can proceed.")
     else:
-        logging.info(f"\n Good! {multi_det_count/len(train_dataset)*100:.1f}% multi-detection scenarios.")
+        logging.info(f"\n🟢 Good! {multi_det_count/len(train_dataset)*100:.1f}% multi-detection scenarios.")
 
     logging.info("="*80 + "\n")
 
+    # ========================================================================
+    # ✅ AUTOMATIC CHECKPOINT HANDLING (Perfect for nohup)
+    # ========================================================================
     
-    checkpoint_path = args.resume
-    if checkpoint_path is None:
-        # Check if checkpoint exists in output dir
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Determine checkpoint path
+    checkpoint_path = None
+    
+    if args.no_resume:
+        # User explicitly wants to start fresh
+        logging.info("🔄 --no-resume flag set, starting fresh training")
+        checkpoint_path = None
+    elif args.resume:
+        # User specified explicit checkpoint path
+        checkpoint_path = args.resume
+        logging.info(f"🔍 Using specified checkpoint: {checkpoint_path}")
+    else:
+        # Check for default checkpoint
         default_checkpoint = output_dir / 'priority_net_best.pth'
         if default_checkpoint.exists():
-            logging.info(f"🔍 Found existing checkpoint: {default_checkpoint}")
-            response = input("Resume from this checkpoint? (y/n): ")
-            if response.lower() == 'y':
-                checkpoint_path = str(default_checkpoint)
+            checkpoint_path = str(default_checkpoint)
+            logging.info(f"🔍 Found default checkpoint: {checkpoint_path}")
+    
+    # ✅ Load checkpoint automatically (no user prompts!)
+    resume_state = load_checkpoint(
+        checkpoint_path=checkpoint_path,
+        config=config,
+        device=device
+    )
 
-    # Load checkpoint
-    resume_state = load_checkpoint_if_exists(checkpoint_path, config)
-
+    # ========================================================================
+    # 🚀 TRAINING
+    # ========================================================================
+    
     # Train Model
     training_metrics = train_priority_net_with_validation(
         config, 
@@ -2224,12 +2652,27 @@ def main():
         resume_state=resume_state 
     )
     
+    # ========================================================================
+    # 📊 EVALUATION
+    # ========================================================================
+    
     # Load best model for evaluation
-    best_checkpoint = torch.load(output_dir / 'priority_net_best.pth', weights_only=False, map_location='cpu')
-    model = PriorityNet(config)
+    logging.info("📊 Loading best model for final evaluation...")
+    best_checkpoint = torch.load(
+        output_dir / 'priority_net_best.pth', 
+        weights_only=False, 
+        map_location='cpu'
+    )
+    model = PriorityNet(
+        config, 
+        use_strain=True, 
+        use_edge_conditioning=True, 
+        n_edge_types=17
+    )
     model.load_state_dict(best_checkpoint['model_state_dict'])
     
     # Comprehensive evaluation
+    logging.info("📊 Evaluating model on all splits...")
     train_results = evaluate_priority_net(model, train_dataset, "train")
     val_results = evaluate_priority_net(model, val_dataset, "validation")
     test_results = evaluate_priority_net(model, test_dataset, "test")
@@ -2247,40 +2690,43 @@ def main():
             'train_scenarios': len(train_scenarios),
             'val_scenarios': len(val_scenarios),
             'test_scenarios': len(test_scenarios),
-            'train_samples': len(train_loader.samples),
-            'val_samples': len(val_loader.samples),
-            'test_samples': len(test_loader.samples)
+            'train_samples': getattr(train_loader, 'count', train_loader.count_samples()),
+            'val_samples': getattr(val_loader, 'count', val_loader.count_samples()),
+            'test_samples': getattr(test_loader, 'count', test_loader.count_samples())
         }
+
     }
     
     # Save results
     with open(output_dir / 'complete_results.pkl', 'wb') as f:
         pickle.dump(final_results, f)
     
+    # ========================================================================
+    # 🎉 FINAL SUMMARY
+    # ========================================================================
     
     print("\n" + "=" * 80)
-    print(" COMPLETE PHASE 2 - PRIORITYNET WITH INTEGRATED DATASET LOADING")
+    print("🎉 COMPLETE PHASE 2 - PRIORITYNET WITH INTEGRATED DATASET LOADING")
     print("=" * 80)
-    print(f"✅ TEST SET Ranking Correlation: {test_results['avg_correlation']*100:.1f}%")  # Use actual results
-    print(f"✅ VALIDATION SET Ranking Correlation: {val_results['avg_correlation']*100:.1f}%")  # Use actual results
-
-    # Add performance interpretation
+    print(f"✅ TEST SET Ranking Correlation: {test_results['avg_correlation']*100:.1f}%")
+    print(f"✅ VALIDATION SET Ranking Correlation: {val_results['avg_correlation']*100:.1f}%")
+    
     if test_results['avg_correlation'] > 0.85:
         print("🟢 EXCELLENT - Production ready!")
     elif test_results['avg_correlation'] > 0.70:
         print("🟡 GOOD - Continue improvements")
     else:
         print("🔴 NEEDS WORK - Consider retraining")
-
     
-    print(f"\n DATASET STATISTICS:")
-    print(f"   Training: {len(train_loader.samples):,} samples â†’ {len(train_scenarios):,} scenarios")
-    print(f"   Validation: {len(val_loader.samples):,} samples â†’ {len(val_scenarios):,} scenarios")
-    print(f"   Test: {len(test_loader.samples):,} samples â†’ {len(test_scenarios):,} scenarios")
+    print(f"\n📊 DATASET STATISTICS:")
+    print(f"   Training: {final_results['dataset_info']['train_samples']:,} samples → {len(train_scenarios):,} scenarios")
+    print(f"   Validation: {final_results['dataset_info']['val_samples']:,} samples → {len(val_scenarios):,} scenarios")
+    print(f"   Test: {final_results['dataset_info']['test_samples']:,} samples → {len(test_scenarios):,} scenarios")
     
-    print(f"\“ Results saved to: {output_dir}")
-    print(f" See training_curves.png for training visualization")
+    print(f"\n💾 Results saved to: {output_dir}")
+    print(f"📈 See training_curves.png for training visualization")
     print("="*80)
+
 
 if __name__ == '__main__':
     main()

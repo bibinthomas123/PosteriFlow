@@ -414,9 +414,8 @@ class WaveformGenerator:
         Returns:
             Optimal SNR
         """
-        # FFT of signal (normalize by number of samples to match parseval/PSD scaling)
-        N = float(len(signal)) if len(signal) > 0 else 1.0
-        signal_fft = np.fft.rfft(signal) / N
+        # FFT of signal
+        signal_fft = np.fft.rfft(signal)
         freqs = np.fft.rfftfreq(len(signal), 1/self.sample_rate)
         
         # Interpolate PSD to match FFT frequencies

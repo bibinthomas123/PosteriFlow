@@ -23,8 +23,9 @@ import yaml
 import json
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import numpy as np
+from collections import Counter
 
 # Import AHSD data modules
 from ahsd.data import GWDatasetGenerator
@@ -103,6 +104,13 @@ def validate_config(config: Dict) -> Dict:
         'train_frac': config.get('train_frac', 0.8),
         'val_frac': config.get('val_frac', 0.1),
         'test_frac': config.get('test_frac', 0.1),
+        'chunk_size': config.get('chunk_size', 100),  # ✅ ADD THIS
+        'noise_augmentation_k': config.get('noise_augmentation_k', 1),  # ✅ ADD THIS
+        'debug_snr_diagnostic': config.get('debug_snr_diagnostic', False),
+        
+        # ✅ ADD THESE TWO CRITICAL SECTIONS:
+        'edge_cases': config.get('edge_cases', {}),
+        'extreme_cases': config.get('extreme_cases', {}),
     }
     
     # Validate ranges
@@ -137,231 +145,183 @@ def apply_custom_distributions(config: Dict):
 
 
 def generate_dataset_from_config(config: Dict) -> Dict:
-    """
-    Main dataset generation function with comprehensive logging
-    
-    Args:
-        config: Validated configuration dictionary
-        
-    Returns:
-        Generation summary dictionary
-    """
+    """Generate dataset from configuration with proper error handling."""
     
     logger = logging.getLogger(__name__)
     
-    # ========================================================================
-    # CONFIGURATION DISPLAY
-    # ========================================================================
-    logger.info("=" * 70)
-    logger.info("DATASET GENERATION CONFIGURATION")
-    logger.info("=" * 70)
-    
-    logger.info("")
-    logger.info("Dataset Parameters:")
-    logger.info(f"  Total samples:        {config['n_samples']:,}")
-    logger.info(f"  Overlap fraction:     {config['overlap_fraction']:.1%} ({int(config['n_samples'] * config['overlap_fraction'])} samples)")
-    logger.info(f"  Edge case fraction:   {config['edge_case_fraction']:.1%} ({int(config['n_samples'] * config['edge_case_fraction'])} samples)")
-    logger.info(f"  Save batch size:      {config['save_batch_size']}")
-    
-    logger.info("")
-    logger.info("Signal Processing:")
-    logger.info(f"  Sample rate:          {config['sample_rate']} Hz")
-    logger.info(f"  Duration:             {config['duration']} seconds")
-    logger.info(f"  Add glitches:         {config['add_glitches']}")
-    logger.info(f"  Preprocessing:        {config['preprocess']}")
-    
-    logger.info("")
-    logger.info("Detector Network:")
-    logger.info(f"  Detectors:            {', '.join(config['detectors'])}")
-    
-    logger.info("")
-    logger.info("Event Type Distribution:")
-    for event_type, fraction in config.get('event_distribution', {}).items():
-        expected_count = int(config['n_samples'] * fraction * (1 - config['overlap_fraction']))
-        logger.info(f"  {event_type:6s}:  {fraction:5.1%}  (~{expected_count:,} samples)")
-    
-    logger.info("")
-    logger.info("SNR Distribution:")
-    for snr_regime, fraction in config.get('snr_distribution', {}).items():
-        snr_range = SNR_RANGES.get(snr_regime, (0, 0))
-        expected_count = int(config['n_samples'] * fraction)
-        logger.info(f"  {snr_regime:6s}:  {fraction:5.1%}  (SNR {snr_range[0]}-{snr_range[1]}, ~{expected_count:,} samples)")
-    
-    logger.info("")
-    logger.info("Train/Val/Test Splits:")
-    logger.info(f"  Create splits:        {config.get('create_splits', True)}")
-    if config.get('create_splits', True):
-        logger.info(f"  Train fraction:       {config['train_frac']:.1%} ({int(config['n_samples'] * config['train_frac'])} samples)")
-        logger.info(f"  Val fraction:         {config['val_frac']:.1%} ({int(config['n_samples'] * config['val_frac'])} samples)")
-        logger.info(f"  Test fraction:        {config['test_frac']:.1%} ({int(config['n_samples'] * config['test_frac'])} samples)")
-        logger.info(f"  Chunk size:           {config.get('chunk_size', 100)}")
-        
-        aug_k = config.get('noise_augmentation_k', 1)
-        if aug_k > 1:
-            train_original = int(config['n_samples'] * config['train_frac'])
-            train_augmented = train_original * aug_k
-            logger.info(f"  Train augmentation:   {aug_k}x ({train_original:,} → {train_augmented:,} samples)")
-    
-    logger.info("")
-    logger.info("Output Configuration:")
-    logger.info(f"  Output directory:     {config['output_dir']}")
-    logger.info(f"  Output format:        {config['output_format']}")
-    logger.info(f"  Save complete file:   {config.get('save_complete', True)}")
-    logger.info(f"  Validate output:      {config.get('validate_output', True)}")
-    
-    if config.get('random_seed') is not None:
-        logger.info(f"  Random seed:          {config['random_seed']}")
-    
-    logger.info("=" * 70)
-    logger.info("")
-    
-    # Set random seed for reproducibility
-    if config['random_seed'] is not None:
-        np.random.seed(config['random_seed'])
-        logger.info(f"✓ Random seed set to: {config['random_seed']}")
-    
-    # Apply custom distributions
-    apply_custom_distributions(config)
-    
-    # Create output directory
-    output_dir = Path(config['output_dir'])
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save configuration
-    config_file = output_dir / 'generation_config.yaml'
-    with open(config_file, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False)
-    logger.info(f"✓ Configuration saved to: {config_file}")
-    logger.info("")
-    
-    # Initialize generator
-    logger.info("=" * 70)
-    logger.info("INITIALIZING DATASET GENERATOR")
-    logger.info("=" * 70)
-    
-    generator = GWDatasetGenerator(
-        output_dir=str(output_dir),
-        sample_rate=config['sample_rate'],
-        duration=config['duration'],
-        detectors=config['detectors'],
-        output_format=config['output_format']
-    )
-    
-    logger.info("")
-    
-    # Estimate generation time
-    estimated_time_per_sample = 0.5  # seconds (conservative estimate)
-    total_estimated_time = config['n_samples'] * estimated_time_per_sample
-    hours = int(total_estimated_time // 3600)
-    minutes = int((total_estimated_time % 3600) // 60)
-    
-    logger.info("=" * 70)
-    logger.info("STARTING DATASET GENERATION")
-    logger.info("=" * 70)
-    logger.info(f"Estimated time: ~{hours}h {minutes}m (assuming {estimated_time_per_sample}s per sample)")
-    logger.info(f"Actual time may vary based on system performance")
-    logger.info("=" * 70)
-    logger.info("")
-    
-    start_time = time.time()
-    
-    # Track progress milestones
-    milestones = [0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
-    milestone_idx = 0
-    
     try:
-        summary = generator.generate_dataset(
-            n_samples=config['n_samples'],
-            overlap_fraction=config['overlap_fraction'],
-            edge_case_fraction=config['edge_case_fraction'],
-            save_batch_size=config['save_batch_size'],
-            add_glitches=config['add_glitches'],
-            preprocess=config['preprocess'],
-            save_complete=config.get('save_complete', True),
-            create_splits=config.get('create_splits', True),
-            train_frac=config['train_frac'],
-            val_frac=config['val_frac'],
-            test_frac=config['test_frac'],
-            chunk_size=config.get('chunk_size', 100),
-            noise_augmentation_k=config.get('noise_augmentation_k', 2)
+        # Extract parameters
+        n_samples = config.get('n_samples', 1000)
+        output_dir = config.get('output_dir', 'data/dataset')
+        
+        # Initialize generator
+        generator = GWDatasetGenerator(
+            output_dir=output_dir,
+            sample_rate=config.get('sample_rate', 4096),
+            duration=config.get('duration', 4.0),
+            detectors=config.get('detectors', ['H1', 'L1', 'V1']),
+            output_format=config.get('output_format', 'pkl'),
+            config=config
         )
         
-        elapsed = time.time() - start_time
+        # Generate dataset
+        summary = generator.generate_dataset(
+            n_samples=n_samples,
+            overlap_fraction=config.get('overlap_fraction', 0.5),
+            edge_case_fraction=config.get('edge_case_fraction', 0.15),
+            save_batch_size=config.get('save_batch_size', 100),
+            add_glitches=config.get('add_glitches', True),
+            preprocess=config.get('preprocess', True),
+            save_complete=config.get('save_complete', False),
+            create_splits=config.get('create_splits', True),
+            train_frac=config.get('train_frac', 0.8),
+            val_frac=config.get('val_frac', 0.1),
+            test_frac=config.get('test_frac', 0.1),
+            chunk_size=config.get('chunk_size', 100),
+            noise_augmentation_k=config.get('noise_augmentation_k', 1),
+            config=config
+        )
         
-        # Add configuration to summary
-        summary['configuration'] = config
-        summary['total_time_seconds'] = elapsed
-        summary['success'] = True
-        
+        # ✅ FIX: Handle both complete generation and early return cases
         logger.info("")
         logger.info("=" * 70)
         logger.info("DATASET GENERATION COMPLETE")
         logger.info("=" * 70)
-        logger.info(f"✓ Generated {summary['n_samples']:,} samples")
-        logger.info(f"✓ Time elapsed: {elapsed:.1f}s ({elapsed/60:.1f}m) @ {summary['samples_per_second']:.2f} samples/s")
-        logger.info(f"✓ Output directory: {summary['output_dir']}")
-        logger.info(f"✓ Batches created: {summary['n_batches']}")
+        logger.info(f"✓ Generated {summary.get('n_samples', 0):,} samples")
         
-        if 'splits' in summary and summary['splits']:
-            logger.info("")
-            logger.info("Split Summary:")
-            splits = summary['splits']
-            if isinstance(splits['train'], dict):
-                logger.info(f"  Train:  {splits['train']['original']:,} original → {splits['train']['augmented']:,} augmented ({splits['train']['augmentation_factor']}x)")
-            else:
-                logger.info(f"  Train:  {splits['train']:,} samples")
-            logger.info(f"  Validation:    {splits['validation']:,} samples")
-            logger.info(f"  Test:   {splits['test']:,} samples")
+        generation_time = summary.get('generation_time')
+        if generation_time and generation_time > 0:
+            logger.info(f"✓ Time elapsed: {generation_time:.1f}s ({generation_time/60:.1f}m) @ {summary.get('samples_per_second', 0):.2f} samples/s")
+        else:
+            logger.info(f"✓ Time elapsed: 0.0s (0.0m) @ 0.00 samples/s")
+        
+        logger.info(f"✓ Output directory: {summary.get('output_dir', output_dir)}")
+        
+        # ✅ FIX: Only log n_batches if it exists
+        if 'n_batches' in summary:
+            logger.info(f"✓ Batches created: {summary['n_batches']}")
+        
+        # ✅ FIX: Check if this was a resume/skip
+        if summary.get('resumed', False):
+            logger.info("✓ Resumed from existing dataset")
+        if summary.get('already_complete', False):
+            logger.info("✓ Dataset already complete, no generation needed")
         
         logger.info("=" * 70)
-        logger.info("")
         
-        # Validate output if requested
-        if config['validate_output']:
+        # Validation
+        if config.get('validate_output', True):
+            logger.info("")
             logger.info("=" * 70)
             logger.info("VALIDATING GENERATED DATASET")
             logger.info("=" * 70)
-            validation_report = validate_generated_dataset(output_dir, config)
-            summary['validation'] = validation_report
             
-            if validation_report['passed']:
+            validation = validate_generated_dataset(Path(output_dir), config)
+            
+            if validation['passed']:
                 logger.info("✓ Validation PASSED")
             else:
-                logger.warning(f"✗ Validation FAILED")
-                if validation_report['errors']:
+                logger.warning("✗ Validation FAILED")
+                if validation.get('errors'):
                     logger.error("Errors:")
-                    for error in validation_report['errors']:
+                    for error in validation['errors']:
                         logger.error(f"  - {error}")
-            
-            if validation_report['warnings']:
-                logger.warning("Warnings:")
-                for warning in validation_report['warnings']:
-                    logger.warning(f"  - {warning}")
-            
-            logger.info("=" * 70)
-            logger.info("")
-        
-        # Save final summary
-        summary_file = output_dir / 'generation_summary.json'
-        with open(summary_file, 'w') as f:
-            json.dump(summary, f, indent=2, default=str)
-        logger.info(f"✓ Summary saved to: {summary_file}")
+                if validation.get('warnings'):
+                    logger.warning("Warnings:")
+                    for warning in validation['warnings']:
+                        logger.warning(f"  - {warning}")
         
         return summary
         
     except Exception as e:
-        logger.error(f"Dataset generation failed: {e}", exc_info=True)
+        logger.error(f"Dataset generation failed: {e}")
         raise
+
+def _categorize_snr(snr: float) -> str:
+    """
+    Categorize SNR into one of 5 regimes.
+    
+    Args:
+        snr: Signal-to-noise ratio
+    
+    Returns:
+        Category string: 'weak', 'low', 'medium', 'high', or 'loud'
+    """
+    if snr < 10:
+        return 'weak'
+    elif snr < 15:
+        return 'low'
+    elif snr < 25:
+        return 'medium'
+    elif snr < 40:
+        return 'high'
+    else:
+        return 'loud'
+
+
+def validate_premerger_samples(samples: List[Dict], logger) -> bool:
+    """
+    Validate pre-merger samples have correct metadata.
+    
+    Args:
+        samples: List of sample dicts
+        logger: Logger instance
+    
+    Returns:
+        True if validation passed
+    """
+    if not samples:
+        logger.info("    ℹ No samples to validate")
+        return True
+    
+    premerger_count = 0
+    valid_premerger = 0
+    
+    for sample in samples:
+        if sample is None:
+            continue
+        
+        # Check if this is a pre-merger sample
+        metadata = sample.get('metadata', {})
+        is_premerger = (
+            metadata.get('phase') == 'inspiral_only' or
+            metadata.get('merger_in_window') is False or
+            'time_to_merger' in metadata
+        )
+        
+        if is_premerger:
+            premerger_count += 1
+            
+            # Validate has time_to_merger
+            if 'time_to_merger' in metadata:
+                ttm = metadata['time_to_merger']
+                if ttm > 0:
+                    valid_premerger += 1
+    
+    if premerger_count > 0:
+        logger.info(f"    ✓ Pre-merger samples: {premerger_count} ({valid_premerger} valid)")
+        return valid_premerger == premerger_count
+    else:
+        logger.info(f"    ℹ No pre-merger samples found")
+        return True
+
 
 def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
     """
-    Validate generated dataset
+    Validate generated dataset - works with or without complete file.
     
     Checks:
     - File existence
-    - Sample counts
-    - Data integrity
-    - Parameter distributions
+    - Sample counts (from splits if no complete file)
+    - Data integrity (from splits)
+    - Parameter distributions (from splits)
+    
+    Args:
+        output_dir: Path to dataset output directory
+        config: Configuration dict
+    
+    Returns:
+        Validation report dict with passed/failed status
     """
     
     logger = logging.getLogger(__name__)
@@ -374,143 +334,315 @@ def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
         'checks': {}
     }
     
-    # Check 1: Output files exist
-    logger.info("  [1/5] Checking output files...")
+    logger.info("\n" + "=" * 80)
+    logger.info("DATASET VALIDATION")
+    logger.info("=" * 80)
     
-    if config['output_format'] in ['pkl', 'pkl_compressed']:
-        if config['save_complete']:
+    # Check 1: Output files exist
+    logger.info("  [1/6] Checking output files...")
+    
+    # Check for splits (primary storage method)
+    splits_exist = {
+        'train': (output_dir / 'train').exists(),
+        'validation': (output_dir / 'validation').exists(),
+        'test': (output_dir / 'test').exists()
+    }
+    
+    validation_report['checks']['splits_exist'] = splits_exist
+    
+    if all(splits_exist.values()):
+        logger.info(f"    ✓ All splits found")
+        validation_report['checks']['has_splits'] = True
+    else:
+        missing = [k for k, v in splits_exist.items() if not v]
+        validation_report['warnings'].append(f"Missing splits: {missing}")
+        logger.warning(f"    ⚠ Missing splits: {missing}")
+    
+    # Check for complete file (optional)
+    complete_file = None
+    if config.get('save_complete', False):
+        if config.get('output_format') == 'pkl_compressed':
+            complete_file = output_dir / 'complete_dataset.pkl.gz'
+        else:
             complete_file = output_dir / 'complete_dataset.pkl'
-            if config['output_format'] == 'pkl_compressed':
-                complete_file = output_dir / 'complete_dataset.pkl.gz'
-            
-            if complete_file.exists():
-                validation_report['checks']['complete_file_exists'] = True
-            else:
-                validation_report['passed'] = False
-                validation_report['errors'].append(f"Complete dataset file not found: {complete_file}")
+        
+        if complete_file and complete_file.exists():
+            validation_report['checks']['complete_file_exists'] = True
+            logger.info(f"    ✓ Complete file found: {complete_file.name}")
+        else:
+            validation_report['warnings'].append("No complete dataset file (using splits only)")
+            logger.info(f"    ℹ No complete file (splits-only mode)")
+    else:
+        logger.info(f"    ℹ Complete file disabled (memory-optimized mode)")
+        validation_report['checks']['complete_file_exists'] = False
     
     # Check 2: Load and verify sample count
-    logger.info("  [2/5] Verifying sample count...")
+    logger.info("  [2/6] Verifying sample count...")
     
-    try:
-        if config['save_complete'] and config['output_format'] in ['pkl', 'pkl_compressed']:
+    dataset = None
+    samples = []
+    
+    # Try loading from complete file first
+    if complete_file and complete_file.exists():
+        try:
             dataset = reader.load_pkl(str(complete_file))
-            
-            actual_samples = len(dataset.get('samples', []))
+            samples = dataset.get('samples', [])
+            actual_samples = len(samples)
             expected_samples = config['n_samples']
             
             if actual_samples == expected_samples:
                 validation_report['checks']['sample_count'] = True
-                logger.info(f"    ✓ Sample count matches: {actual_samples}")
+                logger.info(f"    ✓ Sample count matches: {actual_samples:,}")
             else:
-                validation_report['passed'] = False
                 validation_report['errors'].append(
-                    f"Sample count mismatch: expected {expected_samples}, got {actual_samples}"
+                    f"Sample count mismatch: expected {expected_samples:,}, got {actual_samples:,}"
                 )
-        else:
-            validation_report['checks']['sample_count'] = 'skipped'
+                validation_report['passed'] = False
+                logger.error(f"    ✗ Expected {expected_samples:,}, got {actual_samples:,}")
+        
+        except Exception as e:
+            validation_report['warnings'].append(f"Could not load complete file: {e}")
+            logger.warning(f"    ⚠ Could not load complete file: {e}")
     
-    except Exception as e:
+    # Load from splits if no complete file
+    if not samples and splits_exist['train']:
+        logger.info(f"    ℹ Loading from splits for validation...")
+        try:
+            # Load samples from train split (first 5 chunks for better sampling)
+            train_dir = output_dir / 'train'
+            chunk_files = sorted(train_dir.glob('*chunk*.pkl'))[:5]
+            
+            for chunk_file in chunk_files:
+                try:
+                    import pickle
+                    with open(chunk_file, 'rb') as f:
+                        chunk_data = pickle.load(f)
+                        if isinstance(chunk_data, list):
+                            samples.extend(chunk_data)
+                        elif isinstance(chunk_data, dict) and 'samples' in chunk_data:
+                            samples.extend(chunk_data['samples'])
+                except Exception as e:
+                    logger.warning(f"    ⚠ Failed to load {chunk_file.name}: {e}")
+            
+            if samples:
+                logger.info(f"    ✓ Loaded {len(samples):,} samples from {len(chunk_files)} chunks")
+                validation_report['checks']['sample_count'] = 'partial'
+            else:
+                validation_report['warnings'].append("Could not load samples from splits")
+                logger.warning(f"    ⚠ Could not load samples from splits")
+        
+        except Exception as e:
+            validation_report['warnings'].append(f"Failed to load from splits: {e}")
+            logger.warning(f"    ⚠ Failed to load from splits: {e}")
+    
+    # ✅ Early exit if no samples loaded
+    if not samples:
+        logger.error("    ✗ No samples could be loaded for validation!")
+        validation_report['errors'].append("No samples loaded")
         validation_report['passed'] = False
-        validation_report['errors'].append(f"Failed to load dataset: {e}")
+        return validation_report
+    
+    logger.info(f"    ✓ Loaded {len(samples):,} samples for validation")
     
     # Check 3: Verify overlap fraction
-    logger.info("  [3/5] Checking overlap distribution...")
+    logger.info("  [3/6] Checking overlap distribution...")
     
     try:
-        if 'dataset' in locals():
-            samples = dataset['samples']
-            n_overlap = sum(1 for s in samples if s.get('is_overlap', False))
-            actual_overlap_frac = n_overlap / len(samples) if samples else 0
-            expected_overlap_frac = config['overlap_fraction']
-            
-            tolerance = 0.02  # 2% tolerance
-            if abs(actual_overlap_frac - expected_overlap_frac) < tolerance:
-                validation_report['checks']['overlap_fraction'] = True
-                logger.info(f"    ✓ Overlap fraction: {actual_overlap_frac:.2%}")
-            else:
-                validation_report['warnings'].append(
-                    f"Overlap fraction deviation: expected {expected_overlap_frac:.2%}, "
-                    f"got {actual_overlap_frac:.2%}"
-                )
+        n_overlap = sum(1 for s in samples if s and s.get('is_overlap', False))
+        n_single = len(samples) - n_overlap
+        actual_overlap_frac = n_overlap / len(samples) if samples else 0
+        expected_overlap_frac = config.get('overlap_fraction', 0.4)
+        
+        tolerance = 0.10  # ✅ 10% tolerance (more lenient for partial data)
+        
+        logger.info(f"    Single events: {n_single:,} ({(1-actual_overlap_frac)*100:.1f}%)")
+        logger.info(f"    Overlap events: {n_overlap:,} ({actual_overlap_frac*100:.1f}%)")
+        
+        if abs(actual_overlap_frac - expected_overlap_frac) < tolerance:
+            validation_report['checks']['overlap_fraction'] = True
+            logger.info(f"    ✓ Within tolerance (expected: {expected_overlap_frac:.1%})")
+        else:
+            diff = abs(actual_overlap_frac - expected_overlap_frac)
+            validation_report['warnings'].append(
+                f"Overlap fraction off by {diff:.1%} "
+                f"(expected {expected_overlap_frac:.1%}, got {actual_overlap_frac:.1%})"
+            )
+            logger.warning(f"    ⚠ Off by {diff:.1%} (expected: {expected_overlap_frac:.1%})")
+    
     except Exception as e:
         validation_report['warnings'].append(f"Could not verify overlap fraction: {e}")
+        logger.warning(f"    ⚠ Could not verify overlap fraction: {e}")
     
     # Check 4: Data integrity
+    logger.info("  [4/6] Checking data integrity...")
     
-    logger.info("  [4/5] Checking data integrity...")
-
     try:
-        if 'dataset' in locals() and dataset is not None and 'samples' in dataset:
-            samples = dataset['samples']
+        import numpy as np
+        
+        integrity_checks = {
+            'has_strain_data': 0,
+            'has_parameters': 0,
+            'has_valid_snr': 0,
+            'has_detector_data': 0,
+            'valid_samples': 0
+        }
+        
+        check_count = min(500, len(samples))  # ✅ Check up to 500 samples
+        
+        for i, sample in enumerate(samples[:check_count]):
+            if sample is None:
+                continue
             
-            integrity_checks = {
-                'has_strain_data': 0,
-                'has_parameters': 0,
-                'has_valid_snr': 0,
-                'has_detector_data': 0
-            }
+            integrity_checks['valid_samples'] += 1
             
-            check_count = min(100, len(samples))
-            
-            for i, sample in enumerate(samples[:check_count]):
-                # Safety check: skip if sample is None
-                if sample is None:
-                    continue
+            # Check detector data
+            if 'detector_data' in sample and sample['detector_data'] is not None:
+                integrity_checks['has_detector_data'] += 1
                 
-                # Check detector data
-                if 'detector_data' in sample and sample['detector_data'] is not None:
-                    integrity_checks['has_detector_data'] += 1
+                for det_name, det_data in sample['detector_data'].items():
+                    if det_data is None:
+                        continue
                     
-                    for det_name, det_data in sample['detector_data'].items():
-                        if det_data is None:
-                            continue
+                    if 'strain' in det_data and det_data['strain'] is not None:
+                        integrity_checks['has_strain_data'] += 1
                         
-                        if 'strain' in det_data and det_data['strain'] is not None:
-                            integrity_checks['has_strain_data'] += 1
-                            
-                            # Check for NaN/Inf
-                            strain = det_data['strain']
-                            if not np.all(np.isfinite(strain)):
-                                validation_report['errors'].append(
-                                    f"Sample {sample.get('sample_id', i)} contains NaN/Inf in {det_name}"
-                                )
-                                validation_report['passed'] = False
-                
-                # Check parameters
-                if 'parameters' in sample and sample['parameters'] is not None:
-                    integrity_checks['has_parameters'] += 1
-                    
-                    # Check SNR if available
-                    params = sample['parameters']
-                    if isinstance(params, list):
-                        params = params[0] if len(params) > 0 else None
-                    
-                    if params is not None and 'target_snr' in params:
-                        if params['target_snr'] > 0:
-                            integrity_checks['has_valid_snr'] += 1
+                        # Check for NaN/Inf
+                        strain = det_data['strain']
+                        if not np.all(np.isfinite(strain)):
+                            validation_report['errors'].append(
+                                f"Sample {i} contains NaN/Inf in {det_name}"
+                            )
+                            validation_report['passed'] = False
             
-            validation_report['checks']['integrity'] = integrity_checks
-            logger.info(f"    ✓ Integrity checks passed ({check_count} samples checked)")
-        else:
-            validation_report['warnings'].append("Could not access dataset samples for integrity check")
-
+            # Check parameters
+            if 'parameters' in sample and sample['parameters'] is not None:
+                integrity_checks['has_parameters'] += 1
+                
+                params = sample['parameters']
+                if isinstance(params, list):
+                    params = params[0] if len(params) > 0 else None
+                
+                if params is not None and isinstance(params, dict):
+                    if 'target_snr' in params and params['target_snr'] > 0:
+                        integrity_checks['has_valid_snr'] += 1
+        
+        validation_report['checks']['integrity'] = integrity_checks
+        
+        logger.info(f"    ✓ Checked {check_count:,} samples:")
+        logger.info(f"      Valid samples: {integrity_checks['valid_samples']}")
+        logger.info(f"      With detector data: {integrity_checks['has_detector_data']}")
+        logger.info(f"      With parameters: {integrity_checks['has_parameters']}")
+        logger.info(f"      With valid SNR: {integrity_checks['has_valid_snr']}")
+    
     except Exception as e:
         validation_report['warnings'].append(f"Data integrity check failed: {e}")
-
-    # Check 5: Statistics
-    logger.info("  [5/5] Computing statistics...")
+        logger.warning(f"    ⚠ Data integrity check failed: {e}")
+    
+    # Check 5: Event type distribution
+    logger.info("  [5/6] Checking event type distribution...")
     
     try:
-        if 'dataset' in locals() and 'statistics' in dataset:
-            stats = dataset['statistics']
-            validation_report['checks']['statistics'] = stats
-            
-            logger.info(f"    ✓ Event types: {stats.get('event_types', {})}")
-            logger.info(f"    ✓ SNR range: {stats.get('snr_distribution', {})}")
+        event_counts = Counter()
+        for sample in samples:
+            if sample is None:
+                continue
+            event_type = sample.get('type', 'unknown')
+            event_counts[event_type] += 1
+        
+        total = sum(event_counts.values())
+        
+        logger.info(f"    Event type distribution ({total:,} samples):")
+        for event_type in sorted(event_counts.keys()):
+            count = event_counts[event_type]
+            pct = count / total * 100 if total > 0 else 0
+            logger.info(f"      {event_type:10s}: {count:>6,} ({pct:>5.1f}%)")
+        
+        validation_report['checks']['event_distribution'] = dict(event_counts)
     
     except Exception as e:
-        validation_report['warnings'].append(f"Statistics computation failed: {e}")
+        validation_report['warnings'].append(f"Event type distribution check failed: {e}")
+        logger.warning(f"    ⚠ Event type check failed: {e}")
+    
+    # Check 6: SNR distribution
+    logger.info("  [6/6] Checking SNR distribution...")
+    
+    try:
+        import numpy as np
+        
+        snr_distribution = Counter({'weak': 0, 'low': 0, 'medium': 0, 'high': 0, 'loud': 0})
+        snr_values = []
+        
+        for sample in samples:
+            if sample is None:
+                continue
+            
+            # Get SNR from parameters
+            snr = None
+            params = sample.get('parameters')
+            
+            if params:
+                if isinstance(params, list):
+                    # Overlapping - take max SNR
+                    snrs = [p.get('target_snr', 0) for p in params if isinstance(p, dict) and p.get('target_snr', 0) > 0]
+                    if snrs:
+                        snr = max(snrs)
+                elif isinstance(params, dict):
+                    snr = params.get('target_snr')
+            
+            if snr is not None and snr > 0:
+                snr_values.append(snr)
+                category = _categorize_snr(snr)
+                snr_distribution[category] += 1
+        
+        total_snr_samples = sum(snr_distribution.values())
+        
+        if total_snr_samples > 0:
+            logger.info(f"    SNR distribution ({total_snr_samples:,} signals):")
+            logger.info(f"      Mean: {np.mean(snr_values):.2f}, Median: {np.median(snr_values):.2f}")
+            
+            for category in ['weak', 'low', 'medium', 'high', 'loud']:
+                count = snr_distribution[category]
+                fraction = count / total_snr_samples
+                bar = '█' * int(fraction * 50)
+                logger.info(f"      {category.capitalize():6s}: {count:>6,} ({fraction*100:>5.1f}%) {bar}")
+            
+            validation_report['checks']['snr_distribution'] = dict(snr_distribution)
+        else:
+            logger.warning(f"    ⚠ No valid SNR values found")
+            validation_report['warnings'].append("No valid SNR values")
+    
+    except Exception as e:
+        validation_report['warnings'].append(f"SNR distribution check failed: {e}")
+        logger.warning(f"    ⚠ SNR distribution check failed: {e}")
+    
+    # Check 7: Pre-merger samples
+    logger.info("  [7/7] Validating pre-merger samples...")
+    
+    try:
+        premerger_valid = validate_premerger_samples(samples, logger)
+        validation_report['checks']['premerger_valid'] = premerger_valid
+    except Exception as e:
+        validation_report['warnings'].append(f"Pre-merger validation failed: {e}")
+        logger.warning(f"    ⚠ Pre-merger validation failed: {e}")
+    
+    # Final summary
+    logger.info("\n" + "=" * 80)
+    if validation_report['passed'] and not validation_report['errors']:
+        logger.info("✅ DATASET VALIDATION PASSED")
+    else:
+        logger.error("❌ DATASET VALIDATION FAILED")
+        
+        if validation_report['errors']:
+            logger.error(f"\nErrors ({len(validation_report['errors'])}):")
+            for error in validation_report['errors']:
+                logger.error(f"  • {error}")
+    
+    if validation_report['warnings']:
+        logger.warning(f"\nWarnings ({len(validation_report['warnings'])}):")
+        for warning in validation_report['warnings']:
+            logger.warning(f"  • {warning}")
+    
+    logger.info("=" * 80 + "\n")
     
     return validation_report
 
@@ -591,6 +723,8 @@ Examples:
                        help='Samples per chunk file (default: 100)')
     parser.add_argument('--noise-augmentation', type=int, default=1,
                        help='Noise augmentation factor for training set (default: 1, no augmentation)')
+    parser.add_argument('--debug-snr', action='store_true',
+                       help='Enable debug SNR diagnostics (logs target/pre/actual SNR for first N samples)')
     
     return parser.parse_args()
 
@@ -627,6 +761,8 @@ def main():
         config['save_batch_size'] = args.save_batch_size
     if args.random_seed is not None:
         config['random_seed'] = args.random_seed
+    if getattr(args, 'debug_snr', False):
+        config['debug_snr_diagnostic'] = True
     
     # Processing flags
     if args.no_glitches:

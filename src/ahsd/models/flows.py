@@ -106,11 +106,20 @@ class ConditionalRealNVP(nn.Module):
                 )
             
             self.all_transforms.append(
-                transforms.AffineCouplingTransform(
-                    mask=mask,
-                    transform_net_create_fn=make_coupling_net
-                )
-            )
+    def _get_active_transform(self, active_layers: int = None):
+        """Return a CompositeTransform using only the specified number of coupling layers"""
+        if active_layers is None:
+            active_layers = self._active_layers
+            
+        transforms_list = []
+        count = 0
+        for t in self.all_transforms:
+            if isinstance(t, (transforms.AffineCouplingTransform, transforms.CompositeTransform)):
+                if count >= active_layers:
+                    break
+                count += 1
+            transforms_list.append(t)
+        return transforms.CompositeTransform(transforms_list)            )
             if i < max_layers - 1:
                 self.all_transforms.append(transforms.RandomPermutation(features))
         
@@ -155,14 +164,14 @@ class ConditionalRealNVP(nn.Module):
         return transforms.CompositeTransform(transforms_list)
     
     def forward(self, inputs: torch.Tensor, context: torch.Tensor, active_layers: int = None):
-        inputs_clamped = torch.clamp(inputs, -3.0, 3.0)
+        inputs_clamped = torch.clamp(inputs, -5.0, 5.0)
         if active_layers is None:
             active_layers = self._active_layers
         transform = self._get_active_transform(active_layers)
         return transform(inputs_clamped, context=context)
     
     def inverse(self, inputs: torch.Tensor, context: torch.Tensor, active_layers: int = None):
-        inputs_clamped = torch.clamp(inputs, -3.0, 3.0)
+        inputs_clamped = torch.clamp(inputs, -5.0, 5.0)
         if active_layers is None:
             active_layers = self._active_layers
         transform = self._get_active_transform(active_layers)

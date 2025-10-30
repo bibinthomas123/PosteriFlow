@@ -1,76 +1,278 @@
-# Production Dataset Configuration
-# AHSD Overlapping GW Dataset Generation - OPTIMIZED FOR NPE & PRIORITYNET
+# ============================================================================
+# AHSD PRODUCTION CONFIG - OPTIMIZED FOR NEURAL PE & PRIORITY NET
+# Tuned for publication-quality overlapping GW detection
+# ============================================================================
 
+# ==============================================================================
+# DATASET SIZE & OUTPUT
+# ==============================================================================
 
-# Dataset Size
-n_samples: 45000 # Increased from 40000 for better statistical power
+n_samples: 55000 # ✅ 55k for production (10k dev, 50+ final publication)
 
-
-# Output Configuration
 output_dir: "data/dataset"
-output_format: "pkl"  # pkl is faster for loading than HDF5
-save_complete: true
-save_batch_size: 500  # Good batch size
+output_format: "pkl"
+save_batch_size: 100
 
+# ==============================================================================
+# TRAIN/VAL/TEST SPLITS
+# ==============================================================================
 
-# Train/Val/Test splits
 create_splits: true
-train_frac: 0.8   
-val_frac: 0.1     
-test_frac: 0.1    
+train_frac: 0.80  # ✅ Standard 80/10/10 split
+val_frac: 0.10
+test_frac: 0.10
+chunk_size: 100
 
+# ==============================================================================
+# DATA ACQUISITION
+# ==============================================================================
 
-# Data Acquisition
-sample_rate: 4096  # Hz - Keep for compatibility with LIGO data
-duration: 4.0  # seconds - Good for capturing merger signals
+sample_rate: 4096  # ✅ Standard LIGO sampling rate
+duration: 4.0      # ✅ 4s window captures most CBC inspirals
 
-
-# Detector Network
 detectors:
   - H1
   - L1
-  - V1  # 3-detector network improves localization and parameter estimation
+  - V1
 
+approximant: "IMRPhenomPv2"  # ✅ Fast, accurate for aligned spins
+f_ref: 20.0                   # ✅ Standard reference frequency
 
-# Signal Configuration
-overlap_fraction: 0.40  # INCREASED from 0.40 → 0.50 (50% overlapping signals for better PriorityNet training)
-edge_case_fraction: 0.20  # INCREASED from 0.15 → 0.20 (more diverse, challenging cases for robustness)
+# ==============================================================================
+# SIGNAL CONFIGURATION
+# ==============================================================================
 
+overlap_fraction: 0.40  # ✅ 40% overlaps (realistic + challenging)
+edge_case_fraction: 0.12  # ✅ 12% edge cases (enough diversity, not overwhelming)
+premerger_fraction: 0.08   # ✅ 8% pre-merger (early warning scenarios)
 
-# Event Type Distribution
-event_distribution:
-  BBH: 0.50   # Slightly reduced to balance with BNS/NSBH
-  BNS: 0.30   # INCREASED - BNS are harder to detect and estimate, important for NPE
-  NSBH: 0.15  # Keep
-  noise: 0.05 # Keep noise-only samples for false alarm training
+# ==============================================================================
+# PRE-MERGER CONFIGURATION (Early Warning Training)
+# ==============================================================================
 
+premerger_config:
+  enabled: true
+  time_to_merger_range: [0.5, 5.0]  # ✅ 0.5-5s after window ends
+  event_types: ["BBH", "BNS", "NSBH"]
+  min_snr: 8  # ✅ Detectable but weak signals
 
-# SNR Distribution - REBALANCED FOR BETTER TRAINING
-snr_distribution:
-  weak: 0.20      # INCREASED from 0.15 → 0.20 (more low-SNR = harder, realistic scenarios)
-  low: 0.35       # Keep
-  medium: 0.25    # DECREASED from 0.30 → 0.25 
-  high: 0.15      # Keep
-  loud: 0.05      # Keep (useful for sanity checks and confidence calibration)
+# ==============================================================================
+# EXTREME CASES (Probabilistic - 10% of regular samples become extreme)
+# ==============================================================================
 
+extreme_cases:
+  enabled: true
+  fraction: 0.10  # ✅ 10% of regular singles → ~2000 samples
+  
+  types:
+    # Near-simultaneous mergers (20% of extremes = ~400 samples)
+    near_simultaneous_mergers:
+      enabled: true
+      fraction: 0.20
+      delta_t_range: [0.05, 0.2]  # ✅ 50-200ms separation
+      min_overlap: 2
+      max_overlap: 3
+      event_type_pairs: 
+        - ['BBH', 'BBH']
+        - ['BNS', 'BNS']
+        - ['NSBH', 'NSBH']
+        - ['BBH', 'BNS']
+        - ['BBH', 'NSBH']
+        - ['BNS', 'NSBH']
+    
+    # Extreme mass ratio (15% of extremes = ~300 samples)
+    extreme_mass_ratio:
+      enabled: true
+      fraction: 0.15
+      q_max: 0.05  # ✅ q < 0.05 (very asymmetric)
+      q_range: [0.01, 0.05]
+      total_mass_range: [10.0, 30.0]
+    
+    # High-spin aligned (12% of extremes = ~240 samples)
+    high_spin_aligned:
+      enabled: true
+      fraction: 0.12
+      spin_min: 0.85  # ✅ χ > 0.85
+      spin_range: [0.85, 0.998]
+      tilt_max: 0.3   # ✅ Nearly aligned
+    
+    # Precession-dominated (12% of extremes = ~240 samples)
+    precession_dominated:
+      enabled: true
+      fraction: 0.12
+      chi_p_min: 0.5  # ✅ Strong precession
+      spin_min: 0.5
+      tilt_range: [0.5, 2.5]  # ✅ 30-145 degrees
+    
+    # Weak-strong overlaps (18% of extremes = ~360 samples)
+    weak_strong_overlaps:
+      enabled: true
+      fraction: 0.18
+      weak_snr_max: 10       # ✅ Weak: SNR < 10
+      strong_snr_min: 30     # ✅ Strong: SNR > 30
+      snr_ratio_min: 3.0     # ✅ 3x SNR difference minimum
+    
+    # Noise-confused overlaps (10% of extremes = ~200 samples)
+    noise_confused_overlaps:
+      enabled: true
+      fraction: 0.10
+      n_signals: 2           # ✅ Exactly 2 signals
+      glitch_probability: 0.7  # ✅ 70% have glitches
+      glitch_prob: 0.7
+      glitch_types: ['blip', 'whistle', 'scattered_light']
+    
+    # Detector dropouts (8% of extremes = ~160 samples)
+    detector_dropouts:
+      enabled: true
+      fraction: 0.08
+      dropout_prob: 0.35     # ✅ 35% chance per detector
+      min_active_detectors: 1
+    
+    # Eccentric overlaps (8% of extremes = ~160 samples)
+    eccentric_overlaps:
+      enabled: true
+      fraction: 0.08
+      eccentricity_range: [0.1, 0.3]  # ✅ Moderate eccentricity
+      n_signals_range: [2, 3]
+    
+    # Long-duration BNS (4% of extremes = ~80 samples)
+    long_duration_bns_overlaps:
+      enabled: true
+      fraction: 0.04
+      f_lower_max: 20        # ✅ 10-20 Hz → long inspiral
+      overlap_required: true
+    
+    # Cosmological distance (3% of extremes = ~60 samples)
+    cosmological_distance:
+      enabled: true
+      fraction: 0.03
+      redshift_range: [0.3, 0.8]  # ✅ Moderate redshift
+      distance_min: 1500
+      distance_max: 4000
+      snr_max: 10           # ✅ Weak but detectable
 
-# Processing Options
-add_glitches: true   # Essential for realistic training
-preprocess: true     # Whitening improves NPE convergence
-validate_output: true  # Always validate
+# ==============================================================================
+# EDGE CASES (Deterministic - exact counts, ~6000 samples)
+# ==============================================================================
 
+edge_cases:
+  # Physical extremes (30% of edge cases = ~1800 samples)
+  physical_extremes:
+    enabled: true
+    fraction: 0.30
+    types:
+      high_mass_ratio:
+        fraction: 0.20  # ✅ 20% → ~360 samples
+        q_range: [0.02, 0.12]
+      
+      extreme_spins:
+        fraction: 0.20  # ✅ 20% → ~360 samples
+        spin_range: [0.85, 0.998]
+        aligned_fraction: 0.5
+      
+      eccentric_mergers:
+        fraction: 0.15  # ✅ 15% → ~270 samples
+        eccentricity_range: [0.05, 0.25]
+      
+      precessing_systems:
+        fraction: 0.20  # ✅ 20% → ~360 samples
+      
+      short_duration_high_mass:
+        fraction: 0.15  # ✅ 15% → ~270 samples
+        mass_range: [60, 120]  # ✅ High-mass BBH
+      
+      low_snr_threshold:
+        fraction: 0.10  # ✅ 10% → ~180 samples
+        snr_range: [7.5, 10]
+  
+  # Observational extremes (30% of edge cases = ~1800 samples)
+  observational_extremes:
+    enabled: true
+    fraction: 0.30
+    types:
+      strong_glitches:
+        fraction: 0.40  # ✅ 40% → ~720 samples
+        glitch_prob: 0.8
+        glitch_types: ['blip', 'whistle', 'scattered_light']
+      
+      psd_drift:
+        fraction: 0.20  # ✅ 20% → ~360 samples
+        use_multiple_epochs: true
+      
+      detector_dropout:
+        fraction: 0.20  # ✅ 20% → ~360 samples
+        dropout_prob: 0.4
+      
+      sky_position_extremes:
+        fraction: 0.20  # ✅ 20% → ~360 samples
+        use_uniform_sky: true
+  
+  # Statistical extremes (20% of edge cases = ~1200 samples)
+  statistical_extremes:
+    enabled: true
+    fraction: 0.20
+    types:
+      multimodal_posteriors:
+        fraction: 0.45  # ✅ 45% → ~540 samples
+      
+      heavy_tailed_regions:
+        fraction: 0.30  # ✅ 30% → ~360 samples
+        log_uniform_distance: true
+      
+      uninformative_priors:
+        fraction: 0.25  # ✅ 25% → ~300 samples
+        broad_prior_multiplier: 8.0
+  
+  # Overlapping extremes (20% of edge cases = ~1200 samples)
+  overlapping_extremes:
+    enabled: true
+    fraction: 0.20
+    
+    subtle_ranking:
+      fraction: 0.45  # ✅ 45% → ~540 samples (critical for PriorityNet)
+      snr_difference_range: [0.5, 2.0]  # ✅ Subtle differences
+    
+    heavy_overlaps:
+      fraction: 0.30  # ✅ 30% → ~360 samples
+      n_signals_range: [4, 6]  # ✅ 4-6 signals
+    
+    partial_overlaps:
+      fraction: 0.25  # ✅ 25% → ~300 samples
+      overlap_time_ms: [100, 300]  # ✅ 100-300ms overlap
 
-# Reproducibility
-random_seed: 42
+# ==============================================================================
+# PROCESSING OPTIONS
+# ==============================================================================
 
+add_glitches: true        # ✅ Realistic noise
+preprocess: true          # ✅ Whitening + bandpass
+noise_augmentation_k: 3   # ✅ 3 noise realizations per sample (150k total)
+random_seed: 42           # ✅ Reproducibility
+save_complete: false      # ✅ Save space (don't save intermediate waveforms)
+validate_output: true     # ✅ Quality checks
+quota_mode: true
+quota_max_attempts: 10
+# Quota-mode tuning
+# Expected number of signals per overlapping sample (used to estimate total signal quotas).
+# Increase if you expect many overlaps with >2 signals (default 2.5).
+expected_signals_per_overlap: 2.5
 
-# Advanced Options
-strict_snr_validation: true
-include_metadata: true
+# If true, compute joint quotas over (snr_regime, event_type) using iterative
+# proportional fitting (IPF) and enforce the joint table exactly when sampling.
+# Default: false (uses marginal quotas with soft reconciliation).
+quota_joint_enforcement: false
 
+# If true, explicit edge/ extreme samples (edge_cases / extreme_cases) count
+# against the global quotas. If false, quotas are only applied to the regular
+# single/overlap generation paths (recommended: false to avoid double-counting).
+quota_include_extremes: false
 
-# Chunking
-chunk_size: 100  
+# Calibration options: if enabled, the generator will run empirical calibration
+# of the sampler automatically before quota-mode generation (may add runtime).
+calibration:
+  enabled: true
+  n_samples: 5000
+  random_seed: 42
 
-
-noise_augmentation_k: 5  
+# Verbose quota logging (prints quota progress and remaining counters during generation)
+quota_verbose: true

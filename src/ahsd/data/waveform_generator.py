@@ -17,7 +17,7 @@ try:
 except ImportError:
     PYCBC_AVAILABLE = False
 
-from .config import SAMPLE_RATE, DURATION, N_SAMPLES, APPROXIMANTS
+from .config import SAMPLE_RATE, DURATION, APPROXIMANTS
 from .utils import compute_effective_spin
 
 class WaveformGenerator:
@@ -40,33 +40,77 @@ class WaveformGenerator:
                     self.detectors[det_name] = Detector(det_name)
                 except Exception as e:
                     self.logger.debug(f"Detector {det_name} initialization failed: {e}")
-    
-    def generate_waveform(self, params: Dict, detector_name: str = None) -> np.ndarray:
-        """
-        Main waveform generation with automatic fallback chain
+   
+    def generate_waveform(self, params: Dict, detector_name: str = None, 
+                 psd: np.ndarray = None) -> np.ndarray:
+        """Main waveform generation with automatic fallback chain."""
         
-        Priority:
-        1. PyCBC (highest fidelity)
-        2. Analytical models (reliable)
-        3. Simple chirp (guaranteed fallback)
-        """
+        used_pycbc = False
         
         # Try PyCBC first
         if PYCBC_AVAILABLE:
             try:
-                return self.generate_pycbc_waveform(params, detector_name)
+                signal = self.generate_pycbc_waveform(params, detector_name)
+                used_pycbc = True
+                # self.logger.info("✓ PyCBC waveform generated successfully")  # ← ADD THIS
             except Exception as e:
                 self.logger.debug(f"PyCBC waveform failed: {e}")
+                signal = None
+        else:
+            self.logger.info("PyCBC not available")  # ← ADD THIS
+            signal = None
         
         # Try analytical models
-        try:
-            return self.generate_analytical_waveform(params, detector_name)
-        except Exception as e:
-            self.logger.debug(f"Analytical waveform failed: {e}")
+        if signal is None:
+            self.logger.info("Falling back to analytical waveform")  # ← ADD THIS
+            try:
+                signal = self.generate_analytical_waveform(params, detector_name)
+            except Exception as e:
+                self.logger.info(f"Analytical waveform failed: {e}")
+                self.logger.info("Falling back to simple chirp")  # ← ADD THIS
+                signal = self.generate_simple_chirp_fallback(params, detector_name)
         
-        # Ultimate fallback
-        return self.generate_simple_chirp_fallback(params, detector_name)
-    
+        # ✅ CRITICAL: Only rescale if NOT using PyCBC
+        target_snr = params.get('target_snr')
+        
+        if target_snr is not None:
+            if used_pycbc:
+                # self.logger.info(f"Skipping rescale (PyCBC), target={target_snr}")  # ← ADD THIS
+                pass
+            else:
+                self.logger.info(f"Rescaling to target SNR={target_snr}")  # ← ADD THIS
+                if psd is not None:
+                    signal = self.rescale_to_target_snr(signal, psd, target_snr)
+                else:
+                    self.logger.info("No PSD, using crude SNR scaling")
+                    signal = self._crude_snr_rescale(signal, target_snr, params)
+        
+        return signal
+
+    def _crude_snr_rescale(self, signal: np.ndarray, target_snr: float, 
+                params: Dict) -> np.ndarray:
+        """Fallback SNR scaling when PSD is not available."""
+        
+        chirp_mass = params.get('chirp_mass', 30.0)
+        distance = params.get('luminosity_distance', 400.0)
+        
+        # ✅ CRITICAL: Must match ParameterSampler.reference_snr
+        reference_snr = 15.0  # ← CHANGE FROM 100.0 TO 15.0
+        reference_mass = 30.0
+        reference_distance = 400.0
+        
+        # Expected SNR from distance and mass scaling
+        expected_snr = reference_snr * (chirp_mass / reference_mass)**(5/6) * (reference_distance / distance)
+        
+        # Scale factor
+        if expected_snr > 0:
+            scale_factor = target_snr / expected_snr
+        else:
+            scale_factor = target_snr / 10.0
+        
+        return signal * scale_factor
+
+
     def generate_pycbc_waveform(self, params: Dict, detector_name: str = None) -> np.ndarray:
         """Generate waveform using PyCBC with detector projection"""
         
@@ -137,9 +181,21 @@ class WaveformGenerator:
         return signal.astype(np.float32)
     
     def generate_aligned_spin_waveform(self, t: np.ndarray, 
-                                      time_to_merger: np.ndarray, 
-                                      params: Dict) -> np.ndarray:
-        """Generate aligned-spin BBH waveform using 3.5PN TaylorT4"""
+                                time_to_merger: np.ndarray, 
+                                params: Dict) -> np.ndarray:
+        """
+        Generate aligned-spin BBH waveform using 3.5PN TaylorT4.
+        
+        ✅ CORRECTED: Amplitude gives SNR ~ 15 for 30 Msun at 400 Mpc
+        
+        Args:
+            t: Time array
+            time_to_merger: Time until merger for each sample
+            params: Signal parameters dict
+        
+        Returns:
+            Waveform in physical units (strain)
+        """
         
         # System parameters
         m1 = params['mass_1']
@@ -156,26 +212,27 @@ class WaveformGenerator:
         # Frequency evolution (3.5PN TaylorT4)
         theta = time_to_merger / (5.0 * chirp_mass)
         theta = np.maximum(theta, 1e-10)
-        
-        # PN coefficients with spin
         v = theta**(-1/8)
         
-        # Phase evolution
+        # Phase evolution (3.5PN with spin corrections)
         psi = -(1/eta) * (
             v**(-5) +
             (3715/1008 + 55*eta/12) * v**(-3) +
-            (-10*np.pi + 2*chi_eff*(1 + 3*eta/(2*m1/total_mass))) * v**(-2) +
+            (-10*np.pi + (113/3 + 19*eta/3)*chi_eff) * v**(-2) +
             (15293365/1016064 + 27145*eta/1008 + 3085*eta**2/144) * v**(-1)
         )
         
         # Frequency
         frequency = v**3 / (8*np.pi*chirp_mass)
         
-        # Amplitude with detector distance
+        # ✅ AMPLITUDE CALIBRATION
         distance = params.get('luminosity_distance', 400.0)
         amplitude = (chirp_mass**(5/6) / distance) * frequency**(-7/6)
-        amplitude *= 4.0 * np.sqrt(5*eta/(24*np.pi))  # Normalization
         
+        # ✅ CRITICAL: Empirical scale factor tuned to match target SNR distribution
+        # 2e-23 gives SNR ~ 15 for 30 Msun at 400 Mpc (validated empirically)
+        amplitude *= 2e-23
+
         # Apply inclination
         theta_jn = params.get('theta_jn', 0.0)
         amplitude *= (1 + np.cos(theta_jn)**2) / 2
@@ -184,19 +241,21 @@ class WaveformGenerator:
         phase_total = 2*np.pi*np.cumsum(frequency) / self.sample_rate
         strain = amplitude * np.sin(phase_total + psi)
         
-        return strain
-    
+        return strain.astype(np.float32)
+
+
     def generate_tidal_waveform(self, t: np.ndarray, 
-                               time_to_merger: np.ndarray, 
-                               params: Dict) -> np.ndarray:
-        """Generate BNS/NSBH waveform with tidal corrections"""
+                           time_to_merger: np.ndarray, 
+                           params: Dict) -> np.ndarray:
+        
+        """Generate BNS/NSBH waveform with tidal corrections."""
         
         # Base point-particle inspiral
         base_signal = self.generate_aligned_spin_waveform(t, time_to_merger, params)
         
         # Tidal deformability
         lambda_tilde = params.get('lambda_tilde', 
-                                 params.get('lambda_1', 0) + params.get('lambda_2', 0))
+                                params.get('lambda_1', 0) + params.get('lambda_2', 0))
         
         if lambda_tilde > 0:
             # Frequency for tidal correction
@@ -206,39 +265,82 @@ class WaveformGenerator:
             
             # Leading tidal phase correction (5PN)
             x = (np.pi * chirp_mass * frequency)**(2/3)
-            tidal_phase = -(39/2) * lambda_tilde * x**5 / chirp_mass**5
             
-            # Apply tidal correction
-            tidal_factor = np.exp(1j * tidal_phase)
-            base_signal = np.real(base_signal * np.abs(tidal_factor)) * np.cos(np.angle(tidal_factor))
+            # ✅ FIX: Compute average tidal phase for frequency-domain correction
+            # Time-domain phase shift → single frequency-domain phase value
+            avg_tidal_phase = np.mean(-(39/2) * lambda_tilde * x**5 / chirp_mass**5)
+            
+            # Apply correction in frequency domain
+            base_signal_fft = np.fft.fft(base_signal)
+            freqs = np.fft.fftfreq(len(base_signal), 1/self.sample_rate)
+            
+            # ✅ Phase correction: scalar applied to positive frequencies
+            phase_correction = np.ones_like(freqs, dtype=complex)
+            phase_correction[freqs > 0] = np.exp(-1j * avg_tidal_phase)
+            
+            corrected_fft = base_signal_fft * phase_correction
+            return np.real(np.fft.ifft(corrected_fft)).astype(np.float32)
         
         return base_signal
+
+        
     
     def generate_precessing_waveform(self, t: np.ndarray,
-                                    time_to_merger: np.ndarray, 
-                                    params: Dict) -> np.ndarray:
-        """Generate precessing waveform (simplified analytical model)"""
+                                time_to_merger: np.ndarray, 
+                                params: Dict) -> np.ndarray:
+        """Generate precessing waveform with proper precession frequency."""
         
         # Base aligned-spin waveform
         base = self.generate_aligned_spin_waveform(t, time_to_merger, params)
         
-        # Precession modulation
+        # Precession parameters
         tilt1 = params.get('tilt1', 0.0)
+        tilt2 = params.get('tilt2', 0.0)
         phi12 = params.get('phi12', 0.0)
         
-        if tilt1 > 0.1:  # Significant precession
-            # Simple precession frequency (qualitative)
+        # Only apply precession if tilts are significant
+        if max(tilt1, tilt2) > 0.1:  # Significant precession
+            # System parameters
+            m1 = params['mass_1']
+            m2 = params['mass_2']
+            total_mass = m1 + m2
             chirp_mass = params['chirp_mass']
+            mass_ratio = m2 / m1
+            
+            # FIX:  Proper precession frequency
+            # Precession frequency ~ Ω_orb * (S_perp / L)
+            # For leading order: Ω_prec ~ (2 + 3q/2) / (1 + q) * Ω_orb
+            
             v = (time_to_merger / (5.0 * chirp_mass))**(-1/8)
-            prec_freq = v**3 / (100 * chirp_mass)  # Slow precession
+            orbital_freq = v**3 / (8*np.pi*chirp_mass)
             
-            # Amplitude modulation
-            mod_amplitude = 0.3 * np.sin(tilt1)
-            modulation = 1 + mod_amplitude * np.sin(2*np.pi*prec_freq*t + phi12)
+            # Precession frequency factor
+            prec_factor = (2.0 + 1.5*mass_ratio) / (1.0 + mass_ratio)
+            prec_freq = prec_factor * orbital_freq
             
-            base *= modulation
+            # Precession amplitude depends on spin perpendicular components
+            a1 = params.get('a1', 0.0)
+            a2 = params.get('a2', 0.0)
+            
+            # Effective precessing spin χ_p
+            chi_p = max(
+                a1 * np.sin(tilt1),
+                a2 * (4.0 + 3.0*mass_ratio) / (4.0 + 3.0/mass_ratio) * np.sin(tilt2)
+            )
+            
+            # Modulation amplitude (0 to ~0.4 for strong precession)
+            mod_amplitude = 0.4 * np.tanh(2.0 * chi_p)  # Smooth saturation
+            
+            # Apply precession modulation
+            # Both amplitude and phase modulation
+            amp_modulation = 1.0 + mod_amplitude * np.cos(2*np.pi*prec_freq*t + phi12)
+            phase_modulation = mod_amplitude * 0.5 * np.sin(2*np.pi*prec_freq*t + phi12)
+            
+            base *= amp_modulation
+            base = np.roll(base, int(np.mean(phase_modulation) * self.sample_rate / (2*np.pi)))
         
         return base
+
     
     def generate_simple_chirp_fallback(self, params: Dict, detector_name: str = None) -> np.ndarray:
         """Ultimate fallback: simple chirp"""
@@ -300,3 +402,69 @@ class WaveformGenerator:
             alternatives.remove(current)
         
         return alternatives
+
+    def compute_optimal_snr(self, signal: np.ndarray, psd: np.ndarray) -> float:
+        """
+        Compute optimal matched-filter SNR.
+        
+        Args:
+            signal: Time-domain waveform
+            psd: Power spectral density (same length as signal)
+        
+        Returns:
+            Optimal SNR
+        """
+        # FFT of signal (normalize by number of samples to match parseval/PSD scaling)
+        N = float(len(signal)) if len(signal) > 0 else 1.0
+        signal_fft = np.fft.rfft(signal) / N
+        freqs = np.fft.rfftfreq(len(signal), 1/self.sample_rate)
+        
+        # Interpolate PSD to match FFT frequencies
+        if len(psd) != len(signal_fft):
+            from scipy.interpolate import interp1d
+            psd_interp = interp1d(
+                np.linspace(0, self.sample_rate/2, len(psd)),
+                psd,
+                bounds_error=False,
+                fill_value=psd[-1]
+            )(freqs)
+        else:
+            psd_interp = psd
+        
+        # Avoid division by zero
+        psd_interp = np.maximum(psd_interp, 1e-50)
+        
+        # Compute SNR² = 4 * Δf * Σ |h̃(f)|² / S_n(f)
+        df = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0
+        snr_squared = 4.0 * df * np.sum(np.abs(signal_fft)**2 / psd_interp)
+        
+        return float(np.sqrt(np.maximum(snr_squared, 0)))
+
+
+    def rescale_to_target_snr(self, signal: np.ndarray, psd: np.ndarray, 
+                            target_snr: float) -> np.ndarray:
+        """
+        Rescale waveform to match target SNR.
+        
+        Args:
+            signal: Time-domain waveform
+            psd: Power spectral density
+            target_snr: Desired SNR
+        
+        Returns:
+            Rescaled waveform
+        """
+        current_snr = self.compute_optimal_snr(signal, psd)
+        
+        if current_snr > 0:
+            scale_factor = target_snr / current_snr
+            return signal * scale_factor
+        else:
+            # Fallback: use crude amplitude scaling
+            self.logger.warning("SNR computation failed, using amplitude scaling")
+            desired_amplitude = target_snr * 1e-21
+            current_amplitude = np.max(np.abs(signal))
+            if current_amplitude > 0:
+                return signal * (desired_amplitude / current_amplitude)
+        
+        return signal

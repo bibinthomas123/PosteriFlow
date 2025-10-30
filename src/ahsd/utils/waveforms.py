@@ -136,20 +136,26 @@ class WaveformUtilities:
                 overlap = np.abs(np.dot(h1, h2)) / (np.linalg.norm(h1) * np.linalg.norm(h2))
             else:
                 # Frequency-domain overlap with PSD weighting
-                h1_f = np.fft.fft(h1)
-                h2_f = np.fft.fft(h2)
-                
-                # Truncate PSD to match FFT length
-                psd_trunc = psd[:len(h1_f)//2 + 1]
-                
-                # Inner product
+                N = float(len(h1)) if len(h1) > 0 else 1.0
+                # Use rfft for positive frequencies and normalize FFT by N
+                h1_f = np.fft.rfft(h1) / N
+                h2_f = np.fft.rfft(h2) / N
+
+                # Frequency grid and df
+                freqs = np.fft.rfftfreq(len(h1), 1.0 / self.sampling_frequency)
+                df = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0
+
+                # Truncate PSD to match FFT positive-frequency length
+                psd_trunc = psd[:len(h1_f)]
+
+                # Inner product (consistent normalization): 4 * df * sum(conj(h1)*h2 / S_n)
                 integrand = np.conj(h1_f[:len(psd_trunc)]) * h2_f[:len(psd_trunc)] / psd_trunc
-                inner_product = 4 * np.real(np.sum(integrand)) / self.sampling_frequency
-                
+                inner_product = 4.0 * np.real(np.sum(integrand)) * df
+
                 # Normalization
                 norm1 = self.compute_waveform_norm(h1, psd)
                 norm2 = self.compute_waveform_norm(h2, psd)
-                
+
                 overlap = inner_product / (norm1 * norm2)
             
             return float(np.abs(overlap))
@@ -166,12 +172,16 @@ class WaveformUtilities:
         if psd is None:
             return np.linalg.norm(waveform)
         else:
-            waveform_f = np.fft.fft(waveform)
-            psd_trunc = psd[:len(waveform_f)//2 + 1]
-            
+            N = float(len(waveform)) if len(waveform) > 0 else 1.0
+            waveform_f = np.fft.rfft(waveform) / N
+            psd_trunc = psd[:len(waveform_f)]
+
+            freqs = np.fft.rfftfreq(len(waveform), 1.0 / self.sampling_frequency)
+            df = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0
+
             integrand = np.abs(waveform_f[:len(psd_trunc)])**2 / psd_trunc
-            norm_squared = 4 * np.sum(integrand) / self.sampling_frequency
-            
+            norm_squared = 4.0 * np.sum(integrand) * df
+
             return np.sqrt(norm_squared)
     
     def estimate_snr(self,
@@ -194,13 +204,10 @@ class WaveformUtilities:
         """
         
         try:
-            waveform_f = np.fft.fft(waveform)
-            freqs = np.fft.fftfreq(len(waveform), 1/self.sampling_frequency)
-            
-            # Keep only positive frequencies
-            positive_freqs = freqs[:len(freqs)//2 + 1]
-            waveform_f_pos = waveform_f[:len(positive_freqs)]
-            
+            N = float(len(waveform)) if len(waveform) > 0 else 1.0
+            waveform_f_pos = np.fft.rfft(waveform) / N
+            positive_freqs = np.fft.rfftfreq(len(waveform), 1.0 / self.sampling_frequency)
+
             # Interpolate PSD to match frequency grid
             if len(psd) != len(positive_freqs):
                 psd_interp = np.interp(positive_freqs, 
@@ -208,14 +215,17 @@ class WaveformUtilities:
                                      psd)
             else:
                 psd_interp = psd
-            
+
             # Avoid division by zero
-            psd_interp[psd_interp <= 0] = np.inf
-            
-            # Compute SNR
+            psd_interp = np.maximum(psd_interp, 1e-50)
+
+            freqs = positive_freqs
+            df = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0
+
+            # Compute SNR using consistent normalization
             integrand = np.abs(waveform_f_pos)**2 / psd_interp
-            snr_squared = 4 * np.sum(integrand) / self.sampling_frequency
-            
+            snr_squared = 4.0 * np.sum(integrand) * df
+
             return np.sqrt(snr_squared)
             
         except Exception as e:

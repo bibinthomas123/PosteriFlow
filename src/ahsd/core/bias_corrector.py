@@ -16,11 +16,11 @@ import warnings
 class BiasEstimator(nn.Module):
     """ advanced bias estimator with transformer architecture"""
     
-    def __init__(self, input_dim: int, hidden_dims: List[int] = None):
+    def __init__(self, input_dim: int, context_dim: int = 256, hidden_dims: List[int] = None):
         super().__init__()
         
         self.input_dim = input_dim
-        self.context_dim = 16  # Extended context features
+        self.context_dim = context_dim   # Extended context features
         
         if hidden_dims is None:
             hidden_dims = [256, 128, 64] if input_dim <= 9 else [512, 256, 128, 64]
@@ -150,21 +150,22 @@ class BiasEstimator(nn.Module):
         # Distance correction (parameter 2)
         dist_corr = self.distance_corrector(features) * self.distance_scale
         corrections.append(dist_corr)
-        
-        # Time correction (parameter 5 if present)
-        if self.input_dim > 5:
-            time_corr = self.time_corrector(features) * self.time_scale
-            corrections.append(time_corr)
-        
-        # Sky corrections (parameters 3, 4)
+
+        # Sky corrections (3, 4)
         if self.input_dim > 3:
             sky_corr = self.sky_corrector(features) * self.sky_scale
             corrections.append(sky_corr)
-        
-        # Extra parameter corrections
+
+        # Time corrections (5)
+        if self.input_dim > 5:
+            time_corr = self.time_corrector(features) * self.time_scale
+            corrections.append(time_corr)
+
+        # Extra corrections (6+)
         if self.extra_corrector is not None and self.input_dim > 6:
             extra_corr = self.extra_corrector(features) * self.extra_scale
             corrections.append(extra_corr)
+
         
         # Concatenate all corrections
         all_corrections = torch.cat(corrections, dim=1)
@@ -173,7 +174,12 @@ class BiasEstimator(nn.Module):
         if all_corrections.shape[1] > self.input_dim:
             all_corrections = all_corrections[:, :self.input_dim]
         elif all_corrections.shape[1] < self.input_dim:
-            padding = torch.zeros(batch_size, self.input_dim - all_corrections.shape[1])
+            padding = torch.zeros(
+                batch_size, 
+                self.input_dim - all_corrections.shape[1],
+                device=all_corrections.device,
+                dtype=all_corrections.dtype
+            )
             all_corrections = torch.cat([all_corrections, padding], dim=1)
         
         # Estimate uncertainties
@@ -182,7 +188,7 @@ class BiasEstimator(nn.Module):
         return all_corrections, uncertainties
 
 
-class BiasCorrector:
+class BiasCorrector(nn.Module):
     """
     BiasCorrector is a comprehensive class for correcting hierarchical biases in parameter estimation, 
     particularly in gravitational-wave (GW) signal analysis. It integrates advanced machine learning 
@@ -255,12 +261,19 @@ class BiasCorrector:
     """
     """ bias corrector with advanced machine learning and physics validation"""
     
-    def __init__(self, param_names: List[str]):
+    def __init__(self, param_names, context_dim=256):
+        super().__init__()
         self.param_names = param_names
         self.n_params = len(param_names)
+        self.context_dim = context_dim
         
         #  Initialize advanced neural bias estimator
-        self.bias_estimator = BiasEstimator(self.n_params)
+        self.bias_estimator = BiasEstimator(
+            input_dim=self.n_params,
+            context_dim=self.context_dim
+        )
+        self.correction_scales = nn.Parameter(torch.ones(self.n_params))
+
         
         self.logger = logging.getLogger(__name__)
         #  FIX: Initialize with correct shapes for 9 parameters
@@ -309,9 +322,25 @@ class BiasCorrector:
         self.logger.info(f"BiasCorrector initialized for {self.n_params} parameters")
     
     
-    def forward(self, params: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __call__(self, params: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Forward pass for integration with OverlapNeuralPE.
+        Make BiasCorrector callable like a function.
+        This method delegates to the forward method.
+        
+        Args:
+            params: (batch, param_dim) normalized parameters
+            context: (batch, context_dim) context features
+            
+        Returns:
+            corrections: (batch, param_dim) bias corrections
+            uncertainties: (batch, param_dim) correction uncertainties
+            confidence: (batch,) correction confidence scores
+        """
+        return self.forward(params, context)
+
+
+    def forward(self, params: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass for integration with OverlapNeuralPE.
         
         Args:
             params: [batch, param_dim] normalized parameters
@@ -319,23 +348,25 @@ class BiasCorrector:
             
         Returns:
             corrections: [batch, param_dim] bias corrections
-            uncertainties: [batch, param_dim] correction uncertainties
+            uncertainties: [batch, param_dim] correction uncertainties  
             confidence: [batch] correction confidence scores
         """
-        # Concatenate params and context
-        combined = torch.cat([params, context], dim=1)
-        
-        # Get bias estimates
-        bias_pred, uncertainty, confidence = self.bias_estimator(combined)
+        # Get bias estimates (returns only 2 values)
+        bias_pred, uncertainty = self.bias_estimator(params, context)
         
         # Apply learned scaling
         corrections = bias_pred * self.correction_scales
         
-        # Clamp to reasonable range
-        corrections = torch.clamp(corrections, -0.2, 0.2)  # Max 20% correction
+        # Clamp to reasonable range (max 20% correction)
+        corrections = torch.clamp(corrections, -0.2, 0.2)
+        
+        # Compute confidence from uncertainties
+        # Lower uncertainty = higher confidence
+        mean_uncertainty = uncertainty.mean(dim=1)  # [batch]
+        confidence = 1.0 / (1.0 + mean_uncertainty)
         
         return corrections, uncertainty, confidence
-    
+
     
     def _initialize_physics_bounds(self) -> Dict[str, Dict[str, float]]:
         """Initialize physics-based parameter bounds and priors"""
@@ -647,13 +678,13 @@ class BiasCorrector:
         return corrections, correction_uncertainties
     
     def _validate_corrections(self, original_values: np.ndarray, corrections: np.ndarray,
-                            correction_uncertainties: np.ndarray) -> Dict[str, Any]:
+                         correction_uncertainties: np.ndarray) -> Dict[str, Any]:
         """Comprehensive validation of proposed corrections"""
         
         validation_results = {
             'physics_valid': True,
             'magnitude_acceptable': True,
-            'correlation_consistent': True,
+            'correlation_consistent': True,  
             'uncertainty_reasonable': True,
             'warnings': [],
             'rejection_reasons': []
@@ -670,7 +701,8 @@ class BiasCorrector:
                 corrected_values[i] > bounds['max_value']):
                 validation_results['physics_valid'] = False
                 validation_results['rejection_reasons'].append(
-                    f"{param_name} correction violates physics bounds"
+                    f"{param_name} correction violates physics bounds: "
+                    f"{corrected_values[i]:.4f} not in [{bounds['min_value']:.4f}, {bounds['max_value']:.4f}]"
                 )
             
             # Check correction magnitude
@@ -682,38 +714,37 @@ class BiasCorrector:
             if abs(corrections[i]) > max_correction:
                 validation_results['magnitude_acceptable'] = False
                 validation_results['warnings'].append(
-                    f"{param_name} correction magnitude too large: {abs(corrections[i]):.4f} > {max_correction:.4f}"
+                    f"{param_name} correction magnitude too large: "
+                    f"{abs(corrections[i]):.4f} > {max_correction:.4f}"
                 )
         
-        # Parameter correlation validation
-        expected_correlations = self.correlation_matrix
-        correction_correlations = np.corrcoef(corrections.reshape(1, -1), corrections.reshape(1, -1))
-        
-        if corrections.shape[0] > 1:  # Need multiple parameters for correlation
-            correlation_deviation = np.mean(np.abs(correction_correlations - expected_correlations))
-            if correlation_deviation > 0.5:
-                validation_results['correlation_consistent'] = False
-                validation_results['warnings'].append(
-                    f"Correction correlations deviate significantly from expected: {correlation_deviation:.3f}"
-                )
-        
-        # Uncertainty reasonableness
+        # ✅ IMPROVED: Uncertainty validation
         for i, param_name in enumerate(self.param_names):
-            if correction_uncertainties[i] > abs(corrections[i]) * 5:  # Uncertainty > 5x correction
+            # Check relative to original value
+            relative_uncertainty = correction_uncertainties[i] / (abs(original_values[i]) + 1e-10)
+            
+            if relative_uncertainty > 0.5:  # Uncertainty > 50% of original
                 validation_results['uncertainty_reasonable'] = False
                 validation_results['warnings'].append(
-                    f"{param_name} correction uncertainty suspiciously large"
+                    f"{param_name} correction uncertainty too large: "
+                    f"{correction_uncertainties[i]:.4f} ({relative_uncertainty*100:.1f}% of original)"
+                )
+            
+            # Check if uncertainty >> correction (but more reasonable threshold)
+            if correction_uncertainties[i] > abs(corrections[i]) * 10 and abs(corrections[i]) > 1e-5:
+                validation_results['warnings'].append(
+                    f"{param_name} correction highly uncertain: "
+                    f"uncertainty {correction_uncertainties[i]:.4f} >> correction {corrections[i]:.4f}"
                 )
         
-        # Overall validation
+        # Overall validation (removed correlation_consistent)
         validation_results['overall_valid'] = (
             validation_results['physics_valid'] and 
-            validation_results['magnitude_acceptable'] and
-            validation_results['correlation_consistent']
+            validation_results['magnitude_acceptable']
         )
         
         return validation_results
-    
+
     def _apply_corrections_to_posterior(self, original_summary: Dict, corrections: np.ndarray,
                                       correction_uncertainties: np.ndarray) -> Dict:
         """Apply validated corrections to posterior summary"""
@@ -1106,6 +1137,5 @@ class BiasCorrector:
                 }
         
         return stats
-
 
 UncertaintyAwareSubtractor = BiasCorrector  

@@ -468,14 +468,19 @@ def estimate_snr_from_strain(strain: np.ndarray,
             noise_power = 1e-46
             snr = np.sqrt(signal_power / noise_power)
         else:
-            # Matched filter SNR
-            strain_f = np.fft.fft(strain)
-            freqs = np.fft.fftfreq(len(strain), 1/sampling_rate)
-            
+            # Matched filter SNR (ensure consistent FFT normalization)
+            N = len(strain)
+            strain_f = np.fft.fft(strain) / float(N)
+            freqs = np.fft.fftfreq(N, 1/sampling_rate)
+
             # Compute SNR using frequency domain
-            integrand = np.abs(strain_f)**2 / psd[:len(strain_f)]
-            snr_squared = 4 * np.sum(integrand) / sampling_rate
-            snr = np.sqrt(snr_squared)
+            # Ensure psd has at least N elements when provided by caller
+            psd_seg = psd[:len(strain_f)] if psd is not None else np.ones_like(strain_f)
+            integrand = np.abs(strain_f)**2 / psd_seg
+            df = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0/sampling_rate
+            # Use same normalization as dataset_generator (4 * integral over positive freqs)
+            snr_squared = 4.0 * np.sum(integrand) * df
+            snr = np.sqrt(max(snr_squared, 0.0))
         
         return float(snr)
         

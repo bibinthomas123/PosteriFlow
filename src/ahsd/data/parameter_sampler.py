@@ -5,16 +5,20 @@ Implements astrophysically realistic parameter distributions
 
 import numpy as np
 import logging
-from typing import Dict,List
+from typing import Dict, List
 from scipy.stats import truncnorm, beta
 
-from .config import MASS_RANGES, DISTANCE_RANGES, SNR_RANGES
+from .config import (
+    MASS_RANGES, DISTANCE_RANGES, SNR_RANGES, 
+    SNR_DISTRIBUTION, EVENT_TYPE_DISTRIBUTION
+)
 from .utils import calculate_redshift, calculate_comoving_distance, compute_effective_spin
+
 
 class ParameterSampler:
     """
-    Sample astrophysically realistic GW parameters
-    Based on GWTC-3 population models with independent sampling to avoid correlations
+    Sample astrophysically realistic GW parameters.
+    Uses SNR_DISTRIBUTION and EVENT_TYPE_DISTRIBUTION from config.
     """
     
     def __init__(self):
@@ -22,6 +26,14 @@ class ParameterSampler:
         self.mass_ranges = MASS_RANGES
         self.distance_ranges = DISTANCE_RANGES
         self.snr_ranges = SNR_RANGES
+        
+        # ✅ Store distributions from config
+        self.snr_distribution = SNR_DISTRIBUTION
+        self.event_type_distribution = EVENT_TYPE_DISTRIBUTION
+        
+        self.reference_snr = 15
+        self.reference_mass = 30.0
+        self.reference_distance = 400.0
         
         self.stats = {
             'event_types': {'BBH': 0, 'BNS': 0, 'NSBH': 0},
@@ -34,24 +46,87 @@ class ParameterSampler:
             },
             'snr_regimes': {regime: 0 for regime in self.snr_ranges.keys()}
         }
-    def sample_bbh_parameters(self, snr_regime: str, is_edge_case: bool = False) -> Dict:
+    
+    def _sample_snr_regime(self) -> str:
+        """Sample SNR regime from configured distribution."""
+        regimes = list(self.snr_distribution.keys())
+        probs = list(self.snr_distribution.values())
+        return np.random.choice(regimes, p=probs)
+    
+    def _sample_target_snr(self, snr_regime: str = None) -> float:
         """
-        Generate complete BBH parameters with INDEPENDENT mass and distance sampling
-        Implements decorrelation strategies to avoid parameter degeneracies
+        Sample target SNR from specified regime or from distribution.
+        
+        Args:
+            snr_regime: Specific regime ('low', 'medium', 'high') or None to sample from distribution
+        
+        Returns:
+            Target SNR value
         """
+        # New: accept optional event_type conditioning via self.conditional_snr
+        # Signature backward compatible: snr_regime may be provided by caller.
+        def _draw_from_regime(regime):
+            snr_min, snr_max = self.snr_ranges[regime]
+            return float(np.random.uniform(snr_min, snr_max))
+
+        if snr_regime is not None:
+            target_snr = _draw_from_regime(snr_regime)
+            # Track statistics
+            self.stats['snr_regimes'][snr_regime] = self.stats['snr_regimes'].get(snr_regime, 0) + 1
+            return target_snr
+
+        # If caller didn't ask for a specific regime, sample optionally conditioned on event_type
+        # (caller can pass event_type by setting attribute self._sampling_event_type before calling
+        # or by using the new helper sample_target_snr_for_event).
+        event_type = getattr(self, '_sampling_event_type', None)
+        if event_type and hasattr(self, 'conditional_snr') and event_type in self.conditional_snr:
+            regimes = list(self.conditional_snr[event_type].keys())
+            probs = [self.conditional_snr[event_type][r] for r in regimes]
+            # numerical stability
+            s = sum(probs)
+            if s <= 0:
+                regimes = list(self.snr_distribution.keys())
+                probs = list(self.snr_distribution.values())
+            else:
+                probs = [p / s for p in probs]
+            regime = np.random.choice(regimes, p=probs)
+            target = _draw_from_regime(regime)
+            self.stats['snr_regimes'][regime] = self.stats['snr_regimes'].get(regime, 0) + 1
+            return float(target)
+
+        # Fallback to global sampling
+        snr_regime = self._sample_snr_regime()
+        snr_min, snr_max = self.snr_ranges[snr_regime]
+        target_snr = float(np.random.uniform(snr_min, snr_max))
+        self.stats['snr_regimes'][snr_regime] = self.stats['snr_regimes'].get(snr_regime, 0) + 1
+        return target_snr
+    
+    def sample_bbh_parameters(self, snr_regime: str = None, is_edge_case: bool = False) -> Dict:
+        """
+        Generate complete BBH parameters.
+        
+        Args:
+            snr_regime: SNR regime to use, or None to sample from distribution
+            is_edge_case: Whether to generate edge case parameters
+        """
+        
+        # Track statistics
+        self.stats['event_types']['BBH'] += 1
         
         # Mass sampling with decorrelation
         if is_edge_case and np.random.random() < 0.3:
             mass_1 = np.random.uniform(60, 100)
             mass_2 = np.random.uniform(50, mass_1)
             edge_case_type = 'short_bbh'
+            self.stats['edge_cases']['short_bbh'] += 1
         elif is_edge_case and np.random.random() < 0.5:
             mass_1 = np.random.uniform(30, 80)
             q = np.random.uniform(0.05, 0.15)
             mass_2 = mass_1 * q
             edge_case_type = 'extreme_mass_ratio'
+            self.stats['edge_cases']['extreme_mass_ratio'] += 1
         else:
-            # ✅ Sample with DIFFERENT widths to decorrelate
+            # Sample with different widths to decorrelate
             m1_raw = np.clip(np.random.lognormal(mean=np.log(25.0), sigma=0.35), 5.0, 80.0)
             m2_raw = np.clip(np.random.lognormal(mean=np.log(20.0), sigma=0.40), 5.0, 80.0)
             
@@ -62,7 +137,7 @@ class ParameterSampler:
             # Order by convention
             mass_1, mass_2 = (m1_raw, m2_raw) if m1_raw >= m2_raw else (m2_raw, m1_raw)
             
-            # ✅ Add jitter to break deterministic pairing
+            # Add jitter to break deterministic pairing
             mass_1 += np.random.uniform(-0.05, 0.05)
             mass_2 += np.random.uniform(-0.05, 0.05)
             
@@ -72,10 +147,35 @@ class ParameterSampler:
             
             edge_case_type = 'none'
         
-        # Distance sampling - INDEPENDENT (uniform in volume)
+        # Derived quantities (needed for distance calculation)
+        total_mass = mass_1 + mass_2
+        chirp_mass = (mass_1 * mass_2)**(3/5) / total_mass**(1/5)
+        mass_ratio = mass_2 / mass_1
+        symmetric_mass_ratio = (mass_1 * mass_2) / total_mass**2
+        
+        # ✅ FIX: Sample target SNR FIRST (allow conditioning by event type)
+        self._sampling_event_type = 'BBH'
+        try:
+            target_snr = self._sample_target_snr(snr_regime)
+        finally:
+            self._sampling_event_type = None
+        
+        # ✅ FIX: Compute distance FROM target SNR
+        # SNR ∝ M_chirp^(5/6) / D  →  D = k * M_chirp^(5/6) / SNR
+        # Calibration: 30 Msun at 400 Mpc → SNR ≈ 15
+                
+        # Compute expected distance for this chirp mass and target SNR
+        luminosity_distance = (self.reference_distance * 
+                      (chirp_mass / self.reference_mass)**(5/6) * 
+                      (self.reference_snr / target_snr))
+        
+        # Add random jitter (±15%) to break perfect correlation
+        jitter_factor = np.random.uniform(0.85, 1.15)
+        luminosity_distance *= jitter_factor
+        
+        # Clamp to physical range
         d_min, d_max = self.distance_ranges['BBH']
-        u_d = np.random.random()
-        luminosity_distance = (d_min**3 + u_d * (d_max**3 - d_min**3))**(1/3)
+        luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
         
         # Spin sampling - INDEPENDENT
         a1 = float(np.clip(np.random.beta(2, 5), 0, 0.99))
@@ -90,25 +190,15 @@ class ParameterSampler:
         phi_jl = float(np.random.uniform(0, 2*np.pi))
         
         # Sky location - isotropic
-        ra = np.random.uniform(0, 2*np.pi)
-        dec = np.arcsin(np.random.uniform(-1, 1))
-        theta_jn = np.arccos(np.random.uniform(-1, 1))
-        psi = np.random.uniform(0, np.pi)
-        phase = np.random.uniform(0, 2*np.pi)
-        geocent_time = np.random.uniform(-0.1, 0.1)
+        ra = float(np.random.uniform(0, 2*np.pi))
+        dec = float(np.arcsin(np.random.uniform(-1, 1)))
+        theta_jn = float(np.arccos(np.random.uniform(-1, 1)))
+        psi = float(np.random.uniform(0, np.pi))
+        phase = float(np.random.uniform(0, 2*np.pi))
+        geocent_time = float(np.random.uniform(-0.1, 0.1))
         
         # Approximant
         approximant = 'IMRPhenomD'
-        
-        # Derived quantities
-        total_mass = mass_1 + mass_2
-        chirp_mass = (mass_1 * mass_2)**(3/5) / total_mass**(1/5)
-        mass_ratio = mass_2 / mass_1
-        symmetric_mass_ratio = (mass_1 * mass_2) / total_mass**2
-        
-        # Target SNR
-        snr_min, snr_max = self.snr_ranges[snr_regime]
-        target_snr = np.random.uniform(snr_min, snr_max)
         
         # Cosmology
         z = calculate_redshift(luminosity_distance)
@@ -131,7 +221,7 @@ class ParameterSampler:
             'phi12': float(phi12),
             'phi_jl': float(phi_jl),
             'luminosity_distance': float(luminosity_distance),
-            'redshift': float(z),
+            'redshift': float(z) if z is not None else 0.0,
             'comoving_distance': float(d_C),
             'ra': float(ra),
             'dec': float(dec),
@@ -149,25 +239,29 @@ class ParameterSampler:
             'edge_case': is_edge_case,
             'edge_case_type': edge_case_type
         }
+
+    
+    def sample_bns_parameters(self, snr_regime: str = None, is_edge_case: bool = False) -> Dict:
+        """Generate BNS parameters."""
         
-    def sample_bns_parameters(self, snr_regime: str, is_edge_case: bool = False) -> Dict:
-        """Generate BNS parameters with  mass correlation."""
+        self.stats['event_types']['BNS'] += 1
         
         if is_edge_case:
-            f_lower = np.random.uniform(25.0, 30.0)
+            f_lower = float(np.random.uniform(10.0, 15.0))
             edge_type = 'long_bns_inspiral'
+            self.stats['edge_cases']['long_bns_inspiral'] += 1
         else:
             f_lower = 35.0
             edge_type = None
         
-        #  FIX: Sample independently with different widths + jitter
+        # Sample independently with different widths + jitter
         m1_raw = np.clip(np.random.normal(1.40, 0.15), 1.0, 2.5)
-        m2_raw = np.clip(np.random.normal(1.40, 0.20), 1.0, 2.5)  # wider Ïƒ
+        m2_raw = np.clip(np.random.normal(1.40, 0.20), 1.0, 2.5)
         
         # Enforce ordering
         mass_1, mass_2 = (m1_raw, m2_raw) if m1_raw >= m2_raw else (m2_raw, m1_raw)
         
-        #  FIX: Tiny jitter to break determinism
+        # Tiny jitter to break determinism
         mass_1 += np.random.uniform(-0.01, 0.01)
         mass_2 += np.random.uniform(-0.01, 0.01)
         
@@ -178,21 +272,30 @@ class ParameterSampler:
         total_mass = mass_1 + mass_2
         chirp_mass = (mass_1 * mass_2)**(3/5) / total_mass**(1/5)
         
-        # Distance INDEPENDENT of mass (uniform in volume)
+        # ✅ FIX: Sample target_snr first and derive distance from it (allow conditioning by event type)
+        self._sampling_event_type = 'BNS'
+        try:
+            target_snr = self._sample_target_snr(snr_regime)
+        finally:
+            self._sampling_event_type = None
+
+        # Compute expected distance from target_snr using chirp-mass scaling
+        luminosity_distance = (self.reference_distance *
+                       (chirp_mass / self.reference_mass)**(5/6) *
+                       (self.reference_snr / target_snr))
+
+        # Add small jitter and clamp
+        jitter_factor = np.random.uniform(0.85, 1.15)
+        luminosity_distance *= jitter_factor
         d_min, d_max = 10.0, 300.0
-        u_d = np.random.random()
-        luminosity_distance = float((d_min**3 + u_d * (d_max**3 - d_min**3))**(1/3))
-        
-        # Target SNR
-        snr_min, snr_max = self.snr_ranges[snr_regime]
-        target_snr = np.random.uniform(snr_min, snr_max)
+        luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
         
         # Tidal parameters
-        lambda_1 = np.clip(np.random.lognormal(np.log(400), 0.7) * (1.4/mass_1)**5, 50, 5000)
-        lambda_2 = np.clip(np.random.lognormal(np.log(400), 0.7) * (1.4/mass_2)**5, 50, 5000)
+        lambda_1 = float(np.clip(np.random.lognormal(np.log(400), 0.7) * (1.4/mass_1)**5, 50, 5000))
+        lambda_2 = float(np.clip(np.random.lognormal(np.log(400), 0.7) * (1.4/mass_2)**5, 50, 5000))
         
         # Low spins
-        a1, a2 = np.random.uniform(0.0, 0.05, 2)
+        a1, a2 = float(np.random.uniform(0.0, 0.05)), float(np.random.uniform(0.0, 0.05))
         tilt1, tilt2 = 0.0, 0.0
         
         # Isotropic inclination
@@ -200,10 +303,10 @@ class ParameterSampler:
         theta_jn = float(np.arccos(cos_theta_jn))
         
         # Sky location
-        ra = np.random.uniform(0, 2*np.pi)
-        dec = np.arcsin(np.random.uniform(-1, 1))
-        psi = np.random.uniform(0, np.pi)
-        phase = np.random.uniform(0, 2*np.pi)
+        ra = float(np.random.uniform(0, 2*np.pi))
+        dec = float(np.arcsin(np.random.uniform(-1, 1)))
+        psi = float(np.random.uniform(0, np.pi))
+        phase = float(np.random.uniform(0, 2*np.pi))
         
         # Cosmology
         z = calculate_redshift(luminosity_distance)
@@ -217,7 +320,7 @@ class ParameterSampler:
             'mass_ratio': float(mass_2/mass_1),
             'symmetric_mass_ratio': float((mass_1 * mass_2) / (total_mass ** 2)),
             'luminosity_distance': float(luminosity_distance),
-            'redshift': float(z),
+            'redshift': float(z) if z is not None else 0.0,
             'comoving_distance': float(d_C),
             'target_snr': float(target_snr),
             'a1': float(a1),
@@ -225,11 +328,12 @@ class ParameterSampler:
             'tilt1': float(tilt1),
             'tilt2': float(tilt2),
             'effective_spin': compute_effective_spin(mass_1, mass_2, a1, a2, tilt1, tilt2),
-            'ra': float(ra), 'dec': float(dec),
+            'ra': float(ra), 
+            'dec': float(dec),
             'theta_jn': float(theta_jn),
             'psi': float(psi),
             'phase': float(phase),
-            'f_lower': f_lower,
+            'f_lower': float(f_lower),
             'f_ref': 50.0,
             'approximant': 'IMRPhenomD_NRTidal',
             'lambda_1': float(lambda_1),
@@ -241,164 +345,376 @@ class ParameterSampler:
             'type': 'BNS',
             'geocent_time': float(np.random.uniform(-0.1, 0.1))
         }
-
-    def sample_nsbh_parameters(self, snr_regime: str, is_edge_case: bool = False) -> Dict:
-        """Generate complete NSBH parameters with mass-aware approximant selection"""
+    
+    def sample_nsbh_parameters(self, snr_regime: str = None, is_edge_case: bool = False) -> Dict:
+        """Generate complete NSBH parameters."""
+        
+        self.stats['event_types']['NSBH'] += 1
         
         # Neutron star mass
-        ns_mass = np.random.uniform(1.2, 2.0)
+        ns_mass = float(np.random.uniform(1.2, 2.0))
         
         # Black hole mass with diversity
         if is_edge_case:
             edge_type = 'extreme_mass'
             self.stats['edge_cases']['extreme_mass'] += 1
-            bh_mass = np.random.uniform(50.0, 100.0)
+            bh_mass = float(np.random.uniform(50.0, 100.0))
+            bh_mass_type = 'extreme'
         else:
             edge_type = None
             bh_mass_type = np.random.choice(['light', 'medium', 'heavy'])
             
             if bh_mass_type == 'light':
-                bh_mass = np.random.uniform(3.0, 8.0)
+                bh_mass = float(np.random.uniform(3.0, 8.0))
             elif bh_mass_type == 'medium':
-                bh_mass = np.random.uniform(8.0, 25.0)
+                bh_mass = float(np.random.uniform(8.0, 25.0))
             else:  # heavy
-                bh_mass = np.random.uniform(25.0, 50.0)
+                bh_mass = float(np.random.uniform(25.0, 50.0))
         
         mass_1, mass_2 = bh_mass, ns_mass
         total_mass = mass_1 + mass_2
         
-        
-        # ========================================================================
-        # CRITICAL: Mass-aware approximant selection
-        # ========================================================================
+        # Mass-aware approximant selection
         if total_mass <= 6.0:
-            # Low-mass NSBH: tidal effects matter
-            approximant =  'IMRPhenomPv2_NRTidal'
+            approximant = 'IMRPhenomPv2_NRTidal'
             approximant_type = 'tidal'
         else:
-            # High-mass NSBH: tidal effects negligible
             approximant = 'IMRPhenomPv2'
             approximant_type = 'non_precessing'
         
-        # Distance and SNR
-        snr_min, snr_max = self.snr_ranges[snr_regime]
-        target_snr = np.random.uniform(snr_min, snr_max)
-        
+        # ✅ FIX: Sample target_snr first and derive distance from chirp mass (allow conditioning by event type)
+        self._sampling_event_type = 'NSBH'
+        try:
+            target_snr = self._sample_target_snr(snr_regime)
+        finally:
+            self._sampling_event_type = None
+
         chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
 
-        # Sample distance independently - uniform in comoving volume
-        d_min, d_max = 20.0, 800.0  # Mpc (realistic NSBH horizon)
-        u_d = np.random.random()
-        luminosity_distance = float((d_min**3 + u_d * (d_max**3 - d_min**3))**(1/3))
-
-        # Target SNR is guide only
-        target_snr = np.random.uniform(snr_min, snr_max)
-                
+        # Compute distance consistent with target_snr
+        luminosity_distance = (self.reference_distance *
+                       (chirp_mass / self.reference_mass)**(5/6) *
+                       (self.reference_snr / target_snr))
+        # Clamp and jitter
+        jitter_factor = np.random.uniform(0.85, 1.15)
+        luminosity_distance *= jitter_factor
+        d_min, d_max = 20.0, 800.0
+        luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
+        
         # Black hole spin
         if approximant_type == 'tidal' or np.random.random() < 0.6:
-            a1 = np.random.uniform(0.0, 0.99)
+            a1 = float(np.random.uniform(0.0, 0.99))
         else:
             a1 = 0.0
         
         # NS spin is small
-        a2 = np.random.uniform(0.0, 0.05)
+        a2 = float(np.random.uniform(0.0, 0.05))
         
         # Spin orientations
         if 'Pv2' in approximant:
-            tilt1 = np.random.uniform(0, np.pi/3)
-            phi12 = np.random.uniform(0, 2*np.pi)
-            phi_jl = np.random.uniform(0, 2*np.pi)
+            tilt1 = float(np.random.uniform(0, np.pi/3))
+            phi12 = float(np.random.uniform(0, 2*np.pi))
+            phi_jl = float(np.random.uniform(0, 2*np.pi))
         else:
             tilt1 = 0.0
             phi12 = phi_jl = 0.0
         
         tilt2 = 0.0
         
-        if total_mass > 30 and luminosity_distance < 100:
-            self.logger.debug(f"High-mass NSBH at low distance: M={total_mass:.1f}, D={luminosity_distance:.1f}")
-            
-            
         # Sky location
-        ra = np.random.uniform(0, 2*np.pi)
-        dec = np.arcsin(np.random.uniform(-1, 1))
+        ra = float(np.random.uniform(0, 2*np.pi))
+        dec = float(np.arcsin(np.random.uniform(-1, 1)))
         cos_theta_jn = np.random.uniform(-1, 1)
         theta_jn = float(np.arccos(cos_theta_jn))
-        psi = np.random.uniform(0, np.pi)
-        phase = np.random.uniform(0, 2*np.pi)
+        psi = float(np.random.uniform(0, np.pi))
+        phase = float(np.random.uniform(0, 2*np.pi))
         geocent_time = 0.0
         
-        # Tidal parameters (only for low-mass systems)
-        lambda_1 = 0
+        # Tidal parameters
+        lambda_1 = 0.0
         if approximant_type == 'tidal':
             eos_type = np.random.choice(['soft', 'medium', 'stiff'])
             if eos_type == 'soft':
-                lambda_2 = np.random.lognormal(np.log(800), 0.5) * (1.4 / ns_mass)**5
+                lambda_2 = float(np.random.lognormal(np.log(800), 0.5) * (1.4 / ns_mass)**5)
             elif eos_type == 'medium':
-                lambda_2 = np.random.lognormal(np.log(400), 0.7) * (1.4 / ns_mass)**5
+                lambda_2 = float(np.random.lognormal(np.log(400), 0.7) * (1.4 / ns_mass)**5)
             else:
-                lambda_2 = np.random.lognormal(np.log(200), 0.8) * (1.4 / ns_mass)**5
-            lambda_2 = np.clip(lambda_2, 0, 3000)
+                lambda_2 = float(np.random.lognormal(np.log(200), 0.8) * (1.4 / ns_mass)**5)
+            lambda_2 = float(np.clip(lambda_2, 0, 3000))
         else:
             eos_type = 'N/A'
-            lambda_2 = 0
-            
-        d_L = luminosity_distance  # The luminosity_distance variable already computed
+            lambda_2 = 0.0
+        
+        d_L = luminosity_distance
         z = calculate_redshift(d_L)
-        d_C = calculate_comoving_distance(z) if z is not None else d_L / (1.0 + z)
+        d_C = calculate_comoving_distance(z) if z is not None else d_L
         
         return {
-            'mass_1': mass_1,
-            'mass_2': mass_2,
-            'total_mass': total_mass,
-            'chirp_mass': chirp_mass,
-            'mass_ratio': mass_2 / mass_1,
-            'symmetric_mass_ratio': (mass_1 * mass_2) / total_mass**2,
+            'mass_1': float(mass_1),
+            'mass_2': float(mass_2),
+            'total_mass': float(total_mass),
+            'chirp_mass': float(chirp_mass),
+            'mass_ratio': float(mass_2 / mass_1),
+            'symmetric_mass_ratio': float((mass_1 * mass_2) / total_mass**2),
             'luminosity_distance': float(d_L),
-            'redshift': float(z),              
-            'comoving_distance': float(d_C),  
-            'target_snr': target_snr,
-            'a1': a1, 'a2': a2,
-            'tilt1': tilt1, 'tilt2': tilt2,
-            'phi12': phi12, 'phi_jl': phi_jl,
+            'redshift': float(z) if z is not None else 0.0,
+            'comoving_distance': float(d_C),
+            'target_snr': float(target_snr),
+            'a1': float(a1), 
+            'a2': float(a2),
+            'tilt1': float(tilt1), 
+            'tilt2': float(tilt2),
+            'phi12': float(phi12), 
+            'phi_jl': float(phi_jl),
             'effective_spin': compute_effective_spin(mass_1, mass_2, a1, a2, tilt1, tilt2),
-            'ra': ra, 'dec': dec,
-            'theta_jn': theta_jn, 'psi': psi, 'phase': phase,
-            'geocent_time': geocent_time,
+            'ra': float(ra), 
+            'dec': float(dec),
+            'theta_jn': float(theta_jn), 
+            'psi': float(psi), 
+            'phase': float(phase),
+            'geocent_time': float(geocent_time),
             'f_lower': 20.0,
             'f_ref': 50.0,
             'approximant': approximant,
             'approximant_type': approximant_type,
             'eccentricity': 0.0,
-            'lambda_1': lambda_1,
-            'lambda_2': lambda_2,
+            'lambda_1': float(lambda_1),
+            'lambda_2': float(lambda_2),
             'eos_type': eos_type,
-            'bh_mass_type': bh_mass_type if not is_edge_case else 'extreme',
+            'bh_mass_type': bh_mass_type,
             'edge_case': is_edge_case,
-            'edge_case_type': edge_type
+            'edge_case_type': edge_type,
+            'type': 'NSBH'
         }
 
+    def recompute_target_snr_from_params(self, params: Dict) -> float:
+        """
+        Recompute and overwrite the 'target_snr' field in a params dict using the
+        sampler's reference calibration.
 
-    def sample_pure_noise(self, detector_network: List[str]) -> Dict[str, np.ndarray]:
+        Formula: target_snr = reference_snr * (M_chirp / reference_mass)^(5/6) * (reference_distance / D)
+
+        This method is intended to be called when callers override 'luminosity_distance'
+        or mass parameters after sampling, to keep the explicit 'target_snr' consistent
+        with the parameter set.
+
+        Returns the recomputed target_snr (float).
         """
-        Generate a pure-noise sample per detector using the configured PSDs.
-        Returns a dict {detector_name: noise_time_series}
+        try:
+            m1 = float(params.get('mass_1'))
+            m2 = float(params.get('mass_2'))
+            d = float(params.get('luminosity_distance'))
+        except Exception:
+            # Missing or invalid inputs; leave target_snr unchanged if present
+            return float(params.get('target_snr', self.reference_snr))
+
+        if d <= 0:
+            return float(params.get('target_snr', self.reference_snr))
+
+        M_total = m1 + m2
+        M_chirp = (m1 * m2)**(3/5) / M_total**(1/5)
+
+        target = self.reference_snr * (M_chirp / self.reference_mass)**(5/6) * (self.reference_distance / d)
+
+        # Clip to reasonable physical range
+        target = float(np.clip(target, 5.0, 100.0))
+
+        params['target_snr'] = target
+        return target
+
+    def calibrate_snr_by_event_type(self, n_samples: int = 2000, random_seed: int = None) -> Dict:
+        """Empirically estimate P(snr_regime | event_type) by forward-sampling masses and distances.
+
+        This draws masses according to the per-type priors used in the sampler, draws distances
+        from the configured distance ranges (volume weighting), computes the approximate SNR
+        using the sampler's reference calibration, and records the fraction of samples falling
+        into each SNR regime from `SNR_RANGES`.
+
+        Returns the conditional distribution mapping {event_type: {regime: fraction}} and stores
+        it in `self.conditional_snr` for later sampling.
         """
-        noise = {}
-        for det_name in detector_network:
-            # Reuse your realistic noise generator if available
+        if random_seed is not None:
+            np.random.seed(random_seed)
+
+        conditional = {}
+        for et in ['BBH', 'BNS', 'NSBH']:
+            counts = {r: 0 for r in self.snr_ranges.keys()}
+            for i in range(n_samples):
+                # Sample masses according to lightweight priors used in sampling
+                if et == 'BBH':
+                    m1 = np.clip(np.random.lognormal(mean=np.log(25.0), sigma=0.35), 5.0, 100.0)
+                    m2 = np.clip(np.random.lognormal(mean=np.log(20.0), sigma=0.40), 5.0, 100.0)
+                    if m2 > m1:
+                        m1, m2 = m2, m1
+                    # enforce min q
+                    q_min = 0.1
+                    if m2 < q_min * m1:
+                        m2 = q_min * m1
+                    dmin, dmax = self.distance_ranges['BBH']
+                elif et == 'BNS':
+                    m1 = np.clip(np.random.normal(1.40, 0.15), 1.0, 2.5)
+                    m2 = np.clip(np.random.normal(1.40, 0.20), 1.0, 2.5)
+                    if m2 > m1:
+                        m1, m2 = m2, m1
+                    dmin, dmax = self.distance_ranges['BNS']
+                else:  # NSBH
+                    ns_mass = float(np.random.uniform(1.2, 2.0))
+                    bh_mass = float(np.random.uniform(3.0, 50.0))
+                    m1, m2 = bh_mass, ns_mass
+                    dmin, dmax = self.distance_ranges['NSBH']
+
+                # Volume-weighted distance draw
+                u = np.random.random()
+                d = (dmin**3 + u * (dmax**3 - dmin**3))**(1/3)
+
+                # Compute chirp mass and SNR
+                M_total = m1 + m2
+                M_chirp = (m1 * m2)**(3/5) / M_total**(1/5)
+                snr = self.reference_snr * (M_chirp / self.reference_mass)**(5/6) * (self.reference_distance / d)
+
+                # categorize with clamping: below min -> 'weak', above max -> 'loud'
+                mins = [rng[0] for rng in self.snr_ranges.values()]
+                maxs = [rng[1] for rng in self.snr_ranges.values()]
+                overall_min = min(mins)
+                overall_max = max(maxs)
+                if snr < overall_min:
+                    counts['weak'] += 1
+                elif snr >= overall_max:
+                    counts['loud'] += 1
+                else:
+                    for regime, (mn, mx) in self.snr_ranges.items():
+                        if mn <= snr < mx:
+                            counts[regime] += 1
+                            break
+
+            total = float(n_samples)
+            if total > 0:
+                conditional[et] = {r: counts[r] / total for r in counts}
+            else:
+                conditional[et] = {r: 1.0/len(self.snr_ranges) for r in self.snr_ranges}
+
+        # Store calibration
+        self.conditional_snr = conditional
+        return conditional
+
+    def empirical_calibrate(self, n_samples: int = 2000, random_seed: int = None) -> Dict:
+        """Empirically estimate P(snr_regime | event_type) by using the sampler's
+        own sampling routines. This avoids model/ordering mismatches between a
+        separate forward model and the actual sampler logic.
+
+        This method temporarily clears any existing `self.conditional_snr` to
+        avoid recursive conditioning during the calibration run, and restores
+        sampler stats after completion.
+        """
+        if random_seed is not None:
+            np.random.seed(random_seed)
+
+        # Save and restore stats to avoid polluting sampler state
+        saved_stats = None
+        try:
+            saved_stats = dict(self.stats)
+        except Exception:
+            saved_stats = None
+
+        # Temporarily remove any existing conditional map
+        prev_cond = getattr(self, 'conditional_snr', None)
+        if hasattr(self, 'conditional_snr'):
             try:
-                ts = generate_realistic_noise(det_name)
+                delattr(self, 'conditional_snr')
             except Exception:
-                # Fallback: white gaussian noise tapered to avoid edges
-                ts = np.random.normal(0.0, 1.0, self.n_samples).astype(np.float64)
-                # light taper at ends
-                taper_len = max(16, int(0.01 * self.n_samples))
-                window = np.ones(self.n_samples, dtype=np.float64)
-                ramp = np.hanning(2 * taper_len)
-                window[:taper_len] = ramp[:taper_len]
-                window[-taper_len:] = ramp[-taper_len:]
-                ts *= window
-            noise[det_name] = ts
-        return noise
+                self.conditional_snr = None
 
+        regimes = list(self.snr_ranges.keys())
+        conditional = {}
 
+        for et in ['BBH', 'BNS', 'NSBH']:
+            counts = {r: 0 for r in regimes}
+            for i in range(n_samples):
+                try:
+                    if et == 'BBH':
+                        params = self.sample_bbh_parameters(None, False)
+                    elif et == 'BNS':
+                        params = self.sample_bns_parameters(None, False)
+                    else:
+                        params = self.sample_nsbh_parameters(None, False)
+
+                    snr = float(params.get('target_snr', float('nan')))
+                except Exception:
+                    snr = float('nan')
+
+                # Categorize
+                categorized = False
+                for r, (mn, mx) in self.snr_ranges.items():
+                    try:
+                        if mn <= snr < mx:
+                            counts[r] += 1
+                            categorized = True
+                            break
+                    except Exception:
+                        continue
+
+                if not categorized:
+                    # Out-of-range values map to weak/loud
+                    mins = [rng[0] for rng in self.snr_ranges.values()]
+                    maxs = [rng[1] for rng in self.snr_ranges.values()]
+                    overall_min = min(mins)
+                    overall_max = max(maxs)
+                    if np.isnan(snr) or snr < overall_min:
+                        counts['weak'] += 1
+                    elif snr >= overall_max:
+                        counts['loud'] += 1
+
+            total = float(n_samples)
+            conditional[et] = {r: counts[r] / total for r in counts}
+
+        # Store calibration
+        self.conditional_snr = conditional
+
+        # Restore saved stats to avoid observer effects
+        if saved_stats is not None:
+            try:
+                self.stats = saved_stats
+            except Exception:
+                pass
+
+        # Restore previous conditional if caller expects no persistent change
+        # (we intentionally keep the new empirical map by default)
+        return conditional
+
+    def event_type_given_snr(self, snr_regime: str):
+        """Return a sampled event type conditioned on an SNR regime.
+
+        Uses the empirical conditional map `self.conditional_snr` when available
+        and the configured `self.event_type_distribution` as priors. Falls back
+        to the prior distribution if no calibration is present.
+        """
+        types = list(self.event_type_distribution.keys())
+
+        # If we have an empirical conditional P(snr|type), invert with Bayes:
+        # P(type|snr) ∝ P(snr|type) * P(type)
+        if hasattr(self, 'conditional_snr') and self.conditional_snr:
+            weights = []
+            for t in types:
+                p_reg_given_t = float(self.conditional_snr.get(t, {}).get(snr_regime, 0.0))
+                p_t = float(self.event_type_distribution.get(t, 0.0))
+                weights.append(p_reg_given_t * p_t)
+            s = sum(weights)
+            if s <= 0:
+                probs = [self.event_type_distribution.get(t, 0.0) for t in types]
+                s2 = sum(probs)
+                if s2 <= 0:
+                    probs = [1.0 / len(types)] * len(types)
+                else:
+                    probs = [p / s2 for p in probs]
+            else:
+                probs = [w / s for w in weights]
+            return np.random.choice(types, p=probs)
+
+        # Fallback to prior event-type distribution
+        probs = [self.event_type_distribution.get(t, 0.0) for t in types]
+        s = sum(probs)
+        if s <= 0:
+            probs = [1.0 / len(types)] * len(types)
+        else:
+            probs = [p / s for p in probs]
+        return np.random.choice(types, p=probs)

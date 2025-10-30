@@ -165,7 +165,7 @@ Original used fixed margin (0.1). Adaptive margins improve convergence by 20-30%
 
 ---
 
-### EnhancedPriorityLoss
+### PriorityLoss
 **Purpose**: Multi-objective loss combining regression, ranking, and uncertainty calibration.
 
 **Components**:

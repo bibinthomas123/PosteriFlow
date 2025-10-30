@@ -1,9 +1,8 @@
-# ==============================================================================
-# OPTIMIZED Neural PE Configuration for Breaking Through Loss 9.0
-# ==============================================================================
 
-experiment_name: "Optimized_Neural_PE_v2"
-random_seed: 42
+# ========================= Improved Neural PE Config =========================
+
+experiment_name: "AHSD"
+random_seed: 420
 device: "auto"
 
 # ==============================================================================
@@ -11,211 +10,187 @@ device: "auto"
 # ==============================================================================
 
 priority_net:
-  hidden_dims: [512, 256, 128, 64]
-  dropout: 0.2
-  learning_rate: 5e-4
-  weight_decay: 1e-5
+
+  # ARCHITECTURE 
+  hidden_dims: [640, 512, 384, 256]  # ✅ Increased from [512, 384, 256, 128]
+  dropout: 0.12
+  
+  # Model flags 
+  use_strain: true
+  use_edge_conditioning: true
+  n_edge_types: 17
+  
+  # OPTIMIZER
+  learning_rate: 1e-4
+  weight_decay: 1.5e-5
+  
+  # TRAINING
   batch_size: 32
-  epochs: 170
-  patience: 20
-  scheduler_patience: 15
+  epochs: 250
+  patience: 1
+  
+  # Warmup
+  warmup_epochs: 5
+  warmup_start_factor: 0.1
+  
+  # Scheduler
+  scheduler_patience: 5
+  scheduler_factor: 0.5
   min_lr: 1e-6
+  
+  # LOSS WEIGHTS 
+  ranking_weight: 0.6
+  mse_weight: 0.35
+  uncertainty_weight: 0.05
+  use_snr_weighting: true
 
-# ==============================================================================
-# PARAMETERS
-# ==============================================================================
+  gradient_clip_norm: 0.8
+  label_smoothing: 0.02
 
+
+
+# ========================= Parameters (9-d space) =========================
 param_names:
-  - mass_1
-  - mass_2
-  - luminosity_distance
-  - ra
-  - dec
-  - theta_jn
-  - psi
-  - phase
-  - geocent_time
+ - mass_1
+ - mass_2
+ - luminosity_distance
+ - ra
+ - dec
+ - theta_jn
+ - psi
+ - phase
+ - geocent_time
 
-# ==============================================================================
-# MODEL ARCHITECTURE - OPTIMIZED FOR LOSS 9.0 → 6.0
-# ==============================================================================
 
+# ========================= Model Architecture (Deep, expressive) =========================
 context_dim: 256
-n_flow_layers: 8              # ✅ Keep (good balance)
+n_flow_layers: 14 # Increased for complex posterior modeling
 max_iterations: 5
 
+
 flow_config:
-  hidden_features: 128        # ✅ Keep
-  num_blocks_per_layer: 2     # ✅ Keep
-  dropout: 0.05               # ✅ REDUCE from 0.15 (flows sensitive to dropout)
+ type: "realnvp" #realnvp or maf
+ hidden_features: 256 # Increased hidden features for flow networks
+ num_blocks_per_layer: 2
+ dropout: 0.02 # Minimal dropout for flow stability
 
-# ==============================================================================
-# TRAINING - BALANCED REGULARIZATION
-# ==============================================================================
 
-# Learning - INCREASE LR to break through plateau
-learning_rate: 0.0002         # ✅ INCREASE from 8e-5 to 2e-4
-batch_size: 16                # ✅ Keep (good for stability) was 16
-epochs: 200                   # ✅ Keep (early stopping will handle)
-patience: 15                  # ✅ Keep (reasonable)
+# ========================= Training: Regularization & Optimization =========================
+learning_rate: 0.0003 # Slightly higher LR
+batch_size: 64 # Maximize based on 32GB RAM (GPU VRAM dependent)
+epochs: 40 # Longer training for full convergence
+patience: 10
+weight_decay: 0.00001
+gradient_clip: 5.0
+dropout: 0.02
 
-# Regularization - REDUCE (too strong currently)
-weight_decay: 0.00001         # ✅ REDUCE from 5e-5 to 1e-5
-gradient_clip: 1.0            # ✅ Keep
-dropout: 0.15                 # ✅ REDUCE from 0.2 to 0.15 (context encoder only)
 
-# Optimizer
-optimizer: "AdamW"            # ✅ Keep
+optimizer: "AdamW"
 
-# Scheduler - LESS AGGRESSIVE
+
+# Reduce learning rate on plateau
 scheduler: "ReduceLROnPlateau"
-scheduler_patience: 10        # ✅ INCREASE from 5 to 10
-scheduler_factor: 0.7         # ✅ CHANGE from 0.5 to 0.7 (gentler reduction)
-min_lr: 0.000001              # ✅ Keep
+scheduler_patience: 8
+scheduler_factor: 0.6
+min_lr: 0.000001
 
-# Data augmentation - MODERATE (not too aggressive)
+
+# ========================= Data Augmentation =========================
+
+
 data_augmentation:
-  enabled: true
-  noise_scaling: [0.98, 1.02] # ✅ REDUCE from [0.95, 1.05] (less aggressive)
-  time_shifts: [-0.002, 0.002]# ✅ REDUCE from [-0.005, 0.005]
-  apply_probability: 0.2      # ✅ REDUCE from 0.3
+ enabled: true
+ noise_scaling: [0.98, 1.02]
+ time_shifts: [-0.002, 0.002]
+ apply_probability: 0.3
 
-# ==============================================================================
-# RL CONTROLLER (Keep as is)
-# ==============================================================================
 
-rl_controller:
-  enabled: true
-  
-  state_features:
-    - remaining_signals
-    - residual_power
-    - current_snr
-    - extraction_success_rate
-  
-  complexity_levels: ["low", "medium", "high"]
-  
-  learning_rate: 0.001
-  epsilon: 0.1
-  epsilon_decay: 0.995
-  memory_size: 10000
-  batch_size: 32
-  
-  complexity_configs:
-    low:
-      flow_layers: 4
-      inference_samples: 500
-    medium:
-      flow_layers: 8
-      inference_samples: 1000
-    high:
-      flow_layers: 12
-      inference_samples: 2000
+# ========================= Monitoring & Early Stopping =========================
 
-# ==============================================================================
-# BIAS CORRECTOR
-# ==============================================================================
-
-bias_corrector:
-  enabled: true
-  hidden_dims: [256, 128, 64]
-  context_dim: 16
-  dropout: 0.10               # ✅ REDUCE from 0.15
-  learning_rate: 0.0001
-  batch_size: 64
-  epochs: 15
-  patience: 8
-
-# ==============================================================================
-# ADAPTIVE SUBTRACTOR (Keep as is)
-# ==============================================================================
-
-adaptive_subtractor:
-  complexity_level: "medium"
-  waveform_approximant: "IMRPhenomPv2"
-  post_newtonian_order: "3.5PN"
-  spin_effects: true
-  tidal_effects: true
-  base_strength: 0.1
-  max_strength: 0.8
-  uncertainty_threshold: 0.3
-  match_threshold: 0.7
-
-# ==============================================================================
-# DATA
-# ==============================================================================
-
-data:
-  sample_rate: 4096
-  segment_duration: 4.0
-  f_low: 20.0
-  f_high: 1024.0
-  
-  signal_distribution:
-    BBH: 0.70
-    BNS: 0.20
-    NSBH: 0.10
-  
-  validation_split: 0.15      # ✅ Keep (good)
-  test_split: 0.05
-
-# ==============================================================================
-# MONITORING
-# ==============================================================================
-
-monitoring:
-  save_frequency: 5
-  log_frequency: 1
-  early_stopping: true
-  
-  metrics:
-    - nll_loss
-    - parameter_accuracy
-    - extraction_efficiency
-    - train_val_gap
-    - gradient_norm
-  
-  rl_monitoring:
-    track_complexity_changes: true
-    log_rl_rewards: true
-    complexity_distribution: true
-  
-  bias_monitoring:
-    track_correction_effectiveness: true
-    log_physics_violations: true
-
-# ==============================================================================
-# OUTPUT
-# ==============================================================================
 
 output:
-  save_best_only: true
-  save_intermediate: true
-  generate_plots: true
-  
-  rl_outputs:
-    save_rl_controller: true
-    complexity_history: true
-    reward_curves: true
-  
-  bias_outputs:
-    save_bias_corrector: true
-    correction_statistics: true
+ save_best_only: true
+ save_intermediate: true
+ generate_plots: true
 
-# ==============================================================================
-# VALIDATION
-# ==============================================================================
 
-validation:
-  accuracy_thresholds:
-    mass_1: 0.1
-    mass_2: 0.1
-    luminosity_distance: 0.3
-  
-  processing_time_limit: 10.0
-  memory_limit_mb: 2048
-  
-  # Overfitting detection - LESS STRICT
-  overfitting_detection:
-    max_train_val_gap: 1.5    # ✅ INCREASE from 0.5 to 1.5
-    gap_threshold_epochs: 5   # ✅ INCREASE from 3 to 5
+
+monitoring:
+ save_frequency: 5
+ log_frequency: 1
+ early_stopping: true
+ 
+ metrics:
+  - nll_loss
+  - parameter_accuracy
+  - extraction_efficiency
+  - train_val_gap
+  - gradient_norm
+ 
+ rl_monitoring:
+  track_complexity_changes: true
+  log_rl_rewards: true
+  complexity_distribution: true
+ 
+ bias_monitoring:
+  track_correction_effectiveness: true
+  log_physics_violations: true
+
+
+# ========================= RL ,Bias Correction and Adaptive subtractor =========================
+
+
+rl_controller:
+ enabled: true
+ state_features:
+  - remaining_signals
+  - residual_power
+  - current_snr
+  - extraction_success_rate
+ complexity_levels: ["low", "medium", "high"]
+ learning_rate: 0.001
+ epsilon: 0.1
+ epsilon_decay: 0.995
+ memory_size: 10000
+ batch_size: 32
+ complexity_configs:
+  low: {flow_layers: 4, inference_samples: 500}
+  medium: {flow_layers: 8, inference_samples: 1000}
+  high: {flow_layers: 14, inference_samples: 2000}
+
+
+bias_corrector:
+ enabled: true
+ hidden_dims: [256, 128, 64]
+ context_dim: 16
+ dropout: 0.10
+ learning_rate: 0.0001
+ batch_size: 64
+ epochs: 15
+ patience: 8
+
+
+adaptive_subtractor:
+ complexity_level: "medium"
+ waveform_approximant: "IMRPhenomPv2"
+ post_newtonian_order: "3.5PN"
+ spin_effects: true
+ tidal_effects: true
+ base_strength: 0.1
+ max_strength: 0.8
+ uncertainty_threshold: 0.3
+ match_threshold: 0.7
+
+
+# ========================= Dataset ------------------------------
+data:
+ sample_rate: 4096
+ segment_duration: 4.0
+ f_low: 20.0
+ f_high: 1024.0
+ validation_split: 0.15
+ test_split: 0.05
+ signal_distribution:
+  BBH: 0.70
+  BNS: 0.20
+  NSBH: 0.10

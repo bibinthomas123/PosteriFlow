@@ -1,6 +1,5 @@
 """
-overlap_neuralpe.py - Unified Best-in-Class Neural Parameter Estimation
-Combines OverlapNeuralPE + BestInClassNeuralPE
+Neural Parameter Estimation
 """
 
 import torch
@@ -15,13 +14,13 @@ from ahsd.core.priority_net import PriorityNet
 from ahsd.models.rl_controller import AdaptiveComplexityController
 from ahsd.core.bias_corrector import BiasCorrector
 from ahsd.core.adaptive_subtractor import AdaptiveSubtractor
-from ahsd.models.flows import ConditionalRealNVP
+from ahsd.models.flows import create_flow_model
 
 
 class OverlapNeuralPE(nn.Module):
     """
     Unified best-in-class Neural PE for overlapping gravitational wave signals.
-    
+
     Integrates:
     - PriorityNet: Signal importance ranking
     - RL Controller: Adaptive complexity
@@ -32,39 +31,39 @@ class OverlapNeuralPE(nn.Module):
     - Uncertainty Estimation: Calibrated uncertainties
     - Proper Posterior Sampling: Full Bayesian inference
     """
-    
-    
-    def __init__(self, param_names: List[str], priority_net_path: str, 
+
+
+    def __init__(self, param_names: List[str], priority_net_path: str,
                  config: Dict[str, Any], device: str = 'cuda'):
         super().__init__()
-        
+
         self.param_names = param_names
         self.param_dim = len(param_names)
         self.config = config
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
         self.logger = logging.getLogger(__name__)
-        
+
         # Model configuration
         self.context_dim = config.get('context_dim', 256)
         self.n_flow_layers = config.get('n_flow_layers', 8)
         self.max_iterations = config.get('max_iterations', 5)
-        
+
         # Dropout configuration
         self.dropout_rate = config.get('dropout', 0.1)
         flow_config = config.get('flow_config', {})
         self.flow_dropout = flow_config.get('dropout', 0.15)
         self.flow_hidden_features = flow_config.get('hidden_features', 128)
         self.flow_num_blocks = flow_config.get('num_blocks_per_layer', 2)
-        
+
         # Parameter bounds for normalization
         self.param_bounds = self._get_parameter_bounds()
-        
+
         # Physics-informed priors
         self.physics_priors = self._build_physics_priors()
-        
+
         # Initialize components
         self._init_components(priority_net_path)
-        
+
         # Uncertainty estimator network
         self.uncertainty_estimator = nn.Sequential(
             nn.Linear(self.param_dim + self.context_dim, 256),
@@ -76,7 +75,6 @@ class OverlapNeuralPE(nn.Module):
             nn.Linear(128, self.param_dim),
             nn.Softplus()  # Ensure positive uncertainties
         )
-        
         # Performance tracking
         self.performance_tracker = {
             'training_losses': deque(maxlen=1000),
@@ -85,16 +83,14 @@ class OverlapNeuralPE(nn.Module):
             'inference_times': deque(maxlen=1000),
             'rl_rewards': deque(maxlen=1000)
         }
-        
         self.training_step = 0
-        
         self.to(self.device)
         total_params = sum(p.numel() for p in self.parameters())
-        self.logger.info(f"✅ Unified OverlapNeuralPE initialized with {total_params:,} parameters")
+        
+        self.logger.info(f"âœ… Unified OverlapNeuralPE initialized with {total_params:,} parameters")
         self.logger.info(f"   Context dim: {self.context_dim}")
         self.logger.info(f"   Flow layers: {self.n_flow_layers}")
         self.logger.info(f"   Dropout: {self.dropout_rate}, Flow dropout: {self.flow_dropout}")
-    
     def _get_parameter_bounds(self) -> Dict[str, Tuple[float, float]]:
         """Get parameter bounds for normalization."""
         bounds = {
@@ -109,11 +105,11 @@ class OverlapNeuralPE(nn.Module):
             'phase': (0.0, 2*np.pi)
         }
         return {param: bounds.get(param, (0.0, 1.0)) for param in self.param_names}
-    
+
     def _build_physics_priors(self) -> Dict[str, torch.distributions.Distribution]:
         """Build physics-informed priors."""
         priors = {}
-        
+
         for param in self.param_names:
             if 'mass' in param:
                 # Power-law priors for masses (Salpeter IMF)
@@ -130,32 +126,32 @@ class OverlapNeuralPE(nn.Module):
             else:
                 # Default uniform prior
                 priors[param] = torch.distributions.Uniform(0.0, 1.0)
-        
+
         return priors
-    
+
     def _normalize_parameters(self, params: torch.Tensor) -> torch.Tensor:
         """Normalize parameters to [-1, 1]."""
         normalized = torch.zeros_like(params)
-        
+
         for i, param_name in enumerate(self.param_names):
             min_val, max_val = self.param_bounds[param_name]
             normalized[..., i] = 2 * (params[..., i] - min_val) / (max_val - min_val) - 1
-            
+
         return torch.clamp(normalized, -1, 1)
-    
+
     def _denormalize_parameters(self, normalized_params: torch.Tensor) -> torch.Tensor:
         """Denormalize parameters from [-1, 1] to physical units."""
         params = torch.zeros_like(normalized_params)
-        
+
         for i, param_name in enumerate(self.param_names):
             min_val, max_val = self.param_bounds[param_name]
             params[..., i] = (normalized_params[..., i] + 1) / 2 * (max_val - min_val) + min_val
-            
+
         return params
-    
+
     def _init_components(self, priority_net_path: str):
         """Initialize all pipeline components."""
-        
+
         # 1. PriorityNet (pre-trained, frozen)
         self.priority_net = PriorityNet(use_strain=True)
         checkpoint = torch.load(priority_net_path, map_location=self.device)
@@ -163,33 +159,34 @@ class OverlapNeuralPE(nn.Module):
         self.priority_net.eval()
         for param in self.priority_net.parameters():
             param.requires_grad = False
-        self.logger.info(f"✅ Loaded PriorityNet from {priority_net_path}")
-        
+        self.logger.info(f"âœ… Loaded PriorityNet from {priority_net_path}")
+
         # 2. Context Encoder
         self.context_encoder = ContextEncoder(
             n_detectors=2,
             hidden_dim=self.context_dim,
             dropout=self.dropout_rate
         )
-        
+
         # 3. Normalizing Flow
-        self.flow = ConditionalRealNVP(
+        self.flow = create_flow_model(
+            flow_type=flow_config.get('type', 'realnvp'),  # 'realnvp' or 'maf'
             features=self.param_dim,
             context_features=self.context_dim,
-            hidden_features=self.flow_hidden_features,
-            max_layers=self.n_flow_layers,
-            num_blocks_per_layer=self.flow_num_blocks,
-            dropout=self.flow_dropout
+            hidden_features=flow_config.get('hidden_features', 128),
+            num_layers=flow_config.get('num_layers', 8),  # Factory handles mapping
+            num_blocks_per_layer=flow_config.get('num_blocks_per_layer', 2),
+            dropout=flow_config.get('dropout', 0.1)
         )
-        
-        self.logger.info(f"✅ Flow model initialized: {self.n_flow_layers} layers")
-        
+
+        self.logger.info(f"âœ… Flow model initialized: {self.n_flow_layers} layers")
+
         # 4. RL Controller
         rl_config = self.config.get('rl_controller', {})
-        
+
         self.rl_controller = AdaptiveComplexityController(
             state_features=rl_config.get('state_features', [
-                'remaining_signals', 'residual_power', 
+                'remaining_signals', 'residual_power',
                 'current_snr', 'extraction_success_rate'
             ]),
             complexity_levels=rl_config.get('complexity_levels', ['low', 'medium', 'high']),
@@ -199,35 +196,35 @@ class OverlapNeuralPE(nn.Module):
             memory_size=rl_config.get('memory_size', 10000),
             batch_size=rl_config.get('batch_size', 32)
         )
-        
+
         self.complexity_configs = rl_config.get('complexity_configs', {
             'low': {'flow_layers': 4, 'inference_samples': 500},
             'medium': {'flow_layers': 8, 'inference_samples': 1000},
             'high': {'flow_layers': 12, 'inference_samples': 2000}
         })
-        
+
         # 5. Bias Corrector
         bias_cfg = self.config.get('bias_corrector', {})
         if bias_cfg.get('enabled', True):
             self.bias_corrector = BiasCorrector(param_names=self.param_names)
-            self.logger.info("✅ BiasCorrector initialized")
+            self.logger.info("BiasCorrector initialized")
         else:
             self.bias_corrector = None
-            self.logger.info("⚠️  BiasCorrector disabled")
-        
+            self.logger.info("BiasCorrector disabled")
+
         # 6. Adaptive Subtractor
         self.adaptive_subtractor = AdaptiveSubtractor()
-        self.logger.info("✅ AdaptiveSubtractor initialized")
-    
-    def sample_posterior(self, strain_data: torch.Tensor, 
+        self.logger.info("âœ… AdaptiveSubtractor initialized")
+
+    def sample_posterior(self, strain_data: torch.Tensor,
                         n_samples: int = 1000) -> Dict[str, torch.Tensor]:
         """
         Sample from learned posterior distribution.
-        
+
         Args:
             strain_data: [batch, n_det, n_samples] whitened strain data
             n_samples: Number of posterior samples to draw
-            
+
         Returns:
             dict containing:
                 'samples': [batch, n_samples, param_dim] posterior samples
@@ -237,43 +234,38 @@ class OverlapNeuralPE(nn.Module):
         """
         self.eval()
         batch_size = strain_data.size(0)
-        
+
         with torch.no_grad():
             # Extract context from strain
             context = self.context_encoder(strain_data)
-            
+            context = (context - context.mean(dim=0, keepdim=True)) / (context.std(dim=0, keepdim=True) + 1e-6)
+
             # Sample from base distribution (standard normal)
             z = torch.randn(batch_size, n_samples, self.param_dim, device=self.device)
-            
+
             # Transform through flow (inverse direction for sampling)
             samples_list = []
             for i in range(batch_size):
                 context_i = context[i:i+1].expand(n_samples, -1)
                 z_i = z[i]
-                
-                # Inverse flow transformation
-                samples_norm_i, _ = self.flow.inverse(z_i, context_i)
-                
-                # Apply bias correction
-                if self.bias_corrector is not None:
-                    corrections, _, _ = self.bias_corrector(samples_norm_i, context_i)
-                    samples_norm_i = samples_norm_i + corrections
-                
-                # Denormalize to physical units
-                samples_physical = self._denormalize_parameters(samples_norm_i)
+
+                # Inverse flow transformation (now outputs physical units directly)
+                samples_physical, _ = self.flow.inverse(z_i, context_i)
+
+                # No denormalization needed - flow trained on physical units
                 samples_list.append(samples_physical)
-            
+
             samples = torch.stack(samples_list, dim=0)  # [batch, n_samples, param_dim]
-            
+
             # Compute summary statistics
             means = samples.mean(dim=1)
             stds = samples.std(dim=1)
-            
+
             # Estimate uncertainties
             uncertainties = self.uncertainty_estimator(
                 torch.cat([self._normalize_parameters(means), context], dim=1)
             )
-            
+
             return {
                 'samples': samples,
                 'means': means,
@@ -281,25 +273,25 @@ class OverlapNeuralPE(nn.Module):
                 'uncertainties': uncertainties,
                 'context': context
             }
-    
-    def extract_single_signal(self, strain_data: torch.Tensor, 
+
+    def extract_single_signal(self, strain_data: torch.Tensor,
                              complexity: str = 'medium') -> Dict[str, Any]:
         """
         Extract parameters for a single signal.
-        
+
         Args:
             strain_data: [batch, n_det, n_samples] strain data
             complexity: Complexity level ('low', 'medium', 'high')
-            
+
         Returns:
             dict with parameter estimates and uncertainties
         """
         # Use posterior sampling for extraction
         complexity_settings = self.complexity_configs.get(complexity, {})
         n_samples = complexity_settings.get('inference_samples', 1000)
-        
+
         result = self.sample_posterior(strain_data, n_samples=n_samples)
-        
+
         return {
             'means': result['means'],
             'stds': result['stds'],
@@ -307,48 +299,48 @@ class OverlapNeuralPE(nn.Module):
             'uncertainties': result['uncertainties'],
             'context': result['context']
         }
-    
+
     def extract_overlapping_signals(self, strain_data: torch.Tensor,
                                    true_params: Optional[List[Dict]] = None,
                                    training: bool = False) -> Dict[str, Any]:
         """
         Extract all overlapping signals iteratively.
-        
+
         Args:
             strain_data: [batch, n_det, n_samples] strain data
             true_params: Optional ground truth parameters for training
             training: Whether in training mode (for RL)
-            
+
         Returns:
             dict with all extracted signals and final residual
         """
         batch_size = strain_data.size(0)
-        
+
         all_extracted = []
         residual_data = strain_data.clone()
-        
+
         pipeline_state = {
             'remaining_signals': self.max_iterations,
             'residual_power': 1.0,
             'current_snr': 0.0,
             'extraction_success_rate': 1.0
         }
-        
+
         for iteration in range(self.max_iterations):
             # Get priorities from PriorityNet
             with torch.no_grad():
                 detections = self._residual_to_detections(residual_data)
                 priorities, _ = self.priority_net(detections)
-            
+
             # Select complexity level via RL
             complexity = self.rl_controller.get_complexity_level(
                 pipeline_state,
                 training=training
             )
-            
+
             # Extract signal
             extraction_result = self.extract_single_signal(residual_data, complexity)
-            
+
             all_extracted.append({
                 'params': extraction_result['means'],
                 'uncertainties': extraction_result['stds'],
@@ -356,62 +348,62 @@ class OverlapNeuralPE(nn.Module):
                 'iteration': iteration,
                 'complexity': complexity
             })
-            
+
             # Subtract extracted signal
             estimated_params_dict = self._tensor_to_param_dict(extraction_result['means'])
             subtraction_result = self.adaptive_subtractor.subtract(
                 residual_data.cpu().numpy(),
                 estimated_params_dict
             )
-            
+
             residual_data = torch.tensor(
                 subtraction_result['residual'],
                 dtype=torch.float32,
                 device=self.device
             )
-            
+
             # Update pipeline state
             pipeline_state['remaining_signals'] -= 1
             pipeline_state['residual_power'] = float(torch.mean(residual_data ** 2))
-            
+
             # Early stopping if residual too low
-            if pipeline_state['residual_power'] < 0.01:
+            if pipeline_state['residual_power'] < 0.001:
                 self.logger.info(f"Stopping at iteration {iteration+1}: low residual power")
                 break
-            
+
             # RL training if enabled
             if training and true_params is not None:
                 reward = self._compute_extraction_reward(
                     extraction_result['means'],
                     true_params[iteration] if iteration < len(true_params) else None
                 )
-                
+
                 state_vector = self.rl_controller.get_state_vector(pipeline_state)
                 action = self.rl_controller.complexity_levels.index(complexity)
                 next_state_vector = self.rl_controller.get_state_vector(pipeline_state)
                 done = (iteration == self.max_iterations - 1)
-                
+
                 self.rl_controller.store_experience(
                     state_vector, action, reward, next_state_vector, done
                 )
-                
+
                 if len(self.rl_controller.memory) >= self.rl_controller.batch_size:
                     self.rl_controller.train_step()
-        
+
         return {
             'extracted_signals': all_extracted,
             'final_residual': residual_data,
             'n_iterations': iteration + 1
         }
-    
+
     def _residual_to_detections(self, residual: torch.Tensor) -> List[Dict]:
         """Convert residual strain to detection format for PriorityNet."""
         batch_size = residual.size(0)
         detections = []
-        
+
         for i in range(batch_size):
             snr_proxy = float(torch.sqrt(torch.mean(residual[i] ** 2)))
-            
+
             detection = {
                 'network_snr': snr_proxy * 10.0,
                 'match_filter_snr': snr_proxy * 10.0,
@@ -419,138 +411,143 @@ class OverlapNeuralPE(nn.Module):
                 'null_snr': 0.1
             }
             detections.append(detection)
-        
+
         return detections
-    
+
     def _tensor_to_param_dict(self, params_tensor: torch.Tensor) -> Dict[str, float]:
         """Convert parameter tensor to dictionary."""
         params_np = params_tensor.detach().cpu().numpy()
-        
+
         if len(params_np.shape) > 1:
             params_np = params_np[0]
-        
+
         return {name: float(params_np[i]) for i, name in enumerate(self.param_names)}
-    
+
     def _compute_extraction_reward(self, estimated_params: torch.Tensor,
                                    true_params: Optional[Dict]) -> float:
         """Compute reward for RL training."""
         if true_params is None:
             return 0.0
-        
+
         true_tensor = torch.tensor(
             [true_params.get(name, 0.0) for name in self.param_names],
             dtype=torch.float32,
             device=self.device
         )
-        
+
         rel_error = torch.abs((estimated_params[0] - true_tensor) / (true_tensor + 1e-6))
         accuracy = 1.0 - torch.mean(rel_error).item()
-        
+
         return max(0.0, accuracy)
-    
-    def compute_loss(self, strain_data: torch.Tensor, 
+
+    def compute_loss(self, strain_data: torch.Tensor,
                     true_params: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
         Compute comprehensive training loss.
-        
+
         Args:
             strain_data: [batch, n_det, n_samples] strain data
             true_params: [batch, param_dim] true parameters
-            
+
         Returns:
             dict with total loss and component losses
         """
         # Extract context
         context = self.context_encoder(strain_data)
-        
+
         # Normalize parameters
         true_params_norm = self._normalize_parameters(true_params)
-        
+
         # Flow loss (negative log-likelihood)
         log_prob = self.flow.log_prob(true_params_norm, context)
         flow_loss = -log_prob.mean()
-        
+
         # Physics constraint loss
         physics_loss = self._compute_physics_loss(true_params)
-        
+
         # Uncertainty regularization
         uncertainties = self.uncertainty_estimator(
             torch.cat([true_params_norm, context], dim=1)
         )
         uncertainty_loss = 0.01 * torch.mean(uncertainties)
-        
+
         # Total loss
-        total_loss = flow_loss + 0.1 * physics_loss + uncertainty_loss
-        
+        jacobian_reg = 1e-4 * torch.mean(
+            torch.stack([p.norm(2) for n, p in self.flow.named_parameters() if 'weight' in n])
+        )
+        total_loss = flow_loss + jacobian_reg + 0.1 * physics_loss + uncertainty_loss
+
         return {
             'total_loss': total_loss,
             'nll': flow_loss,
             'physics_loss': physics_loss,
             'uncertainty_loss': uncertainty_loss
         }
-    
+
     def _compute_physics_loss(self, params: torch.Tensor) -> torch.Tensor:
         """Enforce physical constraints."""
         loss = torch.tensor(0.0, device=params.device)
-        
+
         # Mass ordering constraint: m1 >= m2
         if 'mass_1' in self.param_names and 'mass_2' in self.param_names:
             m1_idx = self.param_names.index('mass_1')
             m2_idx = self.param_names.index('mass_2')
             mass_violation = F.relu(params[:, m2_idx] - params[:, m1_idx])
             loss += torch.mean(mass_violation**2)
-        
+
         return loss
-    
+
     def update_training_metrics(self, loss_dict: Dict[str, torch.Tensor],
                                processing_time: float, gradient_norm: float):
         """Update training metrics for monitoring and RL."""
         self.training_step += 1
-        
+
         # Store metrics
         self.performance_tracker['training_losses'].append(loss_dict['total_loss'].item())
         self.performance_tracker['inference_times'].append(processing_time)
-        
+
         # Log periodically
         if self.training_step % 100 == 0:
             recent_loss = np.mean(list(self.performance_tracker['training_losses'])[-10:])
-            self.logger.debug(f"Step {self.training_step}: Loss={recent_loss:.4f}, " 
+            self.logger.debug(f"Step {self.training_step}: Loss={recent_loss:.4f}, "
                             f"GradNorm={gradient_norm:.3f}")
-    
-    def save_model(self, filepath: str):
-        """Save complete model state."""
+
+    def save_checkpoint(self, epoch, val_metrics, is_best=False):
+        """Save model checkpoint"""
         checkpoint = {
-            'model_state_dict': self.state_dict(),
-            'rl_controller': self.rl_controller.q_network.state_dict(),
-            'param_names': self.param_names,
-            'param_bounds': self.param_bounds,
+            'model_state_dict': self.model.state_dict(),
+            'rl_controller': self.model.rl_controller.get_state() if hasattr(self.model.rl_controller, 'get_state') else None,
+            'param_names': self.model.param_names,
+            'param_bounds': self.model.param_bounds,
             'config': self.config,
-            'training_step': self.training_step,
-            'performance_tracker': {
-                k: list(v) for k, v in self.performance_tracker.items()
-            }
+            'training_step': self.model.training_step,
+            'performance_tracker': self.model.performance_tracker,
+
+            # ADD THESE:
+            'epoch': epoch,
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+            'val_metrics': val_metrics,
         }
-        torch.save(checkpoint, filepath)
-        self.logger.info(f"Model saved to {filepath}")
-    
+
     def load_model(self, filepath: str):
         """Load complete model state."""
         checkpoint = torch.load(filepath, map_location=self.device)
         self.load_state_dict(checkpoint['model_state_dict'])
         self.rl_controller.q_network.load_state_dict(checkpoint['rl_controller'])
         self.training_step = checkpoint.get('training_step', 0)
-        
+
         if 'performance_tracker' in checkpoint:
             for k, v in checkpoint['performance_tracker'].items():
                 self.performance_tracker[k] = deque(v, maxlen=self.performance_tracker[k].maxlen)
-        
+
         self.logger.info(f"Model loaded from {filepath}")
-    
+
     def get_model_summary(self) -> Dict[str, Any]:
         """Get comprehensive model summary."""
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        
+
         return {
             'model_type': 'UnifiedOverlapNeuralPE',
             'parameter_names': self.param_names,
@@ -561,59 +558,160 @@ class OverlapNeuralPE(nn.Module):
             'flow_layers': self.n_flow_layers,
             'training_step': self.training_step,
             'recent_performance': {
-                'avg_loss': np.mean(list(self.performance_tracker['training_losses'])[-10:]) 
+                'avg_loss': np.mean(list(self.performance_tracker['training_losses'])[-10:])
                            if self.performance_tracker['training_losses'] else 0.0,
-                'avg_inference_time': np.mean(list(self.performance_tracker['inference_times'])[-10:]) 
+                'avg_inference_time': np.mean(list(self.performance_tracker['inference_times'])[-10:])
                                      if self.performance_tracker['inference_times'] else 0.0
             }
         }
 
+    def get_rl_metrics(self) -> Dict[str, float]:
+        """
+        Get metrics from RL controller for tracking adaptive complexity.
+        
+        Returns:
+            Dict with RL controller metrics (empty if RL not enabled)
+        """
+        if not hasattr(self, 'rl_controller') or self.rl_controller is None:
+            return {}
+        
+        try:
+            # Get RL controller state/metrics
+            if hasattr(self.rl_controller, 'get_metrics'):
+                return self.rl_controller.get_metrics()
+            
+            # Fallback: manually extract metrics
+            metrics = {}
+            
+            # Complexity distribution
+            if hasattr(self.rl_controller, 'action_history'):
+                action_history = self.rl_controller.action_history[-100:]  # Last 100 actions
+                if action_history:
+                    metrics['avg_complexity'] = float(np.mean(action_history))
+                    metrics['complexity_std'] = float(np.std(action_history))
+            
+            # Rewards
+            if hasattr(self.rl_controller, 'reward_history'):
+                reward_history = self.rl_controller.reward_history[-100:]
+                if reward_history:
+                    metrics['avg_reward'] = float(np.mean(reward_history))
+                    metrics['total_reward'] = float(np.sum(reward_history))
+            
+            # Epsilon (exploration rate)
+            if hasattr(self.rl_controller, 'epsilon'):
+                metrics['epsilon'] = float(self.rl_controller.epsilon)
+            
+            # Action entropy (exploration diversity)
+            if hasattr(self.rl_controller, 'action_counts'):
+                counts = np.array(list(self.rl_controller.action_counts.values()))
+                if counts.sum() > 0:
+                    probs = counts / counts.sum()
+                    entropy = -np.sum(probs * np.log(probs + 1e-10))
+                    metrics['action_entropy'] = float(entropy)
+            
+            return metrics
+        
+        except Exception as e:
+            self.logger.warning(f"Failed to get RL metrics: {e}")
+            return {}
+        
+    def get_bias_metrics(self) -> Dict[str, float]:
+        """
+        Get metrics from bias corrector for tracking correction effectiveness.
+        
+        Returns:
+            Dict with bias correction metrics (empty if bias corrector not enabled)
+        """
+        if not hasattr(self, 'bias_corrector') or self.bias_corrector is None:
+            return {}
+        
+        try:
+            # Get bias corrector metrics
+            if hasattr(self.bias_corrector, 'get_metrics'):
+                return self.bias_corrector.get_metrics()
+            
+            # Fallback: manually extract metrics
+            metrics = {}
+            
+            # Correction history
+            if hasattr(self.bias_corrector, 'correction_history'):
+                corrections = self.bias_corrector.correction_history[-100:]  # Last 100
+                if corrections:
+                    # Average correction magnitude per parameter
+                    corrections_array = np.array(corrections)
+                    metrics['avg_correction'] = float(np.mean(np.abs(corrections_array)))
+                    metrics['max_correction'] = float(np.max(np.abs(corrections_array)))
+                    metrics['correction_std'] = float(np.std(corrections_array))
+            
+            # Confidence scores
+            if hasattr(self.bias_corrector, 'confidence_history'):
+                confidences = self.bias_corrector.confidence_history[-100:]
+                if confidences:
+                    metrics['avg_confidence'] = float(np.mean(confidences))
+                    metrics['min_confidence'] = float(np.min(confidences))
+            
+            # Physics violation count
+            if hasattr(self.bias_corrector, 'physics_violation_count'):
+                metrics['physics_violations'] = int(self.bias_corrector.physics_violation_count)
+            
+            # Correction acceptance rate
+            if hasattr(self.bias_corrector, 'corrections_accepted') and hasattr(self.bias_corrector, 'corrections_proposed'):
+                proposed = self.bias_corrector.corrections_proposed
+                accepted = self.bias_corrector.corrections_accepted
+                if proposed > 0:
+                    metrics['correction_acceptance_rate'] = float(accepted / proposed)
+            
+            return metrics
+        
+        except Exception as e:
+            self.logger.warning(f"Failed to get bias metrics: {e}")
+            return {}
 
 class NormalizingFlow(nn.Module):
     """Conditional normalizing flow for posterior estimation."""
-    
+
     def __init__(self, param_dim: int, context_dim: int, n_layers: int = 8):
         super().__init__()
-        
+
         self.param_dim = param_dim
         self.context_dim = context_dim
         self.n_layers = n_layers
-        
+
         # Coupling layers
         self.layers = nn.ModuleList()
         for _ in range(n_layers):
             self.layers.append(AffineCouplingLayer(param_dim, context_dim))
-    
+
     def forward(self, params: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Transform parameters to latent space."""
         z = params
         log_det_sum = 0.0
-        
+
         for layer in self.layers:
             z, log_det = layer(z, context)
             log_det_sum = log_det_sum + log_det
-        
+
         return z, log_det_sum
-    
+
     def inverse(self, z: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         """Transform from latent to parameter space."""
         params = z
-        
+
         for layer in reversed(self.layers):
             params = layer.inverse(params, context)
-        
+
         return params
 
 
 class AffineCouplingLayer(nn.Module):
     """Affine coupling layer for normalizing flow."""
-    
+
     def __init__(self, param_dim: int, context_dim: int):
         super().__init__()
-        
+
         self.param_dim = param_dim
         self.split_dim = param_dim // 2
-        
+
         # Scale and shift networks
         self.scale_net = nn.Sequential(
             nn.Linear(self.split_dim + context_dim, 128),
@@ -623,7 +721,7 @@ class AffineCouplingLayer(nn.Module):
             nn.Linear(64, param_dim - self.split_dim),
             nn.Tanh()
         )
-        
+
         self.shift_net = nn.Sequential(
             nn.Linear(self.split_dim + context_dim, 128),
             nn.ReLU(),
@@ -631,61 +729,61 @@ class AffineCouplingLayer(nn.Module):
             nn.ReLU(),
             nn.Linear(64, param_dim - self.split_dim)
         )
-    
+
     def forward(self, params: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward transformation."""
         x1, x2 = params[:, :self.split_dim], params[:, self.split_dim:]
-        
+
         combined = torch.cat([x1, context], dim=1)
         s = self.scale_net(combined)
         t = self.shift_net(combined)
-        
+
         y2 = x2 * torch.exp(s) + t
         log_det = s.sum(dim=1)
-        
+
         y = torch.cat([x1, y2], dim=1)
-        
+
         return y, log_det
-    
+
     def inverse(self, y: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         """Inverse transformation."""
         y1, y2 = y[:, :self.split_dim], y[:, self.split_dim:]
-        
+
         combined = torch.cat([y1, context], dim=1)
         s = self.scale_net(combined)
         t = self.shift_net(combined)
-        
+
         x2 = (y2 - t) * torch.exp(-s)
         x = torch.cat([y1, x2], dim=1)
-        
+
         return x
 
 
 class ContextEncoder(nn.Module):
     """Encodes multi-detector strain data into context vector."""
-    
+
     def __init__(self, n_detectors: int = 2, hidden_dim: int = 256, dropout: float = 0.1):
         super().__init__()
-        
+
         self.n_detectors = n_detectors
-        
+
         # Per-detector encoder
         self.detector_encoder = nn.Sequential(
             nn.Conv1d(1, 32, kernel_size=64, stride=4),
             nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.Dropout(dropout),  # ✅ ADD dropout after each block
+            nn.Dropout(dropout),  # âœ… ADD dropout after each block
             nn.Conv1d(32, 64, kernel_size=32, stride=4),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Dropout(dropout),  # ✅ ADD
+            nn.Dropout(dropout),  # âœ… ADD
             nn.Conv1d(64, 128, kernel_size=16, stride=2),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(dropout),  # ✅ ADD
+            nn.Dropout(dropout),  # âœ… ADD
             nn.AdaptiveAvgPool1d(64)
         )
-        
+
         # Multi-detector fusion
         self.fusion = nn.Sequential(
             nn.Linear(128 * 64 * n_detectors, hidden_dim * 2),
@@ -694,7 +792,7 @@ class ContextEncoder(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim * 2, hidden_dim)
         )
-        
+
     def forward(self, strain_data: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -703,19 +801,18 @@ class ContextEncoder(nn.Module):
             context: (batch, hidden_dim)
         """
         batch_size = strain_data.size(0)
-        
+
         # Encode each detector
         detector_features = []
         for i in range(self.n_detectors):
             det_data = strain_data[:, i:i+1, :]  # (batch, 1, time)
             features = self.detector_encoder(det_data)  # (batch, 128, 64)
             detector_features.append(features)
-        
+
         # Concatenate and fuse
         combined = torch.cat(detector_features, dim=1)  # (batch, 128*n_det, 64)
         combined = combined.flatten(1)  # (batch, 128*64*n_det)
-        
+
         context = self.fusion(combined)  # (batch, hidden_dim)
         
-        return context
-
+        return context_i

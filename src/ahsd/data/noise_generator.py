@@ -15,7 +15,7 @@ try:
 except ImportError:
     PYCBC_AVAILABLE = False
 
-from .config import SAMPLE_RATE, DURATION, N_SAMPLES
+from .config import SAMPLE_RATE, DURATION
 
 class NoiseGenerator:
     """

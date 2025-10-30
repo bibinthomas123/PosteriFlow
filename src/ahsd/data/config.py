@@ -1,24 +1,23 @@
 """
 Configuration parameters for AHSD data generation
-Extracted from main script configuration
+Optimized for PriorityNet and Neural Posterior Estimation
 """
 
 # Acquisition parameters
 SAMPLE_RATE = 4096  # Hz
 DURATION = 4.0  # seconds
-N_SAMPLES = int(SAMPLE_RATE * DURATION)
 
 # Detector configuration
 DETECTORS = ['H1', 'L1', 'V1']
 DEFAULT_DETECTOR_NETWORK = ['H1', 'L1']
 
-# SNR regimes
+# ✅ FIXED: Correct SNR ranges matching dataset_generator.py
 SNR_RANGES = {
-    'weak': (8, 10),
-    'low': (10, 14),
-    'medium': (14, 20),
-    'high': (20, 30),
-    'loud': (30, 50)
+    'weak': (7, 10),      # ✅ SNR 7-10
+    'low': (10, 15),      # ✅ SNR 10-15
+    'medium': (15, 25),   # ✅ SNR 15-25 - MOST TRAINING HERE
+    'high': (25, 40),     # ✅ SNR 25-40 - Good for priority ranking
+    'loud': (40, 80)      # ✅ SNR 40-80 - Rare but important
 }
 
 # Approximants by event type
@@ -40,26 +39,26 @@ APPROXIMANTS = {
     }
 }
 
-# Event type distribution
+# ✅ Event type distribution - Astrophysically realistic
 EVENT_TYPE_DISTRIBUTION = {
-    'BBH': 0.55,
-    'BNS': 0.25,
-    'NSBH': 0.15,
-    'noise': 0.05
+    'BBH': 0.50,    # Most common astrophysically
+    'BNS': 0.28,    # Less common than BBH
+    'NSBH': 0.17,   # Intermediate
+    'noise': 0.05   # For robustness
 }
 
-# SNR distribution
+# ✅ SNR distribution - Balanced for training
 SNR_DISTRIBUTION = {
-    'weak': 0.15,
-    'low': 0.35,
-    'medium': 0.30,
-    'high': 0.15,
-    'loud': 0.05
+    'weak': 0.15,   # Weak signals (detectable)
+    'low': 0.30,    # Low SNR (training)
+    'medium': 0.30, # MOST TRAINING HERE for clean priority learning
+    'high': 0.20,   # Good for priority ranking
+    'loud': 0.05    # Rare but important
 }
 
 # Special cases
-OVERLAP_FRACTION = 0.05
-EDGE_CASE_FRACTION = 0.15
+OVERLAP_FRACTION = 0.40    # 40% overlap for PriorityNet training
+EDGE_CASE_FRACTION = 0.12  # 12% edge cases (balanced)
 
 # Frequency bounds
 F_LOWER = 20.0  # Hz
@@ -67,9 +66,9 @@ F_UPPER = 2048.0  # Hz
 
 # Distance ranges (Mpc)
 DISTANCE_RANGES = {
-    'BBH': (100.0, 2000.0),
-    'BNS': (10.0, 300.0),
-    'NSBH': (20.0, 800.0)
+    'BBH': (100.0, 4000.0),
+    'BNS': (10.0, 500.0),
+    'NSBH': (20.0, 1500.0)
 }
 
 # Mass ranges (solar masses)
@@ -93,6 +92,7 @@ STRICT_SNR_ACCEPTANCE = True
 SNR_TOLERANCE_LOW = 0.3
 SNR_TOLERANCE_HIGH = 3.0
 
+# Train/val/test split
 TRAIN_FRACTION = 0.8
 VAL_FRACTION = 0.1
 TEST_FRACTION = 0.1

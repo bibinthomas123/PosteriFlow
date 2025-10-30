@@ -629,7 +629,21 @@ class GWDatasetGenerator:
         elif 'NSBH' in event_name.upper():
             event_type = 'NSBH'
         else:
-            event_type = np.random.choice(['BBH', 'BNS', 'NSBH'], p=[0.75, 0.15, 0.10])
+            # Fall back to global EVENT_TYPE_DISTRIBUTION so experiments follow central config
+            try:
+                from ahsd.data.config import EVENT_TYPE_DISTRIBUTION
+                types = ['BBH', 'BNS', 'NSBH']
+                probs = [EVENT_TYPE_DISTRIBUTION.get(t, 0.0) for t in types]
+                total = sum(probs)
+                if total <= 0:
+                    event_type = np.random.choice(types)
+                else:
+                    probs = [p / total for p in probs]
+                    event_type = np.random.choice(types, p=probs)
+            except Exception:
+                # If importing config fails for any reason, fall back to a uniform choice
+                # (avoid hard-coded biased weights here so experiments don't override global config)
+                event_type = np.random.choice(['BBH', 'BNS', 'NSBH'])
         
         # BBH: Power-law + Gaussian mass distribution
         if event_type == 'BBH':
@@ -3699,9 +3713,21 @@ class GWDatasetGenerator:
             combined_binary_types = []
             
             for i in range(n_signals):
-                # Select event type proportionally
+                # Select event type using central EVENT_TYPE_DISTRIBUTION when possible
                 event_types = ['BBH', 'BNS', 'NSBH']
-                event_weights = [0.55, 0.25, 0.20]  # Training distribution
+                try:
+                    from ahsd.data.config import EVENT_TYPE_DISTRIBUTION
+                    event_weights = [EVENT_TYPE_DISTRIBUTION.get(t, 0.0) for t in event_types]
+                    total_w = sum(event_weights)
+                    if total_w <= 0:
+                        # Fall back to uniform if config missing or invalid
+                        event_weights = [1/3, 1/3, 1/3]
+                    else:
+                        event_weights = [w / total_w for w in event_weights]
+                except Exception:
+                    # If config cannot be imported, fall back to uniform weights
+                    event_weights = [1/3, 1/3, 1/3]
+
                 event_type = np.random.choice(event_types, p=event_weights)
                 
                 # Select SNR regime

@@ -13,9 +13,24 @@ import logging
 
 
 class TemporalStrainEncoder(nn.Module):
-    """CNN + BiLSTM + Attention encoder for whitened strain segments."""
+    """
+    CNN + BiLSTM + Multi-head Attention encoder for whitened strain segments.
 
-    def __init__(self, input_length: int = 2048, n_detectors: int = 2, hidden_dim: int = 128):
+    This module extracts multi-scale time-frequency features from multi-detector strain
+    inputs, models temporal dependencies with a bidirectional LSTM, and aggregates long-
+    range context via self-attention, projecting to a fixed 64-D representation suitable
+    for downstream fusion. 
+    """
+
+    def __init__(self, input_length: int = 2048, n_detectors: int = 3, hidden_dim: int = 128):
+        """
+        Initialize the temporal strain encoder.
+
+        Args:
+            input_length: Number of time samples per detector channel (e.g., 2048 for 1s at 2048 Hz).
+            n_detectors: Number of detector channels (e.g., H1, L1, V1 → 3).
+            hidden_dim: Hidden size for the BiLSTM per direction (total BiLSTM output is 2×hidden_dim).
+        """
         super().__init__()
 
         # Multi-scale CNN for time-frequency features
@@ -61,7 +76,18 @@ class TemporalStrainEncoder(nn.Module):
         )
 
     def _conv_block(self, in_channels, out_channels, kernel_size, stride):
-        """Convolutional block with normalization."""
+        """
+        Construct a 1D convolution block with BatchNorm, GELU, and Dropout.
+
+        Args:
+            in_channels: Input channel count.
+            out_channels: Output channel count.
+            kernel_size: Convolution kernel width.
+            stride: Convolution stride (downsampling factor).
+
+        Returns:
+            A sequential module: Conv1d → BatchNorm1d → GELU → Dropout.
+        """
         return nn.Sequential(
             nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding=kernel_size//2),
             nn.BatchNorm1d(out_channels),
@@ -71,10 +97,13 @@ class TemporalStrainEncoder(nn.Module):
 
     def forward(self, strain_segments: torch.Tensor) -> torch.Tensor:
         """
+        Encode whitened strain segments into a 64-D temporal representation.
+
         Args:
-            strain_segments: [batch, n_detectors, time_samples]
+            strain_segments: Tensor of shape [batch, n_detectors, time_samples].
+
         Returns:
-            encoded: [batch, 64] temporal features
+            A tensor of shape [batch, 64] with aggregated temporal features.
         """
         x = strain_segments
 
@@ -103,12 +132,19 @@ class TemporalStrainEncoder(nn.Module):
 
 
 class CrossSignalAnalyzer(nn.Module):
-    """Computes pairwise overlap features for multi-signal scenarios."""
+    """
+    Pairwise overlap analyzer with learned attention over pairwise relations.
+
+    Computes attention-weighted aggregates of pairwise features (e.g., time separation,
+    sky separation, mass/frequency overlap proxies, distance ratio, polarization diff),
+    yielding a 16-D overlap feature per signal within a multi-signal scenario.
+    """
 
     def __init__(self):
+        """Initialize the pairwise feature and importance networks."""
         super().__init__()
 
-        # Learnable overlap feature extractor
+        # Pairwise feature extractor
         self.overlap_net = nn.Sequential(
             nn.Linear(8, 32),
             nn.LayerNorm(32),
@@ -116,13 +152,25 @@ class CrossSignalAnalyzer(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(32, 16)
         )
+        
+        # Learns which pairwise relationships matter most
+        self.importance_net = nn.Sequential(
+            nn.Linear(8, 16),
+            nn.LayerNorm(16),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(16, 1)
+        )
 
     def forward(self, params_batch: torch.Tensor) -> torch.Tensor:
         """
+        Compute attention-weighted pairwise overlap features for a scenario.
+
         Args:
-            params_batch: [n_signals, 15] normalized parameters
+            params_batch: Tensor [n_signals, 15] of normalized signal parameters.
+
         Returns:
-            overlap_features: [n_signals, 16] cross-signal features
+            Tensor [n_signals, 16] with aggregated overlap features per signal.
         """
         n_signals = params_batch.shape[0]
 
@@ -135,6 +183,7 @@ class CrossSignalAnalyzer(nn.Module):
         for i in range(n_signals):
             # Compute overlap metrics with all other signals
             pairwise_features = []
+            pairwise_importance = []
 
             for j in range(n_signals):
                 if i == j:
@@ -171,94 +220,185 @@ class CrossSignalAnalyzer(nn.Module):
                 # Polarization angles
                 dpsi = torch.abs(params_batch[i, 7] - params_batch[j, 7])
 
-                pairwise_features.append(torch.stack([
+                features = torch.stack([
                     dt, sky_sep, mass_similarity, freq_overlap, 
                     dist_ratio, dpsi, dra, ddec
-                ]))
+                ])
+                
+                pairwise_features.append(features)
+                
+                # Learned importance score for this pair
+                importance = self.importance_net(features)
+                pairwise_importance.append(importance)
 
             if len(pairwise_features) > 0:
-                # Average overlap with all other signals
-                pairwise_tensor = torch.stack(pairwise_features)
-                mean_overlap = torch.mean(pairwise_tensor, dim=0)
-                overlap_scores.append(mean_overlap)
+                # Stack all pairwise features
+                pairwise_tensor = torch.stack(pairwise_features)  # [n-1, 8]
+                importance_tensor = torch.stack(pairwise_importance)  # [n-1, 1]
+                
+                # Attention-weighted aggregation across pairs
+                attention_weights = F.softmax(importance_tensor, dim=0)  # [n-1, 1]
+                
+                # Weighted sum of pairwise features
+                weighted_overlap = (attention_weights * pairwise_tensor).sum(dim=0)  # [8]
+                
+                overlap_scores.append(weighted_overlap)
             else:
                 overlap_scores.append(torch.zeros(8, device=params_batch.device))
 
-        overlap_tensor = torch.stack(overlap_scores)
-        overlap_features = self.overlap_net(overlap_tensor)
+        overlap_tensor = torch.stack(overlap_scores)  # [n_signals, 8]
+        overlap_features = self.overlap_net(overlap_tensor)  # [n_signals, 16]
 
         return overlap_features
 
 
-class SignalFeatureExtractor(nn.Module):
-    """Enhanced feature extractor with deeper architecture and layer normalization."""
+class ResidualBlock(nn.Module):
+    """
+    Residual MLP block with pre-layer normalization and optional projection.
 
-    def __init__(self, input_dim: int = 15):
+    Applies LayerNorm → Linear → GELU → Dropout, then adds a skip connection
+    (identity or linear projection if dimensions differ), improving gradient flow
+    and stabilizing deeper stacks in the feature extractor.
+    """
+    def __init__(self, in_dim, out_dim, dropout=0.15):
+        """
+        Initialize a ResidualBlock.
+
+        Args:
+            in_dim: Input feature dimension.
+            out_dim: Output feature dimension.
+            dropout: Dropout probability applied after activation.
+        """
         super().__init__()
+        self.norm = nn.LayerNorm(in_dim)
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+        
+        # Skip connection projection
+        self.skip = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
+    
+    def forward(self, x):
+        """
+        Forward pass for the residual block.
 
-        # Deeper physics-aware feature processing
-        self.feature_processor = nn.Sequential(
-            nn.Linear(15, 256),
-            nn.LayerNorm(256),
-            nn.GELU(),
-            nn.Dropout(0.1),
+        Args:
+            x: Input tensor of shape [..., in_dim].
 
-            nn.Linear(256, 256),
-            nn.LayerNorm(256),
-            nn.GELU(),
-            nn.Dropout(0.1),
+        Returns:
+            Output tensor of shape [..., out_dim] after residual connection.
+        """
+        # Pre-norm
+        identity = x
+        x = self.norm(x)
+        x = self.linear(x)
+        x = self.activation(x)
+        x = self.dropout(x)
+        
+        # Residual
+        return x + self.skip(identity)
 
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
-            nn.GELU(),
-            nn.Dropout(0.1),
 
-            nn.Linear(128, 64),
+class SignalFeatureExtractor(nn.Module):
+    """
+    Enhanced metadata feature extractor with residual connections and physics encodings.
+
+    Transforms normalized signal parameters into a learned representation via stacked
+    residual MLP blocks (projected to 64-D), augments with analytic physics-derived
+    features (32-D), and concatenates them into a 96-D metadata representation.
+    """
+    
+    def __init__(self, input_dim: int = 15, config=None):
+        """
+        Initialize the feature extractor.
+
+        Args:
+            input_dim: Number of normalized scalar parameters per signal (default 15).
+            config: Dict or object with fields hidden_dims and dropout; falls back to defaults when absent.
+        """
+        super().__init__()
+        
+        if isinstance(config, dict) or hasattr(config, 'get'):
+            hidden_dims = config.get('hidden_dims', [512, 384, 256, 128])
+            dropout = config.get('dropout', 0.15)
+        elif config is not None:
+            hidden_dims = getattr(config, 'hidden_dims', [512, 384, 256, 128])
+            dropout = getattr(config, 'dropout', 0.15)
+        else:
+            hidden_dims = [512, 384, 256, 128]
+            dropout = 0.15
+        
+        # Input embedding
+        self.input_embed = nn.Linear(input_dim, hidden_dims[0])
+        
+        # Residual blocks 
+        self.blocks = nn.ModuleList([
+            ResidualBlock(hidden_dims[0], hidden_dims[0], dropout),  
+            ResidualBlock(hidden_dims[0], hidden_dims[1], dropout),
+            ResidualBlock(hidden_dims[1], hidden_dims[2], dropout),
+            ResidualBlock(hidden_dims[2], hidden_dims[3], dropout),
+        ])
+        
+        # Final projection to 64-D
+        self.output_proj = nn.Sequential(
+            nn.LayerNorm(hidden_dims[3]),
+            nn.Linear(hidden_dims[3], 64)
+        )
+        
+        # Physics encoder (8 → 32)
+        self.physics_encoder = nn.Sequential(
+            nn.Linear(8, 64),
             nn.LayerNorm(64),
             nn.GELU(),
-            nn.Dropout(0.1),
-
             nn.Linear(64, 32)
         )
-
-        # Physics-derived features extractor
-        self.physics_encoder = nn.Sequential(
-            nn.Linear(8, 32),
-            nn.LayerNorm(32),
-            nn.GELU(),
-            nn.Linear(32, 16)
-        )
-
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Args:
-            x: [batch, 15] normalized parameters
-        Returns:
-            features: [batch, 48] (32 from network + 16 from physics)
-        """
-        # Network-learned features
-        network_features = self.feature_processor(x)
+        Encode normalized parameters into a 96-D metadata feature.
 
-        # Physics-derived features
+        Args:
+            x: Tensor [N, input_dim] of normalized scalar parameters.
+
+        Returns:
+            Tensor [N, 96] formed by concatenating learned (64-D) and physics (32-D) encodings.
+        """
+        # Network features
+        features = self.input_embed(x)
+        for block in self.blocks:
+            features = block(features)
+        network_features = self.output_proj(features)
+        
+        # Physics features
         physics_features = self._compute_physics_features(x)
         physics_encoded = self.physics_encoder(physics_features)
-
-        # Concatenate both feature types
-        combined = torch.cat([network_features, physics_encoded], dim=1)
-
-        return combined
+        
+        # Combine
+        return torch.cat([network_features, physics_encoded], dim=1)
+    
 
     def _compute_physics_features(self, params: torch.Tensor) -> torch.Tensor:
-        """Compute derived physics quantities."""
+        """
+        Compute analytic physics-derived features from normalized parameters.
 
+        Denormalizes selected parameters to physically meaningful scales, computes
+        derived quantities (chirp mass, symmetric mass ratio, f_ISCO, χ_eff proxy,
+        SNR estimate, difficulty), and returns an 8-D normalized feature vector.
+
+        Args:
+            params: Tensor [N, input_dim] of normalized parameters.
+
+        Returns:
+            Tensor [N, 8] with physics-derived features in [0, 1] where applicable.
+        """
         batch_size = params.shape[0]
         physics_features = torch.zeros(batch_size, 8, device=params.device)
 
         try:
             # Extract basic parameters (denormalized)
-            m1 = params[:, 0] * 95 + 5  # [5, 100] solar masses
+            m1 = params[:, 0] * 95 + 5
             m2 = params[:, 1] * 95 + 5
-            distance = params[:, 2] * 2950 + 50  # [50, 3000] Mpc
+            distance = params[:, 2] * 2950 + 50
 
             # Derived quantities
             total_mass = m1 + m2
@@ -266,15 +406,15 @@ class SignalFeatureExtractor(nn.Module):
             mass_ratio = torch.minimum(m1, m2) / torch.maximum(m1, m2)
             eta = m1 * m2 / (total_mass**2)
 
-            # SNR estimation (approximate)
+            # SNR estimation
             estimated_snr = 8.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / torch.clamp(distance, min=50.0))
 
             # Frequency estimates
             f_isco = 220.0 / total_mass
 
-            # Effective spin (if available)
+            # Effective spin
             if params.shape[1] >= 11:
-                a1 = params[:, 9] * 0.99  # [0, 0.99]
+                a1 = params[:, 9] * 0.99
                 a2 = params[:, 10] * 0.99
                 chi_eff = (m1 * a1 + m2 * a2) / total_mass
             else:
@@ -300,219 +440,542 @@ class SignalFeatureExtractor(nn.Module):
         return physics_features
 
 
-class EnhancedPriorityNet(nn.Module):
-    """Enhanced PriorityNet with temporal encoding and uncertainty quantification."""
+class MultiModalFusion(nn.Module):
+    """
+    Cross-modal fusion block with self-attention and residual FFN.
 
-    def __init__(self, config=None, use_strain: bool = True):
+    Concatenates metadata (96-D), overlap (16-D), temporal strain (64-D), and edge
+    embeddings (32-D), projects to an output_dim space, applies a single-token
+    self-attention block and a residual feed-forward network to produce a unified
+    fused embedding for downstream heads.
+    """
+    def __init__(self, metadata_dim=96, overlap_dim=16, temporal_dim=64, 
+                 edge_dim=32, output_dim=64, num_heads=4):
+        """
+        Initialize the multi-modal fusion module.
+
+        Args:
+            metadata_dim: Input dimension of metadata features.
+            overlap_dim: Input dimension of overlap features.
+            temporal_dim: Input dimension of temporal strain features.
+            edge_dim: Input dimension of edge-type embeddings.
+            output_dim: Working dimension for attention/FFN projections.
+            num_heads: Number of attention heads for the self-attention block.
+        """
+        super().__init__()
+        
+        total_dim = metadata_dim + overlap_dim + temporal_dim + edge_dim
+        
+        # Input projection
+        self.input_proj = nn.Linear(total_dim, output_dim)
+        self.input_norm = nn.LayerNorm(output_dim)  # stabilize fused distribution
+        
+        # Cross-modal self-attention
+        self.attention = nn.MultiheadAttention(
+            output_dim, num_heads, dropout=0.08, batch_first=True
+        )
+        self.attn_norm = nn.LayerNorm(output_dim)
+        
+        # Feed-forward network
+        self.ffn = nn.Sequential(
+            nn.Linear(output_dim, output_dim * 2),
+            nn.GELU(),
+            nn.Dropout(0.08),
+            nn.Linear(output_dim * 2, output_dim)
+        )
+        self.ffn_norm = nn.LayerNorm(output_dim)
+    
+    def forward(self, metadata, overlap, temporal, edge):
+        """
+        Fuse modalities into a single 64-D token embedding.
+
+        Args:
+            metadata: Tensor [N, metadata_dim] from the metadata extractor.
+            overlap: Tensor [N, overlap_dim] from the overlap analyzer.
+            temporal: Tensor [N, temporal_dim] from the strain encoder (zeros if absent).
+            edge: Tensor [N, edge_dim] from edge-type embeddings (zeros if absent).
+
+        Returns:
+            Tensor [N, output_dim] fused representation for downstream heads.
+        """
+        # Concatenate all modalities
+        combined = torch.cat([metadata, overlap, temporal, edge], dim=-1)
+        
+        # Project to output dimension
+        x = self.input_proj(combined)
+        x = self.input_norm(x)
+        x = x.unsqueeze(1)  # [batch, 1, dim]
+        
+        # Self-attention with residual
+        residual = x
+        attn_out, _ = self.attention(x, x, x)
+        x = residual + attn_out
+        x = self.attn_norm(x)
+        
+        # FFN with residual
+        residual = x
+        ffn_out = self.ffn(x)
+        x = residual + ffn_out
+        x = self.ffn_norm(x)
+        
+        return x.squeeze(1)
+
+
+class AdaptiveRankingLoss(nn.Module):
+    """
+    Adaptive pairwise ranking loss with learned margin scaling and optional pair weights.
+
+    Computes hinge-like violations over all pairs (i, j) where targets differ by ≥ 0.05,
+    with a margin proportional to the target gap and a multiplicative margin_scale
+    (e.g., larger for dense overlaps). Optional per-sample SNR weights can be averaged
+    per pair to emphasize de-noising (e.g., weak SNR cases) during ranking.
+    """
+
+    def __init__(self, base_margin: float = 0.05):
+        """
+        Initialize the adaptive ranking loss.
+
+        Args:
+            base_margin: Base margin factor multiplied by clamped |Δtarget| to form pairwise margins.
+        """
+        super().__init__()
+        self.base_margin = base_margin
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor,
+                uncertainties: Optional[torch.Tensor] = None,
+                snr_weights: Optional[torch.Tensor] = None,
+                margin_scale: float = 1.0) -> torch.Tensor:
+        """
+        Compute the adaptive pairwise ranking loss.
+
+        Args:
+            predictions: Tensor [n] of predicted priorities for a scenario.
+            targets: Tensor [n] of target priorities for the same scenario.
+            uncertainties: Optional tensor [n] of predicted uncertainties (unused here; kept for API cohesion).
+            snr_weights: Optional tensor [n] of per-sample SNR-derived weights; if provided,
+                         each pair (i, j) is weighted by 0.5·(w_i + w_j).
+            margin_scale: Scalar multiplier applied to the base margin to emphasize certain scenarios.
+
+        Returns:
+            A scalar tensor with the average pairwise violation over considered pairs.
+        """
+        n_samples = predictions.shape[0]
+        if n_samples < 2:
+            return torch.zeros(1, device=predictions.device, requires_grad=True).squeeze()
+
+        loss = predictions.new_tensor(0.0, requires_grad=True)
+        count = 0
+
+        for i in range(n_samples):
+            for j in range(i + 1, n_samples):
+                target_diff = torch.abs(targets[i] - targets[j])
+                if target_diff < 0.05:
+                    continue
+
+                margin = margin_scale * self.base_margin * torch.clamp(target_diff, min=0.1, max=1.0)
+
+                pair_w = 1.0
+                if snr_weights is not None:
+                    pair_w = 0.5 * (snr_weights[i] + snr_weights[j])
+
+                if targets[i] > targets[j]:
+                    violation = torch.clamp(predictions[j] - predictions[i] + margin, min=0.0)
+                else:
+                    violation = torch.clamp(predictions[i] - predictions[j] + margin, min=0.0)
+
+                loss = loss + pair_w * violation
+                count += 1
+
+        return loss / count if count > 0 else predictions.new_tensor(0.0, requires_grad=True)
+
+
+class PriorityLoss(nn.Module):
+    """
+    Composite loss for priority learning with calibration and robustness components.
+
+    Combines:
+    - Weighted MSE (with optional SNR emphasis) for scale calibration,
+    - Adaptive pairwise ranking loss to preserve correct ordering (with larger margins for dense overlaps),
+    - Uncertainty regression toward |error| to keep σ informative,
+    - A light batch-level mean/std calibration penalty to correct global offset/compression.
+    """
+
+    def __init__(self, ranking_weight: float = 0.4, mse_weight: float = 0.5, 
+                 uncertainty_weight: float = 0.1, use_snr_weighting: bool = True,
+                 label_smoothing: float = 0.05, lambda_calib: float = 1e-4):
+        """
+        Initialize PriorityLoss.
+
+        Args:
+            ranking_weight: Weight for the pairwise ranking component.
+            mse_weight: Weight for the regression (MSE) component.
+            uncertainty_weight: Weight for the uncertainty calibration component.
+            use_snr_weighting: Enable SNR-based weighting in 5+ overlaps for hard cases.
+            label_smoothing: Smooth targets toward 0.5 by ε to reduce overfitting to extremes.
+            lambda_calib: Batch mean/std alignment penalty coefficient.
+        """
+        super().__init__()
+        self.ranking_weight = ranking_weight
+        self.mse_weight = mse_weight
+        self.uncertainty_weight = uncertainty_weight
+        self.use_snr_weighting = use_snr_weighting
+        self.label_smoothing = label_smoothing 
+        self.lambda_calib = lambda_calib
+        self.ranking_loss_fn = AdaptiveRankingLoss()
+
+    def forward(self, predictions: torch.Tensor, targets: torch.Tensor,
+                uncertainties: torch.Tensor, snr_values: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+        """
+        Compute composite loss and return individual components for logging.
+
+        Args:
+            predictions: Predicted priorities [n].
+            targets: Target priorities [n].
+            uncertainties: Predicted uncertainties [n].
+            snr_values: Optional per-sample SNRs [n] to emphasize weak-SNR samples (used when n ≥ 5).
+
+        Returns:
+            Dict[str, Tensor] with keys: 'total', 'mse', 'ranking', 'uncertainty'.
+        """
+        # Label smoothing for regression
+        if self.label_smoothing > 0:
+            smoothed_targets = targets * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
+        else:
+            smoothed_targets = targets
+
+        # Bucket 5+ detection by scenario length
+        n_signals = predictions.shape[0]
+        bucket5 = (n_signals >= 5)
+
+        # Low-SNR emphasis weights (only for bucket 5+)
+        if self.use_snr_weighting and (snr_values is not None) and bucket5:
+            snr_w = 2.0 * torch.exp(-snr_values / 15.0) + 0.5
+            snr_w = snr_w / snr_w.mean().clamp_min(1e-6)
+        else:
+            snr_w = torch.ones_like(predictions)
+
+        # Weighted MSE
+        mse_loss = (snr_w * (predictions - smoothed_targets) ** 2).mean()
+
+        # Adaptive ranking with larger margin and pair weights in bucket 5+
+        ranking_loss = self.ranking_loss_fn(
+            predictions, targets, uncertainties,
+            snr_weights=snr_w if bucket5 else None,
+            margin_scale=(1.6 if bucket5 else 1.0)  # slightly stronger margin for 5+
+        )
+
+        # Uncertainty regularization toward |error|
+        pred_error = torch.abs(predictions - targets)
+        uncertainty_loss = F.mse_loss(uncertainties, pred_error.detach())
+
+        # Light batch calibration (mean/std alignment)
+        with torch.no_grad():
+            mu_p = predictions.mean()
+            mu_t = targets.mean()
+            std_p = predictions.std(unbiased=False) + 1e-8
+            std_t = targets.std(unbiased=False) + 1e-8
+        calib_pen = (mu_p - mu_t).pow(2) + (std_p - std_t).pow(2)
+
+        # >>> NEW: bucket-aware weights and scale-gap assist <<<
+        effective_ranking_weight = self.ranking_weight
+        effective_mse_weight = self.mse_weight
+
+        if bucket5:
+            # Emphasize ordering in dense overlaps; slightly down-weight MSE
+            effective_ranking_weight = self.ranking_weight * 1.5
+            effective_mse_weight = self.mse_weight * 0.85
+
+        # Light assist to expand prediction range if under-scaled
+        # Safe guardrail: activates only when targets clearly exceed predictions
+        with torch.no_grad():
+            max_gap = (targets.max() - predictions.max()).clamp_min(0.0)
+        scale_push = 0.0
+        if max_gap > 0.12:  # gap threshold; tune 0.10–0.15
+            scale_push = 0.05 * max_gap  # small additive penalty to encourage expansion
+
+        total_loss = (
+            effective_mse_weight * mse_loss +
+            effective_ranking_weight * ranking_loss +
+            self.uncertainty_weight * uncertainty_loss +
+            self.lambda_calib * calib_pen +
+            scale_push  # <<<
+        )
+
+
+        return {
+            'total': total_loss,
+            'mse': mse_loss.detach(),
+            'ranking': ranking_loss.detach(),
+            'uncertainty': uncertainty_loss.detach()
+        }
+
+
+class PriorityNet(nn.Module):
+    """
+    Enhanced PriorityNet with config-driven architecture and multi-modal fusion.
+
+    Encodes metadata, overlap structure, temporal strain, and edge-type context;
+    fuses them with attention; and predicts per-signal priorities with calibrated
+    uncertainty estimates. Includes a lightweight affine calibrator (gain/bias).
+    """
+
+    def __init__(self, config=None, use_strain: bool = None,
+                 use_edge_conditioning: bool = None, n_edge_types: int = None):
+        """
+        Initialize PriorityNet components and read configuration safely.
+
+        Args:
+            config: Dict or object providing hidden_dims, dropout, use_strain, use_edge_conditioning, n_edge_types.
+            use_strain: Override to enable/disable temporal strain encoder (default from config).
+            use_edge_conditioning: Override to enable/disable edge-type embedding (default from config).
+            n_edge_types: Size of edge-type vocabulary (default from config or 17).
+        """
         super().__init__()
 
-        self.config = config or self._default_config()
-        self.use_strain = use_strain
+        if config is not None and hasattr(config, '__dict__'):
+            print("🔧 Using provided configuration for PriorityNet.")
+            self.config = config
+        else:
+            print("🔧 Using default configuration for PriorityNet.")
+            self.config = self._default_config()
+        
+        def cfg_get(key, default):
+            if isinstance(self.config, dict) or hasattr(self.config, 'get'):
+                return self.config.get(key, default)
+            return getattr(self.config, key, default)
+    
 
-        # Temporal strain encoder (optional, for when strain data is available)
+        # Flags
+        self.use_strain = use_strain if use_strain is not None else cfg_get('use_strain', True)
+        self.use_edge_conditioning = use_edge_conditioning if use_edge_conditioning is not None else cfg_get('use_edge_conditioning', True)
+        self.n_edge_types = n_edge_types if n_edge_types is not None else cfg_get('n_edge_types', 17)
+
+        # Temporal strain encoder (optional)
         if self.use_strain:
-            self.strain_encoder = TemporalStrainEncoder(
-                input_length=2048,  # 1s at 2048 Hz
-                n_detectors=2,      # H1, L1 (can extend to 3 for Virgo)
-                hidden_dim=128
-            )
+            self.strain_encoder = TemporalStrainEncoder(input_length=2048, n_detectors=3, hidden_dim=128)
             temporal_dim = 64
         else:
             temporal_dim = 0
 
-        # Cross-signal overlap analyzer
+        # Cross-signal overlap analyzer and metadata feature extractor
         self.cross_signal_analyzer = CrossSignalAnalyzer()
+        self.signal_encoder = SignalFeatureExtractor(config=self.config)
 
-        # Enhanced metadata feature extraction
-        self.signal_encoder = SignalFeatureExtractor()
+        # Edge case embedding with padding_idx=0 for 'none'
+        if self.use_edge_conditioning:
+            self.edge_embedding = nn.Embedding(num_embeddings=self.n_edge_types, embedding_dim=32, padding_idx=0)
+            edge_dim = 32
+        else:
+            edge_dim = 0
 
-        # Fusion layer (combines temporal + metadata + overlap features)
-        fusion_input_dim = 48 + 16 + temporal_dim  # metadata + overlap + temporal
+        # Log configuration
+        logging.info(f"🔍 PriorityNet Configuration:")
+        logging.info(f"   use_strain: {self.use_strain} → temporal_dim: {temporal_dim}")
+        logging.info(f"   use_edge_conditioning: {self.use_edge_conditioning} → edge_dim: {edge_dim}")
+        logging.info(f"   n_edge_types: {self.n_edge_types}")
+        if hasattr(self.config, 'hidden_dims'):
+            logging.info(f"   hidden_dims: {self.config.hidden_dims}")
+        if hasattr(self.config, 'dropout'):
+            logging.info(f"   dropout: {self.config.dropout}")
 
-        self.fusion_layer = nn.Sequential(
-            nn.Linear(fusion_input_dim, 128),
-            nn.LayerNorm(128),
-            nn.GELU(),
-            nn.Dropout(0.1),
-
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
-            nn.GELU(),
-            nn.Dropout(0.1)
+        # Modal fusion (keep your existing attention fusion)
+        self.modal_fusion = MultiModalFusion(
+            metadata_dim=96,
+            overlap_dim=16,
+            temporal_dim=64,  # keep interface stable
+            edge_dim=32,      # keep interface stable
+            output_dim=64
         )
+        # Optional: overlap density head (not returned by forward; use in trainer if desired)
+        self.overlap_head = nn.Linear(64, 4)
+        
+        logging.info(f"   Using MultiModalFusion with cross-attention")
 
-        # Priority prediction head (outputs priority + uncertainty)
+        # Heads: priority (linear) and uncertainty (positive via Softplus)
         self.priority_head = nn.Sequential(
             nn.Linear(64, 32),
             nn.LayerNorm(32),
             nn.GELU(),
-            nn.Dropout(0.1),
+            nn.Dropout(cfg_get('dropout', 0.12)),
             nn.Linear(32, 16),
             nn.GELU(),
-            nn.Linear(16, 2)  # [priority, log_uncertainty]
+            nn.Linear(16, 1)     # priority
         )
+        self.uncertainty_head = nn.Sequential(
+            nn.Linear(64, 1),
+            nn.Softplus(beta=1.0)  # sigma > 0
+        )
+        self.prio_gain = nn.Parameter(torch.tensor(1.0))
+        self.prio_bias = nn.Parameter(torch.tensor(0.0))
 
-        logging.info(f"Enhanced PriorityNet initialized (use_strain={use_strain})")
+        logging.info(f"🔍 PriorityNet Configuration: use_strain={self.use_strain}, use_edge_conditioning={self.use_edge_conditioning}, n_edge_types={self.n_edge_types}")
+        logging.info(f"   dropout={cfg_get('dropout', 0.2)}, hidden_dims={cfg_get('hidden_dims', [512,384,256,128])}")
+        logging.info(f"✅ Enhanced PriorityNet initialized with attention fusion")
 
     def _default_config(self):
-        return type('Config', (), {
-            'hidden_dims': [256, 128, 64],
-            'dropout': 0.1,
-            'learning_rate': 1e-3,
-            'use_strain': True
-        })()
-
-    # def forward(self, detections: List[Dict], strain_segments: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-    #     """
-    #     Forward pass with uncertainty quantification.
-
-    #     Args:
-    #         detections: List of detection dictionaries with parameters
-    #         strain_segments: Optional [n_signals, n_detectors, time_samples] whitened strain
-
-    #     Returns:
-    #         priorities: [n_signals] priority scores
-    #         uncertainties: [n_signals] uncertainty estimates
-    #     """
-
-    #     if not detections:
-    #         return torch.empty(0), torch.empty(0)
-
-    #     try:
-    #         # Convert metadata to tensor
-    #         signal_tensor = self._detections_to_tensor(detections)
-
-    #         if signal_tensor is None or signal_tensor.numel() == 0:
-    #             n = len(detections)
-    #             return torch.zeros(n), torch.ones(n)
-
-    #         # Extract metadata features
-    #         metadata_features = self.signal_encoder(signal_tensor)
-
-    #         # Extract cross-signal overlap features
-    #         overlap_features = self.cross_signal_analyzer(signal_tensor)
-
-    #         # Extract temporal features from strain (if available)
-    #         if self.use_strain and strain_segments is not None:
-    #             temporal_features = self.strain_encoder(strain_segments)
-    #         else:
-    #             temporal_features = torch.zeros(
-    #                 signal_tensor.shape[0], 0, 
-    #                 device=signal_tensor.device
-    #             )
-
-    #         # Fuse all features
-    #         if temporal_features.shape[1] > 0:
-    #             combined_features = torch.cat([
-    #                 metadata_features, overlap_features, temporal_features
-    #             ], dim=1)
-    #         else:
-    #             combined_features = torch.cat([
-    #                 metadata_features, overlap_features
-    #             ], dim=1)
-
-
-    #         print(f"metadata_features.shape = {metadata_features.shape}")
-    #         print(f"overlap_features.shape = {overlap_features.shape}")
-    #         print(f"temporal_features.shape = {temporal_features.shape}")
-    #         fused = self.fusion_layer(combined_features)
-
-    #         # Predict priority and uncertainty
-    #         output = self.priority_head(fused)
-    #         priorities = torch.sigmoid(output[:, 0])  # [0, 1]
-    #         log_uncertainties = output[:, 1]
-    #         uncertainties = torch.exp(log_uncertainties)  # Convert to positive
-
-    #         return priorities, uncertainties
-
-    #     except Exception as e:
-    #         logging.error(f"Forward pass error: {e}")
-    #         n = len(detections)
-    #         return torch.zeros(n), torch.ones(n)
-
-
-    def forward(self, detections: List[Dict], strain_segments: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass with uncertainty quantification.
-
-        Args:
-            detections: List of detection dictionaries with parameters
-            strain_segments: Optional [n_signals, n_detectors, time_samples] whitened strain
+        Provide a minimal default configuration object for PriorityNet.
 
         Returns:
-            priorities: [n_signals] priority scores
-            uncertainties: [n_signals] uncertainty estimates
+            A dynamic object with default fields: hidden_dims, dropout, learning_rate,
+            use_strain, use_edge_conditioning, n_edge_types.
         """
-        
+        return type('Config', (), {
+            'hidden_dims': [512, 384, 256, 128],
+            'dropout': 0.2,
+            'learning_rate': 5e-4,
+            'use_strain': True,
+            'use_edge_conditioning': True,
+            'n_edge_types': 17
+        })()
+
+    def _to_device_tensor(self, arr, device):
+        """
+        Convert input to a float32 tensor on the specified device with non-blocking transfer.
+
+        Args:
+            arr: Tensor or array-like to convert.
+            device: Target device (e.g., 'cuda' or 'cpu').
+
+        Returns:
+            A torch.float32 tensor on the given device.
+        """
+        if isinstance(arr, torch.Tensor):
+            return arr.to(device=device, dtype=torch.float32, non_blocking=True)
+        return torch.as_tensor(np.asarray(arr), device=device, dtype=torch.float32)
+
+    def forward(
+        self,
+        detections: List[Dict],
+        strain_segments: Optional[torch.Tensor] = None,
+        edge_type_ids: Optional[torch.Tensor] = None,
+        training: bool = False,
+        detector_dropout_prob: float = 0.1
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward with cross-modal attention fusion.
+
+        Args:
+            detections: List of per-signal dictionaries containing normalized/unnormalized parameters.
+            strain_segments: Optional tensor [N, n_detectors, time_samples] of whitened strain.
+            edge_type_ids: Optional tensor [N] of edge-type ids; 0 is padding for 'none'.
+            training: Unused flag (reserved for future stochastic behavior).
+            detector_dropout_prob: Unused argument placeholder for future extensions.
+
+        Returns:
+            priorities: Tensor [N] of predicted priorities (pre-calibrated by affine).
+            uncertainties: Tensor [N] of positive uncertainties via Softplus.
+        """
         if not detections:
             return torch.empty(0), torch.empty(0)
 
+        device = next(self.parameters()).device
         try:
-            signal_tensor = self._detections_to_tensor(detections)
+            signal_tensor = self._detections_to_tensor(detections).to(device)
             if signal_tensor is None or signal_tensor.numel() == 0:
                 n = len(detections)
-                return torch.zeros(n), torch.ones(n)
+                return torch.zeros(n, device=device), torch.ones(n, device=device)
 
-            metadata_features = self.signal_encoder(signal_tensor)
-            overlap_features = self.cross_signal_analyzer(signal_tensor)
+            # Modal encodings
+            metadata_features = self.signal_encoder(signal_tensor)        # [N, 96]
+            overlap_features = self.cross_signal_analyzer(signal_tensor)  # [N, 16]
 
-            if self.use_strain and strain_segments is not None and strain_segments.shape[1] > 0:
-                temporal_features = self.strain_encoder(strain_segments)
-                if temporal_features.shape[1] == 0:
-                    # Replace zero-dim temporal_features with zeros tensor of shape [batch_size, 64]
-                    temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=signal_tensor.device)
+            # Temporal features (zeros if absent)
+            if self.use_strain and strain_segments is not None and strain_segments.numel() > 0:
+                temporal_features = self.strain_encoder(strain_segments.to(device))  # [N, 64]
+                if temporal_features.shape[-1] != 64:
+                    temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
             else:
-                temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=signal_tensor.device)
+                temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
 
-            combined_features = torch.cat([metadata_features, overlap_features, temporal_features], dim=1)
+            # Edge conditioning inputs (IDs provided by caller or default 0)
+            if self.use_edge_conditioning:
+                if edge_type_ids is None:
+                    edge_type_ids = torch.zeros(signal_tensor.shape[0], dtype=torch.long, device=device)
+                else:
+                    edge_type_ids = edge_type_ids.to(device=device, dtype=torch.long)
+                    if edge_type_ids.dim() == 0:
+                        edge_type_ids = edge_type_ids.unsqueeze(0).expand(signal_tensor.shape[0])
+                    elif len(edge_type_ids) != signal_tensor.shape[0]:
+                        edge_type_ids = torch.zeros(signal_tensor.shape[0], dtype=torch.long, device=device)
+                edge_embeds = self.edge_embedding(edge_type_ids)  # [N, 32]
+            else:
+                edge_embeds = torch.zeros((signal_tensor.shape[0], 32), device=device)
 
-            fused = self.fusion_layer(combined_features)
-            output = self.priority_head(fused)
-            priorities = torch.sigmoid(output[:, 0])
-            log_uncertainties = output[:, 1]
-            uncertainties = torch.exp(log_uncertainties)
+            # Optional lightweight eval diagnostics for modality activity (rate-limited)
+            if not self.training and torch.rand(1).item() < 0.001:  # 0.1% instead of 2%
+                try:
+                    n_sigs = signal_tensor.shape[0]
+                    if n_sigs >= 2:  # only log when overlap is expected
+                        logging.info(f"   [n={n_sigs}] meta:{metadata_features.std():.2e} overlap:{overlap_features.std():.2e} temp:{temporal_features.std():.2e} edge:{edge_embeds.std():.2e}")
+                except Exception:
+                    pass
 
-            return priorities, uncertainties
+
+            # Fusion
+            fused = self.modal_fusion(
+                metadata_features, overlap_features, temporal_features, edge_embeds
+            )  # [N, 64]
+
+            # Heads
+            prio = self.priority_head(fused).squeeze(-1)          # [N], linear (no sigmoid)
+            prio = prio * self.prio_gain + self.prio_bias         # affine transform
+            sigma = self.uncertainty_head(fused).squeeze(-1)      # [N], positive
+
+            return prio, sigma
 
         except Exception as e:
             logging.error(f"Forward pass error: {e}")
             n = len(detections)
-            return torch.zeros(n), torch.ones(n)
+            return torch.zeros(n, device=device), torch.ones(n, device=device)
 
     def rank_detections(self, detections: List[Dict], strain_segments: Optional[torch.Tensor] = None) -> List[int]:
-        """Rank detections by priority, accounting for uncertainty."""
+        """
+        Rank detections by an uncertainty-penalized priority score.
 
+        The score is priorities − β·uncertainty, where β is larger for dense overlaps
+        (n ≥ 5) to discount uncertain picks in difficult scenes.
+
+        Args:
+            detections: List of detection dicts matching the forward API.
+            strain_segments: Optional strain tensor forwarded to the encoder.
+
+        Returns:
+            A list of indices sorted by descending score (best-first).
+        """
         if not detections:
             return []
-
         try:
             with torch.no_grad():
                 priorities, uncertainties = self.forward(detections, strain_segments)
-
                 if priorities.numel() == 0 or len(priorities) != len(detections):
                     return list(range(len(detections)))
-
-                # Uncertainty-aware ranking: penalize high uncertainty
-                # Use UCB-like approach: score = priority - beta * uncertainty
-                beta = 0.1  # Exploration parameter
+                n = len(detections)
+                beta = 0.25 if n >= 5 else 0.10  # stronger penalty for 5+
                 scores = priorities - beta * uncertainties
-
-                ranked_indices = torch.argsort(scores, descending=True).tolist()
-                return ranked_indices
-
+                return torch.argsort(scores, descending=True).tolist()
         except Exception as e:
             logging.warning(f"Ranking failed: {e}")
             return self._snr_fallback_ranking(detections)
 
     def _detections_to_tensor(self, detections: List[Dict]) -> torch.Tensor:
-        """Convert detection dictionaries to tensor format."""
+        """
+        Convert detection dictionaries to a normalized tensor of features.
 
+        Extracts a fixed 15-D parameter vector per detection, denormalizes when needed,
+        clamps to valid ranges, and normalizes to [0, 1], with safe fallbacks.
+
+        Args:
+            detections: List of detection dicts possibly containing nested 'median'/'mean' values.
+
+        Returns:
+            Tensor [N, 15] of normalized features suitable for the feature extractor.
+        """
         param_names = [
             'mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
             'geocent_time', 'theta_jn', 'psi', 'phase', 'a_1', 'a_2',
             'tilt_1', 'tilt_2', 'phi_12', 'phi_jl'
         ]
-
         ranges = {
             'mass_1': (5.0, 100.0), 'mass_2': (5.0, 100.0),
             'luminosity_distance': (50.0, 3000.0),
@@ -524,7 +987,6 @@ class EnhancedPriorityNet(nn.Module):
             'tilt_1': (0.0, np.pi), 'tilt_2': (0.0, np.pi),
             'phi_12': (0.0, 2*np.pi), 'phi_jl': (0.0, 2*np.pi)
         }
-
         defaults = {
             'mass_1': 35.0, 'mass_2': 30.0, 'luminosity_distance': 500.0,
             'ra': 1.0, 'dec': 0.0, 'geocent_time': 0.0,
@@ -532,324 +994,271 @@ class EnhancedPriorityNet(nn.Module):
             'a_1': 0.0, 'a_2': 0.0, 'tilt_1': 0.0, 'tilt_2': 0.0,
             'phi_12': 0.0, 'phi_jl': 0.0
         }
-
         try:
             tensor_data = []
-
             for detection in detections:
-                signal_params = []
-
-                for param_name in param_names:
+                vals = []
+                for name in param_names:
                     try:
-                        value = detection.get(param_name, defaults[param_name])
-
-                        if isinstance(value, dict):
-                            value = value.get('median', value.get('mean', defaults[param_name]))
-
-                        value = float(value)
-
-                        if not np.isfinite(value):
-                            value = defaults[param_name]
-
-                        # Normalize to [0, 1]
-                        min_val, max_val = ranges[param_name]
-                        normalized = (value - min_val) / (max_val - min_val)
-                        normalized = np.clip(normalized, 0.0, 1.0)
-
-                        signal_params.append(normalized)
-
+                        v = detection.get(name, defaults[name])
+                        if isinstance(v, dict):
+                            v = v.get('median', v.get('mean', defaults[name]))
+                        v = float(v)
+                        if not np.isfinite(v):
+                            v = defaults[name]
+                        mn, mx = ranges[name]
+                        norm = (v - mn) / (mx - mn)
+                        vals.append(np.clip(norm, 0.0, 1.0))
                     except:
-                        min_val, max_val = ranges[param_name]
-                        default_val = defaults[param_name]
-                        normalized = (default_val - min_val) / (max_val - min_val)
-                        signal_params.append(np.clip(normalized, 0.0, 1.0))
-
-                tensor_data.append(signal_params)
-
+                        mn, mx = ranges[name]; dv = defaults[name]
+                        norm = (dv - mn) / (mx - mn)
+                        vals.append(np.clip(norm, 0.0, 1.0))
+                tensor_data.append(vals)
             return torch.tensor(tensor_data, dtype=torch.float32)
-
         except Exception as e:
             logging.error(f"Tensor conversion failed: {e}")
-            n_detections = len(detections)
-            return torch.full((n_detections, 15), 0.5, dtype=torch.float32)
+            n = len(detections)
+            return torch.full((n, 15), 0.5, dtype=torch.float32)
+        
+    
 
     def _snr_fallback_ranking(self, detections: List[Dict]) -> List[int]:
-        """Fallback SNR-based ranking."""
+        """
+        Fallback ranking by available SNR-like fields when model ranking fails.
 
+        Args:
+            detections: List of detection dicts possibly containing 'network_snr', 'target_snr', or 'snr'.
+
+        Returns:
+            Indices sorted by descending SNR proxy; identity order on failure.
+        """
         try:
             snr_scores = []
             for i, detection in enumerate(detections):
-                snr = detection.get('network_snr', 0.0)
-                if not np.isfinite(snr):
-                    snr = 0.0
+                snr = detection.get('network_snr', detection.get('target_snr', detection.get('snr', 15.0)))
+                snr = float(snr) if np.isfinite(snr) else 0.0
                 snr_scores.append((i, snr))
-
             snr_scores.sort(key=lambda x: x[1], reverse=True)
             return [idx for idx, _ in snr_scores]
-
         except:
             return list(range(len(detections)))
 
 
-class AdaptiveRankingLoss(nn.Module):
-    """Adaptive pairwise ranking loss with learned margins."""
+class PriorityNetTrainer:
+    """
+    Trainer for PriorityNet with warmup, ReduceLROnPlateau, and composite loss.
 
-    def __init__(self, base_margin: float = 0.1):
-        super().__init__()
-        self.base_margin = base_margin
+    Handles optimizer/scheduler setup, gradient clipping, batch-wise training over
+    variable-length scenarios, and exposes an affine calibration mode to fine-tune
+    a global gain/bias for rapid scale alignment when MAE plateaus.
+    """
 
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor, 
-                uncertainties: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def __init__(self, model: PriorityNet, config=None):
         """
-        Compute adaptive ranking loss with uncertainty weighting.
+        Initialize the trainer components from configuration.
 
         Args:
-            predictions: [n] predicted priorities
-            targets: [n] ground truth priorities
-            uncertainties: [n] optional uncertainty estimates
+            model: An instance of PriorityNet to be trained.
+            config: Dict/object providing learning rate, weight decay, warmup and scheduler settings,
+                    loss weights (ranking/mse/uncertainty), label_smoothing, gradient_clip_norm.
         """
-        n_samples = predictions.shape[0]
-
-        if n_samples < 2:
-            return torch.tensor(0.0, device=predictions.device, requires_grad=True)
-
-        loss = 0.0
-        count = 0
-
-        for i in range(n_samples):
-            for j in range(i + 1, n_samples):
-                # Adaptive margin based on target separation
-                target_diff = torch.abs(targets[i] - targets[j])
-                margin = self.base_margin * torch.clamp(target_diff, min=0.1, max=1.0)
-
-                # Uncertainty weighting (down-weight uncertain predictions)
-                if uncertainties is not None:
-                    weight = 1.0 / (1.0 + uncertainties[i] + uncertainties[j])
-                else:
-                    weight = 1.0
-
-                # Ranking constraint
-                if targets[i] > targets[j]:
-                    diff = predictions[j] - predictions[i] + margin
-                    loss += weight * torch.clamp(diff, min=0.0)
-                    count += 1
-                elif targets[j] > targets[i]:
-                    diff = predictions[i] - predictions[j] + margin
-                    loss += weight * torch.clamp(diff, min=0.0)
-                    count += 1
-
-        return loss / max(count, 1)
-
-
-class EnhancedPriorityLoss(nn.Module):
-    """Enhanced loss with adaptive ranking, MSE, and uncertainty regularization."""
-
-    def __init__(self, ranking_weight: float = 0.5, mse_weight: float = 0.4, 
-                 uncertainty_weight: float = 0.1):
-        super().__init__()
-        self.ranking_weight = ranking_weight
-        self.mse_weight = mse_weight
-        self.uncertainty_weight = uncertainty_weight
-        self.ranking_loss_fn = AdaptiveRankingLoss()
-
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor,
-                uncertainties: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """
-        Combined loss with uncertainty regularization.
-
-        Returns:
-            Dict with total loss and individual components
-        """
-        # MSE component
-        mse_loss = F.mse_loss(predictions, targets)
-
-        # Adaptive ranking loss
-        ranking_loss = self.ranking_loss_fn(predictions, targets, uncertainties)
-
-        # Uncertainty regularization (penalize overconfidence and underconfidence)
-        # Encourage uncertainty to be correlated with prediction error
-        pred_error = torch.abs(predictions - targets)
-        uncertainty_loss = F.mse_loss(uncertainties, pred_error.detach())
-
-        # Combined loss
-        total_loss = (self.mse_weight * mse_loss + 
-                     self.ranking_weight * ranking_loss +
-                     self.uncertainty_weight * uncertainty_loss)
-
-        return {
-            'total': total_loss,
-            'mse': mse_loss.detach(),
-            'ranking': ranking_loss.detach(),
-            'uncertainty': uncertainty_loss.detach()
-        }
-
-
-class EnhancedPriorityNetTrainer:
-    """Trainer for Enhanced PriorityNet with improved stability."""
-
-    def __init__(self, model: EnhancedPriorityNet, config=None):
         self.model = model
         self.config = config
+        self.current_epoch = 0
 
-        # Extract learning rate
-        if config and hasattr(config, 'learning_rate'):
-            lr = config.learning_rate
-        else:
-            lr = 1e-3
+        def get_config(key, default):
+            if hasattr(config, 'get'):
+                return config.get(key, default)
+            return getattr(config, key, default) if config is not None else default
 
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(), 
-            lr=lr, 
-            weight_decay=1e-4
-        )
+        lr = get_config('learning_rate', 5e-4)
+        weight_decay = get_config('weight_decay', 1e-5)
+        self.warmup_epochs = get_config('warmup_epochs', 5)
+        warmup_start_factor = get_config('warmup_start_factor', 0.1)
+        scheduler_patience = get_config('scheduler_patience', 5)
+        scheduler_factor = get_config('scheduler_factor', 0.5)
+        min_lr = get_config('min_lr', 1e-6)
 
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer,
-            mode = "min",
-            factor = 0.5,
-            patience = 15,
-            min_lr = 1e-6
-        )
+        # Loss weights and smoothing
+        self.ranking_weight = get_config('ranking_weight', 0.7)
+        self.mse_weight = get_config('mse_weight', 0.2)
+        self.uncertainty_weight = get_config('uncertainty_weight', 0.1)
+        self.use_snr_weighting = get_config('use_snr_weighting', True)
+        self.label_smoothing = get_config('label_smoothing', 0.0)
+        lambda_calib = get_config('lambda_calib', 1e-4)
 
-        self.criterion = EnhancedPriorityLoss(
-                ranking_weight=0.3,  # Reduced from 0.5
-                mse_weight=0.6,      # Increased from 0.4
-                uncertainty_weight=0.1
-            )
-
-    def train_step(self, detections_batch: List[List[Dict]], 
-              priorities_batch: List[torch.Tensor],
-              strain_batch: Optional[List[torch.Tensor]] = None) -> Dict[str, float]:
-        """
-        Single training step with optional strain data.
+        self.gradient_clip_norm = get_config('gradient_clip_norm', 1.0)
         
+        # Class-based loss with σ calibration and bucket-5 emphasis
+        self.loss_fn = PriorityLoss(
+            ranking_weight=self.ranking_weight,
+            mse_weight=self.mse_weight,
+            uncertainty_weight=self.uncertainty_weight,
+            use_snr_weighting=self.use_snr_weighting,
+            label_smoothing=self.label_smoothing,
+            lambda_calib=lambda_calib
+        )
+
+        # Optimizer
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+
+        # Warmup scheduler (stepped in outer loop)
+        self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            self.optimizer,
+            start_factor=warmup_start_factor,
+            end_factor=1.0,
+            total_iters=self.warmup_epochs
+        )
+
+        # Main scheduler
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode='min',
+                factor=scheduler_factor,
+                patience=scheduler_patience,
+                threshold=1e-6,           # absolute min improvement
+                threshold_mode='abs',     # critical change
+                cooldown=0,
+                min_lr=min_lr,
+                verbose=False
+            )
+        self.main_scheduler = self.scheduler
+
+        logging.info(f"✅ Trainer initialized:")
+        logging.info(f"   LR: {lr:.2e}")
+        logging.info(f"   Weight decay: {weight_decay:.2e}")
+        logging.info(f"   Warmup epochs: {self.warmup_epochs}")
+        logging.info(f"   Warmup start factor: {warmup_start_factor}")
+        logging.info(f"   Scheduler patience: {scheduler_patience}")
+        logging.info(f"   Min LR: {min_lr:.2e}")
+        logging.info(f"   Loss weights: R={self.ranking_weight}, M={self.mse_weight}, U={self.uncertainty_weight}")
+        logging.info(f"   Gradient clip: {self.gradient_clip_norm}")
+
+    def set_affine_calibration(self, enable: bool, base_lr: Optional[float] = None, weight_decay: Optional[float] = None):
+        """
+        Enter or exit affine calibration mode on the model's priority head.
+
+        When enabled, freezes all model parameters except prio_gain and prio_bias, and
+        rebuilds the optimizer to update only these two parameters (using current LR).
+        When disabled, restores the full optimizer over all parameters from the config.
+
         Args:
-            detections_batch: List of detection lists
-            priorities_batch: List of target priority tensors
-            strain_batch: Optional list of strain segment tensors
+            enable: True to enter affine mode, False to exit and restore full training.
+            base_lr: Optional LR to use in affine mode; defaults to current optimizer LR.
+            weight_decay: Optional weight decay to use in affine mode (defaults to 0.0).
+        """
+        # Freeze/unfreeze all params
+        for p in self.model.parameters():
+            p.requires_grad = not enable
+
+        # Always allow affine params
+        self.model.prio_gain.requires_grad = True
+        self.model.prio_bias.requires_grad = True
+
+        if enable:
+            # Use current LR; do not force an increase
+            lr = base_lr if base_lr is not None else self.optimizer.param_groups[0]['lr']
+            wd = 0.0 if weight_decay is None else weight_decay
+            self.optimizer = torch.optim.AdamW(
+                [self.model.prio_gain, self.model.prio_bias], lr=lr, weight_decay=wd
+            )
+        else:
+            # Restore full optimizer from config (dict or object)
+            get_cfg = (self.config.get if hasattr(self.config, 'get') else lambda k, d: getattr(self.config, k, d))
+            lr = get_cfg('learning_rate', 7e-4)
+            wd = get_cfg('weight_decay', 1.5e-5)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=wd)
+
+    def train_step(self,
+                   detections_batch: List[List[Dict]],
+                   priorities_batch: List[torch.Tensor],
+                   strain_batch: Optional[List[torch.Tensor]] = None,
+                   edge_type_ids_batch: Optional[List[torch.Tensor]] = None,
+                   snr_values_batch: Optional[List[torch.Tensor]] = None) -> Dict[str, float]:
+        """
+        Perform a single training step over a batch of scenarios.
+
+        Accumulates loss over variable-length scenarios, backpropagates once,
+        applies gradient clipping, and updates optimizer.
+
+        Args:
+            detections_batch: List of lists of detection dicts per scenario.
+            priorities_batch: List of tensors of target priorities per scenario.
+            strain_batch: Optional list of strain tensors per scenario.
+            edge_type_ids_batch: Optional list of edge-type id tensors per scenario.
+            snr_values_batch: Optional list of per-signal SNR tensors per scenario.
+
+        Returns:
+            Dict of scalar metrics averaged over valid scenarios in the batch.
         """
         self.model.train()
-        self.optimizer.zero_grad()
-        
-        total_losses = {'total': 0.0, 'mse': 0.0, 'ranking': 0.0, 'uncertainty': 0.0}
+        self.optimizer.zero_grad(set_to_none=True)
+
+        total_losses = {'total': 0.0, 'mse': 0.0, 'ranking': 0.0}
         valid_batches = 0
+
+        # CONSISTENT accumulator for a single backward at the end
         accumulated_loss_tensor = None
-        
-        for idx, (detections, target_priorities) in enumerate(zip(detections_batch, priorities_batch)):
+
+        for i, (detections, target_priorities) in enumerate(zip(detections_batch, priorities_batch)):
             if not detections or len(target_priorities) == 0:
                 continue
-            
             try:
-                # Get strain segments if available
-                strain_segments = strain_batch[idx] if strain_batch is not None else None
-                
-                # Forward pass
-                predicted_priorities, uncertainties = self.model(detections, strain_segments)
-                
-                if predicted_priorities.numel() == 0:
+                strain_segments = None if strain_batch is None else strain_batch[i]
+                edge_ids = None if edge_type_ids_batch is None else edge_type_ids_batch[i]
+
+                preds, sigma = self.model(detections, strain_segments, edge_type_ids=edge_ids)
+
+                m = min(len(preds), len(target_priorities))
+                if m == 0:
                     continue
-                
-                # Match lengths
-                min_len = min(len(predicted_priorities), len(target_priorities))
-                if min_len == 0:
-                    continue
-                
-                pred_slice = predicted_priorities[:min_len]
-                target_slice = target_priorities[:min_len].to(pred_slice.device)
-                unc_slice = uncertainties[:min_len]
-                
-                # Compute loss
-                losses = self.criterion(pred_slice, target_slice, unc_slice)
-                
+                preds = preds[:m]
+                targets = target_priorities[:m].to(preds.device)
+                sigma = sigma[:m]
+
+                snr_vals = None if snr_values_batch is None else snr_values_batch[i]
+                if snr_vals is not None:
+                    snr_vals = snr_vals[:m].to(preds.device)
+
+                losses = self.loss_fn(preds, targets, sigma, snr_values=snr_vals)
+                loss = losses['total']
+
+                # Accumulate graph-carrying loss tensor
                 if accumulated_loss_tensor is None:
-                    accumulated_loss_tensor = losses['total']
+                    accumulated_loss_tensor = loss
                 else:
-                    accumulated_loss_tensor = accumulated_loss_tensor + losses['total']
-                
-                total_losses['total'] += float(losses['total'].item())
-                total_losses['mse'] += float(losses['mse'].item())
-                total_losses['ranking'] += float(losses['ranking'].item())
-                total_losses['uncertainty'] += float(losses['uncertainty'].item())
+                    accumulated_loss_tensor = accumulated_loss_tensor + loss
+
+                # Track scalars for logging
+                total_losses['total'] += float(loss.detach().cpu())
+                total_losses['mse'] += float(losses['mse'].detach().cpu())
+                total_losses['ranking'] += float(losses['ranking'].detach().cpu())
                 valid_batches += 1
-                
+
             except Exception as e:
-                logging.debug(f"Training step error: {e}")
+                logging.debug(f"train_step error on batch {i}: {e}")
                 continue
-        
-        # Compute gradients and update
+
         grad_norm = 0.0
         if valid_batches > 0 and accumulated_loss_tensor is not None:
             avg_loss_tensor = accumulated_loss_tensor / valid_batches
             avg_loss_tensor.backward()
-            
-            # Gradient clipping and get norm
-            grad_norm = float(torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0))
-            
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm))
             self.optimizer.step()
-            
-            return {
-                'loss': total_losses['total'] / valid_batches,
-                'mse': float(total_losses['mse'] / valid_batches),
-                'ranking_loss': float(total_losses['ranking'] / valid_batches),
-                'priority_loss': float(total_losses['mse'] / valid_batches),
-                'uncertainty': float(total_losses['uncertainty'] / valid_batches),
-                'grad_norm': grad_norm,
-                'valid_batches': valid_batches
-            }
-        else:
-            return {
-                'loss': 0.0,
-                'mse': 0.0,
-                'ranking_loss': 0.0,
-                'priority_loss': 0.0,
-                'uncertainty': 0.0,
-                'grad_norm': 0.0,
-                'valid_batches': 0
-            }
 
-    def train_epoch(self, data_loader) -> Dict[str, float]:
-        """Train for one epoch."""
-
-        epoch_losses = {'total': 0.0, 'mse': 0.0, 'ranking': 0.0, 'uncertainty': 0.0}
-        num_batches = 0
-
-        for batch in data_loader:
-            # Handle different batch formats
-            if len(batch) == 2:
-                detections, priorities = batch
-                strain_segments = None
-            elif len(batch) == 3:
-                detections, priorities, strain_segments = batch
-            else:
-                continue
-
-            if not detections or len(priorities) == 0:
-                continue
-
-            loss_info = self.train_step(detections, priorities, strain_segments)
-
-            epoch_losses['total'] += loss_info['loss']
-            epoch_losses['mse'] += loss_info['mse']
-            epoch_losses['ranking'] += loss_info['ranking']
-            epoch_losses['uncertainty'] += loss_info['uncertainty']
-            num_batches += 1
-
-        # Step scheduler
-        self.scheduler.step()
-
-        if num_batches > 0:
-            return {
-                'epoch_loss': epoch_losses['total'] / num_batches,
-                'epoch_mse': epoch_losses['mse'] / num_batches,
-                'epoch_ranking': epoch_losses['ranking'] / num_batches,
-                'epoch_uncertainty': epoch_losses['uncertainty'] / num_batches,
-                'lr': self.optimizer.param_groups[0]['lr']
-            }
-        else:
-            return {'epoch_loss': 0.0, 'epoch_mse': 0.0, 'epoch_ranking': 0.0, 
-                   'epoch_uncertainty': 0.0, 'lr': 0.0}
+        return {
+            'loss': total_losses['total'] / max(1, valid_batches),
+            'mse': total_losses['mse'] / max(1, valid_batches),
+            'ranking_loss': total_losses['ranking'] / max(1, valid_batches),
+            'priority_loss': total_losses['mse'] / max(1, valid_batches),
+            'uncertainty': 0.0,
+            'grad_norm': grad_norm,
+            'valid_batches': valid_batches
+        }
 
 
 # Backward compatibility: alias old class names
-PriorityNet = EnhancedPriorityNet
-PriorityNetTrainer = EnhancedPriorityNetTrainer
+PriorityNet = PriorityNet
+PriorityNetTrainer = PriorityNetTrainer
+
+

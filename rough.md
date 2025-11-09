@@ -1,8 +1,3 @@
-
-
-
-
-
 (ahsd) ubuntu@ip-172-31-40-99:~/PosteriFlow$ python experiments/real_data_test.py  --event GW150914     --phase3a outputs/phase3a_output_3/neural_pe_model_only.pth     --phase3b outputs/phase3b_production/phase3b_working_output.pth     --save_dir outputs/real_data_analysis    --whiten
 🚀 AHSD REAL DATA ANALYSIS - SCALE-AWARE VERSION
 ============================================================

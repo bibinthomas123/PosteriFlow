@@ -1007,15 +1007,21 @@ class GWDatasetGenerator:
                 self.update_stats({'metadata': metadata})
                 return sample
             
-            # 3) Generate signal parameters based on type
-            if event_type == 'BBH':
-                params = self.generate_bbh_parameters_complete(snr_regime, is_edge_case)
-            elif event_type == 'BNS':
-                params = self.generate_bns_parameters_complete(snr_regime, is_edge_case)
-            elif event_type == 'NSBH':
-                params = self.generate_nsbh_parameters_complete(snr_regime, is_edge_case)
-            else:
-                self.logger.warning(f"Unknown event type: {event_type}")
+            # 3) Generate signal parameters using the FIXED ParameterSampler
+            # (replaces broken generate_*_parameters_complete functions)
+            try:
+                if event_type == 'BBH':
+                    params = self.sampler.sample_bbh_parameters(snr_regime=snr_regime, is_edge_case=is_edge_case)
+                elif event_type == 'BNS':
+                    params = self.sampler.sample_bns_parameters(snr_regime=snr_regime, is_edge_case=is_edge_case)
+                elif event_type == 'NSBH':
+                    params = self.sampler.sample_nsbh_parameters(snr_regime=snr_regime, is_edge_case=is_edge_case)
+                else:
+                    self.logger.warning(f"Unknown event type: {event_type}")
+                    self.stats['failed_samples'] += 1
+                    return None
+            except Exception as e:
+                self.logger.debug(f"Parameter sampling failed for {event_type}: {e}")
                 self.stats['failed_samples'] += 1
                 return None
             
@@ -3733,13 +3739,17 @@ class GWDatasetGenerator:
                 # Select SNR regime
                 snr_regime = self.select_snr_regime_smart(remaining_snr)
                 
-                # Generate parameters
-                if event_type == 'BBH':
-                    params = self.generate_bbh_parameters_complete(snr_regime, is_edge_case=False)
-                elif event_type == 'BNS':
-                    params = self.generate_bns_parameters_complete(snr_regime, is_edge_case=False)
-                else:  # NSBH
-                    params = self.generate_nsbh_parameters_complete(snr_regime, is_edge_case=False)
+                # Generate parameters using FIXED ParameterSampler
+                try:
+                    if event_type == 'BBH':
+                        params = self.sampler.sample_bbh_parameters(snr_regime=snr_regime, is_edge_case=False)
+                    elif event_type == 'BNS':
+                        params = self.sampler.sample_bns_parameters(snr_regime=snr_regime, is_edge_case=False)
+                    else:  # NSBH
+                        params = self.sampler.sample_nsbh_parameters(snr_regime=snr_regime, is_edge_case=False)
+                except Exception as e:
+                    self.logger.debug(f"Parameter sampling failed for overlap: {e}")
+                    continue
                 
                 # Adjust timing for overlaps (within 4-second window)
                 base_time = np.random.uniform(-1.5, 1.5)

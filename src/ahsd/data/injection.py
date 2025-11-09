@@ -68,6 +68,7 @@ class SignalInjector:
         
         return injected, metadata
     
+    
     def inject_overlapping_signals(self,
                                    noise: np.ndarray,
                                    signal_params_list: List[Dict],
@@ -303,3 +304,73 @@ class SignalInjector:
         
         snr_squared = 4 * np.sum(integrand) * delta_f
         return np.sqrt(snr_squared)
+
+
+def compute_network_snr_from_det_dict(d: dict):
+    """
+    Compute sqrt(sum s_i^2) from per-detector SNRs if present.
+    Returns None if no per-detector SNRs are found.
+    """
+    snrs = []
+    for k in ('snr_H1', 'snr_L1', 'snr_V1'):
+        v = d.get(k, None)
+        if v is not None:
+            snrs.append(float(v))
+    if not snrs:
+        return None
+    return float(math.sqrt(sum(s*s for s in snrs)))
+
+def proxy_network_snr_from_params(d: dict):
+    """
+    Monotone SNR proxy if matched-filter SNRs are unavailable.
+    Uses gravitational wave physics: SNR ∝ (M_chirp)^(5/6) / distance
+    Heavier and closer → higher SNR with strong distance correlation.
+    """
+    m1 = float(d.get('mass_1', 30.0))
+    m2 = float(d.get('mass_2', 25.0))
+    dl = max(float(d.get('luminosity_distance', 100.0)), 10.0)
+    
+    # Chirp mass: M_c = (m1*m2)^(3/5) / (m1+m2)^(1/5)
+    total_mass = m1 + m2
+    chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
+    
+    # Reference: at M_c=30 Msun, d=400 Mpc, SNR=15
+    reference_chirp_mass = 30.0
+    reference_distance = 400.0
+    reference_snr = 15.0
+    
+    # SNR scales as: SNR ~ (M_c)^(5/6) / d
+    snr = reference_snr * (chirp_mass / reference_chirp_mass)**(5/6) * (reference_distance / dl)
+    
+    return float(snr)
+
+
+
+def attach_network_snr(d: dict):
+    """
+    Attach 'network_snr' to detection dict d in-place.
+    Priority:
+      1. Already-set target_snr (from sampler - respect stochastic noise injection)
+      2. Per-detector SNRs (matched-filter calculation)
+      3. Proxy based on mass and distance
+    
+    This ensures that stochastically sampled target_snr values are preserved
+    and properly reflected in network_snr.
+    """
+    # HIGH PRIORITY: If target_snr was sampled/set, use it directly
+    if 'target_snr' in d and d['target_snr'] is not None:
+        try:
+            d['network_snr'] = float(d['target_snr'])
+            return
+        except (ValueError, TypeError):
+            pass
+    
+    # MEDIUM PRIORITY: Compute from per-detector SNRs if available
+    snr_net = compute_network_snr_from_det_dict(d)
+    if snr_net is not None:
+        d['network_snr'] = float(snr_net)
+        return
+    
+    # LOW PRIORITY: Fallback to proxy formula
+    snr_net = proxy_network_snr_from_params(d)
+    d['network_snr'] = float(snr_net)

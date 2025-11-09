@@ -161,7 +161,11 @@ def generate_dataset_from_config(config: Dict) -> Dict:
             duration=config.get('duration', 4.0),
             detectors=config.get('detectors', ['H1', 'L1', 'V1']),
             output_format=config.get('output_format', 'pkl'),
-            config=config
+            config={
+                **config,
+                'quota_mode': config.get('quota_mode', True),  # ✅ Enable quota enforcement by default
+                'expected_signals_per_overlap': config.get('expected_signals_per_overlap', 2.5)
+            }
         )
         
         # Generate dataset

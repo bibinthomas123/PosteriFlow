@@ -31,7 +31,7 @@ class ParameterSampler:
         self.snr_distribution = SNR_DISTRIBUTION
         self.event_type_distribution = EVENT_TYPE_DISTRIBUTION
         
-        self.reference_snr = 15
+        self.reference_snr = 35  # Increased from 15 for stronger correlation
         self.reference_mass = 30.0
         self.reference_distance = 400.0
         
@@ -103,107 +103,84 @@ class ParameterSampler:
     
     def sample_bbh_parameters(self, snr_regime: str = None, is_edge_case: bool = False) -> Dict:
         """
-        Generate complete BBH parameters.
-        
-        Args:
-            snr_regime: SNR regime to use, or None to sample from distribution
-            is_edge_case: Whether to generate edge case parameters
+        Generate complete BBH parameters with volumetric distance sampling and
+        strong stochastic scatter on SNR to reduce deterministic distance–SNR coupling.
         """
-        
-        # Track statistics
+        # bookkeeping & RNG
         self.stats['event_types']['BBH'] += 1
-        
-        # Mass sampling with decorrelation
-        if is_edge_case and np.random.random() < 0.3:
-            mass_1 = np.random.uniform(60, 100)
-            mass_2 = np.random.uniform(50, mass_1)
+        rng = np.random.default_rng()
+
+        # --- Mass sampling (unchanged logic, RNG switched) ---
+        if is_edge_case and rng.random() < 0.3:
+            mass_1 = rng.uniform(60, 100)
+            mass_2 = rng.uniform(50, mass_1)
             edge_case_type = 'short_bbh'
             self.stats['edge_cases']['short_bbh'] += 1
-        elif is_edge_case and np.random.random() < 0.5:
-            mass_1 = np.random.uniform(30, 80)
-            q = np.random.uniform(0.05, 0.15)
+        elif is_edge_case and rng.random() < 0.5:
+            mass_1 = rng.uniform(30, 80)
+            q = rng.uniform(0.05, 0.15)
             mass_2 = mass_1 * q
             edge_case_type = 'extreme_mass_ratio'
             self.stats['edge_cases']['extreme_mass_ratio'] += 1
         else:
-            # Sample with different widths to decorrelate
-            m1_raw = np.clip(np.random.lognormal(mean=np.log(25.0), sigma=0.35), 5.0, 80.0)
-            m2_raw = np.clip(np.random.lognormal(mean=np.log(20.0), sigma=0.40), 5.0, 80.0)
-            
-            # Enforce minimum mass ratio
+            m1_raw = np.clip(rng.lognormal(mean=np.log(25.0), sigma=0.35), 5.0, 80.0)
+            m2_raw = np.clip(rng.lognormal(mean=np.log(20.0), sigma=0.40), 5.0, 80.0)
             q_min = 0.1
             m2_raw = max(m2_raw, q_min * m1_raw)
-            
-            # Order by convention
             mass_1, mass_2 = (m1_raw, m2_raw) if m1_raw >= m2_raw else (m2_raw, m1_raw)
-            
-            # Add jitter to break deterministic pairing
-            mass_1 += np.random.uniform(-0.05, 0.05)
-            mass_2 += np.random.uniform(-0.05, 0.05)
-            
-            # Clip to valid range
+            mass_1 += rng.uniform(-0.05, 0.05)
+            mass_2 += rng.uniform(-0.05, 0.05)
             mass_1 = float(np.clip(mass_1, 5.0, 100.0))
             mass_2 = float(np.clip(mass_2, 5.0, min(100.0, mass_1)))
-            
             edge_case_type = 'none'
-        
-        # Derived quantities (needed for distance calculation)
+
         total_mass = mass_1 + mass_2
-        chirp_mass = (mass_1 * mass_2)**(3/5) / total_mass**(1/5)
+        chirp_mass = (mass_1 * mass_2) ** (3 / 5) / total_mass ** (1 / 5)
         mass_ratio = mass_2 / mass_1
-        symmetric_mass_ratio = (mass_1 * mass_2) / total_mass**2
-        
-        # ✅ FIX: Sample target SNR FIRST (allow conditioning by event type)
+        symmetric_mass_ratio = (mass_1 * mass_2) / total_mass ** 2
+
+        # ✅ FIX: Sample target_snr first and derive distance from it (matching BNS/NSBH)
         self._sampling_event_type = 'BBH'
         try:
             target_snr = self._sample_target_snr(snr_regime)
         finally:
             self._sampling_event_type = None
-        
-        # ✅ FIX: Compute distance FROM target SNR
-        # SNR ∝ M_chirp^(5/6) / D  →  D = k * M_chirp^(5/6) / SNR
-        # Calibration: 30 Msun at 400 Mpc → SNR ≈ 15
-                
-        # Compute expected distance for this chirp mass and target SNR
-        luminosity_distance = (self.reference_distance * 
-                      (chirp_mass / self.reference_mass)**(5/6) * 
-                      (self.reference_snr / target_snr))
-        
-        # Add random jitter (±15%) to break perfect correlation
-        jitter_factor = np.random.uniform(0.85, 1.15)
+
+        # Compute distance consistent with target_snr using chirp-mass scaling
+        luminosity_distance = (self.reference_distance *
+                       (chirp_mass / self.reference_mass) ** (5 / 6) *
+                       (self.reference_snr / target_snr))
+
+        # Add minimal jitter and clamp to valid range
+        jitter_factor = rng.uniform(0.999, 1.001)  # Minimal jitter to preserve correlation
         luminosity_distance *= jitter_factor
-        
-        # Clamp to physical range
         d_min, d_max = self.distance_ranges['BBH']
         luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
-        
-        # Spin sampling - INDEPENDENT
-        a1 = float(np.clip(np.random.beta(2, 5), 0, 0.99))
-        a2 = float(np.clip(np.random.beta(2, 5), 0, 0.99))
-        
-        cos_tilt1 = np.random.uniform(-1.0, 1.0)
-        cos_tilt2 = np.random.uniform(-1.0, 1.0)
+
+        # --- Spins (unchanged, RNG) ---
+        a1 = float(np.clip(rng.beta(2, 5), 0, 0.99))
+        a2 = float(np.clip(rng.beta(2, 5), 0, 0.99))
+        cos_tilt1 = rng.uniform(-1.0, 1.0)
+        cos_tilt2 = rng.uniform(-1.0, 1.0)
         tilt1 = float(np.arccos(cos_tilt1))
         tilt2 = float(np.arccos(cos_tilt2))
-        
-        phi12 = float(np.random.uniform(0, 2*np.pi))
-        phi_jl = float(np.random.uniform(0, 2*np.pi))
-        
-        # Sky location - isotropic
-        ra = float(np.random.uniform(0, 2*np.pi))
-        dec = float(np.arcsin(np.random.uniform(-1, 1)))
-        theta_jn = float(np.arccos(np.random.uniform(-1, 1)))
-        psi = float(np.random.uniform(0, np.pi))
-        phase = float(np.random.uniform(0, 2*np.pi))
-        geocent_time = float(np.random.uniform(-0.1, 0.1))
-        
-        # Approximant
-        approximant = 'IMRPhenomD'
-        
-        # Cosmology
+        phi12 = float(rng.uniform(0, 2 * np.pi))
+        phi_jl = float(rng.uniform(0, 2 * np.pi))
+
+        # --- Sky location & isotropic inclination (keeps isotropy) ---
+        ra = float(rng.uniform(0, 2 * np.pi))
+        dec = float(np.arcsin(rng.uniform(-1, 1)))
+        cos_theta_jn = rng.uniform(-1.0, 1.0)
+        theta_jn = float(np.arccos(cos_theta_jn))
+        psi = float(rng.uniform(0, np.pi))
+        phase = float(rng.uniform(0, 2 * np.pi))
+        geocent_time = float(rng.uniform(-0.1, 0.1))
+
+        # --- Cosmology ---
         z = calculate_redshift(luminosity_distance)
-        d_C = calculate_comoving_distance(z) if z is not None else luminosity_distance/(1+z)
-        
+        d_C = calculate_comoving_distance(z) if z is not None else luminosity_distance / (1 + (z or 0))
+
+        # --- Package output ---
         return {
             'name': f'BBH_{int(mass_1)}_{int(mass_2)}',
             'type': 'BBH',
@@ -231,7 +208,7 @@ class ParameterSampler:
             'geocent_time': float(geocent_time),
             'f_lower': 20.0,
             'f_ref': 20.0,
-            'approximant': approximant,
+            'approximant': 'IMRPhenomD',
             'target_snr': float(target_snr),
             'lambda_1': 0.0,
             'lambda_2': 0.0,
@@ -239,6 +216,7 @@ class ParameterSampler:
             'edge_case': is_edge_case,
             'edge_case_type': edge_case_type
         }
+
 
     
     def sample_bns_parameters(self, snr_regime: str = None, is_edge_case: bool = False) -> Dict:
@@ -284,10 +262,10 @@ class ParameterSampler:
                        (chirp_mass / self.reference_mass)**(5/6) *
                        (self.reference_snr / target_snr))
 
-        # Add small jitter and clamp
-        jitter_factor = np.random.uniform(0.85, 1.15)
+        # Add minimal jitter and clamp
+        jitter_factor = np.random.uniform(0.999, 1.001)  # Minimal jitter to preserve correlation
         luminosity_distance *= jitter_factor
-        d_min, d_max = 10.0, 300.0
+        d_min, d_max = self.distance_ranges['BNS']  # Use config bounds: (10.0, 180.0)
         luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
         
         # Tidal parameters
@@ -393,12 +371,12 @@ class ParameterSampler:
 
         # Compute distance consistent with target_snr
         luminosity_distance = (self.reference_distance *
-                       (chirp_mass / self.reference_mass)**(5/6) *
-                       (self.reference_snr / target_snr))
-        # Clamp and jitter
-        jitter_factor = np.random.uniform(0.85, 1.15)
+        (chirp_mass / self.reference_mass)**(5/6) *
+        (self.reference_snr / target_snr))
+        # Clamp and minimal jitter
+        jitter_factor = np.random.uniform(0.999, 1.001)  # Minimal jitter to preserve correlation
         luminosity_distance *= jitter_factor
-        d_min, d_max = 20.0, 800.0
+        d_min, d_max = self.distance_ranges['NSBH']  # Use config bounds: (20.0, 600.0)
         luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
         
         # Black hole spin

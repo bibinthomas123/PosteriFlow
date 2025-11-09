@@ -4,6 +4,7 @@ Handles injection of single and overlapping GW signals with SNR control
 """
 
 import numpy as np
+import math
 import logging
 from typing import Dict, List, Tuple, Optional
 

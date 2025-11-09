@@ -1,0 +1,79 @@
+
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>GW Dataset Analysis Report</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+            h1 { color: #333; border-bottom: 3px solid #0066cc; padding: 10px; }
+            h2 { color: #0066cc; margin-top: 30px; }
+            .metric { background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #0066cc; }
+            table { border-collapse: collapse; width: 100%; background: white; margin: 15px 0; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #0066cc; color: white; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            .success { color: green; font-weight: bold; }
+            .warning { color: orange; font-weight: bold; }
+            .error { color: red; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h1>Gravitational Wave Dataset Analysis Report</h1>
+
+        <h2>1. Dataset Statistics</h2>
+        <div class="metric">
+            <p><strong>Total Samples:</strong> 987</p>
+            <p><strong>Single Events:</strong> 528 (53.5%)</p>
+            <p><strong>Overlapping Events:</strong> 459 (46.5%)</p>
+        </div>
+
+        <h2>2. SNR Regime Analysis</h2>
+        <table>
+            <tr><th>Regime</th><th>Count</th><th>Percentage</th><th>Mean SNR</th></tr>
+    
+            <tr>
+                <td>WEAK</td>
+                <td>4</td>
+                <td>0.4%</td>
+                <td>5.5</td>
+            </tr>
+            
+            <tr>
+                <td>LOW</td>
+                <td>45</td>
+                <td>4.6%</td>
+                <td>12.5</td>
+            </tr>
+            
+            <tr>
+                <td>MEDIUM</td>
+                <td>841</td>
+                <td>86.0%</td>
+                <td>28.3</td>
+            </tr>
+            
+            <tr>
+                <td>HIGH</td>
+                <td>88</td>
+                <td>9.0%</td>
+                <td>58.8</td>
+            </tr>
+            
+            <tr>
+                <td>LOUD</td>
+                <td>0</td>
+                <td>0.0%</td>
+                <td>0.0</td>
+            </tr>
+            
+        </table>
+
+        <h2>3. Physics Validation</h2>
+    
+        <div class="metric">
+            <p><strong>Cosmology Valid:</strong> <span class="success">987/987 (100.0%)</span></p>
+        </div>
+    
+        </body>
+    </html>
+    

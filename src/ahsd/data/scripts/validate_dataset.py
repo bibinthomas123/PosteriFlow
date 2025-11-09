@@ -223,12 +223,12 @@ def validate_distributions(samples: List[Dict], expected_config: Dict, logger) -
     
     # ✅ FIXED: Correct SNR ranges matching dataset generator
     SNR_RANGES = {
-        'weak': (7, 10),    # ✅ SNR < 10
-        'low': (10, 15),    # ✅ 10 ≤ SNR < 15
-        'medium': (15, 25), # ✅ 15 ≤ SNR < 25
-        'high': (25, 40),   # ✅ 25 ≤ SNR < 40
-        'loud': (40, 80)    # ✅ SNR ≥ 40
-    }
+    'weak': (5.0, 10.0),
+    'low': (8.0, 20.0),
+    'medium': (15.0, 40.0),
+    'high': (30.0, 65.0),
+    'loud': (50.0, 100.0)
+}
     
     # Extract SNR values and categorize
     for sample in samples:
@@ -411,7 +411,7 @@ def validate_edge_cases(samples: List[Dict], logger, expected_config: Dict = Non
         }
     }
     
-    # ✅ FIXED: Comprehensive edge case type sets (includes all variants and aliases)
+    # Comprehensive edge case type sets (includes all variants and aliases)
     PHYSICAL_EXTREMES = {
         # Mass-related
         'high_mass_ratio', 'extreme_mass_ratio', 'short_duration_high_mass',
@@ -614,20 +614,20 @@ def validate_extreme_cases(samples: List[Dict], logger, expected_config: Dict = 
     logger.info("  Analyzing extreme case distribution...")
     
     extreme_stats = {
-        'total_samples': len([s for s in samples if s is not None]),
-        'extreme_cases': {
-            'near_simultaneous_mergers': 0,
-            'extreme_mass_ratio': 0,
-            'high_spin_aligned': 0,
-            'precession_dominated': 0,
-            'eccentric_overlaps': 0,
-            'weak_strong_overlaps': 0,
-            'noise_confused_overlaps': 0,
-            'long_duration_bns_overlaps': 0,
-            'detector_dropouts': 0,
-            'cosmological_distance': 0,
-            'pre_merger_samples': 0  # ✅ ADD THIS
-        },
+    'total_samples': len([s for s in samples if s is not None]),
+    'extreme_cases': {
+    'near_simultaneous_mergers': 0,
+    'extreme_mass_ratio': 0,
+    'high_spin_aligned': 0,
+    'precession_dominated': 0,
+    'eccentric_overlaps': 0,
+    'weak_strong_overlaps': 0,
+    'noise_confused_overlaps': 0,
+    'long_duration_bns_overlaps': 0,
+    'detector_dropouts': 0,
+    'cosmological_distance': 0
+    # Removed pre_merger_samples as it's an edge case, not extreme case
+    },
         'validation': {
             'passed': True,
             'errors': [],
@@ -669,23 +669,7 @@ def validate_extreme_cases(samples: List[Dict], logger, expected_config: Dict = 
                 # acceptable but count missing target_snr below
                 pass
         
-        # ✅ CHECK FOR PRE-MERGER SAMPLES
-        metadata = sample.get('metadata', {})
-        extreme_meta = sample.get('extreme_metadata', {})
-        
-        # Multiple ways to detect pre-merger samples
-        is_pre_merger = (
-            sample.get('extreme_case_type') == 'pre_merger_samples' or
-            metadata.get('phase') == 'inspiral_only' or
-            metadata.get('merger_in_window') == False or
-            extreme_meta.get('contains_merger') == False or
-            'time_to_merger' in metadata or
-            'time_to_merger' in extreme_meta
-        )
-        
-        if is_pre_merger:
-            extreme_stats['extreme_cases']['pre_merger_samples'] += 1
-            continue  # Don't double-count
+        # Note: Pre-merger samples are handled as edge cases, not extreme cases
         
         # Handle overlapping samples (can have multiple parameter dicts)
         if isinstance(params, list) and len(params) >= 2:
@@ -798,19 +782,31 @@ def validate_extreme_cases(samples: List[Dict], logger, expected_config: Dict = 
     
     # Calculate stats and validate
     total = extreme_stats['total_samples']
-    
+
+    # Expected fractions based on config (extreme_fraction=0.10):
+    # near_simultaneous_mergers: 0.20 → 0.10*0.20 = 0.020
+    # extreme_mass_ratio: 0.15 → 0.10*0.15 = 0.015
+    # high_spin_aligned: 0.12 → 0.10*0.12 = 0.012
+    # precession_dominated: 0.12 → 0.10*0.12 = 0.012
+    # eccentric_overlaps: 0.08 → 0.10*0.08 = 0.008
+    # weak_strong_overlaps: 0.18 → 0.10*0.18 = 0.018
+    # noise_confused_overlaps: 0.10 → 0.10*0.10 = 0.010
+    # long_duration_bns_overlaps: 0.04 → 0.10*0.04 = 0.004
+    # detector_dropouts: 0.08 → 0.10*0.08 = 0.008
+    # cosmological_distance: not in config, keep default
+    # pre_merger_samples: not an extreme case, remove from expectations
     expected_minimums = {
-        'near_simultaneous_mergers': 0.01,
-        'extreme_mass_ratio': 0.01,
-        'high_spin_aligned': 0.01,
-        'precession_dominated': 0.01,
-        'eccentric_overlaps': 0.005,
-        'weak_strong_overlaps': 0.005,
-        'noise_confused_overlaps': 0.01,
-        'long_duration_bns_overlaps': 0.005,
+        'near_simultaneous_mergers': 0.015,  # 0.10 * 0.20 * 0.75 (some tolerance)
+        'extreme_mass_ratio': 0.010,
+        'high_spin_aligned': 0.008,
+        'precession_dominated': 0.008,
+    'eccentric_overlaps': 0.005,
+    'weak_strong_overlaps': 0.012,
+    'noise_confused_overlaps': 0.007,
+    'long_duration_bns_overlaps': 0.002,
         'detector_dropouts': 0.005,
-        'cosmological_distance': 0.005,
-        'pre_merger_samples': 0.01  
+    'cosmological_distance': 0.005
+    # Removed pre_merger_samples as it's an edge case, not extreme case
     }
     
     logger.info("  ✓ Extreme case breakdown (critical for robustness):")

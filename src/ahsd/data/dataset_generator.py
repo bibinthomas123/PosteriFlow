@@ -28,6 +28,135 @@ from .injection import SignalInjector
 from .preprocessing import DataPreprocessor
 from .io_utils import DatasetWriter, MetadataManager
 from .simulation import OverlappingSignalSimulator
+import random
+
+_EDGE_MAP = {}  # Global edge type mapping
+
+import numpy as np
+
+def sample_overlap_size(p_heavy=0.45, base_lambda=2.2, heavy_min=4, heavy_max=6):
+    """
+    Mixture sampler:
+      - with probability p_heavy draw from a heavy tail (discrete uniform or truncated power-law)
+      - otherwise draw from a light Poisson-like distribution (1-4)
+    """
+    if np.random.random() < p_heavy:
+        # heavy tail: discrete uniform or truncated Pareto
+        return int(np.random.randint(heavy_min, heavy_max + 1))
+    else:
+        # light component: Poisson truncated to [1,4]
+        val = np.random.poisson(base_lambda)
+        val = max(1, min(val, 4))
+        return int(val)
+
+
+def sample_clustered_times(rng, n_signals, duration, overlap_window=0.6):
+    """
+    Generate geocent_time offsets clustered so signals overlap.
+    """
+    center = rng.uniform(-0.5 * (duration - overlap_window),
+                         0.5 * (duration - overlap_window))
+    offsets = rng.normal(0, overlap_window / 6.0, size=n_signals)
+    times = center + offsets
+    return list(np.clip(times, -duration / 2 + 0.01, duration / 2 - 0.01))
+
+def sample_snr_for_overlap(rng, snr_ranges, prefer_low_prob=0.65):
+    """
+    Prefer weaker SNRs when sampling inside heavy overlaps
+    to keep network SNR realistic.
+    """
+    if rng.random() < prefer_low_prob:
+        regime = rng.choice(['weak', 'low'], p=[0.4, 0.6])
+    else:
+        regime = rng.choice(['medium', 'high', 'loud'], p=[0.7, 0.2, 0.1])
+    return rng.uniform(*snr_ranges[regime])
+
+
+def build_overlap_group(pool, n):
+    """
+    Build a group of n detections by time proximity and mixed types.
+    pool: list of candidate detection dicts with 'geocent_time'.
+    """
+    if not pool or n <= 0:
+        return []
+    seed = random.choice(pool)
+    candidates = sorted(pool, key=lambda d: abs(d.get('geocent_time', 0.0) - seed.get('geocent_time', 0.0)))
+    group = [seed]
+    for d in candidates:
+        if len(group) >= n:
+            break
+        if d is seed:
+            continue
+        group.append(d)
+    return group
+
+def encode_edge_type(dets):
+    """
+    Map overlap size to a stable int ID.
+    0: single signal
+    3: pairwise overlap
+    6: triple overlap
+    7+: higher overlaps
+    """
+    if not dets:
+        return 0
+    size = len([d for d in dets if d is not None])  # ← FIX: count only non-None
+    if size == 1:
+        return 0
+    elif size == 2:
+        return 3
+    elif size == 3:
+        return 6
+    else:
+        return 7  # For size 4+, use 7
+
+
+def attach_network_snr_safe(params_or_list):
+    """
+    Attach network_snr to params, handling both single dict and list of dicts.
+    """
+    from .injection import attach_network_snr  # Import the base function
+    
+    if params_or_list is None:
+        return
+    
+    if isinstance(params_or_list, list):
+        for p in params_or_list:
+            if p is not None and isinstance(p, dict):
+                attach_network_snr(p)  # Call base function
+    elif isinstance(params_or_list, dict):
+        attach_network_snr(params_or_list)  # Call base function
+
+
+
+
+def rescale_priorities(y_raw):
+    """
+    Rescale list/array y_raw to [0,1] with mild gamma < 1 to expand headroom.
+    """
+    y_arr = np.asarray(y_raw, dtype=np.float32)
+    ymin, ymax = float(np.min(y_arr)), float(np.max(y_arr))
+    if ymax - ymin < 1e-6:
+        return np.clip(y_arr * 0 + 0.5, 0.0, 1.0).tolist()
+    y = (y_arr - ymin) / (ymax - ymin)
+    y = np.clip(y ** 0.9, 0.0, 1.0)
+    return y.tolist()
+
+def maybe_inject_decoy(detections, p=0.30):
+    """
+    Optionally append a decoy (weaker copy) to force label separation.
+    """
+    from .injection import attach_network_snr
+    if len(detections) == 0 or random.random() >= p:
+        return detections
+    d0 = detections[0]
+    d_decoy = dict(d0)
+    if d_decoy.get('network_snr') is not None:
+        d_decoy['network_snr'] = max(0.0, float(d_decoy['network_snr']) * 0.7)
+    d_decoy['luminosity_distance'] = float(d_decoy.get('luminosity_distance', 500.0)) * 1.3
+    attach_network_snr(d_decoy)
+    detections.append(d_decoy)
+    return detections
 
 # Add to the GWDatasetGenerator class
 
@@ -363,6 +492,11 @@ class GWDatasetGenerator:
                             p[k] = v.item()
                     except Exception:
                         pass
+
+                # Add detectors for edge type encoding
+                if 'detectors' not in p:
+                    p['detectors'] = sample.get('detectors', [])
+
                 return p
 
             if isinstance(params, list):
@@ -458,8 +592,8 @@ class GWDatasetGenerator:
             self.logger.info(f"{'─'*80}")
             
             snr_ranges = {
-                'weak': '8-10 Hz',
-                'low': '10-15 Hz',
+                'weak': '10-15 Hz',
+                'low': '15-25 Hz',
                 'medium': '15-25 Hz',
                 'high': '25-40 Hz',
                 'loud': '40+ Hz'
@@ -849,6 +983,19 @@ class GWDatasetGenerator:
         # marginals by selecting regimes/types from computed quotas.
         quota_mode = bool(self.config.get('quota_mode', False))
         quota_max_attempts = int(self.config.get('quota_max_attempts', 10))
+         
+         # ✅ Calibrate sampler empirically if quota mode is enabled
+         # This estimates P(snr_regime | event_type) for conditional sampling in overlaps
+        if quota_mode:
+             self.logger.info("Calibrating parameter sampler for quota-aware event type sampling...")
+             try:
+                 calibration = self.parameter_sampler.empirical_calibrate(
+                     n_samples=int(self.config.get('calibration_samples', 2000)),
+                     random_seed=int(self.config.get('random_seed', 42)) if self.config.get('random_seed') else None
+                 )
+                 self.logger.info("✓ Calibration complete: P(snr_regime | event_type) ready for conditional sampling")
+             except Exception as e:
+                 self.logger.warning(f"Calibration failed: {e}. Falling back to marginal distributions.")
 
         # Quota bookkeeping (populated only if quota_mode=True)
         quotas_snr = {}
@@ -1166,7 +1313,7 @@ class GWDatasetGenerator:
                 for i in range(n_regular_overlap):
                     # Quota-mode: construct per-signal forced regimes/types when enabled
                     if quota_mode:
-                        n_sigs = np.random.choice([2, 3, 4], p=[0.6, 0.3, 0.1])
+                        n_sigs = sample_overlap_size()
                         forced_signals = []
                         for j in range(n_sigs):
                             snr_choice, evt_choice = _select_joint_cell()
@@ -1192,7 +1339,7 @@ class GWDatasetGenerator:
                         #  Use simulator for overlaps
                         if self.simulation is not None:
                             try:
-                                n_sigs = np.random.choice([2, 3, 4], p=[0.6, 0.3, 0.1])
+                                n_sigs = sample_overlap_size()
                                 sample = self._generate_sample_with_simulator(
                                     sample_id,
                                     n_signals=n_sigs
@@ -1742,7 +1889,10 @@ class GWDatasetGenerator:
         priority = self._estimate_snr_from_params(params)
         if 'target_snr' not in params:
             self._set_target_snr(params, priority, reason='psd_drift_assign')
-        
+
+        # Attach network_snr to params
+        attach_network_snr_safe(params)
+
         return {
             'sample_id': f'psd_drift_{sample_id:06d}',  #  Fixed
             'type': event_type,
@@ -1805,7 +1955,10 @@ class GWDatasetGenerator:
         priority = self._estimate_snr_from_params(params)
         if 'target_snr' not in params:
             self._set_target_snr(params, priority, reason='sky_extreme_assign')
-        
+
+        # Attach network_snr to params
+        attach_network_snr_safe(params)
+
         return {
             'sample_id': f'sky_extreme_{sample_id:06d}',  #  Fixed
             'type': event_type,
@@ -2037,7 +2190,10 @@ class GWDatasetGenerator:
         # Only set target_snr if not already present (preserve sampled values)
         if 'target_snr' not in params:
             self._set_target_snr(params, priority, reason='pre_merger_assign')
-        
+
+        # Attach network_snr to params
+        attach_network_snr_safe(params)
+
         # Construct sample
         sample = {
             'sample_id': f'pre_merger_{sample_id:06d}',  #  Changed from 'id' to 'sample_id'
@@ -2244,7 +2400,10 @@ class GWDatasetGenerator:
         # Preserve any existing sampled target_snr
         if 'target_snr' not in params:
             self._set_target_snr(params, priority, reason='_generate_sample_from_params')
-        
+
+        # Attach network_snr to params
+        attach_network_snr_safe(params)
+
         #  Create sample with all required fields
         sample = {
             'sample_id': f'{edge_type}_{sample_id:06d}',
@@ -2538,7 +2697,7 @@ class GWDatasetGenerator:
             self.logger.warning("Failed to generate multimodal posterior sample")
             return None
         
-        #  Handle noise samples (no signal to create degeneracy with)
+        # Handle noise samples (no signal to create degeneracy with)
         if base_sample.get('type') == 'noise' or not base_sample.get('parameters'):
             base_sample['edge_case_type'] = 'multimodal_posteriors'
             base_sample['priorities'] = base_sample.get('priorities', [10.0])
@@ -2546,11 +2705,22 @@ class GWDatasetGenerator:
             self.logger.debug(f"Sample {sample_id}: Noise sample, skipping multimodal posterior generation")
             return base_sample
         
-        # Extract parameters
-        params = base_sample.get('parameters', {})
-        if not params:
+        # Extract parameters - HANDLE LIST FORMAT
+        params_list = base_sample.get('parameters', [])
+        
+        # Ensure params_list is actually a list
+        if not isinstance(params_list, list):
+            params_list = [params_list] if params_list else []
+        
+        # Skip if no valid parameters
+        if not params_list or not params_list[0]:
             base_sample['edge_case_type'] = 'multimodal_posteriors'
+            base_sample['priorities'] = base_sample.get('priorities', [10.0])
+            base_sample['n_signals'] = len(params_list)
             return base_sample
+        
+        # Get first (and typically only) param dict from list
+        params = params_list[0]
         
         # Apply specific degeneracy based on type
         if degeneracy_type == 'inclination':
@@ -2575,12 +2745,12 @@ class GWDatasetGenerator:
             
         elif degeneracy_type == 'spin_inclination':
             # Aligned spin with inclination flip
-            params['a1'] = np.random.uniform(0.7, 0.95)  # High spin
-            params['tilt1'] = np.random.uniform(0.0, 0.2)  # Nearly aligned
+            params['a_1'] = np.random.uniform(0.7, 0.95)  # High spin
+            params['tilt_1'] = np.random.uniform(0.0, 0.2)  # Nearly aligned
             params['theta_jn'] = np.random.uniform(0.0, 0.4)
             
             degenerate_params = params.copy()
-            degenerate_params['tilt1'] = np.pi - params['tilt1']  # Anti-aligned
+            degenerate_params['tilt_1'] = np.pi - params['tilt_1']  # Anti-aligned
             degenerate_params['theta_jn'] = np.pi - params['theta_jn']
             
         elif degeneracy_type == 'mass_distance':
@@ -2599,8 +2769,13 @@ class GWDatasetGenerator:
             M2 = degenerate_params['mass_2']
             degenerate_params['chirp_mass'] = (M1 * M2)**(3/5) / (M1 + M2)**(1/5)
             
-            # Adjust distance
-            original_Mc = params['chirp_mass']
+            # Adjust distance - compute original chirp mass if not present
+            if 'chirp_mass' in params:
+                original_Mc = params['chirp_mass']
+            else:
+                m1, m2 = params['mass_1'], params['mass_2']
+                original_Mc = (m1 * m2)**(3/5) / (m1 + m2)**(1/5)
+            
             new_Mc = degenerate_params['chirp_mass']
             degenerate_params['luminosity_distance'] = params['luminosity_distance'] * (new_Mc / original_Mc)**(5/6)
             # Keep the degenerate parameter's target_snr consistent with its new distance
@@ -2614,6 +2789,13 @@ class GWDatasetGenerator:
             degenerate_params = params.copy()
             if 'theta_jn' in degenerate_params:
                 degenerate_params['theta_jn'] = np.pi - degenerate_params['theta_jn']
+        
+        # IMPORTANT: Update the params_list with modified params
+        params_list[0] = params
+        base_sample['parameters'] = params_list
+        
+        # Attach network_snr to all params (including modified ones)
+        attach_network_snr_safe(params_list)
         
         # Update sample with multimodal metadata
         base_sample['edge_case_type'] = 'multimodal_posteriors'
@@ -2634,7 +2816,7 @@ class GWDatasetGenerator:
             f"Sample {sample_id}: Multimodal posterior with {degeneracy_type} degeneracy"
         )
         
-        #  Ensure priorities exist
+        # Ensure priorities exist
         if 'priorities' not in base_sample or not base_sample.get('priorities'):
             priorities = []
             parameters = base_sample.get('parameters', [])
@@ -2643,19 +2825,18 @@ class GWDatasetGenerator:
                 parameters = [parameters]
                 base_sample['parameters'] = parameters
             
-            for params in parameters:
-                if isinstance(params, dict):
-                    priority = self._estimate_snr_from_params(params)
+            for p in parameters:
+                if isinstance(p, dict):
+                    priority = self._estimate_snr_from_params(p)
                     # Respect any existing sampled target_snr (don't overwrite)
-                    if 'target_snr' not in params:
-                        self._set_target_snr(params, priority, reason='multimodal_posteriors')
+                    if 'target_snr' not in p:
+                        self._set_target_snr(p, priority, reason='multimodal_posteriors')
                     priorities.append(priority)
             
             base_sample['priorities'] = priorities if priorities else [15.0]
             base_sample['n_signals'] = len(priorities)
         
         return base_sample
-
 
     # ============================================================================
     # 4. OVERLAPPING EXTREMES
@@ -2771,7 +2952,7 @@ class GWDatasetGenerator:
                             val = float(params.get('target_snr', 0.0))
                         except Exception:
                             val = 0.0
-                        if val >= 79.9:
+                        if val >= 100.0:
                             entry = {
                                 'sample_index': si,
                                 'sample_id': sample.get('sample_id'),
@@ -2780,7 +2961,7 @@ class GWDatasetGenerator:
                             }
                             clipped_entries.append(entry)
                             # Log a short stack for diagnostics (where save was triggered)
-                            self.logger.warning(f"[SNR-PRE-SAVE] Detected high target_snr={val} in batch {batch_id} "
+                            self.logger.warning(f"[SNR-PRE-SAVE] Detected clipped target_snr={val} in batch {batch_id} "
                                                 f"sample_index={si} param_index={pi} sample_id={sample.get('sample_id')}")
                             stack = ''.join(traceback.format_stack(limit=6))
                             self.logger.warning(stack)
@@ -2961,7 +3142,7 @@ class GWDatasetGenerator:
 
         # If value is effectively clipped/high, log stack for diagnostics
         try:
-            if isinstance(val, (int, float)) and val >= 79.9:
+            if isinstance(val, (int, float)) and val >= 100.0:
                 import traceback
                 self.logger.warning(f"[SNR-TRACE] Assigned clipped target_snr={val} reason={reason}")
                 stack = ''.join(traceback.format_stack(limit=6))
@@ -3034,38 +3215,49 @@ class GWDatasetGenerator:
                 'strain': injected.astype(np.float32),
                 'metadata': metadata
             }
+
+
+        attach_network_snr_safe(params)
         
         # Create sample with comprehensive metadata (like original script)
         sample = {
+            'edge_type_id': encode_edge_type([params] if params is not None else []),
             'sample_id': f'single_{sample_id:06d}',
             'type': event_type,
             'is_overlap': False,
             'is_edge_case': is_edge_case,
-            'parameters': params,
+            'parameters': [params],
             'detector_data': detector_data,
             'metadata': {                                      # ← ADD THIS BLOCK
-                'sample_id': f'single_{sample_id:06d}',
-                'event_type': event_type,
-                'detector_network': self.detectors,
-                'snr_regime': snr_regime,
-                'signal_parameters': [params] if params else [],  # ← KEY FIX
-                'is_edge_case': is_edge_case,
-                'overlap_type': 'single'
+            'sample_id': f'single_{sample_id:06d}',
+            'event_type': event_type,
+            'detector_network': self.detectors,
+            'snr_regime': snr_regime,
+            'signal_parameters': [params] if params else [],  # ← KEY FIX
+            'is_edge_case': is_edge_case,
+            'overlap_type': 'single'
             }
         }
-        
+
+    
         return sample
 
     def _generate_overlapping_sample(self, sample_id: int, is_edge_case: bool,
-                                    add_glitches: bool, preprocess: bool,
-                                    forced_signals: Optional[List[Dict]] = None) -> Dict:
+                                     add_glitches: bool, preprocess: bool,
+                                     forced_signals: Optional[List[Dict]] = None) -> Dict:
         """Generate sample with overlapping signals"""
-        
-        n_signals = np.random.choice([2, 3, 4], p=[0.6, 0.3, 0.1])
-        
+
+        n_signals = sample_overlap_size()
+
         signal_params_list = []
         target_snrs = []
-        
+
+        # Generate clustered geocent_time for overlapping signals
+        if n_signals > 1:
+            clustered_times = sample_clustered_times(np.random, n_signals, self.duration, overlap_window=0.6)
+        else:
+            clustered_times = [0.0]
+
         # Generate parameters for each signal
         for i in range(n_signals):
             # If caller provided forced_signals info, use it for this index
@@ -3075,11 +3267,29 @@ class GWDatasetGenerator:
                 event_type = info.get('event_type')
             else:
                 # Default behavior: sample regime then event type via sampler
-                snr_regime = self._sample_snr_regime()
+                # Bias towards lower SNR regimes for overlaps to keep network realistic
+                if np.random.random() < 0.65:
+                    snr_regime = np.random.choice(['weak', 'low'], p=[0.4, 0.6])
+                else:
+                    snr_regime = np.random.choice(['medium','high','loud'], p=[0.7, 0.2, 0.1])
                 try:
                     event_type = self.parameter_sampler.event_type_given_snr(snr_regime)
                 except Exception:
                     event_type = self._sample_event_type()
+
+            # Force event type diversity in overlaps: if not the first signal, avoid the first signal's type
+            if i > 0 and n_signals > 1 and event_type == signal_params_list[0]['type']:
+                first_type = signal_params_list[0]['type']
+                available_types = [t for t in ['BBH', 'BNS', 'NSBH'] if t != first_type]
+                if available_types:
+                    # Resample from available types weighted by global distribution
+                    weights = [EVENT_TYPE_DISTRIBUTION.get(t, 0.0) for t in available_types]
+                    total_weight = sum(weights)
+                    if total_weight > 0:
+                        probs = [w / total_weight for w in weights]
+                        event_type = np.random.choice(available_types, p=probs)
+                    else:
+                        event_type = np.random.choice(available_types)
 
             if event_type == 'BBH':
                 params = self.parameter_sampler.sample_bbh_parameters(snr_regime, is_edge_case)
@@ -3087,16 +3297,19 @@ class GWDatasetGenerator:
                 params = self.parameter_sampler.sample_bns_parameters(snr_regime, is_edge_case)
             else:
                 params = self.parameter_sampler.sample_nsbh_parameters(snr_regime, is_edge_case)
-            
-            params['time_offset'] = np.random.uniform(-0.25, 0.25) if i > 0 else 0.0
+
+            # Use clustered time instead of random offset
+            params['geocent_time'] = clustered_times[i]
             signal_params_list.append(params)
-            
+
             # Compute SNR using the first detector's PSD (outside detector loop)
             waveform = self.waveform_generator.generate_waveform(params)
             reference_psd = self.psds[self.detectors[0]]  # Use first detector as reference
             target_snr = self.injector._compute_optimal_snr(waveform, reference_psd)
             target_snrs.append(float(target_snr))
-        
+
+        attach_network_snr_safe(signal_params_list)
+
         # Generate data for each detector (NOW psd_dict is defined here)
         detector_data = {}
         for detector_name in self.detectors:
@@ -3119,14 +3332,29 @@ class GWDatasetGenerator:
                 'metadata': metadata_list
             }
         
+        
+        signal_params_list = maybe_inject_decoy(signal_params_list, p=0.30)
+        
+        # Recompute priorities after decoy injection
+        priorities = []
+        for params in signal_params_list:
+            # Use your existing SNR computation or approximation
+            priority = self._estimate_snr_from_params(params)
+            priorities.append(priority)
+        
+        # Rescale priorities to widen spread
+        priorities = rescale_priorities(priorities)
+        
+        
         sample = {
+            'edge_type_id': encode_edge_type(signal_params_list),  # Multiple signals
             'sample_id': f'overlap_{sample_id:06d}',
             'type': 'overlap',
             'is_overlap': True,
             'n_signals': n_signals,
             'is_edge_case': is_edge_case,
             'parameters': signal_params_list,
-            'priorities': target_snrs,
+            'priorities': priorities,
             'detector_data': detector_data,
             'metadata': {
                 'sample_id': f'overlap_{sample_id:06d}',
@@ -3271,7 +3499,10 @@ class GWDatasetGenerator:
             target_snr = np.random.uniform(10, 30)
             if 'target_snr' not in params:
                 self._set_target_snr(params, target_snr, reason='near_simultaneous_target')
-            
+
+            # Attach network_snr to params
+            attach_network_snr_safe(params)
+
             parameters_list.append(params)
         
         # Generate overlapping sample
@@ -4282,6 +4513,7 @@ class GWDatasetGenerator:
                     'frequencies': psd_dict.get('frequencies', None)
                 }
             
+            
             sample = {
                 'id': sample_id,  #  ADDED: raw integer ID
                 'sample_id': f'overlap_{sample_id:06d}',
@@ -4491,6 +4723,9 @@ class GWDatasetGenerator:
                 'noise': noise_data[detector_name].astype(np.float32)
             }
         
+        # Attach network_snr to parameters
+        attach_network_snr_safe(parameters)
+
         return {
             'sample_id': f'sim_{sample_id:06d}',
             'type': 'overlap' if n_signals > 1 else parameters[0]['type'],
@@ -4500,6 +4735,7 @@ class GWDatasetGenerator:
             'parameters': parameters,  # List of parameter dicts
             'priorities': priorities,  #  List of SNRs (one per signal)
             'detector_data': detector_data,
+            'edge_type_id': encode_edge_type(parameters),
             'metadata': {
                 'sample_id': sample_id,
                 'generator': 'OverlappingSignalSimulator',
@@ -5093,7 +5329,10 @@ class GWDatasetGenerator:
                         # Best-effort: fall back to direct assignment if helper is unavailable
                         signal['target_snr'] = float(priority)
                 priorities.append(priority)
-            
+
+            # Rescale priorities to widen spread for better calibration
+            priorities = rescale_priorities(priorities)
+
             # ====================================================================
             # CONSTRUCT SAMPLE
             # ====================================================================
@@ -5109,6 +5348,7 @@ class GWDatasetGenerator:
                 'parameters': parameters_list,
                 'priorities': priorities,
                 'detector_data': detector_data,
+                'edge_type_id': encode_edge_type(parameters_list),
                 'metadata': {
                     'sample_id': sample_id,
                     'n_signals': n_signals,
@@ -5118,7 +5358,10 @@ class GWDatasetGenerator:
                     'scenario_type': scenario.get('scenario_type', 'unknown')
                 }
             }
-            
+
+            # Attach network_snr to parameters
+            attach_network_snr_safe(parameters_list)
+
             return sample
             
         except Exception as e:

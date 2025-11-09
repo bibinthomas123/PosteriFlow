@@ -111,10 +111,10 @@ class OverlappingSignalSimulator:
         
         # Safe sky positions - avoid problematic declinations
         ra = np.random.uniform(0.5, 2*np.pi - 0.5)
-        dec = np.random.uniform(-0.3, 0.3)  # Very conservative declination
+        dec = np.arcsin(np.random.uniform(-1, 1))
         
         # Safe angles
-        theta_jn = np.random.uniform(0.5, np.pi - 0.5)
+        theta_jn = np.arccos(np.random.uniform(-1, 1))
         psi = np.random.uniform(0.3, np.pi - 0.3)
         phase = np.random.uniform(0.3, 2*np.pi - 0.3)
         

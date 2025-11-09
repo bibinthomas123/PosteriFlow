@@ -1,116 +1,106 @@
-Dataset fixes
-Populate edge_type_id with variance
 
-Problem: edge_type_id variance is 0, so the edge-conditioning path is bypassed.​
+## 🧩 1. Dataset fixes — get the data right before the network trains
 
-Fix: in convert_to_priority_scenarios, assign a stable integer per scenario encoding detector-pair and overlap context.
+### **A. Edge-type variance**
 
-Example scheme:
+* **Problem:** All your `edge_type_id` values are identical (variance = 0).
+  That disables the *edge-conditioning pathway* in your graph model—because the embedding for edges sees no difference between them.
+* **Fix:** In `convert_to_priority_scenarios()`, assign each detector-pair/overlap context a distinct, stable integer ID.
+  Example map:
 
-0–2: single-detector H1/L1/V1
+  ```
+  0–2 → single-detector (H1, L1, V1)
+  3–5 → pairwise (H1-L1, H1-V1, L1-V1)
+  6   → triple overlap HLV
+  7–16 → reserved for special/time/morphology bins
+  ```
 
-3–5: pairwise overlaps (H1–L1, H1–V1, L1–V1)
+  Those IDs must travel through the dataloader as `edge_type_id` tensors so the `nn.Embedding` in PriorityNet can actually learn conditioning.
 
-6: HLV triple overlap
+### **B. SNR inclusion and normalization**
 
-7–16: reserved for special overlap types (e.g., time proximity bins, morphology class)
+* **Problem:** Many detections miss `network_snr`; when it’s there, normalization clips small differences (ΔSNR = +2 → Δpred≈0).
+* **Fix:**
 
-Ensure these IDs flow into PriorityNetDataset items as edge_type_id and are tensors in the dataloader.
+  * Always populate `network_snr` in detection dicts and in `_detections_to_tensor`.
+  * Normalize with a simple bounded scale, not z-score:
 
-Ensure SNR is present and scaled consistently
+    ```python
+    snr_scaled = min(network_snr, 35) / 35.0
+    ```
 
-Problem: SNR deltas of +2 yield Δpred≈0, implying weak coupling or normalization clipping.​
+    That preserves small variations and avoids compressing high values.
+  * Write a quick unit test: increasing SNR by +2 should increase predicted priority ≥ 0.01 for mid-range examples.
 
-Fix:
+### **C. Overlap diversity**
 
-Always include network_snr in detection dicts and in _detections_to_tensor.
+* **Problem:** The model ranks correctly but calibration is narrow—means your training overlaps are too simple.
+* **Fix:**
 
-Normalize with a calibrated transform that preserves small deltas:
+  * Raise 5 + overlaps to **25–35 %** of training data (we already added this patch earlier).
+  * Mix event types inside overlaps (e.g., BBH + BNS) with realistic SNR spread.
+  * Add a few “decoy” composites: real + weak synthetic signals, to teach the scale boundaries.
 
-Suggested: snr_scaled = min(snr, 35) / 35.0, do not z-score unless you trained that way.
+### **D. Real-parameter diversity in evaluation**
 
-Validate with a unit test: +2 SNR should increase priority by ≥ 0.01 on a mid-range sample.
+* Use a robust **GWOSC parser** to pull true parameters for evaluation; don’t let defaults fill with zeros.
+* Keep a small static catalog fallback (for CI/tests) so evaluation doesn’t break if the API changes.
 
-Expand overlap diversity for training
+---
 
-Problem: model excels at rank but calibration is narrow, often a sign of limited headroom in diverse overlaps.​
+## ⚙️ 2. PriorityNet fixes — repair learning dynamics
 
-Fix:
+### **A. Output compression**
 
-Increase the proportion of 5+ overlaps in training to 25–35%.
+* **Problem:** Predictions saturate at 0.4 while true labels go to 0.95 → output layer is squashing (sigmoid/tanh).
+* **Fix:**
 
-Mix event types in overlaps (BBH+BNS, NSBH+BBH) with controlled SNR spreads.
+  * Remove the final sigmoid/tanh; use a **linear head** trained on raw 0–1 targets.
+  * Or keep the head linear and learn an **affine calibration** post-training:
+    (\hat y = a·z + b) minimizing L1 gap on validation.
 
-Add “decoy-injection” samples (true + weaker synthetic) to bind the scale.
+### **B. Strengthen SNR pathway**
 
-Preserve real-parameter diversity in eval
+* Add a dedicated SNR embedding:
 
-Implement the robust GWOSC parser in your evaluator to avoid defaulting params; keep a curated static catalog fallback for CI stability.​
+  ```python
+  self.snr_embed = MLP([1,16,32], activation=GELU)
+  ```
 
-PriorityNet fixes
-Remove or relax output squashing
+  concatenate it before the fusion block.
+* Add an auxiliary sensitivity loss: encourage ∂ŷ/∂SNR ≈ 0.02 (so a +2 SNR shift raises priority by ≈ 0.04).
+  Simple version: `L_snr = MSE((ŷ2-ŷ1)/(SNR2-SNR1), 0.02)`.
 
-Problem: pred max ≈ 0.40 vs target max ≈ 0.95 (gap 0.55) indicates output compression.​
+### **C. Re-enable edge conditioning**
 
-Fix:
+* Add / verify:
 
-If the priority head ends with sigmoid/tanh, remove it and train on raw targets scaled to .
+  ```python
+  self.edge_embed = nn.Embedding(n_edge_types, edge_dim)
+  ```
 
-Alternatively, keep linear output and learn an affine calibration at inference: ŷ = a·z + b, where a,b learned by minimizing L1 on validation.
+  and fuse it into node features or attention keys.
+* Dropout ≈ 0.1 on the edge embedding prevents the net from latching onto one ID.
 
-Strengthen SNR pathway
+### **D. Calibrated loss**
 
-Add a dedicated SNR embedding branch feeding into the fusion block:
+* Keep your ranking loss (e.g., pairwise logistic) but add gentle calibration penalties:
+  [
+  L = L_\text{rank}
+  + λ_1·|mean(ŷ) - mean(y)|
+  + λ_2·|max(ŷ) - max(y)|
+  ]
+  with λ₁ ≈ λ₂ ≈ 0.05.
+  This widens predicted spread to match target scale.
 
-snr_embed = MLP([1→16→32], GELU), concatenated before the final head.
+### **E. Training stability**
 
-Add a small auxiliary loss: L_snr = MSE(∂ŷ/∂snr, c) around a target sensitivity c≈0.02 for mid SNR range, or contrastive margin where higher SNR should rank higher holding others fixed.
+* Use `ReduceLROnPlateau` monitoring Spearman/Kendall τ and calibration gap.
+* Initialize final head near the dataset mean to avoid early flatlining:
 
-Re-enable edge conditioning
+  ```python
+  nn.init.normal_(head.weight, 0, 0.01)
+  head.bias.data.fill_(0.2)
+  ```
 
-Ensure the edge embedding table is used:
-
-edge_embed = nn.Embedding(n_edge_types, edge_dim)
-
-Fuse edge_embed into node features via addition or cross-attention key/value bias.
-
-Add dropout ≈0.1 to prevent overfitting to a single ID.
-
-Calibrated training objective
-
-Keep your ranking loss for order, add a mild calibration term to widen spread:
-
-L = L_rank + λ1·|mean(ŷ) − mean(y)| + λ2·|max(ŷ) − max(y)| with λ1≈0.05, λ2≈0.05.
-
-Use ReduceLROnPlateau on validation Kendall/Spearman and calibration gap to stabilize late training.
-
-Head initialization
-
-Initialize the final linear layer with small weights and bias near the dataset mean priority to avoid early saturation:
-
-nn.init.normal_(head.weight, 0, 0.01); head.bias.data.fill_(0.2)
-
-Verification checklist after fixes
-Edge variance
-
-Log edge_type_id variance > 0.5 on a 500-sample validation slice.​
-
-SNR sensitivity
-
-Unit test: +2 SNR delta yields Δpred ≥ 0.01 for a mid-range sample.​
-
-Correlate prediction with SNR over real events: Spearman(ŷ, SNR) ≥ 0.4 in BBH-only subset.
-
-Calibration
-
-Validation max gap: max(true) − max(pred) ≤ 0.18.​
-
-Reliability curve decile MAE ≤ 0.03.
-
-Overlap-5+ bucket
-
-τ ≥ 0.56, Spearman ≥ 0.72 on 5+ overlaps (target you already approach).​
-
-Real events
-
-On the curated 16 GWTC events, std(pred) ≥ 0.03, range widens with calibration fix; decoys still rank lower.​
+---

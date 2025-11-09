@@ -10,6 +10,7 @@ import requests
 import json
 from typing import Dict, List, Optional
 from pathlib import Path
+import time
 
 try:
     from gwpy.timeseries import TimeSeries
@@ -22,49 +23,128 @@ class GWTCLoader:
     Load and process real GW event data from GWTC catalogs
     Supports GWTC-1, GWTC-2, GWTC-3, GWTC-4
     """
-    
-    def __init__(self, data_dir: str = "data/gwtc"):
+
+    def __init__(self, data_dir: str = "data/gwtc", cache_days: int = 7):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_file = self.data_dir / "gwtc_events.json"
+        self.cache_days = cache_days  # Cache validity in days
         self.logger = logging.getLogger(__name__)
         self.gwosc_base_url = "https://gwosc.org"
     
-    def get_gwtc_events(self, catalog: str = "GWTC-4") -> pd.DataFrame:
+    def get_gwtc_events(self, catalog: str = "GWTC") -> pd.DataFrame:
         """
         Fetch all events from GWTC catalog
-        
+
         Args:
-            catalog: Catalog name (GWTC-1, GWTC-2, GWTC-3, GWTC-4, or all)
-            
+            catalog: Catalog name (GWTC-1, GWTC-2, GWTC-3, GWTC-4, or GWTC for cumulative)
+
         Returns:
             DataFrame with event parameters
         """
-        
-        endpoints = [
-            f"https://gwosc.org/eventapi/json/{catalog}/",
-            "https://gwosc.org/eventapi/json/GWTC-4.0/",
-            "https://gwosc.org/eventapi/json/confident/",
-        ]
-        
-        for endpoint in endpoints:
-            try:
-                response = requests.get(endpoint, timeout=10)
-                if response.status_code == 200:
-                    events_data = response.json()
-                    
-                    if 'events' in events_data:
-                        return self._parse_events_dict(events_data['events'])
-                    elif isinstance(events_data, list):
-                        return self._parse_events_list(events_data)
-                        
-            except requests.RequestException as e:
-                self.logger.debug(f"Failed to fetch from {endpoint}: {e}")
-                continue
-        
+
+        # Check cache first
+        if self._is_cache_valid():
+            self.logger.info("Loading GWTC events from cache")
+            return self._load_from_cache()
+
+        # Fetch from API (all pages)
+        base_url = f"https://gwosc.org/api/v2/catalogs/{catalog}/events?include-default-parameters=true"
+        all_results = []
+
+        try:
+            page = 1
+            while True:
+                endpoint = f"{base_url}&page={page}"
+                response = requests.get(endpoint, timeout=30)
+                if response.status_code != 200:
+                    break
+
+                api_data = response.json()
+                if not isinstance(api_data, dict) or 'results' not in api_data:
+                    break
+
+                all_results.extend(api_data['results'])
+
+                # Check if there are more pages
+                if api_data.get('next') is None:
+                    break
+                page += 1
+
+            if all_results:
+                df = self._parse_api_results(all_results)
+                # Cache the result
+                self._save_to_cache(df)
+                self.logger.info(f"Fetched {len(df)} events from GWOSC API")
+                return df
+            else:
+                raise ValueError("No results from API")
+
+        except requests.RequestException as e:
+            self.logger.warning(f"Failed to fetch from GWOSC API: {e}")
+        except Exception as e:
+            self.logger.warning(f"Error parsing GWOSC response: {e}")
+
         # Fallback to hardcoded high-confidence events
         self.logger.warning("API fetch failed, using hardcoded events")
-        return self._get_hardcoded_events()
-    
+        df = self._get_hardcoded_events()
+        self._save_to_cache(df)  # Cache fallback too
+        return df
+
+    def _is_cache_valid(self) -> bool:
+        """Check if cache file exists and is recent enough"""
+        if not self.cache_file.exists():
+            return False
+
+        # Check file age
+        file_age_days = (time.time() - self.cache_file.stat().st_mtime) / (24 * 3600)
+        return file_age_days < self.cache_days
+
+    def _load_from_cache(self) -> pd.DataFrame:
+        """Load events from cache file"""
+        with open(self.cache_file, 'r') as f:
+            data = json.load(f)
+        return pd.DataFrame(data)
+
+    def _save_to_cache(self, df: pd.DataFrame) -> None:
+        """Save events to cache file"""
+        df_dict = df.to_dict('records')
+        with open(self.cache_file, 'w') as f:
+            json.dump(df_dict, f, indent=2)
+
+    def _parse_api_results(self, results: List[Dict]) -> pd.DataFrame:
+        """Parse GWOSC v2 API results"""
+        events_list = []
+
+        for event in results:
+            # Extract basic info
+            event_dict = {
+                'event_name': event.get('name', ''),
+                'gps_time': event.get('gps', 0.0),
+                'observing_run': event.get('catalog', ''),
+                'detectors': event.get('detectors', [])
+            }
+
+            # Extract parameters from default_parameters
+            params = event.get('default_parameters', [])
+            param_dict = {p['name']: p.get('best', 0.0) for p in params}
+
+            # Map to expected columns
+            event_dict.update({
+                'mass_1_source': param_dict.get('mass_1_source', 0.0),
+                'mass_2_source': param_dict.get('mass_2_source', 0.0),
+                'chirp_mass_source': param_dict.get('chirp_mass_source', 0.0),
+                'total_mass_source': param_dict.get('total_mass_source', 0.0),
+                'luminosity_distance': param_dict.get('luminosity_distance', 0.0),
+                'redshift': param_dict.get('redshift', 0.0),
+                'network_snr': param_dict.get('network_matched_filter_snr', 0.0),
+                'far': param_dict.get('far', 1e10),
+            })
+
+            events_list.append(event_dict)
+
+        return pd.DataFrame(events_list)
+
     def _parse_events_dict(self, events_dict: Dict) -> pd.DataFrame:
         """Parse GWOSC old dict format"""
         
@@ -183,23 +263,28 @@ class GWTCLoader:
     
     def _get_event_gps_time(self, event_name: str) -> Optional[float]:
         """Get GPS time for event"""
-        
+
+        # First try from cached events
         try:
-            response = requests.get(
-                f"https://gwosc.org/eventapi/json/{event_name}/",
-                timeout=5
-            )
-            if response.status_code == 200:
-                return response.json().get('GPS')
+            events_df = self.get_gwtc_events()
+            event_row = events_df[events_df['event_name'] == event_name]
+            if not event_row.empty:
+                return float(event_row.iloc[0]['gps_time'])
         except:
             pass
-        
-        # Fallback to hardcoded
-        events_df = self._get_hardcoded_events()
-        event_row = events_df[events_df['event_name'] == event_name]
-        if not event_row.empty:
-            return float(event_row.iloc[0]['gps_time'])
-        
+
+        # Fallback to direct API call
+        try:
+            response = requests.get(
+                f"https://gwosc.org/api/v2/events/{event_name}?format=api",
+                timeout=10
+            )
+            if response.status_code == 200:
+                event_data = response.json()
+                return event_data.get('GPS')
+        except:
+            pass
+
         return None
     
     def create_synthetic_overlaps(self,

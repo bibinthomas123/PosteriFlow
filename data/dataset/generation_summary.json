@@ -1,0 +1,75 @@
+{
+  "n_samples": 100,
+  "n_batches": 2,
+  "generation_time": 113.68354558944702,
+  "samples_per_second": 0.8796347745973431,
+  "output_dir": "data/dataset",
+  "output_format": "pkl",
+  "elapsed_time": 113.68354558944702,
+  "resumed": false,
+  "configuration": {
+    "sample_rate": 4096,
+    "duration": 4.0,
+    "detectors": [
+      "H1",
+      "L1",
+      "V1"
+    ],
+    "overlap_fraction": 0.45,
+    "edge_case_fraction": 0.08,
+    "premerger_fraction": 0.15,
+    "edge_cases": {}
+  },
+  "statistics": {
+    "event_types": {
+      "NSBH": 6,
+      "noise": 3,
+      "BBH": 29,
+      "overlap": 48,
+      "BNS": 14
+    },
+    "snr_regimes": {
+      "medium": 83,
+      "high": 92,
+      "low": 22,
+      "loud": 44
+    },
+    "edge_cases": {},
+    "extreme_cases": {
+      "noise_confused_overlaps": 1,
+      "near_simultaneous_mergers": 2
+    },
+    "joint_quotas": {
+      "weak": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "low": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "medium": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "high": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "loud": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      }
+    }
+  }
+}

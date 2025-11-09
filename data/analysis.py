@@ -642,11 +642,11 @@ def check_physics_correctness(df, violations):
     for event_type in ['BBH', 'BNS', 'NSBH']:
         mask = df['event_type'] == event_type
         if mask.sum() > 10:
-            # Compute expected SNR from formula
+            # Compute expected SNR from formula using correct reference (SNR=35 at M_c=30, d=400)
             M_chirp = df[mask]['chirp_mass']
             d = df[mask]['luminosity_distance']
-            snr_expected = 15 * (M_chirp / 30.0)**(5/6) * (400.0 / d)
-            snr_observed = df[mask]['target_snr']
+            snr_expected = 35 * (M_chirp / 30.0)**(5/6) * (400.0 / d)
+            snr_observed = df[mask]['network_snr']  # Use network_snr, not target_snr
             
             # Check residuals (should be small due to jitter)
             residuals = (snr_observed - snr_expected) / snr_expected

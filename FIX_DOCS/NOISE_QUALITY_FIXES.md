@@ -106,6 +106,34 @@ Run: `python test_full_generation.py`
 
 **Result**: Analysis now correctly identifies 0 dead channels (all 10 samples with valid noise) ✓
 
+## Dataset Generation Fix (Nov 10, 2025)
+
+**Issue**: NameError in `_generate_psd_drift_sample` - variable `noise` referenced but not defined at line 2084
+
+**Root Cause**: Variable was defined as `combined_noise` (line 2063) but referenced as `noise` in detector_data assignment
+
+**Fix Applied** (line 2084 in `src/ahsd/data/dataset_generator.py`):
+```python
+# Before: "noise": noise.astype(np.float32),
+# After: "noise": combined_noise.astype(np.float32),
+```
+
+**Result**: PSD drift sample generation now completes without NameError ✓
+
+## Analysis Script Improvement (Nov 10, 2025)
+
+**Issue**: False warning "Noise not centered at zero" for RMS-combined multi-detector noise
+
+**Root Cause**: RMS-combined noise (positive values only) always has non-zero mean, triggering false warnings
+
+**Fix Applied** (lines 1411-1419 in `data/analysis.py`):
+- Changed from checking absolute mean to checking RMS/std ratio
+- RMS should be ≈ std for zero-mean Gaussian
+- Threshold: RMS/std < 0.5 indicates unphysical centering
+- More robust for multi-detector combined noise
+
+**Result**: No false warnings for physically valid multi-detector noise ✓
+
 ## Impact
 - **Noise Quality**: Now has realistic frequency structure (not flat)
 - **Sample Quality**: No more dead channels (zero-noise samples)
@@ -113,3 +141,4 @@ Run: `python test_full_generation.py`
 - **Model Learning**: Should now learn better noise characteristics
 - **Detector Accuracy**: Improved SNR estimation and signal detection
 - **Analysis Validation**: Analysis script now correctly validates noise quality
+- **Dataset Generation**: Fixed NameError in PSD drift sample generation

@@ -58,12 +58,22 @@ class SignalInjector:
         # Combine
         injected = noise + scaled_signal
         
+        # Validate injected data
+        if np.any(~np.isfinite(injected)):
+            self.logger.warning(
+                f"NaN/Inf detected in injected signal for {detector_name}, "
+                f"replacing with noise only"
+            )
+            # If injection produced NaN, just return the noise
+            injected = np.copy(noise)
+            actual_snr = 0.0
+        
         # Metadata
         metadata = {
             'detector': detector_name,
             'target_snr': target_snr,
             'actual_snr': actual_snr,
-            'signal_peak': float(np.max(np.abs(scaled_signal))),
+            'signal_peak': float(np.nanmax(np.abs(scaled_signal))) if np.any(np.isfinite(scaled_signal)) else 0.0,
             'injection_time': params.get('geocent_time', 0.0)
         }
         
@@ -117,11 +127,20 @@ class SignalInjector:
                 'target_snr': target_snr,
                 'actual_snr': actual_snr,
                 'time_offset': time_offset,
-                'signal_peak': float(np.max(np.abs(scaled_signal)))
+                'signal_peak': float(np.nanmax(np.abs(scaled_signal))) if np.any(np.isfinite(scaled_signal)) else 0.0
             })
         
         # Combine with noise
         injected = noise + combined_signal
+        
+        # Validate injected data
+        if np.any(~np.isfinite(injected)):
+            self.logger.warning(
+                f"NaN/Inf detected in overlapping signals for {detector_name}, "
+                f"replacing with noise only"
+            )
+            # If injection produced NaN, just return the noise
+            injected = np.copy(noise)
         
         return injected, metadata_list
     
@@ -335,10 +354,10 @@ def proxy_network_snr_from_params(d: dict):
     total_mass = m1 + m2
     chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
     
-    # Reference: at M_c=30 Msun, d=400 Mpc, SNR=15
+    # Reference: at M_c=30 Msun, d=400 Mpc, SNR=35 (must match ParameterSampler)
     reference_chirp_mass = 30.0
     reference_distance = 400.0
-    reference_snr = 15.0
+    reference_snr = 35.0
     
     # SNR scales as: SNR ~ (M_c)^(5/6) / d
     snr = reference_snr * (chirp_mass / reference_chirp_mass)**(5/6) * (reference_distance / dl)

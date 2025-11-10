@@ -64,9 +64,9 @@ MASS_RANGES = {
 # BNS: O4 realistic range ~150-170 Mpc (design ~170 Mpc)
 # NSBH: Intermediate mass systems scaling between BNS and BBH
 DISTANCE_RANGES = {
-    "BBH": (50.0, 2000.0),     # O4 horizon ~1000-1200 Mpc, allow up to 2000 Mpc
-    "BNS": (10.0, 180.0),      # O4 realistic ~150-170 Mpc, cap at design sensitivity
-    "NSBH": (20.0, 600.0)      # Intermediate, scales between BNS and BBH
+    'BBH': (100.0, 2000.0),
+    'BNS': (10.0, 300.0),
+    'NSBH': (20.0, 800.0)
 }
 
 

@@ -1,0 +1,23 @@
+{
+  "samples_with_noise": 1000,
+  "samples_without_noise": 0,
+  "noise_stats": {
+    "mean": 2.0063679751676746e-21,
+    "std": 1.2945860252853092e-21,
+    "min": 0.0,
+    "max": 1.3861422569307675e-20,
+    "rms": 2.387568182790342e-21,
+    "samples_analyzed": 16384000
+  },
+  "psd_validation": {
+    "psd_median": 6.6001157669698884e-43,
+    "psd_mean": 1.1196374729955288e-42,
+    "freq_range_hz": [
+      50,
+      2000
+    ]
+  },
+  "issues": [
+    "PSD too uniform"
+  ]
+}

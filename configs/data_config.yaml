@@ -10,7 +10,7 @@
 # ==============================================================================
 
 # Number of samples to generate (start with 50k for full training)
-n_samples: 100
+n_samples: 1000
 
 # Output configuration
 output_dir: "data/dataset"
@@ -318,6 +318,11 @@ extreme_cases:
       fraction: 0.15
       n_signals: 2
       glitch_probability: 0.5
+    long_duration_bns_overlaps:
+      enabled: true
+      fraction: 0.05
+      f_lower_max: 15
+      overlap_required: true
     
     detector_dropouts:
       enabled: false  # Disable to reduce complexity
@@ -325,11 +330,6 @@ extreme_cases:
     eccentric_overlaps:
       enabled: false  # Disable eccentric for cleaner dataset
     
-    long_duration_bns_overlaps:
-      enabled: true
-      fraction: 0.05
-      f_lower_max: 15
-      overlap_required: true
     
     cosmological_distance:
       enabled: false  # Disable for realistic O4 sensitivity

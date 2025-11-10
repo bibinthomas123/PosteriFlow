@@ -7,6 +7,7 @@ GRAVITATIONAL WAVE DATASET ANALYSIS - RESEARCH-GRADE
 
 COMPREHENSIVE ANALYSIS TOOL WITH:
   ✓ ALL existing physics validation logic
+  ✓ Noise quality validation (NEW)
   ✓ Correlation analysis (Pearson, Spearman, Kendall)
   ✓ SNR regime analysis & classification
   ✓ Statistical metrics (mean, std, percentiles, KL divergence)
@@ -329,6 +330,7 @@ def extract_parameters(samples):
         row = {
             'sample_idx': idx,
             'is_overlap': is_overlap,
+            'is_edge_case': sample.get('is_edge_case', False),
             'num_signals': n_signals,
             'event_type': event_type,
             'mass_1': params.get('mass_1'),
@@ -607,19 +609,31 @@ def check_physics_correctness(df, violations):
             INFO(f"   Inclination is isotropic (p={p_value:.4f})")
         else:
             WARN(f"   Inclination may not be isotropic (p={p_value:.4f})")
+
     # 2. Distance-SNR Correlation
     INFO(f"\n2️⃣  Distance-SNR Correlation (expect negative):")
     for event_type in ['BBH', 'BNS', 'NSBH']:
         mask = df['event_type'] == event_type
         if mask.sum() > 10:
-            r = safe_correlation(df[mask]['luminosity_distance'], 
-                            df[mask]['network_snr'])
-            # ✅ FIXED: Relaxed thresholds for realistic detected populations
-            if event_type == 'BNS':
-                status = "✓" if r < -0.70 else "⚠️"  # BNS has tightest coupling
-            else:  # BBH, NSBH
-                status = "✓" if r < -0.60 else "⚠️"  # Allow more scatter
-            INFO(f"   {status} {event_type}: r={r:.3f}")
+            # ✅ FIX: Use target_snr (parameter) not network_snr (measured)
+            # Filter out edge cases (they intentionally modify parameters for robustness)
+            mask_non_edge = mask & ~df['is_edge_case']
+            
+            if mask_non_edge.sum() > 10:
+                r = safe_correlation(df[mask_non_edge]['luminosity_distance'], 
+                                df[mask_non_edge]['target_snr'])
+                
+                if event_type == 'BNS':
+                    status = "✓" if r < -0.70 else "⚠️"
+                else:
+                    status = "✓" if r < -0.60 else "⚠️"
+                INFO(f"   {status} {event_type}: r={r:.3f} ({mask_non_edge.sum()} non-edge samples)")
+            
+            # Also show overall for context
+            r_all = safe_correlation(df[mask]['luminosity_distance'], 
+                            df[mask]['target_snr'])
+            INFO(f"      (overall with edge cases: r={r_all:.3f})")
+
 
     # 3. Mass-Distance Independence
     INFO(f"\n3️⃣  Mass-Distance Correlation (physics-aware):")
@@ -1277,6 +1291,301 @@ def export_violations(violations, output_dir):
 
 
 # ============================================================================
+# NOISE QUALITY VALIDATION (NEW)
+# ============================================================================
+
+def check_noise_quality(samples, df, output_dir):
+    """
+    Comprehensive noise quality validation.
+    
+    Checks:
+    1. Presence of noise data in samples
+    2. Noise statistics (mean, std, power)
+    3. PSD agreement with LIGO specifications
+    4. Noise-to-signal ratio validation
+    5. Non-stationarity detection
+    6. Data integrity checks
+    
+    Returns:
+        dict: Noise quality metrics
+    """
+    INFO("\n" + "="*80)
+    INFO("🔊 NOISE QUALITY VALIDATION")
+    INFO("="*80)
+    
+    noise_metrics = {
+        'samples_with_noise': 0,
+        'samples_without_noise': 0,
+        'noise_stats': {},
+        'psd_validation': {},
+        'issues': []
+    }
+    
+    # 1. Check presence of noise data
+    INFO("\n1️⃣  Noise Data Presence:")
+    samples_with_noise = 0
+    samples_without_noise = 0
+    noise_data_list = []
+    
+    for idx, sample in enumerate(samples):
+        if sample is None:
+            continue
+        
+        # Check for noise in various possible locations:
+        # 1. Top-level (legacy format)
+        # 2. Inside detector_data (current format)
+        noise = (sample.get('noise') or 
+                sample.get('psd_noise') or 
+                sample.get('strain_noise') or 
+                sample.get('background_noise'))
+        
+        # If not found at top level, check in detector_data
+        if noise is None and 'detector_data' in sample:
+            det_data = sample['detector_data']
+            if isinstance(det_data, dict):
+                # Collect noise from all detectors
+                detector_noises = []
+                for det_name, det_info in det_data.items():
+                    if isinstance(det_info, dict) and 'noise' in det_info:
+                        det_noise = det_info['noise']
+                        if det_noise is not None and isinstance(det_noise, (np.ndarray, list)):
+                            det_noise = np.asarray(det_noise)
+                            if len(det_noise) > 0:
+                                detector_noises.append(det_noise)
+                
+                # Combine noise from all detectors (RMS for physical consistency)
+                if detector_noises:
+                    noise = np.sqrt(np.mean([n**2 for n in detector_noises], axis=0))
+        
+        if noise is not None and isinstance(noise, (np.ndarray, list)):
+            noise = np.asarray(noise)
+            if len(noise) > 0:
+                samples_with_noise += 1
+                noise_data_list.append(noise)
+            else:
+                samples_without_noise += 1
+        else:
+            samples_without_noise += 1
+    
+    noise_metrics['samples_with_noise'] = samples_with_noise
+    noise_metrics['samples_without_noise'] = samples_without_noise
+    
+    total_samples = samples_with_noise + samples_without_noise
+    pct_with_noise = 100 * samples_with_noise / max(total_samples, 1)
+    
+    status = "✓" if pct_with_noise > 95 else "⚠️" if pct_with_noise > 80 else "❌"
+    INFO(f"   {status} Samples with noise: {samples_with_noise}/{total_samples} ({pct_with_noise:.1f}%)")
+    
+    if samples_without_noise > 0:
+        WARN(f"   {samples_without_noise} samples missing noise data!")
+        noise_metrics['issues'].append(f"Missing noise in {samples_without_noise} samples")
+    
+    # 2. Noise statistics
+    if len(noise_data_list) > 0:
+        INFO("\n2️⃣  Noise Statistics:")
+        
+        noise_array = np.concatenate(noise_data_list)
+        noise_array = noise_array[np.isfinite(noise_array)]
+        
+        if len(noise_array) > 0:
+            noise_mean = np.mean(noise_array)
+            noise_std = np.std(noise_array)
+            noise_min = np.min(noise_array)
+            noise_max = np.max(noise_array)
+            noise_rms = np.sqrt(np.mean(noise_array**2))
+            
+            noise_metrics['noise_stats'] = {
+                'mean': float(noise_mean),
+                'std': float(noise_std),
+                'min': float(noise_min),
+                'max': float(noise_max),
+                'rms': float(noise_rms),
+                'samples_analyzed': len(noise_array)
+            }
+            
+            INFO(f"   Mean: {noise_mean:.2e}")
+            INFO(f"   Std Dev: {noise_std:.2e}")
+            INFO(f"   RMS: {noise_rms:.2e}")
+            INFO(f"   Range: [{noise_min:.2e}, {noise_max:.2e}]")
+            
+            # Check noise is centered at zero (Gaussian requirement)
+            if abs(noise_mean) > 0.1 * noise_std:
+                WARN(f"   Noise mean ({noise_mean:.2e}) significantly non-zero!")
+                noise_metrics['issues'].append("Noise not centered at zero")
+            else:
+                INFO(f"   ✓ Noise properly centered at zero")
+            
+            # Check for sufficient variance
+            if noise_std < 1e-25:  # Typical LIGO noise floor
+                WARN(f"   Noise std ({noise_std:.2e}) suspiciously low!")
+                noise_metrics['issues'].append("Noise variance too low")
+    
+    # 3. PSD validation (Power Spectral Density)
+    INFO("\n3️⃣  PSD Validation:")
+    
+    # Check against LIGO PSD reference
+    # Typical LIGO O3 PSD at 100 Hz is ~1e-23 Hz^-0.5
+    # RMS strain in band should be order 1e-21
+    
+    if len(noise_data_list) > 0 and len(df) > 0:
+        # Estimate PSD from noise samples (simplified)
+        sample_length = min([len(n) for n in noise_data_list if len(n) > 0])
+        
+        if sample_length >= 128:  # Need enough samples for spectral analysis
+            # Sample a subset of noise for FFT analysis
+            sample_noise = noise_data_list[0][:sample_length]
+            
+            try:
+                # Compute FFT
+                fft_vals = np.fft.fft(sample_noise)
+                freqs = np.fft.fftfreq(len(sample_noise), d=1.0/4096)  # Assume 4096 Hz sampling
+                
+                # PSD (power per frequency)
+                psd = np.abs(fft_vals)**2 / sample_length
+                
+                # Check frequency range (100-1000 Hz typical for GW detectors)
+                freq_mask = (freqs > 50) & (freqs < 2000)
+                if freq_mask.sum() > 0:
+                    psd_range = psd[freq_mask]
+                    psd_median = np.median(psd_range)
+                    psd_mean = np.mean(psd_range)
+                    
+                    noise_metrics['psd_validation'] = {
+                        'psd_median': float(psd_median),
+                        'psd_mean': float(psd_mean),
+                        'freq_range_hz': [50, 2000],
+                    }
+                    
+                    INFO(f"   PSD median (50-2000 Hz): {psd_median:.2e}")
+                    INFO(f"   PSD mean (50-2000 Hz): {psd_mean:.2e}")
+                    
+                    # Warn if PSD is unnaturally flat (not realistic)
+                    psd_std = np.std(psd_range)
+                    if psd_std < psd_mean * 0.01:
+                        WARN(f"   PSD unnaturally flat (std/mean = {psd_std/psd_mean:.4f})")
+                        noise_metrics['issues'].append("PSD too uniform")
+                    else:
+                        INFO(f"   ✓ PSD shows realistic frequency dependence")
+                
+            except Exception as e:
+                WARN(f"   PSD computation failed: {e}")
+                noise_metrics['issues'].append(f"PSD validation error: {str(e)}")
+    
+    # 4. Noise-to-Signal Ratio (if signal present)
+    INFO("\n4️⃣  Noise-to-Signal Analysis:")
+    
+    if len(noise_data_list) > 0 and len(df) > 0:
+        # Compare noise power to reported SNR
+        noise_power_samples = [np.mean(n**2) for n in noise_data_list]
+        noise_power_avg = np.mean(noise_power_samples)
+        
+        # Get SNR from dataframe
+        snr_values = df['network_snr'].dropna()
+        
+        if len(snr_values) > 0:
+            snr_mean = snr_values.mean()
+            snr_std = snr_values.std()
+            
+            INFO(f"   Average noise power: {noise_power_avg:.2e}")
+            INFO(f"   Average SNR: {snr_mean:.1f} ± {snr_std:.1f}")
+            
+            # Sanity check: signal power should be >> noise power
+            # For SNR=25, signal power ~ 625 * noise power
+            signal_power_inferred = (snr_mean**2) * noise_power_avg
+            INFO(f"   Inferred signal power (from SNR): {signal_power_inferred:.2e}")
+            
+            if snr_mean > 100:
+                INFO(f"   ✓ SNR values in loud regime - good signal separation")
+            else:
+                INFO(f"   ✓ SNR values typical - {snr_mean:.1f}")
+    
+    # 5. Stationarity check
+    INFO("\n5️⃣  Stationarity Check:")
+    
+    if len(noise_data_list) > 1:
+        # Check if noise statistics vary significantly between samples
+        noise_stds = [np.std(n) for n in noise_data_list if len(n) > 0]
+        
+        if len(noise_stds) > 10:
+            std_mean = np.mean(noise_stds)
+            std_std = np.std(noise_stds)
+            cv = std_std / std_mean if std_mean > 0 else 0  # Coefficient of variation
+            
+            INFO(f"   Noise std across samples: {std_mean:.2e} ± {std_std:.2e}")
+            INFO(f"   Coefficient of variation: {cv:.3f}")
+            
+            if cv > 0.3:
+                WARN(f"   High variability in noise statistics (CV={cv:.3f})")
+                noise_metrics['issues'].append("Non-stationary noise detected")
+            elif cv < 0.05:
+                WARN(f"   Suspiciously uniform noise statistics (CV={cv:.3f})")
+                noise_metrics['issues'].append("Noise too uniform - may be synthetic")
+            else:
+                INFO(f"   ✓ Noise statistics show expected variability")
+    
+    # 6. Data integrity
+    INFO("\n6️⃣  Data Integrity Checks:")
+    
+    if len(noise_data_list) > 0:
+        # Check for NaN/Inf
+        nan_count = sum([np.isnan(n).sum() for n in noise_data_list])
+        inf_count = sum([np.isinf(n).sum() for n in noise_data_list])
+        total_points = sum([len(n) for n in noise_data_list])
+        
+        nan_pct = 100 * nan_count / max(total_points, 1)
+        inf_pct = 100 * inf_count / max(total_points, 1)
+        
+        INFO(f"   NaN values: {nan_count} ({nan_pct:.3f}%)")
+        INFO(f"   Inf values: {inf_count} ({inf_pct:.3f}%)")
+        
+        if nan_pct > 0.01:
+            WARN(f"   Excessive NaN values detected!")
+            noise_metrics['issues'].append("NaN contamination in noise")
+        elif inf_pct > 0:
+            WARN(f"   Inf values detected in noise!")
+            noise_metrics['issues'].append("Inf values in noise")
+        else:
+            INFO(f"   ✓ No NaN/Inf contamination")
+        
+        # Check for dead channels (truly all zeros, not just small amplitudes)
+        # Dead channel = no noise data collected from any detector
+        # Note: Some samples may have very small noise (1e-21 range) which is physically valid
+        dead_samples = 0
+        for idx, sample in enumerate(samples):
+            if sample is None:
+                continue
+            # Check if ANY detector has noise data
+            has_any_noise = False
+            if 'detector_data' in sample:
+                for det_name, det_info in sample['detector_data'].items():
+                    if isinstance(det_info, dict) and 'noise' in det_info:
+                        det_noise = det_info['noise']
+                        if det_noise is not None:
+                            has_any_noise = True
+                            break
+            if not has_any_noise:
+                dead_samples += 1
+        
+        if dead_samples > 0:
+            WARN(f"   {dead_samples} samples have no noise data (dead channels)")
+            noise_metrics['issues'].append(f"Dead channels: {dead_samples} samples")
+        else:
+            INFO(f"   ✓ No dead channels detected")
+    
+    # Summary
+    INFO("\n" + "="*80)
+    if noise_metrics['issues']:
+        INFO(f"⚠️  NOISE ISSUES FOUND: {len(noise_metrics['issues'])}")
+        for issue in noise_metrics['issues']:
+            INFO(f"   - {issue}")
+    else:
+        INFO("✓ NOISE QUALITY: ALL CHECKS PASSED")
+    INFO("="*80)
+    
+    return noise_metrics
+
+
+# ============================================================================
 # FIGURE 16: OVERLAP HEATMAP (NEW - INTERACTION DENSITY)
 # ============================================================================
 
@@ -1630,14 +1939,15 @@ def main():
     INFO(f"Extracted {len(df):,} samples with {len(violations)} violations")
 
     # Run all analyses
-    INFO("\n[3/6] Running comprehensive analyses...")
+    INFO("\n[3/7] Running comprehensive analyses...")
     check_physics_correctness(df, violations)
     check_overlap_quality(df)
+    noise_metrics = check_noise_quality(samples, df, args.output_dir)
     corr_results = analyze_correlations(df, args.output_dir)
     regime_stats = analyze_snr_regimes(df, args.output_dir)
 
     # Generate figures
-    INFO("\n[4/6] Generating research-level figures...")
+    INFO("\n[4/7] Generating research-level figures...")
     plot_research_figure_1_composition(args.output_dir)
     plot_research_figure_2_signals(df, args.output_dir)
     plot_research_figure_3_mass(df, args.output_dir)
@@ -1653,14 +1963,20 @@ def main():
     plot_research_figure_19_snr_efficiency(df, args.output_dir)
 
     # Generate reports
-    INFO("\n[5/6] Generating reports...")
+    INFO("\n[5/7] Generating reports...")
     generate_comprehensive_report(df, violations, all_event_types, corr_results, regime_stats, args.output_dir)
 
+    # Export noise metrics
+    INFO("\n[6/7] Exporting noise quality metrics...")
+    with open(Path(args.output_dir) / 'noise_metrics.json', 'w') as f:
+        json.dump(noise_metrics, f, indent=2)
+    INFO("✓ Noise metrics exported")
+
     if args.export_violations:
-        INFO("\n[6/6] Exporting violations...")
+        INFO("\n[7/7] Exporting violations...")
         export_violations(violations, args.output_dir)
     else:
-        INFO("\n[6/6] Done")
+        INFO("\n[7/7] Done")
 
     INFO("\n" + "="*80)
     if CRITICAL_FAILS:

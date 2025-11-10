@@ -95,7 +95,7 @@ class WaveformGenerator:
         distance = params.get('luminosity_distance', 400.0)
         
         # ✅ CRITICAL: Must match ParameterSampler.reference_snr
-        reference_snr = 15.0  # ← CHANGE FROM 100.0 TO 15.0
+        reference_snr = 35.0  # Must match ParameterSampler
         reference_mass = 30.0
         reference_distance = 400.0
         

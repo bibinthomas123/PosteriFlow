@@ -61,10 +61,20 @@ class PSDManager:
         for psd_name in psd_names:
             try:
                 psd = pycbc_psd.from_string(psd_name, flen, delta_f, 10.0)
+                psd_arr = psd.numpy()
+                
+                # PyCBC PSDs need scaling to match physical units (strain^2/Hz)
+                # Empirically scale to ~1e-46 at 100 Hz for aLIGO
+                freqs = psd.sample_frequencies.numpy()
+                idx_100 = np.argmin(np.abs(freqs - 100.0))
+                if psd_arr[idx_100] > 0:
+                    scaling = 1e-46 / psd_arr[idx_100]
+                    psd_arr = psd_arr * scaling
+                
                 return {
-                    'psd': psd,
-                    'frequencies': psd.sample_frequencies.numpy(),
-                    'asd': np.sqrt(psd.numpy()),
+                    'psd': psd_arr,
+                    'frequencies': freqs,
+                    'asd': np.sqrt(np.maximum(psd_arr, 1e-50)),
                     'name': psd_name,
                     'source': 'pycbc'
                 }
@@ -73,54 +83,117 @@ class PSDManager:
         
         # Fallback
         psd = pycbc_psd.from_string('aLIGOZeroDetHighPower', flen, delta_f, 10.0)
+        psd_arr = psd.numpy()
+        freqs = psd.sample_frequencies.numpy()
+        idx_100 = np.argmin(np.abs(freqs - 100.0))
+        if psd_arr[idx_100] > 0:
+            scaling = 1e-46 / psd_arr[idx_100]
+            psd_arr = psd_arr * scaling
+        
         return {
-            'psd': psd,
-            'frequencies': psd.sample_frequencies.numpy(),
-            'asd': np.sqrt(psd.numpy()),
+            'psd': psd_arr,
+            'frequencies': freqs,
+            'asd': np.sqrt(np.maximum(psd_arr, 1e-50)),
             'name': 'aLIGOZeroDetHighPower',
             'source': 'pycbc_fallback'
         }
     
     def _create_analytical_psd(self, detector_name: str) -> Dict:
-        """Create analytical PSD model (fallback)"""
+        """Create realistic analytical PSD model"""
         delta_f = 1.0 / self.duration
         flen = self.n_samples // 2 + 1
         frequencies = np.arange(flen) * delta_f
         
-        # Advanced aLIGO analytical model
-        psd = np.ones(flen) * 1e-47
+        # Avoid zero frequency issues
+        frequencies_safe = np.maximum(frequencies, 1.0)
         
-        # Low frequency: seismic wall
-        low_mask = frequencies < 40
-        if np.any(low_mask):
-            f_low = frequencies[low_mask]
-            psd[low_mask] = 1e-44 * (f_low / 40.0)**(-4.14)
-        
-        # Mid frequency: thermal noise floor
-        mid_mask = (frequencies >= 40) & (frequencies < 200)
-        if np.any(mid_mask):
-            psd[mid_mask] = 3e-48
-        
-        # High frequency: shot noise
-        high_mask = frequencies >= 200
-        if np.any(high_mask):
-            f_high = frequencies[high_mask]
-            psd[high_mask] = 1e-47 * (f_high / 200.0)**2
-        
-        # Detector-specific adjustments
         if detector_name == 'V1':
-            psd *= 2.0  # Virgo is ~2x worse
+            psd = self._create_virgo_psd(frequencies_safe)
+        else:
+            psd = self._create_aLIGO_psd(frequencies_safe)
         
-        # Add spectral lines
+        # Add spectral lines for realism
         psd = self._add_spectral_lines(frequencies, psd, detector_name)
         
         return {
             'psd': psd,
             'frequencies': frequencies,
-            'asd': np.sqrt(psd),
+            'asd': np.sqrt(np.maximum(psd, 1e-50)),
             'name': f'analytical_{detector_name}',
             'source': 'analytical'
         }
+    
+    def _create_aLIGO_psd(self, frequencies: np.ndarray) -> np.ndarray:
+        """Realistic aLIGO PSD model based on O3 sensitivity"""
+        # ASD reference: ~3e-23 at 100 Hz for aLIGO
+        # PSD = ASD^2, so reference PSD ~9e-46 at 100 Hz
+        
+        psd = np.zeros_like(frequencies, dtype=float)
+        
+        # Low frequency: seismic wall (~1/f^2 scaling)
+        # ASD ~ 1e-22 * (f/10)^(-2.07)
+        low_mask = frequencies <= 20
+        psd[low_mask] = (1e-22 * (frequencies[low_mask] / 10.0)**(-2.07))**2
+        
+        # Transition region (20-60 Hz): smooth interpolation
+        trans_mask = (frequencies > 20) & (frequencies < 60)
+        low_edge = psd[frequencies <= 20][-1] if np.any(frequencies <= 20) else 1e-43
+        high_edge = (3e-24)**2  # Mid-freq baseline
+        f_trans = frequencies[trans_mask]
+        psd[trans_mask] = low_edge + (high_edge - low_edge) * ((f_trans - 20) / 40)**2
+        
+        # Mid frequency: thermal noise floor (relatively flat)
+        # ASD ~ 2-4e-24, so PSD ~ 4-16e-48
+        mid_mask = (frequencies >= 60) & (frequencies <= 250)
+        psd[mid_mask] = (3e-24)**2
+        
+        # Transition to high frequency (250-500 Hz): smooth
+        trans_high_mask = (frequencies > 250) & (frequencies < 500)
+        f_trans_high = frequencies[trans_high_mask]
+        psd[trans_high_mask] = ((3e-24)**2) * (1 + 0.5 * ((f_trans_high - 250) / 250)**1.5)
+        
+        # High frequency: shot noise (~f^2 scaling)
+        # ASD ~ 1e-23 * (f/200)^1
+        high_mask = frequencies >= 500
+        psd[high_mask] = (1e-23 * (frequencies[high_mask] / 200.0))**2
+        
+        return psd
+    
+    def _create_virgo_psd(self, frequencies: np.ndarray) -> np.ndarray:
+        """Realistic Virgo PSD model (higher noise than aLIGO)"""
+        # Virgo is ~2-3x less sensitive than aLIGO
+        # Reference ASD ~ 5-7e-23 at 100 Hz
+        
+        psd = np.zeros_like(frequencies, dtype=float)
+        
+        # Low frequency: seismic wall
+        # ASD ~ 3e-22 * (f/10)^(-2.0)
+        low_mask = frequencies <= 20
+        psd[low_mask] = (3e-22 * (frequencies[low_mask] / 10.0)**(-2.0))**2
+        
+        # Transition region
+        trans_mask = (frequencies > 20) & (frequencies < 60)
+        low_edge = psd[frequencies <= 20][-1] if np.any(frequencies <= 20) else 1e-42
+        high_edge = (1e-23)**2
+        f_trans = frequencies[trans_mask]
+        psd[trans_mask] = low_edge + (high_edge - low_edge) * ((f_trans - 20) / 40)**2
+        
+        # Mid frequency: broader plateau with stronger features
+        # ASD ~ 5-8e-24
+        mid_mask = (frequencies >= 60) & (frequencies <= 300)
+        psd[mid_mask] = (6e-24)**2
+        
+        # Transition to high frequency
+        trans_high_mask = (frequencies > 300) & (frequencies < 500)
+        f_trans_high = frequencies[trans_high_mask]
+        psd[trans_high_mask] = ((6e-24)**2) * (1 + 0.3 * ((f_trans_high - 300) / 200)**1.5)
+        
+        # High frequency: shot noise
+        # ASD ~ 2e-23 * (f/200)^0.8
+        high_mask = frequencies >= 500
+        psd[high_mask] = (2e-23 * (frequencies[high_mask] / 200.0)**0.8)**2
+        
+        return psd
     
     def _add_spectral_lines(self, frequencies: np.ndarray, 
                            psd: np.ndarray, 

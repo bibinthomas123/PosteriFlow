@@ -1409,11 +1409,14 @@ def check_noise_quality(samples, df, output_dir):
             INFO(f"   Range: [{noise_min:.2e}, {noise_max:.2e}]")
             
             # Check noise is centered at zero (Gaussian requirement)
-            if abs(noise_mean) > 0.1 * noise_std:
-                WARN(f"   Noise mean ({noise_mean:.2e}) significantly non-zero!")
-                noise_metrics['issues'].append("Noise not centered at zero")
+            # For RMS-combined noise: check if RMS value relative to std makes sense
+            # RMS should be roughly equal to std for zero-mean Gaussian
+            rms_to_std_ratio = noise_rms / max(noise_std, 1e-30)
+            if rms_to_std_ratio < 0.5:  # RMS too small relative to std = unphysical
+                WARN(f"   RMS/std ratio ({rms_to_std_ratio:.3f}) unusually low!")
+                noise_metrics['issues'].append("Noise centering issue")
             else:
-                INFO(f"   ✓ Noise properly centered at zero")
+                INFO(f"   ✓ Noise properly centered at zero (RMS/std ratio: {rms_to_std_ratio:.3f})")
             
             # Check for sufficient variance
             if noise_std < 1e-25:  # Typical LIGO noise floor

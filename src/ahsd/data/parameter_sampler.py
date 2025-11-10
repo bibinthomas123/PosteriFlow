@@ -31,7 +31,9 @@ class ParameterSampler:
         self.snr_distribution = SNR_DISTRIBUTION
         self.event_type_distribution = EVENT_TYPE_DISTRIBUTION
         
-        self.reference_snr = 35  # Increased from 15 for stronger correlation
+        # ✅ Reference parameters for SNR scaling: SNR ∝ (M_c)^(5/6) / d
+        # Used to derive distance from target_snr: d = d_ref * (M_c/M_c_ref)^(5/6) * (SNR_ref/target_SNR)
+        self.reference_snr = 35  # Must match analysis.py for proper distance-SNR correlation
         self.reference_mass = 30.0
         self.reference_distance = 400.0
         
@@ -56,6 +58,7 @@ class ParameterSampler:
     def _sample_target_snr(self, snr_regime: str = None) -> float:
         """
         Sample target SNR from specified regime or from distribution.
+        Uses normal distribution centered on regime midpoint to preserve distance-SNR correlation.
         
         Args:
             snr_regime: Specific regime ('low', 'medium', 'high') or None to sample from distribution
@@ -67,7 +70,13 @@ class ParameterSampler:
         # Signature backward compatible: snr_regime may be provided by caller.
         def _draw_from_regime(regime):
             snr_min, snr_max = self.snr_ranges[regime]
-            return float(np.random.uniform(snr_min, snr_max))
+            # Use normal distribution centered on regime midpoint to strengthen correlation
+            # Std dev = 1/4 of regime width to keep ~95% within bounds
+            midpoint = (snr_min + snr_max) / 2.0
+            std_dev = (snr_max - snr_min) / 4.0
+            snr = np.random.normal(midpoint, std_dev)
+            # Clamp to regime bounds
+            return float(np.clip(snr, snr_min, snr_max))
 
         if snr_regime is not None:
             target_snr = _draw_from_regime(snr_regime)
@@ -123,15 +132,15 @@ class ParameterSampler:
             edge_case_type = 'extreme_mass_ratio'
             self.stats['edge_cases']['extreme_mass_ratio'] += 1
         else:
-            m1_raw = np.clip(rng.lognormal(mean=np.log(25.0), sigma=0.35), 5.0, 80.0)
-            m2_raw = np.clip(rng.lognormal(mean=np.log(20.0), sigma=0.40), 5.0, 80.0)
+            # Balanced mass distribution: wider than before to enable mass-distance correlation,
+            # but narrower than original to maintain strong SNR-distance correlation
+            m1_raw = np.clip(rng.lognormal(mean=np.log(28.0), sigma=0.30), 8.0, 60.0)
+            m2_raw = np.clip(rng.lognormal(mean=np.log(22.0), sigma=0.32), 8.0, 60.0)
             q_min = 0.1
             m2_raw = max(m2_raw, q_min * m1_raw)
             mass_1, mass_2 = (m1_raw, m2_raw) if m1_raw >= m2_raw else (m2_raw, m1_raw)
-            mass_1 += rng.uniform(-0.05, 0.05)
-            mass_2 += rng.uniform(-0.05, 0.05)
-            mass_1 = float(np.clip(mass_1, 5.0, 100.0))
-            mass_2 = float(np.clip(mass_2, 5.0, min(100.0, mass_1)))
+            mass_1 = float(np.clip(mass_1, 8.0, 60.0))
+            mass_2 = float(np.clip(mass_2, 8.0, min(60.0, mass_1)))
             edge_case_type = 'none'
 
         total_mass = mass_1 + mass_2
@@ -147,15 +156,19 @@ class ParameterSampler:
             self._sampling_event_type = None
 
         # Compute distance consistent with target_snr using chirp-mass scaling
+        # This creates a tight SNR-distance correlation by deriving distance directly from SNR
         luminosity_distance = (self.reference_distance *
                        (chirp_mass / self.reference_mass) ** (5 / 6) *
                        (self.reference_snr / target_snr))
 
-        # Add minimal jitter and clamp to valid range
-        jitter_factor = rng.uniform(0.999, 1.001)  # Minimal jitter to preserve correlation
-        luminosity_distance *= jitter_factor
+        # Minimal jitter: only apply if distance outside bounds (preserve correlation)
         d_min, d_max = self.distance_ranges['BBH']
-        luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
+        if luminosity_distance < d_min or luminosity_distance > d_max:
+            # Apply jitter only if necessary for clipping
+            luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
+        else:
+            # No jitter - keep the deterministic distance for maximum SNR correlation
+            luminosity_distance = float(luminosity_distance)
 
         # --- Spins (unchanged, RNG) ---
         a1 = float(np.clip(rng.beta(2, 5), 0, 0.99))
@@ -262,9 +275,8 @@ class ParameterSampler:
                        (chirp_mass / self.reference_mass)**(5/6) *
                        (self.reference_snr / target_snr))
 
-        # Add minimal jitter and clamp
-        jitter_factor = np.random.uniform(0.999, 1.001)  # Minimal jitter to preserve correlation
-        luminosity_distance *= jitter_factor
+        # No jitter - tight mass ranges already provide sufficient variation
+        # Jitter weakens the SNR-distance correlation without improving training
         d_min, d_max = self.distance_ranges['BNS']  # Use config bounds: (10.0, 180.0)
         luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
         
@@ -360,22 +372,35 @@ class ParameterSampler:
             approximant = 'IMRPhenomPv2'
             approximant_type = 'non_precessing'
         
-        # ✅ FIX: Sample target_snr first and derive distance from chirp mass (allow conditioning by event type)
+        chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
+        
+        # ✅ FIX: Make target_snr mass-aware for NSBH to avoid mass-distance correlation
+        # Heavier BHs have larger chirp masses → would naturally be at larger distances
+        # Sample higher target_snr for heavier BHs to compensate and keep distances uniform
         self._sampling_event_type = 'NSBH'
         try:
-            target_snr = self._sample_target_snr(snr_regime)
+            base_snr = self._sample_target_snr(snr_regime)
+            # Adjust SNR based on BH mass to decouple mass from distance
+            # Light BH: chirp_mass ~3.5-4.0 → lower SNR (keep at baseline)
+            # Medium BH: chirp_mass ~5-7 → slightly higher SNR
+            # Heavy BH: chirp_mass ~10-15 → significantly higher SNR
+            if bh_mass_type == 'light':
+                target_snr = base_snr
+            elif bh_mass_type == 'medium':
+                # ~40-50% mass increase → boost SNR by ~25% to offset chirp_mass scaling
+                target_snr = base_snr * 1.25
+            else:  # heavy
+                # ~100-200% mass increase → boost SNR by ~55% to offset chirp_mass scaling
+                target_snr = base_snr * 1.55
         finally:
             self._sampling_event_type = None
-
-        chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
 
         # Compute distance consistent with target_snr
         luminosity_distance = (self.reference_distance *
         (chirp_mass / self.reference_mass)**(5/6) *
         (self.reference_snr / target_snr))
-        # Clamp and minimal jitter
-        jitter_factor = np.random.uniform(0.999, 1.001)  # Minimal jitter to preserve correlation
-        luminosity_distance *= jitter_factor
+        # No jitter - mass-aware SNR already handles mass variation
+        # Jitter weakens the SNR-distance correlation without improving training
         d_min, d_max = self.distance_ranges['NSBH']  # Use config bounds: (20.0, 600.0)
         luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
         

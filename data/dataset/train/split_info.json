@@ -1,13 +1,14 @@
 {
   "split": "train",
-  "n_samples": 78,
-  "n_chunks": 1,
+  "n_samples": 797,
+  "n_chunks": 2,
   "chunk_size": 500,
   "compressed": false,
   "file_pattern": "chunk_XXXX.pkl",
-  "created_at": "2025-11-09T04:04:52.014632+00:00",
+  "created_at": "2025-11-10T02:34:14.924916+00:00",
   "chunk_files": [
-    "chunk_0000.pkl"
+    "chunk_0000.pkl",
+    "chunk_0001.pkl"
   ],
   "sample_rate": 4096,
   "duration": 4.0,
@@ -16,5 +17,5 @@
     "L1",
     "V1"
   ],
-  "total_samples": 78
+  "total_samples": 797
 }

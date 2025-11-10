@@ -1,11 +1,11 @@
 {
-  "n_samples": 100,
-  "n_batches": 2,
-  "generation_time": 113.68354558944702,
-  "samples_per_second": 0.8796347745973431,
+  "n_samples": 1000,
+  "n_batches": 11,
+  "generation_time": 882.0686845779419,
+  "samples_per_second": 1.1336985628035152,
   "output_dir": "data/dataset",
   "output_format": "pkl",
-  "elapsed_time": 113.68354558944702,
+  "elapsed_time": 882.0686845779419,
   "resumed": false,
   "configuration": {
     "sample_rate": 4096,
@@ -18,26 +18,57 @@
     "overlap_fraction": 0.45,
     "edge_case_fraction": 0.08,
     "premerger_fraction": 0.15,
-    "edge_cases": {}
+    "edge_cases": {
+      "high_mass_ratio": 5,
+      "extreme_spins": 4,
+      "eccentric_mergers": 3,
+      "precessing_systems": 5,
+      "short_duration_high_mass": 3,
+      "strong_glitches": 8,
+      "psd_drift": 5,
+      "detector_dropout": 4,
+      "sky_position_extremes": 3,
+      "multimodal_posteriors": 6,
+      "heavy_tailed_regions": 5,
+      "uninformative_priors": 4
+    }
   },
   "statistics": {
     "event_types": {
-      "NSBH": 6,
-      "noise": 3,
-      "BBH": 29,
-      "overlap": 48,
-      "BNS": 14
+      "BBH": 284,
+      "BNS": 156,
+      "NSBH": 91,
+      "noise": 13,
+      "overlap": 456
     },
     "snr_regimes": {
-      "medium": 83,
-      "high": 92,
-      "low": 22,
-      "loud": 44
+      "high": 941,
+      "medium": 732,
+      "loud": 460,
+      "low": 188,
+      "weak": 3
     },
-    "edge_cases": {},
+    "edge_cases": {
+      "high_spin_aligned": 2,
+      "extreme_mass_ratio": 1,
+      "high_mass_ratio": 5,
+      "extreme_spins": 4,
+      "eccentric": 3,
+      "precessing": 5,
+      "short_duration_high_mass": 3,
+      "strong_glitches": 8,
+      "psd_drift": 5,
+      "detector_dropout": 4,
+      "sky_position_extremes": 3,
+      "multimodal_posteriors": 6,
+      "heavy_tailed": 5,
+      "uninformative_prior": 4
+    },
     "extreme_cases": {
-      "noise_confused_overlaps": 1,
-      "near_simultaneous_mergers": 2
+      "high_spin_aligned": 2,
+      "near_simultaneous_mergers": 3,
+      "noise_confused_overlaps": 3,
+      "extreme_mass_ratio": 1
     },
     "joint_quotas": {
       "weak": {

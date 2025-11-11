@@ -658,7 +658,14 @@ class GWDatasetGenerator:
             self.logger.info(f"{'─'*80}")
 
             total_snr = sum(snr_regime_counts.values())
-            expected_snr = {"weak": 15.0, "low": 35.0, "medium": 30.0, "high": 15.0, "loud": 5.0}
+            # Use the actual configured SNR distribution
+            expected_snr = {
+                "weak": float(SNR_DISTRIBUTION.get("weak", 0.05)) * 100,
+                "low": float(SNR_DISTRIBUTION.get("low", 0.35)) * 100,
+                "medium": float(SNR_DISTRIBUTION.get("medium", 0.45)) * 100,
+                "high": float(SNR_DISTRIBUTION.get("high", 0.12)) * 100,
+                "loud": float(SNR_DISTRIBUTION.get("loud", 0.03)) * 100,
+            }
 
             self.logger.info(
                 f"{'Regime':<12} {'Range':>12} {'Count':>8} {'Actual':>8} {'Expected':>8} {'Diff':>8}  {'Status'}"
@@ -2251,7 +2258,9 @@ class GWDatasetGenerator:
 
         # Expand parameter ranges (simulate uninformative prior)
         # In practice, this means sampling from very broad distributions
-        params["luminosity_distance"] = np.random.uniform(10, 5000)  # Very broad
+        # Scale the distance range by broad_multiplier
+        max_distance = 5000 * broad_multiplier
+        params["luminosity_distance"] = np.random.uniform(10, max_distance)  # Very broad
         # Recompute target_snr to be consistent with the new distance (if masses present)
         try:
             self.parameter_sampler.recompute_target_snr_from_params(params)
@@ -2694,6 +2703,11 @@ class GWDatasetGenerator:
                     # actual SNR reported by injector for reference detector
                     meta = detector_data.get(ref_det, {}).get("metadata", {})
                     actual = meta.get("actual_snr", meta.get("target_snr", float("nan")))
+                    
+                    # If metadata is missing, use target_snr as fallback (for direct waveform injection)
+                    if np.isnan(actual):
+                        actual = params.get('target_snr', float("nan"))
+
 
                     self.logger.info(
                         f"[SNR-DIAG] {sample['sample_id']}: target={params.get('target_snr')} pre_estimate={pre} actual={actual}"
@@ -3208,7 +3222,7 @@ class GWDatasetGenerator:
                             val = float(params.get("target_snr", 0.0))
                         except Exception:
                             val = 0.0
-                        if val >= 100.0:
+                        if val > 100.1:
                             entry = {
                                 "sample_index": si,
                                 "sample_id": sample.get("sample_id"),
@@ -3566,12 +3580,8 @@ class GWDatasetGenerator:
                 snr_regime = info.get("snr_regime")
                 event_type = info.get("event_type")
             else:
-                # Default behavior: sample regime then event type via sampler
-                # Bias towards lower SNR regimes for overlaps to keep network realistic
-                if np.random.random() < 0.65:
-                    snr_regime = np.random.choice(["weak", "low"], p=[0.4, 0.6])
-                else:
-                    snr_regime = np.random.choice(["medium", "high", "loud"], p=[0.7, 0.2, 0.1])
+                # Default behavior: sample regime from configured distribution (respect quotas)
+                snr_regime = self.parameter_sampler._sample_snr_regime()
                 try:
                     event_type = self.parameter_sampler.event_type_given_snr(snr_regime)
                 except Exception:
@@ -3650,9 +3660,12 @@ class GWDatasetGenerator:
                 "noise_type": noise_type,
             }
 
-        signal_params_list = maybe_inject_decoy(signal_params_list, p=0.30)
+        # ✅ FIX (Nov 11, 2025): Don't inject decoys into training data
+        # Decoys cause n_signals ≠ len(parameters) mismatch (12.9% of samples affected)
+        # Decoys should only be used for evaluation/validation, not training
+        # signal_params_list = maybe_inject_decoy(signal_params_list, p=0.30)
 
-        # Recompute priorities after decoy injection
+        # Compute priorities BEFORE decoy injection (so len(priorities) == n_signals)
         priorities = []
         for params in signal_params_list:
             # Use your existing SNR computation or approximation

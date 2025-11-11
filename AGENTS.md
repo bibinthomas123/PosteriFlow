@@ -47,6 +47,16 @@ Do not create a NEW FIX document every time just see if there is any document wh
 - `ahsd-train` - Train models
 - `ahsd-test` - Run inference and evaluation
 
+**New Tools (Nov 2025):**
+- **TransformerStrainEncoder:**
+  - `python validate_transformer_encoder.py` - Validate TransformerStrainEncoder implementation
+  - `pytest tests/test_transformer_encoder_enhanced.py -v` - Run encoder tests
+  - `python scripts/benchmark_encoder.py --iterations 100` - Benchmark encoder performance
+  - `python scripts/benchmark_encoder.py --amp --masks --iterations 100` - Full benchmark with AMP/masks
+- **Neural Noise Integration (10,000× speedup):**
+  - `python test_neural_noise_integration.py` - Validate neural noise generation (expects ✓ PASS)
+  - See FIX_DOCS/NEURAL_NOISE_SETUP.md for configuration and usage
+
 ## Architecture & Codebase Structure
 
 **Directory Layout:**
@@ -163,6 +173,20 @@ Only when asked to test please follow the below conditions
   - Affected methods: `_generate_single_sample`, `_generate_overlapping_sample`, `_generate_psd_drift_sample`, `_generate_sky_position_extreme_sample`, `_generate_pre_merger_sample`, `_generate_sample_from_params`, `_generate_partial_overlap_sample`
   - Verification: All samples now include noise for H1, L1, V1 detectors (shape: 16384 float32 @ 4096 Hz, 4s duration)
   - See FIX_DOCS/NOISE_DATA_STORAGE_FIX.md for details
+- **PriorityNet Dimension Mismatch** (FIXED - Nov 10, 2025): Fixed forward pass shape errors:
+- Issue: "mat1 and mat2 shapes cannot be multiplied (5x16 and 15x640)" errors during training
+- Root cause: (1) CrossSignalAnalyzer hardcoded dimension in importance_net, (2) SignalFeatureExtractor expecting 15 dims but receiving 16 (network_snr added)
+- Fix: (1) Changed `nn.Linear(16, 1)` to `nn.Linear(importance_hidden_dim, 1)` in CrossSignalAnalyzer.importance_net, (2) Updated SignalFeatureExtractor default `input_dim` from 15 to 16
+- Verification: Forward pass now succeeds with 5 signals, 16 features
+- See FIX_DOCS/PRIORITYNET_DIMENSION_MISMATCH_FIX.md for details
+- **Neural Noise Model Path Resolution** (FIXED - Nov 10, 2025): Auto-resolve relative paths to project root:
+   - Issue: Neural noise models not loading - "No model path provided" message even with valid config
+   - Root cause: Relative paths in config (e.g., `"data/Gaussian_network.pickle"`) not resolved to absolute paths
+   - Fix: Added automatic path resolution in `dataset_generator.py` (lines 276-303) that finds project root via `.git/` directory
+   - Works from any working directory - paths automatically resolved relative to project root
+   - Graceful fallback to colored Gaussian noise if models unavailable or sbigw missing
+   - No config changes needed - existing YAML config works transparently
+   - See FIX_DOCS/NEURAL_NOISE_PATH_RESOLUTION.md and FIX_DOCS/NEURAL_NOISE_FIX_SUMMARY.md for details
 
 **Model Training:**
 - Monitor calibration and output dynamic range

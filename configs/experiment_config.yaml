@@ -20,7 +20,7 @@ waveform:
   duration: 8.0
 
 priority_net:
-  hidden_dims: [512, 256, 128, 64]
+  hidden_dims: [512, 384, 256, 128]
   dropout: 0.25
   learning_rate: 0.0005
   batch_size: 16

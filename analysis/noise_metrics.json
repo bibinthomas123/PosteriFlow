@@ -1,13 +1,13 @@
 {
-  "samples_with_noise": 50000,
+  "samples_with_noise": 100,
   "samples_without_noise": 0,
   "noise_stats": {
-    "mean": 4.1697982070519506e-23,
+    "mean": 3.7976865227163197e-23,
     "std": 3.743392066509216e-23,
     "min": 0.0,
-    "max": 1.3107219037334536e-21,
+    "max": 3.6486073995210356e-22,
     "rms": 5.293955920339377e-23,
-    "samples_analyzed": 50000000
+    "samples_analyzed": 100000
   },
   "psd_validation": {
     "psd_median": 0.0,

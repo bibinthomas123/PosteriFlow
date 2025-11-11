@@ -445,16 +445,18 @@ class GWDatasetGenerator:
         extreme_case_type_counts = Counter()
 
         def _categorize_snr(snr: float) -> str:
-            """Categorize SNR into 5 bins: weak, low, medium, high, loud"""
-            if snr < 10:
+            """Categorize SNR into 5 bins using configured SNR_RANGES for consistency."""
+            from .config import SNR_RANGES
+
+            # Check each regime's bounds
+            for regime, (min_snr, max_snr) in SNR_RANGES.items():
+                if min_snr <= snr < max_snr:
+                    return regime
+
+            # Handle out-of-range values
+            if snr < 10.0:  # Below weak minimum
                 return "weak"
-            elif snr < 15:
-                return "low"
-            elif snr < 25:
-                return "medium"
-            elif snr < 40:
-                return "high"
-            else:
+            else:  # Above loud maximum
                 return "loud"
 
         def _track_sample(sample):
@@ -787,20 +789,21 @@ class GWDatasetGenerator:
                 self.logger.info("⚡ EXTREME CASE TYPES (Publication Quality):")
                 self.logger.info(f"{'─'*80}")
 
-                extreme_expected = {
-                    "near_simultaneous_mergers": 1.0,
-                    "extreme_mass_ratio": 1.0,
-                    "high_spin_aligned": 1.0,
-                    "precession_dominated": 1.0,
-                    "eccentric_overlaps": 0.5,
-                    "weak_strong_overlaps": 0.5,
-                    "noise_confused_overlaps": 1.0,
-                    "long_duration_bns_overlaps": 0.5,
-                    "detector_dropouts": 0.5,
-                    "cosmological_distance": 0.5,
-                }
+                # ✓ FIX: Calculate expected percentages from config, not hardcoded values
+                # Each extreme type fraction is relative to total extreme_cases fraction
+                extreme_expected = {}
+                for extreme_type, type_config in self.extreme_types_config.items():
+                    if isinstance(type_config, dict) and type_config.get("enabled", True):
+                        # Get the fraction of this type relative to all extreme cases
+                        type_fraction = type_config.get("fraction", 0.0)
+                        # Convert to percentage of total samples
+                        # expected_pct = type_fraction * extreme_fraction * 100
+                        expected_pct = type_fraction * self.extreme_fraction * 100
+                        extreme_expected[extreme_type] = expected_pct
 
-                self.logger.info(f"{'Type':<35} {'Count':>8} {'%':>7} {'Expected':>8}  {'Status'}")
+                self.logger.info(
+                    f"{'Type':<35} {'Count':>8} {'%':>7} " f"{'Expected':>8}  {'Status'}"
+                )
                 self.logger.info(f"{'─'*80}")
 
                 total_extreme = sum(extreme_case_type_counts.values())
@@ -810,16 +813,56 @@ class GWDatasetGenerator:
                     actual_pct = (count / total_generated * 100) if total_generated > 0 else 0
                     exp_pct = extreme_expected.get(extreme_type, 0.5)
 
-                    if actual_pct >= exp_pct:
-                        status = "✓✓"
-                    elif actual_pct >= exp_pct * 0.5:
-                        status = "✓"
+                    # ✓ FIX: Use z-scores for statistical significance instead of binary thresholds
+                    # Calculate expected count and standard error for multinomial distribution
+                    type_fraction = self.extreme_types_config.get(extreme_type, {}).get(
+                        "fraction", 0.0
+                    )
+                    expected_count = total_extreme * type_fraction / sum(
+                        self.extreme_types_config.get(t, {}).get("fraction", 0.0)
+                        for t in extreme_case_type_counts.keys()
+                    )
+                    
+                    # Standard error for binomial: sqrt(n*p*(1-p))
+                    # Using proportion of extreme samples for this type
+                    if total_extreme > 0 and type_fraction > 0:
+                        # Relative fraction within extreme cases
+                        relative_fraction = (
+                            type_fraction
+                            / sum(
+                                self.extreme_types_config.get(t, {}).get("fraction", 0.0)
+                                for t in extreme_case_type_counts.keys()
+                            )
+                        )
+                        std_error = (
+                            np.sqrt(
+                                total_extreme
+                                * relative_fraction
+                                * (1 - relative_fraction)
+                            )
+                            if total_extreme > 1
+                            else 1.0
+                        )
+                        z_score = (
+                            (count - expected_count) / std_error
+                            if std_error > 0
+                            else 0
+                        )
                     else:
-                        status = "⚠"
+                        z_score = 0
+
+                    # Status based on statistical significance (σ = standard deviations)
+                    # ✓✓: Within 1σ (68%), ✓: Within 2σ (95%), ⚠: Outside 2σ (rare)
+                    if abs(z_score) <= 1.0:
+                        status = "✓✓"  # Within 1σ
+                    elif abs(z_score) <= 2.0:
+                        status = "✓"  # Within 2σ
+                    else:
+                        status = "⚠"  # Outside 2σ
 
                     self.logger.info(
                         f"{extreme_type:<35} {count:>8,} {actual_pct:>6.2f}% "
-                        f"{exp_pct:>7.1f}%  {status}"
+                        f"{exp_pct:>7.2f}%  {status}"
                     )
 
                 self.logger.info(f"{'─'*80}")
@@ -2062,9 +2105,7 @@ class GWDatasetGenerator:
                 half_duration = self.duration / 2
                 half_samples = int(half_duration * self.sample_rate)
 
-                noise1_full, noise1_type = self._get_noise_for_detector(
-                    detector_name, psd_info
-                )
+                noise1_full, noise1_type = self._get_noise_for_detector(detector_name, psd_info)
                 noise1 = noise1_full[:half_samples]
 
                 drift_factor = np.random.uniform(0.5, 2.0)
@@ -2427,7 +2468,7 @@ class GWDatasetGenerator:
         noise_types = {
             det: detector_data[det].get("noise_type", "synthetic") for det in self.detectors
         }
-        
+
         sample = {
             "sample_id": f"pre_merger_{sample_id:06d}",  #  Changed from 'id' to 'sample_id'
             "type": event_type,
@@ -2711,11 +2752,10 @@ class GWDatasetGenerator:
                     # actual SNR reported by injector for reference detector
                     meta = detector_data.get(ref_det, {}).get("metadata", {})
                     actual = meta.get("actual_snr", meta.get("target_snr", float("nan")))
-                    
+
                     # If metadata is missing, use target_snr as fallback (for direct waveform injection)
                     if np.isnan(actual):
-                        actual = params.get('target_snr', float("nan"))
-
+                        actual = params.get("target_snr", float("nan"))
 
                     self.logger.info(
                         f"[SNR-DIAG] {sample['sample_id']}: target={params.get('target_snr')} pre_estimate={pre} actual={actual}"
@@ -3514,17 +3554,21 @@ class GWDatasetGenerator:
             # Final validation: ensure no NaN/Inf in strain or noise
             strain_final = injected.astype(np.float32)
             noise_final = noise.astype(np.float32)
-            
+
             # If NaN detected, replace with noise-only
             if np.any(~np.isfinite(strain_final)):
-                self.logger.warning(f"NaN/Inf in final strain for {detector_name}, using noise-only")
+                self.logger.warning(
+                    f"NaN/Inf in final strain for {detector_name}, using noise-only"
+                )
                 strain_final = np.copy(noise_final)
-            
+
             if np.any(~np.isfinite(noise_final)):
-                self.logger.warning(f"NaN/Inf in noise for {detector_name}, using Gaussian fallback")
+                self.logger.warning(
+                    f"NaN/Inf in noise for {detector_name}, using Gaussian fallback"
+                )
                 noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-21
                 strain_final = np.copy(noise_final)
-            
+
             detector_data[detector_name] = {
                 "strain": strain_final,
                 "noise": noise_final,
@@ -3651,14 +3695,18 @@ class GWDatasetGenerator:
             # Final validation: ensure no NaN/Inf in strain or noise
             strain_final = injected.astype(np.float32)
             noise_final = noise.astype(np.float32)
-            
+
             # If NaN detected, replace with noise-only
             if np.any(~np.isfinite(strain_final)):
-                self.logger.warning(f"NaN/Inf in final strain for {detector_name}, using noise-only")
+                self.logger.warning(
+                    f"NaN/Inf in final strain for {detector_name}, using noise-only"
+                )
                 strain_final = np.copy(noise_final)
-            
+
             if np.any(~np.isfinite(noise_final)):
-                self.logger.warning(f"NaN/Inf in noise for {detector_name}, using Gaussian fallback")
+                self.logger.warning(
+                    f"NaN/Inf in noise for {detector_name}, using Gaussian fallback"
+                )
                 noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-21
                 strain_final = np.copy(noise_final)
 

@@ -2,7 +2,7 @@
   "samples_with_noise": 100,
   "samples_without_noise": 0,
   "noise_stats": {
-    "mean": 3.7976865227163197e-23,
+    "mean": 3.797977139073803e-23,
     "std": 3.743392066509216e-23,
     "min": 0.0,
     "max": 3.6486073995210356e-22,

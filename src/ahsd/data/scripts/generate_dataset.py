@@ -243,7 +243,7 @@ def generate_dataset_from_config(config: Dict) -> Dict:
 
 def _categorize_snr(snr: float) -> str:
     """
-    Categorize SNR into one of 5 regimes.
+    Categorize SNR into one of 5 regimes using config SNR_RANGES.
     
     Args:
         snr: Signal-to-noise ratio
@@ -251,13 +251,14 @@ def _categorize_snr(snr: float) -> str:
     Returns:
         Category string: 'weak', 'low', 'medium', 'high', or 'loud'
     """
-    if snr < 10:
+    # Use SNR_RANGES from config for consistency
+    if snr < 15.0:
         return 'weak'
-    elif snr < 15:
+    elif snr < 25.0:
         return 'low'
-    elif snr < 25:
+    elif snr < 40.0:
         return 'medium'
-    elif snr < 40:
+    elif snr < 60.0:
         return 'high'
     else:
         return 'loud'

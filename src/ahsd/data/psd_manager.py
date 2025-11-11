@@ -131,31 +131,31 @@ class PSDManager:
         psd = np.zeros_like(frequencies, dtype=float)
         
         # Low frequency: seismic wall (~1/f^2 scaling)
-        # ASD ~ 1e-22 * (f/10)^(-2.07)
+        # ASD ~ 1e-21 * (f/10)^(-2.07)
         low_mask = frequencies <= 20
-        psd[low_mask] = (1e-22 * (frequencies[low_mask] / 10.0)**(-2.07))**2
+        psd[low_mask] = (1e-21 * (frequencies[low_mask] / 10.0)**(-2.07))**2
         
         # Transition region (20-60 Hz): smooth interpolation
         trans_mask = (frequencies > 20) & (frequencies < 60)
         low_edge = psd[frequencies <= 20][-1] if np.any(frequencies <= 20) else 1e-43
-        high_edge = (3e-24)**2  # Mid-freq baseline
+        high_edge = (3e-23)**2  # Mid-freq baseline ~9e-46
         f_trans = frequencies[trans_mask]
         psd[trans_mask] = low_edge + (high_edge - low_edge) * ((f_trans - 20) / 40)**2
         
         # Mid frequency: thermal noise floor (relatively flat)
-        # ASD ~ 2-4e-24, so PSD ~ 4-16e-48
+        # ASD ~ 2-4e-23, so PSD ~ 4-16e-46
         mid_mask = (frequencies >= 60) & (frequencies <= 250)
-        psd[mid_mask] = (3e-24)**2
+        psd[mid_mask] = (3e-23)**2
         
         # Transition to high frequency (250-500 Hz): smooth
         trans_high_mask = (frequencies > 250) & (frequencies < 500)
         f_trans_high = frequencies[trans_high_mask]
-        psd[trans_high_mask] = ((3e-24)**2) * (1 + 0.5 * ((f_trans_high - 250) / 250)**1.5)
+        psd[trans_high_mask] = ((3e-23)**2) * (1 + 0.5 * ((f_trans_high - 250) / 250)**1.5)
         
         # High frequency: shot noise (~f^2 scaling)
-        # ASD ~ 1e-23 * (f/200)^1
+        # ASD ~ 1e-22 * (f/200)^1
         high_mask = frequencies >= 500
-        psd[high_mask] = (1e-23 * (frequencies[high_mask] / 200.0))**2
+        psd[high_mask] = (1e-22 * (frequencies[high_mask] / 200.0))**2
         
         return psd
     
@@ -167,31 +167,31 @@ class PSDManager:
         psd = np.zeros_like(frequencies, dtype=float)
         
         # Low frequency: seismic wall
-        # ASD ~ 3e-22 * (f/10)^(-2.0)
+        # ASD ~ 3e-21 * (f/10)^(-2.0)
         low_mask = frequencies <= 20
-        psd[low_mask] = (3e-22 * (frequencies[low_mask] / 10.0)**(-2.0))**2
+        psd[low_mask] = (3e-21 * (frequencies[low_mask] / 10.0)**(-2.0))**2
         
         # Transition region
         trans_mask = (frequencies > 20) & (frequencies < 60)
         low_edge = psd[frequencies <= 20][-1] if np.any(frequencies <= 20) else 1e-42
-        high_edge = (1e-23)**2
+        high_edge = (7e-23)**2  # Virgo reference at ~100 Hz
         f_trans = frequencies[trans_mask]
         psd[trans_mask] = low_edge + (high_edge - low_edge) * ((f_trans - 20) / 40)**2
         
         # Mid frequency: broader plateau with stronger features
-        # ASD ~ 5-8e-24
+        # ASD ~ 5-8e-23
         mid_mask = (frequencies >= 60) & (frequencies <= 300)
-        psd[mid_mask] = (6e-24)**2
+        psd[mid_mask] = (6e-23)**2
         
         # Transition to high frequency
         trans_high_mask = (frequencies > 300) & (frequencies < 500)
         f_trans_high = frequencies[trans_high_mask]
-        psd[trans_high_mask] = ((6e-24)**2) * (1 + 0.3 * ((f_trans_high - 300) / 200)**1.5)
+        psd[trans_high_mask] = ((6e-23)**2) * (1 + 0.3 * ((f_trans_high - 300) / 200)**1.5)
         
         # High frequency: shot noise
-        # ASD ~ 2e-23 * (f/200)^0.8
+        # ASD ~ 2e-22 * (f/200)^0.8
         high_mask = frequencies >= 500
-        psd[high_mask] = (2e-23 * (frequencies[high_mask] / 200.0)**0.8)**2
+        psd[high_mask] = (2e-22 * (frequencies[high_mask] / 200.0)**0.8)**2
         
         return psd
     

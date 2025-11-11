@@ -54,8 +54,10 @@ EDGE_TYPE_TO_ID = {
     'eccentric': 3,
     'extreme_mass_ratio': 4,
     'extreme_spins': 5,
+    'high_spin_aligned': 5,  # Alias for extreme_spins (data variation)
     'heavy_overlaps': 6,
     'heavy_tailed_regions': 7,
+    'heavy_tailed': 7,  # Alias for heavy_tailed_regions (data variation)
     'high_mass_ratio': 8,
     'low_snr_threshold': 9,
     'multimodal_posteriors': 10,
@@ -66,6 +68,7 @@ EDGE_TYPE_TO_ID = {
     'sky_position_extremes': 15,
     'strong_glitches': 16,
     'subtle_ranking': 17,
+    'uninformative_prior': 18,  # New edge case type
 }
 
 def encode_edge_type(edge_type):
@@ -601,6 +604,12 @@ class ChunkedGWDataLoader:
             signal_params = [signal_params]
         elif not isinstance(signal_params, list):
             return None
+        
+        # FIX: Use n_signals to clip detections and priorities if sample has extra parameters
+        # (e.g., when noise or padding was added but not counted in n_signals)
+        n_signals = sample.get('n_signals', len(signal_params))
+        if len(signal_params) > n_signals:
+            signal_params = signal_params[:n_signals]
 
         try:
             priorities = self._extract_priorities_from_dataset(sample, signal_params)
@@ -648,6 +657,12 @@ class ChunkedGWDataLoader:
         signal_params = metadata.get('signal_parameters', [])
         if not signal_params:
             signal_params = sample.get('parameters', [])
+        
+        # FIX: Use n_signals to clip detections and priorities if sample has extra parameters
+        # (e.g., when noise or padding was added but not counted in n_signals)
+        n_signals = sample.get('n_signals', len(signal_params))
+        if len(signal_params) > n_signals:
+            signal_params = signal_params[:n_signals]
 
         if isinstance(signal_params, dict):
             signal_params = [signal_params]
@@ -1327,6 +1342,17 @@ class PriorityNetDataset(Dataset):
         
         detections = scenario['detections']
         priorities = scenario['priorities']
+        n_signals = scenario.get('n_signals', len(detections))
+        
+        # ✅ FIX: Ensure detections and priorities are aligned to n_signals
+        # Sometimes data has extra parameters (e.g., noise) that aren't counted in n_signals
+        # This causes misalignment between detections and priorities
+        if len(detections) > n_signals and len(priorities) >= n_signals:
+            detections = detections[:n_signals]
+            if isinstance(priorities, torch.Tensor):
+                priorities = priorities[:n_signals]
+            else:
+                priorities = priorities[:n_signals] if hasattr(priorities, '__getitem__') else priorities
         
         # ✅ Convert to numpy if needed
         if isinstance(priorities, torch.Tensor):
@@ -1341,6 +1367,7 @@ class PriorityNetDataset(Dataset):
         
         class_ids = scenario['class_ids']
         edge_type_id = scenario.get('edge_type_id', 0)
+        is_edge_case = scenario.get('is_edge_case', False)
         
         n_detections = len(detections)
         edge_type_ids = torch.full((n_detections,), edge_type_id, dtype=torch.long)
@@ -1350,7 +1377,8 @@ class PriorityNetDataset(Dataset):
             'priorities': priorities,  # ✅ Now properly normalized [0.05-0.95]
             'class_ids': class_ids,
             'edge_type_ids': edge_type_ids,
-            'scenario_id': scenario['scenario_id']
+            'scenario_id': scenario['scenario_id'],
+            'is_edge_case': is_edge_case
         }
 
 
@@ -1379,53 +1407,71 @@ def collate_priority_batch(batch):
                - 'detections': List[Dict]
                - 'priorities': torch.Tensor [n]
                - 'edge_type_ids': Optional[torch.LongTensor [n]]
+               - 'strain_segments': Optional[torch.Tensor]
                - 'snr_values': Optional[torch.Tensor [n]]
-               or a tuple (detections, priorities, [edge_type_ids], [snr_values])
+               - 'is_edge_case': Optional[bool]
+               or a tuple (detections, priorities, [edge_type_ids], [strain_segments], [snr_values], [is_edge_case])
 
     Returns:
-        Tuple of 4 lists:
+        Tuple of 6 lists:
           detections_batch: List[List[Dict]]
           priorities_batch: List[torch.Tensor]
           edge_type_ids_batch: List[torch.LongTensor]
+          strain_batch: List[Optional[torch.Tensor]]
           snr_values_batch: List[Optional[torch.Tensor]]
+          is_edge_case_batch: List[bool]
     """
     detections_batch = []
     priorities_batch = []
     edge_type_ids_batch = []
+    strain_batch = []
     snr_values_batch = []
+    is_edge_case_batch = []
 
     for item in batch:
         if isinstance(item, dict):
             dets = item['detections']
             prios = item['priorities']
             
-            # ✅ Use dataset-provided edge_type_id as scalar, or None
-            edge_id_scalar = item.get('edge_type_id', None)  # single int per scenario
-            if edge_id_scalar is not None:
-                # Expand to per-signal tensor for model API
-                edge_ids = torch.full((len(dets),), edge_id_scalar, dtype=torch.long)
-            else:
-                edge_ids = None  # Let model handle via zeros internally
+            # ✅ Use dataset-provided edge_type_ids tensor if available
+            # __getitem__ returns edge_type_ids as a tensor created from edge_type_id scalar
+            edge_ids = item.get('edge_type_ids', None)  # tensor [n] per scenario
+            if edge_ids is None:
+                # Fallback to scalar edge_type_id if tensor not present
+                edge_id_scalar = item.get('edge_type_id', None)
+                if edge_id_scalar is not None:
+                    # Expand to per-signal tensor for model API
+                    edge_ids = torch.full((len(dets),), edge_id_scalar, dtype=torch.long)
+                else:
+                    edge_ids = None  # Let model handle via zeros internally
             
+            strain_seg = item.get('strain_segments', None)
             snr_vals = item.get('snr_values', None)
+            is_edge_case = item.get('is_edge_case', False)
 
             detections_batch.append(dets)
             priorities_batch.append(prios)
             edge_type_ids_batch.append(edge_ids)
+            strain_batch.append(strain_seg)
             snr_values_batch.append(snr_vals)
+            is_edge_case_batch.append(is_edge_case)
         else:
-            # Tuple format: (detections, priorities, [edge_type_ids], [snr_values])
+            # Tuple format: (detections, priorities, [edge_type_ids], [strain_segments], [snr_values], [is_edge_case])
             dets = item[0]
             prios = item[1]
             edge_ids = item[2] if len(item) > 2 else None
-            snr_vals = item[3] if len(item) > 3 else None
+            strain_seg = item[3] if len(item) > 3 else None
+            snr_vals = item[4] if len(item) > 4 else None
+            is_edge_case = item[5] if len(item) > 5 else False
 
             detections_batch.append(dets)
             priorities_batch.append(prios)
             edge_type_ids_batch.append(edge_ids)
+            strain_batch.append(strain_seg)
             snr_values_batch.append(snr_vals)
+            is_edge_case_batch.append(is_edge_case)
 
-    return detections_batch, priorities_batch, edge_type_ids_batch, snr_values_batch
+    return detections_batch, priorities_batch, edge_type_ids_batch, strain_batch, snr_values_batch, is_edge_case_batch
 
 
 
@@ -1468,7 +1514,14 @@ def train_priority_net_with_validation(
     else:
         # Ensure config is available to PriorityNet (dict or object)
         prio_cfg = config.get('priority_net', config) if hasattr(config, 'get') else config
-        model = PriorityNet(prio_cfg, use_strain=True, use_edge_conditioning=True, n_edge_types=17).to(device)
+        use_edge = prio_cfg.get("use_edge_conditioning",False) if hasattr(prio_cfg,"get") else False
+        use_transformer = prio_cfg.get('use_transformer_encoder', False) if hasattr(prio_cfg, 'get') else False
+        use_strain = prio_cfg.get("use_strain", False) if hasattr(prio_cfg, "get") else False
+
+        model = PriorityNet(prio_cfg, use_strain=True, use_edge_conditioning=True, n_edge_types=19,
+        #  use_transformer_encoder=True
+         ).to(device)
+
         trainer = PriorityNetTrainer(model, prio_cfg)
         start_epoch = 0
         best_val_loss = float('inf')
@@ -1658,22 +1711,24 @@ def train_priority_net_with_validation(
         current_lr = trainer.optimizer.param_groups[0]['lr']
         training_metrics['learning_rates'].append(float(current_lr))
 
-        # Per-epoch Spearman (overall) + per-bucket Spearman/Kendall over full val set
+        # Per-epoch Spearman (overall, non-edge cases only) + per-bucket Spearman/Kendall
         val_corr = float('nan')
         with torch.no_grad():
             sample_preds, sample_targets = [], []
+            edge_preds, edge_targets = [], []  # Track edge cases separately
             buckets = {'1': {'preds': [], 'tgts': []},
                        '2': {'preds': [], 'tgts': []},
                        '3-4': {'preds': [], 'tgts': []},
                        '5+': {'preds': [], 'tgts': []}}
 
             for batch in val_loader:
-                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch])
+                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch][, is_edge_case_batch])
                 detections_batch = batch[0]
                 priorities_batch = batch[1]
                 edge_type_ids_batch = batch[2] if len(batch) > 2 else None
                 strain_batch = batch[3] if len(batch) > 3 else None
                 snr_values_batch = batch[4] if len(batch) > 4 else None
+                is_edge_case_batch = batch[5] if len(batch) > 5 else None
 
                 for i, (detections, priorities) in enumerate(zip(detections_batch, priorities_batch)):
                     n = len(priorities)
@@ -1681,6 +1736,7 @@ def train_priority_net_with_validation(
                     if n < 2:
                         continue
 
+                    is_edge_case = is_edge_case_batch[i] if is_edge_case_batch is not None else False
                     strain_segments = None if strain_batch is None else strain_batch[i]
                     edge_ids_item = None if edge_type_ids_batch is None else edge_type_ids_batch[i]
 
@@ -1699,8 +1755,16 @@ def train_priority_net_with_validation(
                         if m < 2:
                             continue
                         p = pred_np[:m].ravel(); t = tgt_np[:m].ravel()
-                        sample_preds.extend(p); sample_targets.extend(t)
-                        buckets[key]['preds'].extend(p); buckets[key]['tgts'].extend(t)
+                        
+                        # Separate edge cases from clean physics samples
+                        if is_edge_case:
+                            edge_preds.extend(p)
+                            edge_targets.extend(t)
+                        else:
+                            sample_preds.extend(p)
+                            sample_targets.extend(t)
+                            buckets[key]['preds'].extend(p)
+                            buckets[key]['tgts'].extend(t)
 
                         # Optional: collect SNR if you want bucket-aware diagnostics
                         # snr_vals = None if snr_values_batch is None else snr_values_batch[i]
@@ -1741,11 +1805,22 @@ def train_priority_net_with_validation(
                     trainer.loss_fn.lambda_calib = 1e-4
                 
             logging.info(
-                f"   📈 Eval (epoch): MAE={mae:.3e}, RMSE={rmse:.3e}, "
+                f"   📈 Eval (epoch, non-edge cases only): MAE={mae:.3e}, RMSE={rmse:.3e}, "
                 f"predictions=[{preds_np.min():.3e}, {preds_np.max():.3e}], std ={preds_np.std():.3e}; "
                 f"targets=[{tgts_np.min():.3e}, {tgts_np.max():.3e}]"
             )
-            logging.info(f"   📊 Per-epoch Spearman: {corr:.3f} (p={pval:.7f})")
+            logging.info(f"   📊 Per-epoch Spearman (non-edge, n={len(sample_preds)}): {corr:.3f} (p={pval:.7f})")
+
+            # Log edge case metrics separately if available
+            if len(edge_preds) >= 10:
+                edge_preds_np = np.asarray(edge_preds)
+                edge_tgts_np = np.asarray(edge_targets)
+                edge_corr, edge_pval = spearmanr(edge_preds_np, edge_tgts_np)
+                edge_mae = float(np.mean(np.abs(edge_preds_np - edge_tgts_np)))
+                logging.info(
+                    f"   🔄 Edge cases (n={len(edge_preds)}): MAE={edge_mae:.3e}, "
+                    f"Spearman={edge_corr:.3f} (p={edge_pval:.7f})"
+                )
 
             for key, buf in buckets.items():
                 preds, tgts = buf['preds'], buf['tgts']
@@ -1753,7 +1828,7 @@ def train_priority_net_with_validation(
                     try:
                         sp, sp_p = spearmanr(preds, tgts)
                         kt, kt_p = kendalltau(preds, tgts, variant='b')
-                        logging.info(f"   🔎 Bucket {key}: Spearman={sp:.3f} (p={sp_p:.1e}), Kendallτ={kt:.3f} (p={kt_p:.1e})")
+                        logging.info(f"   🔎 Bucket {key} (non-edge): Spearman={sp:.3f} (p={sp_p:.1e}), Kendallτ={kt:.3f} (p={kt_p:.1e})")
                     except Exception as e:
                         logging.debug(f"Bucket {key} corr failed: {e}")
 
@@ -2194,17 +2269,36 @@ def load_checkpoint(checkpoint_path: Optional[str], config, device=None) -> Opti
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
         # Create model and move to device
+        use_transformer = config.get('use_transformer_encoder', False) if hasattr(config, 'get') else False
+        use_edge_conditioning = config.get("use_edge_conditioning", False) if hasattr(config, "get") else False
+        use_strain = config.get("use_strain", False) if hasattr(config, "get") else False
         model = PriorityNet(
             config,
-            use_strain=True,
+            use_strain= True,
             use_edge_conditioning=True,
-            n_edge_types=17
+            # use_transformer_encoder=True,
+            n_edge_types=19
         ).to(device)
 
         # Backward-compatible state load: filter + strict=False
         pretrained = checkpoint.get('model_state_dict', {})
         current_sd = model.state_dict()
         filtered = {k: v for k, v in pretrained.items() if k in current_sd and current_sd[k].shape == v.shape}
+        
+        # Handle embedding size mismatches (e.g., n_edge_types increased)
+        for k, v in pretrained.items():
+            if k in current_sd and k not in filtered:
+                current_shape = current_sd[k].shape
+                old_shape = v.shape
+                # If only first dim differs (embedding size), copy old rows and init new ones
+                if len(current_shape) == len(old_shape) and current_shape[1:] == old_shape[1:]:
+                    if k == 'edge_embedding.weight' and current_shape[0] > old_shape[0]:
+                        logging.info(f"   Resizing {k}: {old_shape} → {current_shape}")
+                        # Copy old embeddings, init new ones with small random values
+                        current_sd[k][:old_shape[0]].copy_(v)
+                        torch.nn.init.normal_(current_sd[k][old_shape[0]:], mean=0, std=0.01)
+                        filtered[k] = current_sd[k]
+        
         missing = [k for k in current_sd.keys() if k not in filtered]
         unexpected = [k for k in pretrained.keys() if k not in current_sd]
 
@@ -2522,7 +2616,7 @@ def main():
             'use_snr_weighting': True,
             'gradient_clip_norm': 1.5,
             'use_strain': True,
-            'use_edge_conditioning': True,
+            'use_edge_conditioning': False,
             'n_edge_types': 17,
             'label_smoothing': 0.05
         })()
@@ -2666,8 +2760,9 @@ def main():
     model = PriorityNet(
         config, 
         use_strain=True, 
-        use_edge_conditioning=True, 
-        n_edge_types=17
+        use_edge_conditioning=True,
+        # use_transformer_encoder = True,
+        n_edge_types=19
     )
     model.load_state_dict(best_checkpoint['model_state_dict'])
     

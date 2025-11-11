@@ -106,47 +106,40 @@ class ConditionalRealNVP(nn.Module):
                 )
             
             self.all_transforms.append(
-    def _get_active_transform(self, active_layers: int = None):
-        """Return a CompositeTransform using only the specified number of coupling layers"""
-        if active_layers is None:
-            active_layers = self._active_layers
-            
-        transforms_list = []
-        count = 0
-        for t in self.all_transforms:
-            if isinstance(t, (transforms.AffineCouplingTransform, transforms.CompositeTransform)):
-                if count >= active_layers:
-                    break
-                count += 1
-            transforms_list.append(t)
-        return transforms.CompositeTransform(transforms_list)            )
+                transforms.AffineCouplingTransform(mask, make_coupling_net)
+            )
             if i < max_layers - 1:
                 self.all_transforms.append(transforms.RandomPermutation(features))
         
         self.logger.info(f"ConditionalRealNVP initialized: {max_layers} layers, dropout={dropout}")
     
+    def _create_alternating_mask(self, features: int, even: bool) -> torch.Tensor:
+        """Create alternating binary mask for coupling layers"""
+        mask = torch.zeros(features)
+        mask[::2] = 1 if even else 0
+        mask[1::2] = 0 if even else 1
+        return mask.bool()
+    
     @property
     def active_layers(self):
+        """Get active layers count"""
         return self._active_layers
     
     @active_layers.setter
     def active_layers(self, value):
+        """Set active layers count"""
         self._active_layers = min(max(1, value), self.max_layers)
         self.logger.debug(f"Active layers set to: {self._active_layers}/{self.max_layers}")
     
     @property
     def num_layers(self):
+        """Get number of layers (alias for active_layers)"""
         return self._active_layers
     
     @num_layers.setter
     def num_layers(self, value):
+        """Set number of layers (alias for active_layers)"""
         self.active_layers = value
-    
-    def _create_alternating_mask(self, features: int, even: bool) -> torch.Tensor:
-        mask = torch.zeros(features)
-        mask[::2] = 1 if even else 0
-        mask[1::2] = 0 if even else 1
-        return mask.bool()
     
     def _get_active_transform(self, active_layers: int = None):
         """Return a CompositeTransform using only the specified number of coupling layers"""

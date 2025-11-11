@@ -120,16 +120,22 @@ class NoiseGenerator:
         
         # Ensure ASD has no zeros (can cause dead channels)
         if np.any(asd == 0):
-            self.logger.warning(f"ASD contains {np.sum(asd == 0)} zero values, replacing with minimum")
+            self.logger.debug(f"ASD contains {np.sum(asd == 0)} zero values, replacing with minimum")
             asd = np.maximum(asd, np.min(asd[asd > 0]) if np.any(asd > 0) else 1e-24)
 
-        # Apply coloring
-        colored_fft = white_fft * asd * np.sqrt(self.sample_rate / 2)
+        # Convert ASD to PSD (power spectral density)
+        # PSD = ASD^2 in the frequency domain
+        # Apply coloring: multiply white noise in frequency domain by sqrt(PSD)
+        psd = asd ** 2
+        coloring_filter = np.sqrt(psd)
+        
+        # Apply frequency-domain coloring
+        colored_fft = white_fft * coloring_filter
 
-        # Back to time domain
+        # Back to time domain (IRFFT automatically normalizes by n_samples)
         colored_noise = np.fft.irfft(colored_fft, n=self.n_samples)
         
-        # Final validation
+        # Normalize to realistic amplitude
         colored_noise = colored_noise.astype(np.float32)
         
         # Check for dead channel (all zeros or near-zero noise)

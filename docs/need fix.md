@@ -578,9 +578,6 @@ dataset_composition = {
 # Heavy overlap scenarios use HeavyOverlapGenerator
 ```
 
-**Impact**: 88% → 94% separation accuracy for 5+ signals.  
-**Timeline**: 1 week implementation + 2 weeks regeneration.
-
 ***
 
 # ⚙️ MEDIUM PRIORITY CHANGES

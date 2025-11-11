@@ -141,6 +141,9 @@ class SignalInjector:
             )
             # If injection produced NaN, just return the noise
             injected = np.copy(noise)
+            # Reset all actual_snr values to reflect noise-only fallback
+            for metadata in metadata_list:
+                metadata['actual_snr'] = 0.0
         
         return injected, metadata_list
     

@@ -58,7 +58,7 @@ class ParameterSampler:
     def _sample_target_snr(self, snr_regime: str = None) -> float:
         """
         Sample target SNR from specified regime or from distribution.
-        Uses normal distribution centered on regime midpoint to preserve distance-SNR correlation.
+        Uses uniform distribution within regime bounds to honor SNR_DISTRIBUTION.
         
         Args:
             snr_regime: Specific regime ('low', 'medium', 'high') or None to sample from distribution
@@ -70,12 +70,8 @@ class ParameterSampler:
         # Signature backward compatible: snr_regime may be provided by caller.
         def _draw_from_regime(regime):
             snr_min, snr_max = self.snr_ranges[regime]
-            # Use normal distribution centered on regime midpoint to strengthen correlation
-            # Std dev = 1/4 of regime width to keep ~95% within bounds
-            midpoint = (snr_min + snr_max) / 2.0
-            std_dev = (snr_max - snr_min) / 4.0
-            snr = np.random.normal(midpoint, std_dev)
-            # Clamp to regime bounds
+            # Use uniform distribution within regime bounds to preserve SNR distribution
+            snr = np.random.uniform(snr_min, snr_max)
             return float(np.clip(snr, snr_min, snr_max))
 
         if snr_regime is not None:
@@ -105,8 +101,7 @@ class ParameterSampler:
 
         # Fallback to global sampling
         snr_regime = self._sample_snr_regime()
-        snr_min, snr_max = self.snr_ranges[snr_regime]
-        target_snr = float(np.random.uniform(snr_min, snr_max))
+        target_snr = _draw_from_regime(snr_regime)
         self.stats['snr_regimes'][snr_regime] = self.stats['snr_regimes'].get(snr_regime, 0) + 1
         return target_snr
     
@@ -381,17 +376,22 @@ class ParameterSampler:
         try:
             base_snr = self._sample_target_snr(snr_regime)
             # Adjust SNR based on BH mass to decouple mass from distance
-            # Light BH: chirp_mass ~3.5-4.0 → lower SNR (keep at baseline)
-            # Medium BH: chirp_mass ~5-7 → slightly higher SNR
-            # Heavy BH: chirp_mass ~10-15 → significantly higher SNR
+            # Light BH: chirp_mass ~1.8-3.0 → lower SNR (keep at baseline)
+            # Medium BH: chirp_mass ~2.9-4.1 → slightly higher SNR
+            # Heavy BH: chirp_mass ~3.9-4.6 → significantly higher SNR
             if bh_mass_type == 'light':
                 target_snr = base_snr
             elif bh_mass_type == 'medium':
                 # ~40-50% mass increase → boost SNR by ~25% to offset chirp_mass scaling
                 target_snr = base_snr * 1.25
-            else:  # heavy
+            elif bh_mass_type == 'heavy':
                 # ~100-200% mass increase → boost SNR by ~55% to offset chirp_mass scaling
                 target_snr = base_snr * 1.55
+            else:  # extreme
+                # ~300-400% mass increase → boost SNR by ~100% to offset chirp_mass scaling
+                target_snr = base_snr * 2.0
+            # Clip to valid SNR range to prevent extreme values
+            target_snr = float(np.clip(target_snr, 5.0, 100.0))
         finally:
             self._sampling_event_type = None
 

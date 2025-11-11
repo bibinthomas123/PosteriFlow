@@ -133,16 +133,24 @@ class TemporalStrainEncoder(nn.Module):
 
 class CrossSignalAnalyzer(nn.Module):
     """
-    Pairwise overlap analyzer with learned attention over pairwise relations.
+    Pairwise overlap analyzer with optional learned attention over pairwise relations.
 
-    Computes attention-weighted aggregates of pairwise features (e.g., time separation,
+    Computes optional attention-weighted aggregates of pairwise features (e.g., time separation,
     sky separation, mass/frequency overlap proxies, distance ratio, polarization diff),
     yielding a 16-D overlap feature per signal within a multi-signal scenario.
     """
 
-    def __init__(self):
-        """Initialize the pairwise feature and importance networks."""
+    def __init__(self, use_attention=True, importance_hidden_dim=16):
+        """
+        Initialize the pairwise feature and importance networks.
+        
+        Args:
+            use_attention: Whether to use attention weighting for pairwise features (default True).
+            importance_hidden_dim: Hidden dimension for importance network (default 16).
+        """
         super().__init__()
+        
+        self.use_attention = use_attention
 
         # Pairwise feature extractor
         self.overlap_net = nn.Sequential(
@@ -153,18 +161,18 @@ class CrossSignalAnalyzer(nn.Module):
             nn.Linear(32, 16)
         )
         
-        # Learns which pairwise relationships matter most
+        # Learns which pairwise relationships matter most (optional)
         self.importance_net = nn.Sequential(
-            nn.Linear(8, 16),
-            nn.LayerNorm(16),
+            nn.Linear(8, importance_hidden_dim),
+            nn.LayerNorm(importance_hidden_dim),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(16, 1)
+            nn.Linear(importance_hidden_dim, 1)
         )
 
     def forward(self, params_batch: torch.Tensor) -> torch.Tensor:
         """
-        Compute attention-weighted pairwise overlap features for a scenario.
+        Compute optional attention-weighted pairwise overlap features for a scenario.
 
         Args:
             params_batch: Tensor [n_signals, 15] of normalized signal parameters.
@@ -227,20 +235,24 @@ class CrossSignalAnalyzer(nn.Module):
                 
                 pairwise_features.append(features)
                 
-                # Learned importance score for this pair
-                importance = self.importance_net(features)
-                pairwise_importance.append(importance)
+                # Learned importance score for this pair (if attention enabled)
+                if self.use_attention:
+                    importance = self.importance_net(features)
+                    pairwise_importance.append(importance)
 
             if len(pairwise_features) > 0:
                 # Stack all pairwise features
                 pairwise_tensor = torch.stack(pairwise_features)  # [n-1, 8]
-                importance_tensor = torch.stack(pairwise_importance)  # [n-1, 1]
                 
-                # Attention-weighted aggregation across pairs
-                attention_weights = F.softmax(importance_tensor, dim=0)  # [n-1, 1]
-                
-                # Weighted sum of pairwise features
-                weighted_overlap = (attention_weights * pairwise_tensor).sum(dim=0)  # [8]
+                if self.use_attention and len(pairwise_importance) > 0:
+                    # Attention-weighted aggregation across pairs
+                    importance_tensor = torch.stack(pairwise_importance)  # [n-1, 1]
+                    attention_weights = F.softmax(importance_tensor, dim=0)  # [n-1, 1]
+                    # Weighted sum of pairwise features
+                    weighted_overlap = (attention_weights * pairwise_tensor).sum(dim=0)  # [8]
+                else:
+                    # Simple mean aggregation (no attention)
+                    weighted_overlap = pairwise_tensor.mean(dim=0)  # [8]
                 
                 overlap_scores.append(weighted_overlap)
             else:
@@ -308,12 +320,12 @@ class SignalFeatureExtractor(nn.Module):
     features (32-D), and concatenates them into a 96-D metadata representation.
     """
     
-    def __init__(self, input_dim: int = 15, config=None):
+    def __init__(self, input_dim: int = 16, config=None):
         """
         Initialize the feature extractor.
 
         Args:
-            input_dim: Number of normalized scalar parameters per signal (default 15).
+            input_dim: Number of normalized scalar parameters per signal (default 16, including network_snr).
             config: Dict or object with fields hidden_dims and dropout; falls back to defaults when absent.
         """
         super().__init__()
@@ -450,7 +462,8 @@ class MultiModalFusion(nn.Module):
     fused embedding for downstream heads.
     """
     def __init__(self, metadata_dim=96, overlap_dim=16, temporal_dim=64, 
-                 edge_dim=32, output_dim=64, num_heads=4):
+                 edge_dim=32, output_dim=64, num_heads=4, use_attention=True,
+                 attention_dropout=0.08):
         """
         Initialize the multi-modal fusion module.
 
@@ -461,26 +474,33 @@ class MultiModalFusion(nn.Module):
             edge_dim: Input dimension of edge-type embeddings.
             output_dim: Working dimension for attention/FFN projections.
             num_heads: Number of attention heads for the self-attention block.
+            use_attention: Whether to use self-attention (default True).
+            attention_dropout: Dropout rate for attention module (default 0.08).
         """
         super().__init__()
         
+        self.use_attention = use_attention
         total_dim = metadata_dim + overlap_dim + temporal_dim + edge_dim
         
         # Input projection
         self.input_proj = nn.Linear(total_dim, output_dim)
         self.input_norm = nn.LayerNorm(output_dim)  # stabilize fused distribution
         
-        # Cross-modal self-attention
-        self.attention = nn.MultiheadAttention(
-            output_dim, num_heads, dropout=0.08, batch_first=True
-        )
-        self.attn_norm = nn.LayerNorm(output_dim)
+        # Cross-modal self-attention (optional)
+        if self.use_attention:
+            self.attention = nn.MultiheadAttention(
+                output_dim, num_heads, dropout=attention_dropout, batch_first=True
+            )
+            self.attn_norm = nn.LayerNorm(output_dim)
+            logging.info(f"✅ MultiModalFusion: attention enabled ({num_heads} heads, dropout={attention_dropout})")
+        else:
+            logging.info("⚠️  MultiModalFusion: attention disabled (projection + FFN only)")
         
         # Feed-forward network
         self.ffn = nn.Sequential(
             nn.Linear(output_dim, output_dim * 2),
             nn.GELU(),
-            nn.Dropout(0.08),
+            nn.Dropout(attention_dropout),
             nn.Linear(output_dim * 2, output_dim)
         )
         self.ffn_norm = nn.LayerNorm(output_dim)
@@ -506,11 +526,12 @@ class MultiModalFusion(nn.Module):
         x = self.input_norm(x)
         x = x.unsqueeze(1)  # [batch, 1, dim]
         
-        # Self-attention with residual
-        residual = x
-        attn_out, _ = self.attention(x, x, x)
-        x = residual + attn_out
-        x = self.attn_norm(x)
+        # Optional self-attention with residual
+        if self.use_attention:
+            residual = x
+            attn_out, _ = self.attention(x, x, x)
+            x = residual + attn_out
+            x = self.attn_norm(x)
         
         # FFN with residual
         residual = x
@@ -754,8 +775,18 @@ class PriorityNet(nn.Module):
         else:
             temporal_dim = 0
 
-        # Cross-signal overlap analyzer and metadata feature extractor
-        self.cross_signal_analyzer = CrossSignalAnalyzer()
+        # Cross-signal overlap analyzer with configurable attention
+        overlap_use_attention = cfg_get('overlap_use_attention', True)
+        overlap_importance_hidden = cfg_get('overlap_importance_hidden', 16)
+        self.cross_signal_analyzer = CrossSignalAnalyzer(
+            use_attention=overlap_use_attention,
+            importance_hidden_dim=overlap_importance_hidden
+        )
+        if overlap_use_attention:
+            logging.info(f"   ✅ Overlap analyzer: attention enabled (hidden_dim={overlap_importance_hidden})")
+        else:
+            logging.info(f"   ⚠️  Overlap analyzer: attention disabled (mean aggregation)")
+        
         self.signal_encoder = SignalFeatureExtractor(config=self.config)
 
         # Edge case embedding with padding_idx=0 for 'none'
@@ -784,19 +815,29 @@ class PriorityNet(nn.Module):
             nn.Linear(16, 32)
         )
         
-        # Modal fusion (updated to include SNR embedding)
+        # Modal fusion with configurable attention (updated to include SNR embedding)
         # total_dim = metadata(96) + overlap(16) + temporal(64) + edge(32) + snr(32) = 240
+        use_modal_fusion_attention = cfg_get('use_modal_fusion', True)
+        attention_num_heads = cfg_get('attention_num_heads', 4)
+        attention_dropout = cfg_get('attention_dropout', 0.08)
+        
         self.modal_fusion = MultiModalFusion(
             metadata_dim=96 + 32,  # Concatenate SNR embedding with metadata
             overlap_dim=16,
             temporal_dim=64,
             edge_dim=32,
-            output_dim=64
+            output_dim=64,
+            num_heads=attention_num_heads,
+            use_attention=use_modal_fusion_attention,
+            attention_dropout=attention_dropout
         )
         # Optional: overlap density head (not returned by forward; use in trainer if desired)
         self.overlap_head = nn.Linear(64, 4)
         
-        logging.info(f"   Using MultiModalFusion with cross-attention + SNR embedding")
+        if use_modal_fusion_attention:
+            logging.info(f"   ✅ Modal fusion: attention enabled ({attention_num_heads} heads, dropout={attention_dropout})")
+        else:
+            logging.info(f"   ⚠️  Modal fusion: attention disabled (projection + FFN only)")
 
         # FIX #1: Priority head without sigmoid/tanh (already linear)
         # FIX #5: Initialize with small weights and bias near dataset mean
@@ -1158,8 +1199,7 @@ class PriorityNetTrainer:
                 threshold=1e-6,           # absolute min improvement
                 threshold_mode='abs',     # critical change
                 cooldown=0,
-                min_lr=min_lr,
-                verbose=False
+                min_lr=min_lr
             )
         self.main_scheduler = self.scheduler
 

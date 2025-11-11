@@ -24,7 +24,10 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-FIX_DOCS
+FIX_DOCS/*
+AGENTS.md
+
+
 
 # PyTorch
 *.pth

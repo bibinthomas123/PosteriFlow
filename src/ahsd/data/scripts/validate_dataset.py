@@ -783,30 +783,21 @@ def validate_extreme_cases(samples: List[Dict], logger, expected_config: Dict = 
     # Calculate stats and validate
     total = extreme_stats['total_samples']
 
-    # Expected fractions based on config (extreme_fraction=0.10):
-    # near_simultaneous_mergers: 0.20 → 0.10*0.20 = 0.020
-    # extreme_mass_ratio: 0.15 → 0.10*0.15 = 0.015
-    # high_spin_aligned: 0.12 → 0.10*0.12 = 0.012
-    # precession_dominated: 0.12 → 0.10*0.12 = 0.012
-    # eccentric_overlaps: 0.08 → 0.10*0.08 = 0.008
-    # weak_strong_overlaps: 0.18 → 0.10*0.18 = 0.018
-    # noise_confused_overlaps: 0.10 → 0.10*0.10 = 0.010
-    # long_duration_bns_overlaps: 0.04 → 0.10*0.04 = 0.004
-    # detector_dropouts: 0.08 → 0.10*0.08 = 0.008
-    # cosmological_distance: not in config, keep default
+    # Expected fractions based on config (extreme_fraction=0.03):
+    # near_simultaneous_mergers: 0.25 → 0.03*0.25 = 0.0075
+    # extreme_mass_ratio: 0.15 → 0.03*0.15 = 0.0045
+    # high_spin_aligned: 0.15 → 0.03*0.15 = 0.0045
+    # weak_strong_overlaps: 0.25 → 0.03*0.25 = 0.0075
+    # noise_confused_overlaps: 0.15 → 0.03*0.15 = 0.0045
+    # long_duration_bns_overlaps: 0.05 → 0.03*0.05 = 0.0015
     # pre_merger_samples: not an extreme case, remove from expectations
     expected_minimums = {
-        'near_simultaneous_mergers': 0.015,  # 0.10 * 0.20 * 0.75 (some tolerance)
-        'extreme_mass_ratio': 0.010,
-        'high_spin_aligned': 0.008,
-        'precession_dominated': 0.008,
-    'eccentric_overlaps': 0.005,
-    'weak_strong_overlaps': 0.012,
-    'noise_confused_overlaps': 0.007,
-    'long_duration_bns_overlaps': 0.002,
-        'detector_dropouts': 0.005,
-    'cosmological_distance': 0.005
-    # Removed pre_merger_samples as it's an edge case, not extreme case
+        'near_simultaneous_mergers': 0.0075,  # 0.03 * 0.25
+        'extreme_mass_ratio': 0.0045,  # 0.03 * 0.15
+        'high_spin_aligned': 0.0045,  # 0.03 * 0.15
+        'weak_strong_overlaps': 0.0075,  # 0.03 * 0.25
+        'noise_confused_overlaps': 0.0045,  # 0.03 * 0.15
+        'long_duration_bns_overlaps': 0.0015,  # 0.03 * 0.05
     }
     
     logger.info("  ✓ Extreme case breakdown (critical for robustness):")

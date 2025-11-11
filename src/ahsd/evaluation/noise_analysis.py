@@ -199,7 +199,7 @@ class NoiseAnalyzer:
             
             slope = np.polyfit(log_freq, log_psd, 1)[0]
             return float(slope)
-        except:
+        except (ValueError, np.linalg.LinAlgError):
             return 0.0
     
     def _compute_spectral_flatness(self, psd: np.ndarray) -> float:
@@ -225,7 +225,8 @@ class NoiseAnalyzer:
             
             flatness = entropy / max_entropy if max_entropy > 0 else 0.0
             return float(np.clip(flatness, 0, 1))
-        except:
+        except (ValueError, FloatingPointError) as e:
+            self.logger.debug(f"Spectral flatness computation failed: {e}")
             return 0.5
     
     def _detect_line_noise(
@@ -260,7 +261,7 @@ class NoiseAnalyzer:
             
             ratio = (line_power - neighbor_power) / (neighbor_power + 1e-30)
             return float(np.clip(ratio, 0, 1))
-        except:
+        except (ValueError, IndexError):
             return 0.0
     
     def _compute_non_stationarity(self, strain: np.ndarray, n_windows: int = 8) -> float:
@@ -292,7 +293,7 @@ class NoiseAnalyzer:
             # Coefficient of variation
             cv = np.std(spectral_powers) / (np.mean(spectral_powers) + 1e-30)
             return float(np.clip(cv, 0, 1))
-        except:
+        except (ValueError, ZeroDivisionError):
             return 0.0
     
     def _classify_noise(self, features: Dict) -> Tuple[bool, float]:
@@ -409,10 +410,9 @@ class NoiseAnalyzer:
         
         # Overall statistics
         real_noise_fraction = real_count / total_analyzed if total_analyzed > 0 else 0.0
-        overall_confidence = float(np.mean(
-            [a['confidence'] for analyses in detector_results.values() 
-             for a in analyses['analyses']]
-        )) if any(detector_results.values()) else 0.0
+        all_confidences = [a['confidence'] for analyses in detector_results.values() 
+                           for a in analyses['analyses']]
+        overall_confidence = float(np.mean(all_confidences)) if all_confidences else 0.0
         
         result = {
             'total_samples': len(samples_to_analyze),

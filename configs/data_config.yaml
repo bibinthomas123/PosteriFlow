@@ -10,7 +10,7 @@
 # ==============================================================================
 
 # Number of samples to generate (start with 50k for full training)
-n_samples: 10000
+n_samples: 100
 
 # Output configuration
 output_dir: "data/dataset"

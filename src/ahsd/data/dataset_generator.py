@@ -1657,10 +1657,18 @@ class GWDatasetGenerator:
         total_snr = sum(snr_regime_counts.values())
         self.logger.info("")
         self.logger.info("SNR Distribution (Final):")
+        # Use configured distribution instead of hardcoded values
+        expected_dist = {
+            "weak": float(SNR_DISTRIBUTION.get("weak", 0.05)) * 100,
+            "low": float(SNR_DISTRIBUTION.get("low", 0.35)) * 100,
+            "medium": float(SNR_DISTRIBUTION.get("medium", 0.45)) * 100,
+            "high": float(SNR_DISTRIBUTION.get("high", 0.12)) * 100,
+            "loud": float(SNR_DISTRIBUTION.get("loud", 0.03)) * 100,
+        }
         for regime in ["weak", "low", "medium", "high", "loud"]:
             count = snr_regime_counts.get(regime, 0)
             pct = (count / total_snr * 100) if total_snr > 0 else 0
-            expected_pct = {"weak": 15, "low": 35, "medium": 30, "high": 15, "loud": 5}[regime]
+            expected_pct = expected_dist[regime]
             diff = abs(pct - expected_pct)
             status = "✓" if diff < 5 else "⚠"
             self.logger.info(
@@ -3580,7 +3588,8 @@ class GWDatasetGenerator:
                 snr_regime = info.get("snr_regime")
                 event_type = info.get("event_type")
             else:
-                # Default behavior: sample regime from configured distribution (respect quotas)
+                # Default behavior: sample regime from configured distribution (not quota-forced)
+                # This path is taken when forced_signals is not provided (non-quota overlaps)
                 snr_regime = self.parameter_sampler._sample_snr_regime()
                 try:
                     event_type = self.parameter_sampler.event_type_given_snr(snr_regime)

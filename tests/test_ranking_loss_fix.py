@@ -5,7 +5,7 @@ Verifies that correct rankings have low loss and incorrect rankings have high lo
 """
 
 import torch
-from src.ahsd.core.priority_net import AdaptiveRankingLoss
+from ahsd.core.priority_net import AdaptiveRankingLoss
 
 def test_ranking_loss():
     """Test the fixed AdaptiveRankingLoss implementation."""

@@ -10,7 +10,7 @@ Usage:
     --device cpu
 """
 
-import sys, json, time, logging, argparse, copy
+import sys, json, time, logging, argparse, copy, os
 from types import SimpleNamespace
 from pathlib import Path
 import numpy as np
@@ -57,10 +57,17 @@ def build_config_from_checkpoint(ckpt):
     cfg_dict.setdefault('dropout', 0.2)
     cfg_dict.setdefault('use_strain', True)
     cfg_dict.setdefault('use_edge_conditioning', True)
-    cfg_dict.setdefault('n_edge_types', 17)
+    cfg_dict.setdefault('n_edge_types', 19)
     return SimpleNamespace(**cfg_dict)
 
 def load_prioritynet(checkpoint_path, device="cpu"):
+    # If directory, find checkpoint file
+    if os.path.isdir(checkpoint_path):
+        for fname in ['priority_net_best.pth', 'checkpoint_best.pt', 'model.pt']:
+            candidate = os.path.join(checkpoint_path, fname)
+            if os.path.exists(candidate):
+                checkpoint_path = candidate
+                break
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     cfg = build_config_from_checkpoint(ckpt)
     model = PriorityNet(cfg, use_strain=cfg.use_strain, use_edge_conditioning=cfg.use_edge_conditioning, n_edge_types=cfg.n_edge_types).to(device).eval()
@@ -179,11 +186,20 @@ def edge_activation_check(model, dataset):
     ids = []
     for i in range(min(100, len(dataset))):
         sc = dataset[i]
-        eid = sc.get('edge_type_id', 0)
+        # Note: PriorityNetDataset returns 'edge_type_ids' (plural) as a tensor
+        edge_type_ids_tensor = sc.get('edge_type_ids', None)
+        if edge_type_ids_tensor is not None:
+            # Get first element from the tensor
+            eid = int(edge_type_ids_tensor[0].item()) if len(edge_type_ids_tensor) > 0 else 0
+        else:
+            eid = 0
         ids.append(eid)
     ids = np.array(ids)
     var = ids.var()
+    unique_ids = np.unique(ids)
     L.info(f"edge_type_id variance={var:.3f}")
+    L.info(f"Unique edge_type_ids: {unique_ids} (count: {len(unique_ids)})")
+    L.info(f"Distribution: {dict(zip(*np.unique(ids, return_counts=True)))}")
     if var < 1e-6:
         L.warning("⚠️  Edge IDs collapsed; edge pathway bypassed (fix dataset)")
 
@@ -426,7 +442,7 @@ def main():
     val_dataset = None
     if args.data_dir:
         loader = ChunkedGWDataLoader(args.data_dir, split='validation', max_samples=500, verbose=False)
-        scenarios = loader.convert_to_priority_scenarios(create_overlaps=False)
+        scenarios = loader.convert_to_priority_scenarios(create_overlaps=True, overlap_probability=0.5)
         val_dataset = PriorityNetDataset(scenarios, "validation")
         L.info(f"✅ Loaded {len(val_dataset)} validation scenarios")
 

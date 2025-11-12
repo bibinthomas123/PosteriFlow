@@ -336,13 +336,13 @@ class RealNoiseGenerator:
     """
 
     def __init__(
-        self,
-        detector: str = "H1",
-        cache_dir: str = "data/noise_cache",
-        sample_rate: int = SAMPLE_RATE,
-        duration: float = DURATION,
-        max_cached_segments: int = 1000,
-    ):
+         self,
+         detector: str = "H1",
+         cache_dir: str = "~/.gwpy/cache",
+         sample_rate: int = SAMPLE_RATE,
+         duration: float = DURATION,
+         max_cached_segments: int = 1000,
+     ):
         """
         Initialize RealNoiseGenerator.
 
@@ -598,12 +598,13 @@ class RealNoiseGenerator:
                 )
 
                 # Fetch data from GWOSC (with caching)
+                # gwpy automatically checks ~/.gwpy/cache/ first before network request
                 strain = TimeSeries.fetch_open_data(
                     self.detector,
                     int(start),
                     int(end),
                     sample_rate=sample_rate,
-                    cache=True,  # Cache to disk
+                    cache=True,  # Cache to disk (~/gwpy/cache/)
                 )
 
                 # Preprocessing: highpass filter and whitening

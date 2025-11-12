@@ -3,7 +3,10 @@ Simulate overlapping gravitational wave signals for training.
 """
 
 import numpy as np
-import bilby
+try:
+    import bilby
+except ImportError:
+    bilby = None  # Optional dependency
 from pycbc.waveform import get_td_waveform
 from pycbc.detector import Detector
 from typing import List, Dict, Tuple, Optional
@@ -20,8 +23,9 @@ import warnings
 warnings.filterwarnings("ignore", message="Unkown projection method")
 warnings.filterwarnings("ignore", message="Unknown projection method")
 
-# Configure bilby logging
-bilby.core.utils.logger.setLevel('WARNING')
+# Configure bilby logging (if available)
+if bilby is not None:
+    bilby.core.utils.logger.setLevel('WARNING')
 
 class OverlappingSignalSimulator:
     """

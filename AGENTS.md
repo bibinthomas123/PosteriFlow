@@ -26,6 +26,7 @@ Do not create a new Document every time just read the old doc and update it so t
 **IMPORTANT**
 Do not create a NEW FIX document every time just see if there is any document which is related to the fix if yes update it else just create a new one and place it the FIX_DOCS folder and you can refer from there for knowledge or context
 
+**IMPORTANT** Use FIX_DOCS folder to see what changes have been made to the codebase 
 
 ## Build/Lint/Test Commands
 
@@ -56,6 +57,11 @@ Do not create a NEW FIX document every time just see if there is any document wh
 - **Neural Noise Integration (10,000× speedup):**
   - `python test_neural_noise_integration.py` - Validate neural noise generation (expects ✓ PASS)
   - See FIX_DOCS/NEURAL_NOISE_SETUP.md for configuration and usage
+- **Real Noise Cache Integration (10-25× speedup):**
+  - Pre-downloaded GWOSC segments from `gw_segments_cleaned/` folder
+  - 133 real noise segments (H1: 59, L1: 58, V1: 16) automatically loaded at startup
+  - Set `use_real_noise_prob: 0.1` in `configs/data_config.yaml` to enable (10% real noise)
+  - See FIX_DOCS/REAL_NOISE_CACHE_INTEGRATION.md for details
 
 ## Architecture & Codebase Structure
 
@@ -180,13 +186,53 @@ Only when asked to test please follow the below conditions
 - Verification: Forward pass now succeeds with 5 signals, 16 features
 - See FIX_DOCS/PRIORITYNET_DIMENSION_MISMATCH_FIX.md for details
 - **Neural Noise Model Path Resolution** (FIXED - Nov 10, 2025): Auto-resolve relative paths to project root:
-   - Issue: Neural noise models not loading - "No model path provided" message even with valid config
-   - Root cause: Relative paths in config (e.g., `"data/Gaussian_network.pickle"`) not resolved to absolute paths
-   - Fix: Added automatic path resolution in `dataset_generator.py` (lines 276-303) that finds project root via `.git/` directory
-   - Works from any working directory - paths automatically resolved relative to project root
-   - Graceful fallback to colored Gaussian noise if models unavailable or sbigw missing
-   - No config changes needed - existing YAML config works transparently
-   - See FIX_DOCS/NEURAL_NOISE_PATH_RESOLUTION.md and FIX_DOCS/NEURAL_NOISE_FIX_SUMMARY.md for details
+    - Issue: Neural noise models not loading - "No model path provided" message even with valid config
+    - Root cause: Relative paths in config (e.g., `"data/Gaussian_network.pickle"`) not resolved to absolute paths
+    - Fix: Added automatic path resolution in `dataset_generator.py` (lines 276-303) that finds project root via `.git/` directory
+    - Works from any working directory - paths automatically resolved relative to project root
+    - Graceful fallback to colored Gaussian noise if models unavailable or sbigw missing
+    - No config changes needed - existing YAML config works transparently
+    - See FIX_DOCS/NEURAL_NOISE_PATH_RESOLUTION.md and FIX_DOCS/NEURAL_NOISE_FIX_SUMMARY.md for details
+- **Real Noise Cache Integration** (FIXED - Nov 11, 2025): Pre-downloaded GWOSC segments for 10-25× speedup:
+    - Pre-downloaded segments stored in `gw_segments_cleaned/` folder (H1: 59, L1: 58, V1: 16 segments)
+    - Loaded automatically at dataset generator startup via `_load_cached_noise_segments()`
+    - Three-level priority: cached segments → on-demand fetching → synthetic noise
+    - Set `use_real_noise_prob: 0.1` in config to enable (10% of samples use real noise)
+    - Backward compatible: gracefully falls back if cache directory doesn't exist
+    - Memory efficient: ~21.5 MB total for all 133 segments
+    - See FIX_DOCS/REAL_NOISE_CACHE_INTEGRATION.md for details
+- **PriorityNet Edge Conditioning & Calibration** (FIXED - Nov 12, 2025): Validation dataset and loss weight tuning:
+     - **Edge ID Issue**: Validation set was generated with `create_overlaps=False`, causing all samples to have edge_type_id=0 (variance=0)
+     - **Fix**: Updated `train_priority_net.py` lines 2564-2569 to pass `create_overlaps=args.create_overlaps` to validation/test loaders
+     - **Calibration Issue**: Model predictions max out at 0.557 vs true max 0.950 (gap=0.393) due to ranking loss dominance
+     - **Loss Rebalancing** in `configs/enhanced_training.yaml`: ranking=0.50 (↓0.70), mse=0.35 (↑0.20), uncertainty=0.15 (↑0.10)
+     - **Expected Results**: Edge variance >5, max gap <0.10, uncertainty correlation >0.30, distance sensitivity <-0.01
+     - **Retraining**: Run with `--create_overlaps` flag for proper multi-detection validation
+     - See FIX_DOCS/EDGE_CONDITIONING_AND_CALIBRATION_FIX.md for full details
+- **LR Scheduler Patience Reset Bug** (FIXED - Nov 12, 2025): ReduceLROnPlateau spurious counter resets:
+     - **Issue**: `num_bad_epochs` counter reset to 0 without reducing LR, causing monitoring errors
+     - **Root cause**: `threshold_mode='abs'` with very small losses (~1e-3) caused floating-point precision errors in PyTorch's comparison logic
+     - **Fix**: Changed to `threshold_mode='rel'` (relative mode) in `src/ahsd/core/priority_net.py` lines 1228-1237
+     - **Changes**: `threshold=1e-4, threshold_mode='abs'` → `threshold=1e-3, threshold_mode='rel'` (0.1% relative improvement threshold)
+     - **Why**: Relative comparison `(best - current) / abs(best) > threshold` is numerically stable vs direct subtraction of tiny numbers
+     - **Verification**: `num_bad_epochs` now increments consistently without spurious resets
+     - See FIX_DOCS/LR_SCHEDULER_PATIENCE_RESET_BUG.md for details
+- **Checkpoint Encoder Type Mismatch** (FIXED - Nov 12, 2025): Config nesting issue in checkpoint validation + PriorityNet config reading:
+      - **Issue**: Spurious "Encoder type mismatch: checkpoint=True, config=False" during training resume; state_dict shape mismatches (missing CNN conv_blocks, unexpected Transformer encoder layers)
+      - **Root cause**: Config loader returns nested dict with `priority_net` top-level key, but (1) checkpoint loader only checked top level, (2) PriorityNet's `cfg_get()` also only checked top level, so even after validation passed, model initialized with wrong encoder
+      - **Fix**: (1) Updated `load_checkpoint()` in `experiments/train_priority_net.py` lines 2195-2210 to search both top level and nested `priority_net` section, (2) Updated `cfg_get()` in `src/ahsd/core/priority_net.py` lines 760-777 to search both levels when reading config
+      - **Behavior**: Checkpoint validation passes when types match; PriorityNet correctly initializes TransformerStrainEncoder when `use_transformer_encoder: true`
+      - **Verification**: Checkpoints resume without warnings, encoder type matches config, state_dict loads cleanly
+      - See FIX_DOCS/CHECKPOINT_ENCODER_TYPE_MISMATCH_FIX.md for details
+- **Prediction Compression/Saturation** (FIXED - Nov 12, 2025): Output range severely limited to 25% of target range:
+      - **Issue**: Predictions stuck in (0.297, 0.471) while targets span (0.263, 0.950) — compression ratio only 25%
+      - **Root causes**: (1) Calibration penalties weak (0.05 each), (2) Output bias initialized to 0.2 not 0.5, (3) Weight init std too small (0.01 not 0.05), (4) No range regularization, (5) Affine params unconstrained
+      - **Fix**: (1) Config-driven calibration weights (calib_mean_weight=0.15, calib_max_weight=0.40), (2) Output init from config (bias=0.5, std=0.05), (3) Range regularization loss term, (4) Affine param clamping (gain [0.7,1.5], bias [-0.1,0.1]), (5) Stronger penalties in loss function
+      - **Config changes** in `configs/enhanced_training.yaml` (lines 59-71): 6 new parameters for calibration control
+      - **Code changes** in `src/ahsd/core/priority_net.py`: 6 locations across PriorityLoss, PriorityNet, TrainerForPriorityNet
+      - **Expected improvement**: Range 0.174 → ≥0.50 (287% increase), max_gap 0.687 → <0.10 (93% reduction)
+      - **Timeline**: Epoch 30 target (prediction range ≥0.60, max_gap <0.10), full convergence by epoch 40-50
+      - See FIX_DOCS/PREDICTION_COMPRESSION_FIX.md, COMPRESSION_FIX_SUMMARY.md, MONITORING_CHECKLIST.md for details
 
 **Model Training:**
 - Monitor calibration and output dynamic range

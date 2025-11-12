@@ -15,6 +15,25 @@ import gzip
 import time
 from datetime import datetime, timezone
 
+# Import encode_edge_type for legacy dataset repair
+try:
+    from .dataset_generator import encode_edge_type
+except ImportError:
+    # Fallback if circular import occurs
+    def encode_edge_type(dets):
+        """Fallback edge type encoder"""
+        if not isinstance(dets, list):
+            dets = [dets] if dets else []
+        n_signals = len([d for d in dets if d])
+        if n_signals <= 1:
+            return 0
+        elif n_signals == 2:
+            return 3
+        elif n_signals == 3:
+            return 6
+        else:
+            return 7
+
 class DatasetWriter:
     """
     Write datasets to HDF5 or PKL format with comprehensive metadata
@@ -380,6 +399,15 @@ class DatasetReader:
                     data = pickle.load(f)
             
             self.logger.info(f"✓ Loaded from {filepath}")
+            
+            # ✅ FIX: Ensure all samples have edge_type_id (for legacy datasets)
+            if isinstance(data, dict) and 'samples' in data:
+                for sample in data['samples']:
+                    if "edge_type_id" not in sample or sample.get("edge_type_id") is None:
+                        parameters = sample.get("parameters", [])
+                        if not isinstance(parameters, list):
+                            parameters = [parameters] if parameters else []
+                        sample["edge_type_id"] = encode_edge_type(parameters)
             
             # Log dataset info
             if isinstance(data, dict):

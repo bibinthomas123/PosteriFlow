@@ -141,13 +141,16 @@ def attach_network_snr_safe(params_or_list):
 def rescale_priorities(y_raw):
     """
     Rescale list/array y_raw to [0,1] with mild gamma < 1 to expand headroom.
+    IMPORTANT: Hard clip final result to [0, 1] to prevent out-of-range values.
     """
     y_arr = np.asarray(y_raw, dtype=np.float32)
     ymin, ymax = float(np.min(y_arr)), float(np.max(y_arr))
     if ymax - ymin < 1e-6:
         return np.clip(y_arr * 0 + 0.5, 0.0, 1.0).tolist()
     y = (y_arr - ymin) / (ymax - ymin)
-    y = np.clip(y**0.9, 0.0, 1.0)
+    y = y**0.9  # Apply gamma expansion
+    # CRITICAL: Hard clip to [0, 1] to prevent any out-of-range values
+    y = np.clip(y, 0.0, 1.0)
     return y.tolist()
 
 
@@ -259,16 +262,26 @@ class GWDatasetGenerator:
         self.writer = DatasetWriter(output_dir, format=output_format)
         self.metadata_manager = MetadataManager()
 
-        # Initialize real noise generators (30% of samples use real LIGO/Virgo noise)
-        # NOTE: With new persistent caching, GWOSC segments are loaded once and reused
-        # Catalog is cached to cache_dir for fast subsequent loads
-        self.use_real_noise_prob = 0.0
+        # Initialize real noise generators with pre-downloaded cache
+        # First tries to load from gw_segments_cleaned/, falls back to RealNoiseGenerator
+        self.use_real_noise_prob = self.config.get("use_real_noise_prob", 0.0)
         self.real_noise_generators = {}
+        self.cached_noise_segments = {}  # {detector: [array, array, ...]}
+        
+        # Try to load pre-downloaded segments from gw_segments_cleaned/
+        self._load_cached_noise_segments()
+        
+        # Fall back to RealNoiseGenerator if segments not found
         try:
             from .noise_generator import RealNoiseGenerator
 
             output_dir_path = Path(output_dir)
             for detector in self.detectors:
+                # Skip if we have cached segments
+                if detector in self.cached_noise_segments and self.cached_noise_segments[detector]:
+                    self.logger.info(f"Using {len(self.cached_noise_segments[detector])} pre-downloaded segments for {detector}")
+                    continue
+                    
                 try:
                     self.real_noise_generators[detector] = RealNoiseGenerator(
                         detector=detector,
@@ -276,7 +289,7 @@ class GWDatasetGenerator:
                         sample_rate=sample_rate,
                         duration=duration,
                     )
-                    self.logger.info(f"Real noise generator initialized for {detector}")
+                    self.logger.info(f"Real noise generator (on-demand fetching) initialized for {detector}")
                 except Exception as e:
                     self.logger.warning(f"Failed to initialize real noise for {detector}: {e}")
                     self.real_noise_generators[detector] = None
@@ -291,6 +304,39 @@ class GWDatasetGenerator:
         # Debug SNR diagnostic counters (can be enabled via config['debug_snr_diagnostic'])
         self._debug_snr_count = 0
         self._debug_snr_limit = int(self.config.get("debug_snr_limit", 50))
+
+    def _load_cached_noise_segments(self) -> None:
+        """
+        Load pre-downloaded noise segments from gw_segments_cleaned/ folder.
+        
+        Expected file format: {detector}_{timestamp}.npy
+        e.g., H1_1238166018.npy, L1_1238166018.npy, V1_1238166018.npy
+        """
+        cache_dir = Path("gw_segments_cleaned")
+        
+        if not cache_dir.exists():
+            self.logger.info(f"Cache directory {cache_dir} not found. Will use on-demand fetching.")
+            return
+        
+        # Find and load all .npy files
+        for detector in self.detectors:
+            detector_files = sorted(cache_dir.glob(f"{detector}_*.npy"))
+            
+            if detector_files:
+                segments = []
+                for file_path in detector_files:
+                    try:
+                        segment = np.load(file_path).astype(np.float32)
+                        segments.append(segment)
+                        self.logger.debug(f"Loaded segment from {file_path.name}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to load {file_path.name}: {e}")
+                
+                if segments:
+                    self.cached_noise_segments[detector] = segments
+                    self.logger.info(f"✓ Loaded {len(segments)} pre-downloaded segments for {detector} from {cache_dir}")
+            else:
+                self.logger.info(f"No cached segments found for {detector} in {cache_dir}")
 
     def _get_noise_for_detector(self, detector_name: str, psd_dict: Dict) -> Tuple[np.ndarray, str]:
         """
@@ -584,6 +630,41 @@ class GWDatasetGenerator:
                 sample["parameters"] = [_normalize_param_dict(p) for p in params]
             elif isinstance(params, dict):
                 sample["parameters"] = _normalize_param_dict(params)
+
+            # CRITICAL: Validate and fix priorities to ensure [0, 1] range
+            priorities = sample.get("priorities", [])
+            if priorities:
+                # Validate each priority is in valid range
+                fixed_priorities = []
+                for p in priorities:
+                    try:
+                        p_float = float(p)
+                        # Hard clip to [0, 1]
+                        if not (0.0 <= p_float <= 1.0):
+                            logger = logging.getLogger(__name__)
+                            logger.warning(
+                                f"Sample {sample.get('sample_id', 'unknown')}: "
+                                f"Priority {p_float} out of range [0, 1], clipping"
+                            )
+                            p_float = float(np.clip(p_float, 0.0, 1.0))
+                        fixed_priorities.append(p_float)
+                    except (ValueError, TypeError):
+                        # Invalid priority, use fallback
+                        logger = logging.getLogger(__name__)
+                        logger.warning(
+                            f"Sample {sample.get('sample_id', 'unknown')}: "
+                            f"Invalid priority {p}, using default 0.3"
+                        )
+                        fixed_priorities.append(0.3)
+                
+                sample["priorities"] = fixed_priorities
+
+            # ✅ FIX: Ensure all samples have edge_type_id (for single samples from legacy paths)
+            if "edge_type_id" not in sample or sample.get("edge_type_id") is None:
+                parameters = sample.get("parameters", [])
+                if not isinstance(parameters, list):
+                    parameters = [parameters] if parameters else []
+                sample["edge_type_id"] = encode_edge_type(parameters)
 
             # Track edge/extreme cases
             if sample.get("is_edge_case", False):
@@ -1480,7 +1561,7 @@ class GWDatasetGenerator:
                                         )
                                     priorities.append(priority)
 
-                                sample["priorities"] = priorities if priorities else [15.0]
+                                sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities] if priorities else [self._normalize_priority_to_01(15.0)]
 
                     _normalize_sample(sample)
                     _track_sample(sample)
@@ -1565,7 +1646,7 @@ class GWDatasetGenerator:
                                 else:
                                     priority = self._estimate_snr_from_params(params)
                                     priorities.append(priority)
-                            sample["priorities"] = priorities
+                            sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
                     else:
                         #  Use simulator for overlaps
                         if self.simulation is not None:
@@ -1591,7 +1672,7 @@ class GWDatasetGenerator:
                                             params, priority, reason="overlap_fallback_assign"
                                         )
                                     priorities.append(priority)
-                                sample["priorities"] = priorities
+                                sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
                         else:
                             # No simulator - use legacy
                             sample = self._generate_overlapping_sample(
@@ -1607,7 +1688,7 @@ class GWDatasetGenerator:
                                         params, priority, reason="regular_overlap_legacy"
                                     )
                                 priorities.append(priority)
-                            sample["priorities"] = priorities
+                            sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
 
                     _normalize_sample(sample)
                     _track_sample(sample)
@@ -2159,7 +2240,7 @@ class GWDatasetGenerator:
             "is_edge_case": True,
             "edge_case_type": "psd_drift",
             "parameters": [params],  #  Must be list
-            "priorities": [priority],  #  Added
+            "priorities": [self._normalize_priority_to_01(priority)],  # Normalized
             "detector_data": detector_data,
             "metadata": {
                 "sample_id": sample_id,  #  Fixed
@@ -2227,7 +2308,7 @@ class GWDatasetGenerator:
             "is_edge_case": True,
             "edge_case_type": "sky_position_extremes",
             "parameters": [params],  #  Must be list
-            "priorities": [priority],  #  Added
+            "priorities": [self._normalize_priority_to_01(priority)],  # Normalized
             "detector_data": detector_data,
             "metadata": {
                 "sample_id": sample_id,  #  Fixed
@@ -2477,7 +2558,7 @@ class GWDatasetGenerator:
             "is_edge_case": False,
             "is_premerger": True,
             "parameters": [params],  #  Must be LIST
-            "priorities": [priority],  #  Added
+            "priorities": [self._normalize_priority_to_01(priority)],  # Normalized
             "detector_data": detector_data,
             "noise_type": noise_types,  # Track which detectors used real vs synthetic noise
             "metadata": {
@@ -2718,7 +2799,7 @@ class GWDatasetGenerator:
             "is_edge_case": True,
             "edge_case_type": edge_type,
             "parameters": [params],  # Must be list
-            "priorities": [priority],  # Must be list
+            "priorities": [self._normalize_priority_to_01(priority)],  # Normalized
             "detector_data": detector_data,
             "metadata": {
                 "sample_id": sample_id,
@@ -3007,7 +3088,9 @@ class GWDatasetGenerator:
         # Handle noise samples (no signal to create degeneracy with)
         if base_sample.get("type") == "noise" or not base_sample.get("parameters"):
             base_sample["edge_case_type"] = "multimodal_posteriors"
-            base_sample["priorities"] = base_sample.get("priorities", [10.0])
+            existing_priorities = base_sample.get("priorities", [10.0])
+            # Normalize raw SNR values to [0, 1] range
+            base_sample["priorities"] = [self._normalize_priority_to_01(p) for p in (existing_priorities if isinstance(existing_priorities, list) else [existing_priorities])]
             base_sample["n_signals"] = 0
             self.logger.debug(
                 f"Sample {sample_id}: Noise sample, skipping multimodal posterior generation"
@@ -3024,7 +3107,9 @@ class GWDatasetGenerator:
         # Skip if no valid parameters
         if not params_list or not params_list[0]:
             base_sample["edge_case_type"] = "multimodal_posteriors"
-            base_sample["priorities"] = base_sample.get("priorities", [10.0])
+            existing_priorities = base_sample.get("priorities", [10.0])
+            # Normalize raw SNR values to [0, 1] range
+            base_sample["priorities"] = [self._normalize_priority_to_01(p) for p in (existing_priorities if isinstance(existing_priorities, list) else [existing_priorities])]
             base_sample["n_signals"] = len(params_list)
             return base_sample
 
@@ -3150,7 +3235,7 @@ class GWDatasetGenerator:
                         self._set_target_snr(p, priority, reason="multimodal_posteriors")
                     priorities.append(priority)
 
-            base_sample["priorities"] = priorities if priorities else [15.0]
+            base_sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities] if priorities else [self._normalize_priority_to_01(15.0)]
             base_sample["n_signals"] = len(priorities)
 
         return base_sample
@@ -3394,6 +3479,60 @@ class GWDatasetGenerator:
             self.logger.debug(f"SNR estimation failed: {e}")
             return 15.0  # Default fallback
 
+    def _normalize_priority_to_01(self, snr_value: float) -> float:
+        """
+        Normalize SNR value to priority range [0, 1].
+        
+        Uses exponential mapping to ensure weak signals (SNR < 5) get non-zero priorities.
+        - SNR < 5: Maps to priority [0.05, 0.2] (weak but detectable)
+        - SNR 5-20: Maps to priority [0.2, 0.5]
+        - SNR 20-50: Maps to priority [0.5, 0.8]
+        - SNR > 50: Maps to priority [0.8, 1.0] (loud events)
+        
+        Args:
+            snr_value: Raw SNR value (typically 3-200)
+            
+        Returns:
+            Normalized priority in [0, 1]
+        """
+        # Handle invalid inputs
+        try:
+            snr_val = float(snr_value)
+        except (ValueError, TypeError):
+            # Invalid input - return minimum priority
+            self.logger.debug(f"Invalid SNR value: {snr_value}, using minimum priority")
+            return 0.05  # Minimum non-zero priority
+        
+        # Use logarithmic scaling to handle wide SNR range
+        # Clip raw SNR to reasonable bounds: [1, 1000]
+        clipped_snr = float(np.clip(snr_val, 1.0, 1000.0))
+        
+        # Log-scale: log(1) = 0, log(1000) ≈ 6.9
+        log_snr = np.log(clipped_snr)
+        log_snr_min = np.log(1.0)  # 0
+        log_snr_max = np.log(1000.0)  # ~6.9
+        
+        # Normalize to [0, 1]
+        normalized = (log_snr - log_snr_min) / (log_snr_max - log_snr_min)
+        
+        # Apply sigmoid-like correction to expand lower end:
+        # Use power < 1 to expand values near 0
+        # This ensures SNR=1 (min) maps to ~0.05, not 0.0
+        priority = 0.05 + 0.95 * (normalized ** 0.7)
+        
+        # Double-check the result is in [0, 1]
+        result = float(np.clip(priority, 0.05, 1.0))
+        
+        # Validate result
+        if not (0.05 <= result <= 1.0):
+            self.logger.warning(
+                f"Priority normalization produced out-of-range value: {result}, "
+                f"clipping to [0.05, 1.0]"
+            )
+            result = float(np.clip(result, 0.05, 1.0))
+        
+        return result
+
     def _ensure_sample_priorities(self, sample: Dict) -> Dict:
         """
         Ensure that a sample has 'priorities' and 'n_signals' populated.
@@ -3446,10 +3585,23 @@ class GWDatasetGenerator:
                             params, priority, reason="_ensure_sample_priorities_exception"
                         )
 
+                # Ensure priority is a valid number (not NaN or Inf)
+                if not np.isfinite(priority):
+                    self.logger.warning(f"Non-finite priority detected: {priority}, using fallback SNR=15.0")
+                    priority = 15.0
+                
                 priorities.append(priority)
 
-            # If we couldn't compute priorities (no params), keep a sensible default list
-            sample["priorities"] = priorities if priorities else [15.0]
+            # Normalize all priorities to [0, 1] range
+            normalized_priorities = [self._normalize_priority_to_01(p) for p in priorities] if priorities else [self._normalize_priority_to_01(15.0)]
+            
+            # Validate all normalized priorities are in [0, 1]
+            for i, p in enumerate(normalized_priorities):
+                if not (0.0 <= p <= 1.0):
+                    self.logger.warning(f"Out-of-range priority at index {i}: {p}, clipping to [0, 1]")
+                    normalized_priorities[i] = float(np.clip(p, 0.0, 1.0))
+            
+            sample["priorities"] = normalized_priorities
 
         # Derive n_signals from the normalized parameters list (true signal count)
         sample["n_signals"] = len(parameters) if parameters else 1
@@ -3725,12 +3877,11 @@ class GWDatasetGenerator:
         # Compute priorities BEFORE decoy injection (so len(priorities) == n_signals)
         priorities = []
         for params in signal_params_list:
-            # Use your existing SNR computation or approximation
-            priority = self._estimate_snr_from_params(params)
+            # Estimate raw SNR from parameters
+            raw_snr = self._estimate_snr_from_params(params)
+            # Normalize to [0, 1] using log-scale to avoid near-zero values
+            priority = self._normalize_priority_to_01(raw_snr)
             priorities.append(priority)
-
-        # Rescale priorities to widen spread
-        priorities = rescale_priorities(priorities)
 
         sample = {
             "edge_type_id": encode_edge_type(signal_params_list),  # Multiple signals
@@ -5008,10 +5159,12 @@ class GWDatasetGenerator:
             if max_snr < 5.0:
                 max_snr = self._estimate_snr_from_params(params)
 
-            priority = float(np.clip(max_snr, 7.0, 80.0))
+            raw_snr = float(np.clip(max_snr, 7.0, 80.0))
             # Do not overwrite an existing sampled target_snr — only set if missing
             if "target_snr" not in params:
-                self._set_target_snr(params, priority, reason="custom_overlap_priority")
+                self._set_target_snr(params, raw_snr, reason="custom_overlap_priority")
+            # Normalize raw SNR to [0, 1] priority range
+            priority = self._normalize_priority_to_01(raw_snr)
             priorities.append(priority)
 
         # ========================================================================
@@ -5115,11 +5268,13 @@ class GWDatasetGenerator:
                 max_snr = snr_ref * (distance_ref / signal["luminosity_distance"])
                 max_snr *= np.sqrt(signal["mass_1"] * signal["mass_2"]) / 30.0  # Mass scaling
 
-            priority = np.clip(max_snr, 7.0, 80.0)
-            priorities.append(float(priority))
+            raw_snr = float(np.clip(max_snr, 7.0, 80.0))
             # Do not overwrite an existing sampled target_snr
             if "target_snr" not in params:
-                self._set_target_snr(params, float(priority), reason="simulator_overlap_priority")
+                self._set_target_snr(params, raw_snr, reason="simulator_overlap_priority")
+            # Normalize raw SNR to [0, 1] priority range
+            priority = self._normalize_priority_to_01(raw_snr)
+            priorities.append(priority)
             parameters.append(params)
 
         # Convert detector data to your format
@@ -5614,7 +5769,7 @@ class GWDatasetGenerator:
                     if "target_snr" not in params:
                         self._set_target_snr(params, priority, reason="fallback_generator_assign")
 
-                sample["priorities"] = priorities
+                sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
 
             return sample
 
@@ -5761,10 +5916,9 @@ class GWDatasetGenerator:
                     except Exception:
                         # Best-effort: fall back to direct assignment if helper is unavailable
                         signal["target_snr"] = float(priority)
-                priorities.append(priority)
-
-            # Rescale priorities to widen spread for better calibration
-            priorities = rescale_priorities(priorities)
+                # Normalize raw SNR to [0, 1] using log-scale
+                normalized_priority = self._normalize_priority_to_01(priority)
+                priorities.append(normalized_priority)
 
             # ====================================================================
             # CONSTRUCT SAMPLE

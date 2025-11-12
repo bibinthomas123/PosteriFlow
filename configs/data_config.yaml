@@ -10,10 +10,10 @@
 # ==============================================================================
 
 # Number of samples to generate (start with 50k for full training)
-n_samples: 20000
+n_samples: 1000
 
 # Output configuration
-output_dir: "data/dataset"
+output_dir: "data/test"
 output_format: "pkl"  # Efficient binary format
 
 # Batch size for saving samples to disk
@@ -155,6 +155,7 @@ premerger_config:
     - BNS   # Most relevant for early warning
     - NSBH
   min_snr: 8
+  distance_range: [50, 400]  # Limit to O4 sensitivity range (prevents extreme SNR clipping)
 
 # ==============================================================================
 # SECTION 13: QUOTA MODE (BALANCED GENERATION)
@@ -349,8 +350,9 @@ neural_model_paths:
   L1: "data/Gaussian_network.pickle"
   V1: "data/Gaussian_network.pickle"
 
-# Legacy real noise (disabled by default - very slow GWOSC lookups)
-use_real_noise_prob: 0.0  # Keep at 0.0 to avoid slow network queries
+# Real noise configuration (uses pre-downloaded cache from gw_segments_cleaned/)
+use_real_noise_prob: 0.1  # 10% real noise (uses cached GWOSC data, no network overhead)
+real_noise_cache_dir: "gw_segments_cleaned"  # Directory with pre-downloaded segments {DETECTOR}_{TIMESTAMP}.npy
 
 # ==============================================================================
 # SECTION 18: VALIDATION THRESHOLDS

@@ -13,40 +13,41 @@ priority_net:
   
   # --- ARCHITECTURE ---
   hidden_dims: [640, 512, 384, 256]      # ✅ Increased from [512, 384, 256, 128]
-  dropout: 0.20                           # Dropout in priority head
+  dropout: 0.25                           # Dropout in priority head
   
   # --- MODEL FLAGS ---
   use_strain: true                       # Enable temporal strain encoder
   use_edge_conditioning: true            # Enable edge-type embedding
   n_edge_types: 19                        # Number of edge case types
-  use_transformer_encoder: true          # Disable Transformer (too slow on CPU, 4.8s/batch→0.8s/batch)
+  use_transformer_encoder: true          # ✅ Use Transformer encoder (Whisper+adapter, 1.5x faster, better accuracy)
   
   # --- OPTIMIZER ---
   optimizer: "AdamW"
-  learning_rate: 1.0e-4
+  learning_rate: 8.0e-5
   weight_decay: 1.5e-5
   
   # --- TRAINING SCHEDULE ---
-  batch_size: 32
-  epochs: 250
-  patience: 15                            # Early stopping patience (was 1, too strict)
+  batch_size: 48
+  epochs: 200
+  patience: 5                            
   
   # --- WARMUP ---
-  warmup_epochs: 20
+  warmup_epochs: 1
   warmup_start_factor: 0.02
   
   # --- LEARNING RATE SCHEDULER ---
   scheduler: "ReduceLROnPlateau"
-  scheduler_patience: 5
+  scheduler_patience: 1
   scheduler_factor: 0.5
+  scheduler_threshold: 5e-3
   min_lr: 1.0e-6
   
   # --- LOSS FUNCTION ---
-  ranking_weight: 0.85                    # Ranking loss weight
-  mse_weight: 0.10                        # MSE loss weight
-  uncertainty_weight: 0.05                # Uncertainty loss weight
+  ranking_weight: 0.70                    # Ranking loss weight (reduced from 0.60)
+  mse_weight: 0.20                        # MSE loss weight (increased from 0.30)
+  uncertainty_weight: 0.10                # Uncertainty loss weight (increased from 0.10)
   use_snr_weighting: true                 # Weight losses by SNR
-  loss_scale_factor: 0.001                # Scale factor for loss terms
+  loss_scale_factor: 0.002                # Scale factor for loss terms (from Nov 12 fix)
   
   # --- GRADIENT MANAGEMENT ---
   gradient_clip_norm: 2.0                 # Gradient clipping threshold
@@ -57,12 +58,13 @@ priority_net:
   
   # --- ATTENTION/MODAL FUSION ---
   use_modal_fusion: true                 # Enable multi-modal attention fusion
-  attention_num_heads: 4
-  attention_dropout: 0.1
+  attention_num_heads: 8
+  attention_dropout: 0.15
   
   # --- OVERLAP HANDLING ---
-  overlap_use_attention: true            # Use attention for overlap encoding
-  overlap_importance_hidden: 16           # Hidden dim for importance network
+  overlap_use_attention: true             # Use attention for overlap encoding
+  overlap_importance_hidden: 32           # Hidden dim for importance network
+
 
 
 # ==============================================================================
@@ -250,12 +252,15 @@ output:
 # These flags are logged during training startup for debugging:
 #
 # PRIORITY NET:
-#  ✓ use_strain: true
-#  ✓ use_edge_conditioning: true
-#  ✓ use_transformer_encoder: true
-#  ✓ use_snr_weighting: true
-#  ✓ use_modal_fusion: false (disabled - use attention fusion disabled)
-#  ✓ overlap_use_attention: false (disabled - standard overlap encoding)
+#  ✓ use_strain: true (temporal strain encoder enabled)
+#  ✓ use_edge_conditioning: true (edge-type embedding enabled)
+#  ✓ use_transformer_encoder: true (legacy flag, not used in current code)
+#  ✓ use_snr_weighting: true (SNR-weighted loss enabled)
+#  ✓ use_modal_fusion: true (multi-modal attention fusion enabled)
+#  ✓ attention_num_heads: 8 (number of attention heads in modal fusion)
+#  ✓ attention_dropout: 0.15 (dropout in attention layers)
+#  ✓ overlap_use_attention: true (attention-weighted pairwise overlap analysis)
+#  ✓ overlap_importance_hidden: 32 (hidden dim for overlap importance network)
 #  ✓ early_stopping: true
 #  ✓ label_smoothing: 0.02
 #

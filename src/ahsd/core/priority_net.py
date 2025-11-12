@@ -19,7 +19,7 @@ class TemporalStrainEncoder(nn.Module):
     This module extracts multi-scale time-frequency features from multi-detector strain
     inputs, models temporal dependencies with a bidirectional LSTM, and aggregates long-
     range context via self-attention, projecting to a fixed 64-D representation suitable
-    for downstream fusion. 
+    for downstream fusion.
     """
 
     def __init__(self, input_length: int = 2048, n_detectors: int = 3, hidden_dim: int = 128):
@@ -35,12 +35,14 @@ class TemporalStrainEncoder(nn.Module):
 
         # Multi-scale CNN for time-frequency features
         # Architecture based on LIGO ML pipelines (2048 Hz, 1s segments)
-        self.conv_blocks = nn.ModuleList([
-            self._conv_block(n_detectors, 32, kernel_size=64, stride=4),
-            self._conv_block(32, 64, kernel_size=32, stride=4),
-            self._conv_block(64, 128, kernel_size=16, stride=2),
-            self._conv_block(128, 128, kernel_size=8, stride=2),
-        ])
+        self.conv_blocks = nn.ModuleList(
+            [
+                self._conv_block(n_detectors, 32, kernel_size=64, stride=4),
+                self._conv_block(32, 64, kernel_size=32, stride=4),
+                self._conv_block(64, 128, kernel_size=16, stride=2),
+                self._conv_block(128, 128, kernel_size=8, stride=2),
+            ]
+        )
 
         # Calculate sequence length after convolutions
         seq_len = input_length
@@ -55,15 +57,12 @@ class TemporalStrainEncoder(nn.Module):
             num_layers=2,
             batch_first=True,
             bidirectional=True,
-            dropout=0.2
+            dropout=0.2,
         )
 
         # Multi-head self-attention for long-range dependencies
         self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim * 2,
-            num_heads=8,
-            dropout=0.1,
-            batch_first=True
+            embed_dim=hidden_dim * 2, num_heads=8, dropout=0.1, batch_first=True
         )
 
         # Projection to fixed dimension
@@ -72,7 +71,7 @@ class TemporalStrainEncoder(nn.Module):
             nn.LayerNorm(128),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(128, 64)
+            nn.Linear(128, 64),
         )
 
     def _conv_block(self, in_channels, out_channels, kernel_size, stride):
@@ -89,10 +88,10 @@ class TemporalStrainEncoder(nn.Module):
             A sequential module: Conv1d → BatchNorm1d → GELU → Dropout.
         """
         return nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding=kernel_size//2),
+            nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding=kernel_size // 2),
             nn.BatchNorm1d(out_channels),
             nn.GELU(),
-            nn.Dropout(0.1)
+            nn.Dropout(0.1),
         )
 
     def forward(self, strain_segments: torch.Tensor) -> torch.Tensor:
@@ -143,31 +142,27 @@ class CrossSignalAnalyzer(nn.Module):
     def __init__(self, use_attention=True, importance_hidden_dim=16):
         """
         Initialize the pairwise feature and importance networks.
-        
+
         Args:
             use_attention: Whether to use attention weighting for pairwise features (default True).
             importance_hidden_dim: Hidden dimension for importance network (default 16).
         """
         super().__init__()
-        
+
         self.use_attention = use_attention
 
         # Pairwise feature extractor
         self.overlap_net = nn.Sequential(
-            nn.Linear(8, 32),
-            nn.LayerNorm(32),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(32, 16)
+            nn.Linear(8, 32), nn.LayerNorm(32), nn.GELU(), nn.Dropout(0.1), nn.Linear(32, 16)
         )
-        
+
         # Learns which pairwise relationships matter most (optional)
         self.importance_net = nn.Sequential(
             nn.Linear(8, importance_hidden_dim),
             nn.LayerNorm(importance_hidden_dim),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(importance_hidden_dim, 1)
+            nn.Linear(importance_hidden_dim, 1),
         )
 
     def forward(self, params_batch: torch.Tensor) -> torch.Tensor:
@@ -211,8 +206,8 @@ class CrossSignalAnalyzer(nn.Module):
                 m1_j = params_batch[j, 0] * 95 + 5
                 m2_j = params_batch[j, 1] * 95 + 5
 
-                mc_i = (m1_i * m2_i)**(3/5) / (m1_i + m2_i)**(1/5)
-                mc_j = (m1_j * m2_j)**(3/5) / (m1_j + m2_j)**(1/5)
+                mc_i = (m1_i * m2_i) ** (3 / 5) / (m1_i + m2_i) ** (1 / 5)
+                mc_j = (m1_j * m2_j) ** (3 / 5) / (m1_j + m2_j) ** (1 / 5)
                 mass_similarity = 1.0 / (1.0 + torch.abs(mc_i - mc_j) / 30.0)
 
                 # Frequency overlap estimate
@@ -228,13 +223,12 @@ class CrossSignalAnalyzer(nn.Module):
                 # Polarization angles
                 dpsi = torch.abs(params_batch[i, 7] - params_batch[j, 7])
 
-                features = torch.stack([
-                    dt, sky_sep, mass_similarity, freq_overlap, 
-                    dist_ratio, dpsi, dra, ddec
-                ])
-                
+                features = torch.stack(
+                    [dt, sky_sep, mass_similarity, freq_overlap, dist_ratio, dpsi, dra, ddec]
+                )
+
                 pairwise_features.append(features)
-                
+
                 # Learned importance score for this pair (if attention enabled)
                 if self.use_attention:
                     importance = self.importance_net(features)
@@ -243,7 +237,7 @@ class CrossSignalAnalyzer(nn.Module):
             if len(pairwise_features) > 0:
                 # Stack all pairwise features
                 pairwise_tensor = torch.stack(pairwise_features)  # [n-1, 8]
-                
+
                 if self.use_attention and len(pairwise_importance) > 0:
                     # Attention-weighted aggregation across pairs
                     importance_tensor = torch.stack(pairwise_importance)  # [n-1, 1]
@@ -253,7 +247,7 @@ class CrossSignalAnalyzer(nn.Module):
                 else:
                     # Simple mean aggregation (no attention)
                     weighted_overlap = pairwise_tensor.mean(dim=0)  # [8]
-                
+
                 overlap_scores.append(weighted_overlap)
             else:
                 overlap_scores.append(torch.zeros(8, device=params_batch.device))
@@ -272,6 +266,7 @@ class ResidualBlock(nn.Module):
     (identity or linear projection if dimensions differ), improving gradient flow
     and stabilizing deeper stacks in the feature extractor.
     """
+
     def __init__(self, in_dim, out_dim, dropout=0.15):
         """
         Initialize a ResidualBlock.
@@ -286,10 +281,10 @@ class ResidualBlock(nn.Module):
         self.linear = nn.Linear(in_dim, out_dim)
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(dropout)
-        
+
         # Skip connection projection
         self.skip = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
-    
+
     def forward(self, x):
         """
         Forward pass for the residual block.
@@ -306,7 +301,7 @@ class ResidualBlock(nn.Module):
         x = self.linear(x)
         x = self.activation(x)
         x = self.dropout(x)
-        
+
         # Residual
         return x + self.skip(identity)
 
@@ -319,7 +314,7 @@ class SignalFeatureExtractor(nn.Module):
     residual MLP blocks (projected to 64-D), augments with analytic physics-derived
     features (32-D), and concatenates them into a 96-D metadata representation.
     """
-    
+
     def __init__(self, input_dim: int = 16, config=None):
         """
         Initialize the feature extractor.
@@ -329,42 +324,40 @@ class SignalFeatureExtractor(nn.Module):
             config: Dict or object with fields hidden_dims and dropout; falls back to defaults when absent.
         """
         super().__init__()
-        
-        if isinstance(config, dict) or hasattr(config, 'get'):
-            hidden_dims = config.get('hidden_dims', [512, 384, 256, 128])
-            dropout = config.get('dropout', 0.15)
+
+        if isinstance(config, dict) or hasattr(config, "get"):
+            hidden_dims = config.get("hidden_dims", [512, 384, 256, 128])
+            dropout = config.get("dropout", 0.15)
         elif config is not None:
-            hidden_dims = getattr(config, 'hidden_dims', [512, 384, 256, 128])
-            dropout = getattr(config, 'dropout', 0.15)
+            hidden_dims = getattr(config, "hidden_dims", [512, 384, 256, 128])
+            dropout = getattr(config, "dropout", 0.15)
         else:
             hidden_dims = [512, 384, 256, 128]
             dropout = 0.15
-        
+
         # Input embedding
         self.input_embed = nn.Linear(input_dim, hidden_dims[0])
-        
-        # Residual blocks 
-        self.blocks = nn.ModuleList([
-            ResidualBlock(hidden_dims[0], hidden_dims[0], dropout),  
-            ResidualBlock(hidden_dims[0], hidden_dims[1], dropout),
-            ResidualBlock(hidden_dims[1], hidden_dims[2], dropout),
-            ResidualBlock(hidden_dims[2], hidden_dims[3], dropout),
-        ])
-        
+
+        # Residual blocks
+        self.blocks = nn.ModuleList(
+            [
+                ResidualBlock(hidden_dims[0], hidden_dims[0], dropout),
+                ResidualBlock(hidden_dims[0], hidden_dims[1], dropout),
+                ResidualBlock(hidden_dims[1], hidden_dims[2], dropout),
+                ResidualBlock(hidden_dims[2], hidden_dims[3], dropout),
+            ]
+        )
+
         # Final projection to 64-D
         self.output_proj = nn.Sequential(
-            nn.LayerNorm(hidden_dims[3]),
-            nn.Linear(hidden_dims[3], 64)
+            nn.LayerNorm(hidden_dims[3]), nn.Linear(hidden_dims[3], 64)
         )
-        
+
         # Physics encoder (8 → 32)
         self.physics_encoder = nn.Sequential(
-            nn.Linear(8, 64),
-            nn.LayerNorm(64),
-            nn.GELU(),
-            nn.Linear(64, 32)
+            nn.Linear(8, 64), nn.LayerNorm(64), nn.GELU(), nn.Linear(64, 32)
         )
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Encode normalized parameters into a 96-D metadata feature.
@@ -380,14 +373,13 @@ class SignalFeatureExtractor(nn.Module):
         for block in self.blocks:
             features = block(features)
         network_features = self.output_proj(features)
-        
+
         # Physics features
         physics_features = self._compute_physics_features(x)
         physics_encoded = self.physics_encoder(physics_features)
-        
+
         # Combine
         return torch.cat([network_features, physics_encoded], dim=1)
-    
 
     def _compute_physics_features(self, params: torch.Tensor) -> torch.Tensor:
         """
@@ -414,12 +406,14 @@ class SignalFeatureExtractor(nn.Module):
 
             # Derived quantities
             total_mass = m1 + m2
-            chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
+            chirp_mass = (m1 * m2) ** (3 / 5) / total_mass ** (1 / 5)
             mass_ratio = torch.minimum(m1, m2) / torch.maximum(m1, m2)
             eta = m1 * m2 / (total_mass**2)
 
             # SNR estimation
-            estimated_snr = 8.0 * (chirp_mass / 30.0)**(5/6) * (400.0 / torch.clamp(distance, min=50.0))
+            estimated_snr = (
+                8.0 * (chirp_mass / 30.0) ** (5 / 6) * (400.0 / torch.clamp(distance, min=50.0))
+            )
 
             # Frequency estimates
             f_isco = 220.0 / total_mass
@@ -461,9 +455,18 @@ class MultiModalFusion(nn.Module):
     self-attention block and a residual feed-forward network to produce a unified
     fused embedding for downstream heads.
     """
-    def __init__(self, metadata_dim=96, overlap_dim=16, temporal_dim=64, 
-                 edge_dim=32, output_dim=64, num_heads=4, use_attention=True,
-                 attention_dropout=0.08):
+
+    def __init__(
+        self,
+        metadata_dim=96,
+        overlap_dim=16,
+        temporal_dim=64,
+        edge_dim=32,
+        output_dim=64,
+        num_heads=4,
+        use_attention=True,
+        attention_dropout=0.08,
+    ):
         """
         Initialize the multi-modal fusion module.
 
@@ -478,33 +481,35 @@ class MultiModalFusion(nn.Module):
             attention_dropout: Dropout rate for attention module (default 0.08).
         """
         super().__init__()
-        
+
         self.use_attention = use_attention
         total_dim = metadata_dim + overlap_dim + temporal_dim + edge_dim
-        
+
         # Input projection
         self.input_proj = nn.Linear(total_dim, output_dim)
         self.input_norm = nn.LayerNorm(output_dim)  # stabilize fused distribution
-        
+
         # Cross-modal self-attention (optional)
         if self.use_attention:
             self.attention = nn.MultiheadAttention(
                 output_dim, num_heads, dropout=attention_dropout, batch_first=True
             )
             self.attn_norm = nn.LayerNorm(output_dim)
-            logging.info(f"✅ MultiModalFusion: attention enabled ({num_heads} heads, dropout={attention_dropout})")
+            logging.info(
+                f"✅ MultiModalFusion: attention enabled ({num_heads} heads, dropout={attention_dropout})"
+            )
         else:
             logging.info("⚠️  MultiModalFusion: attention disabled (projection + FFN only)")
-        
+
         # Feed-forward network
         self.ffn = nn.Sequential(
             nn.Linear(output_dim, output_dim * 2),
             nn.GELU(),
             nn.Dropout(attention_dropout),
-            nn.Linear(output_dim * 2, output_dim)
+            nn.Linear(output_dim * 2, output_dim),
         )
         self.ffn_norm = nn.LayerNorm(output_dim)
-    
+
     def forward(self, metadata, overlap, temporal, edge):
         """
         Fuse modalities into a single 64-D token embedding.
@@ -520,25 +525,25 @@ class MultiModalFusion(nn.Module):
         """
         # Concatenate all modalities
         combined = torch.cat([metadata, overlap, temporal, edge], dim=-1)
-        
+
         # Project to output dimension
         x = self.input_proj(combined)
         x = self.input_norm(x)
         x = x.unsqueeze(1)  # [batch, 1, dim]
-        
+
         # Optional self-attention with residual
         if self.use_attention:
             residual = x
             attn_out, _ = self.attention(x, x, x)
             x = residual + attn_out
             x = self.attn_norm(x)
-        
+
         # FFN with residual
         residual = x
         ffn_out = self.ffn(x)
         x = residual + ffn_out
         x = self.ffn_norm(x)
-        
+
         return x.squeeze(1)
 
 
@@ -562,10 +567,14 @@ class AdaptiveRankingLoss(nn.Module):
         super().__init__()
         self.base_margin = base_margin
 
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor,
-                uncertainties: Optional[torch.Tensor] = None,
-                snr_weights: Optional[torch.Tensor] = None,
-                margin_scale: float = 1.0) -> torch.Tensor:
+    def forward(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        uncertainties: Optional[torch.Tensor] = None,
+        snr_weights: Optional[torch.Tensor] = None,
+        margin_scale: float = 1.0,
+    ) -> torch.Tensor:
         """
         Compute the adaptive pairwise ranking loss.
 
@@ -593,7 +602,9 @@ class AdaptiveRankingLoss(nn.Module):
                 if target_diff < 0.05:
                     continue
 
-                margin = margin_scale * self.base_margin * torch.clamp(target_diff, min=0.1, max=1.0)
+                margin = (
+                    margin_scale * self.base_margin * torch.clamp(target_diff, min=0.1, max=1.0)
+                )
 
                 pair_w = 1.0
                 if snr_weights is not None:
@@ -621,9 +632,15 @@ class PriorityLoss(nn.Module):
     - A light batch-level mean/std calibration penalty to correct global offset/compression.
     """
 
-    def __init__(self, ranking_weight: float = 0.4, mse_weight: float = 0.5, 
-                 uncertainty_weight: float = 0.1, use_snr_weighting: bool = True,
-                 label_smoothing: float = 0.05, lambda_calib: float = 1e-4):
+    def __init__(
+        self,
+        ranking_weight: float = 0.4,
+        mse_weight: float = 0.5,
+        uncertainty_weight: float = 0.1,
+        use_snr_weighting: bool = True,
+        label_smoothing: float = 0.05,
+        lambda_calib: float = 0.3,
+    ):
         """
         Initialize PriorityLoss.
 
@@ -640,12 +657,17 @@ class PriorityLoss(nn.Module):
         self.mse_weight = mse_weight
         self.uncertainty_weight = uncertainty_weight
         self.use_snr_weighting = use_snr_weighting
-        self.label_smoothing = label_smoothing 
+        self.label_smoothing = label_smoothing
         self.lambda_calib = lambda_calib
         self.ranking_loss_fn = AdaptiveRankingLoss()
 
-    def forward(self, predictions: torch.Tensor, targets: torch.Tensor,
-                uncertainties: torch.Tensor, snr_values: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def forward(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        uncertainties: torch.Tensor,
+        snr_values: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
         """
         Compute composite loss and return individual components for logging.
 
@@ -666,7 +688,7 @@ class PriorityLoss(nn.Module):
 
         # Bucket 5+ detection by scenario length
         n_signals = predictions.shape[0]
-        bucket5 = (n_signals >= 5)
+        bucket5 = n_signals >= 5
 
         # Low-SNR emphasis weights (only for bucket 5+)
         if self.use_snr_weighting and (snr_values is not None) and bucket5:
@@ -680,9 +702,11 @@ class PriorityLoss(nn.Module):
 
         # Adaptive ranking with larger margin and pair weights in bucket 5+
         ranking_loss = self.ranking_loss_fn(
-            predictions, targets, uncertainties,
+            predictions,
+            targets,
+            uncertainties,
             snr_weights=snr_w if bucket5 else None,
-            margin_scale=(1.6 if bucket5 else 1.0)  # slightly stronger margin for 5+
+            margin_scale=(1.6 if bucket5 else 1.0),  # slightly stronger margin for 5+
         )
 
         # Uncertainty regularization toward |error|
@@ -691,16 +715,16 @@ class PriorityLoss(nn.Module):
 
         # FIX #4: Calibrated training objective
         # L = L_rank + L_mse + λ1·|mean(ŷ) − mean(y)| + λ2·|max(ŷ) − max(y)|
-        
+
         # Mean calibration loss
         mean_gap = torch.abs(predictions.mean() - targets.mean())
-        
+
         # Max calibration loss (widen spread)
         max_gap = torch.abs(predictions.max() - targets.max())
-        
+
         # Calibration penalties (λ1 = λ2 = 0.05 as specified)
-        lambda1 = 0.05
-        lambda2 = 0.05
+        lambda1 = 0.3
+        lambda2 = 0.5
         calib_loss = lambda1 * mean_gap + lambda2 * max_gap
 
         # Bucket-aware weights
@@ -713,18 +737,17 @@ class PriorityLoss(nn.Module):
             effective_mse_weight = self.mse_weight * 0.85
 
         total_loss = (
-            effective_mse_weight * mse_loss +
-            effective_ranking_weight * ranking_loss +
-            self.uncertainty_weight * uncertainty_loss +
-            calib_loss  # Calibration term to widen spread
+            effective_mse_weight * mse_loss
+            + effective_ranking_weight * ranking_loss
+            + self.uncertainty_weight * uncertainty_loss
+            + calib_loss  # Calibration term to widen spread
         )
 
-
         return {
-            'total': total_loss,
-            'mse': mse_loss.detach(),
-            'ranking': ranking_loss.detach(),
-            'uncertainty': uncertainty_loss.detach()
+            "total": total_loss,
+            "mse": mse_loss.detach(),
+            "ranking": ranking_loss.detach(),
+            "uncertainty": uncertainty_loss.detach(),
         }
 
 
@@ -737,8 +760,13 @@ class PriorityNet(nn.Module):
     uncertainty estimates. Includes a lightweight affine calibrator (gain/bias).
     """
 
-    def __init__(self, config=None, use_strain: bool = None,
-                 use_edge_conditioning: bool = None, n_edge_types: int = None):
+    def __init__(
+        self,
+        config=None,
+        use_strain: bool = None,
+        use_edge_conditioning: bool = None,
+        n_edge_types: int = None,
+    ):
         """
         Initialize PriorityNet components and read configuration safely.
 
@@ -750,48 +778,104 @@ class PriorityNet(nn.Module):
         """
         super().__init__()
 
-        if config is not None and hasattr(config, '__dict__'):
+        if config is not None and hasattr(config, "__dict__"):
             print("🔧 Using provided configuration for PriorityNet.")
             self.config = config
         else:
             print("🔧 Using default configuration for PriorityNet.")
             self.config = self._default_config()
-        
+
         def cfg_get(key, default):
-            if isinstance(self.config, dict) or hasattr(self.config, 'get'):
-                return self.config.get(key, default)
-            return getattr(self.config, key, default)
-    
+            """
+            Read config value, checking both top level and nested 'priority_net' section.
+            Handles both dict and object-style configs.
+            """
+            if isinstance(self.config, dict):
+                # Try top level first
+                if key in self.config:
+                    return self.config[key]
+                # Try nested priority_net section
+                if "priority_net" in self.config and isinstance(self.config["priority_net"], dict):
+                    if key in self.config["priority_net"]:
+                        return self.config["priority_net"][key]
+                return default
+            else:
+                # Object-style config
+                if hasattr(self.config, key):
+                    return getattr(self.config, key)
+                # Try nested priority_net section
+                if hasattr(self.config, "priority_net"):
+                    priority_net_cfg = getattr(self.config, "priority_net")
+                    if hasattr(priority_net_cfg, key):
+                        return getattr(priority_net_cfg, key)
+                return default
 
         # Flags
-        self.use_strain = use_strain if use_strain is not None else cfg_get('use_strain', True)
-        self.use_edge_conditioning = use_edge_conditioning if use_edge_conditioning is not None else cfg_get('use_edge_conditioning', True)
-        self.n_edge_types = n_edge_types if n_edge_types is not None else cfg_get('n_edge_types', 17)
+        self.use_strain = use_strain if use_strain is not None else cfg_get("use_strain", True)
+        self.use_edge_conditioning = (
+            use_edge_conditioning
+            if use_edge_conditioning is not None
+            else cfg_get("use_edge_conditioning", True)
+        )
+        self.n_edge_types = (
+            n_edge_types if n_edge_types is not None else cfg_get("n_edge_types", 17)
+        )
 
-        # Temporal strain encoder (optional)
+        # Temporal strain encoder (optional) - support both CNN+BiLSTM and Transformer
+        self.use_transformer_encoder = cfg_get("use_transformer_encoder", False)
+
         if self.use_strain:
-            self.strain_encoder = TemporalStrainEncoder(input_length=2048, n_detectors=3, hidden_dim=128)
+            if self.use_transformer_encoder:
+                # Lazy import to avoid circular dependency
+                from ahsd.models.transformer_encoder import TransformerStrainEncoder
+
+                # Use Transformer-based encoder (faster, leverages Whisper pre-training)
+                self.strain_encoder = TransformerStrainEncoder(
+                    use_whisper=True,
+                    freeze_layers=4,
+                    input_length=2048,
+                    n_detectors=2,  # H1, L1 detectors
+                    output_dim=64,
+                )
+                logging.info(
+                    f"   ✅ Strain encoder: TransformerStrainEncoder (use_transformer_encoder=True)"
+                )
+            else:
+                # Fall back to CNN+BiLSTM (legacy)
+                self.strain_encoder = TemporalStrainEncoder(
+                    input_length=2048, n_detectors=3, hidden_dim=128
+                )
+                logging.info(f"   ℹ️  Strain encoder: TemporalStrainEncoder (CNN+BiLSTM)")
             temporal_dim = 64
         else:
             temporal_dim = 0
 
         # Cross-signal overlap analyzer with configurable attention
-        overlap_use_attention = cfg_get('overlap_use_attention', True)
-        overlap_importance_hidden = cfg_get('overlap_importance_hidden', 16)
+        overlap_use_attention = cfg_get("overlap_use_attention", True)
+        print("Overlap use attention:", overlap_use_attention)
+        overlap_importance_hidden = cfg_get("overlap_importance_hidden", 16)
         self.cross_signal_analyzer = CrossSignalAnalyzer(
-            use_attention=overlap_use_attention,
-            importance_hidden_dim=overlap_importance_hidden
+            use_attention=overlap_use_attention, importance_hidden_dim=overlap_importance_hidden
         )
         if overlap_use_attention:
-            logging.info(f"   ✅ Overlap analyzer: attention enabled (hidden_dim={overlap_importance_hidden})")
+            logging.info(
+                f"   ✅ Overlap analyzer: attention enabled (hidden_dim={overlap_importance_hidden})"
+            )
         else:
             logging.info(f"   ⚠️  Overlap analyzer: attention disabled (mean aggregation)")
-        
+
         self.signal_encoder = SignalFeatureExtractor(config=self.config)
 
         # Edge case embedding with padding_idx=0 for 'none'
         if self.use_edge_conditioning:
-            self.edge_embedding = nn.Embedding(num_embeddings=self.n_edge_types, embedding_dim=32, padding_idx=0)
+            self.edge_embedding = nn.Embedding(
+                num_embeddings=self.n_edge_types, embedding_dim=32, padding_idx=0
+            )
+            # Initialize edge embeddings with small uniform values to control variance
+            with torch.no_grad():
+                self.edge_embedding.weight.uniform_(-0.05, 0.05)
+                # Keep padding vector as zero
+                self.edge_embedding.weight[0].fill_(0.0)
             edge_dim = 32
         else:
             edge_dim = 0
@@ -799,28 +883,26 @@ class PriorityNet(nn.Module):
         # Log configuration
         logging.info(f"🔍 PriorityNet Configuration:")
         logging.info(f"   use_strain: {self.use_strain} → temporal_dim: {temporal_dim}")
-        logging.info(f"   use_edge_conditioning: {self.use_edge_conditioning} → edge_dim: {edge_dim}")
+        logging.info(
+            f"   use_edge_conditioning: {self.use_edge_conditioning} → edge_dim: {edge_dim}"
+        )
         logging.info(f"   n_edge_types: {self.n_edge_types}")
-        if hasattr(self.config, 'hidden_dims'):
+        if hasattr(self.config, "hidden_dims"):
             logging.info(f"   hidden_dims: {self.config.hidden_dims}")
-        if hasattr(self.config, 'dropout'):
+        if hasattr(self.config, "dropout"):
             logging.info(f"   dropout: {self.config.dropout}")
 
         # NEW: Dedicated SNR embedding pathway (FIX #2: Strengthen SNR pathway)
         self.snr_embedding = nn.Sequential(
-            nn.Linear(1, 16),
-            nn.LayerNorm(16),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(16, 32)
+            nn.Linear(1, 16), nn.LayerNorm(16), nn.GELU(), nn.Dropout(0.1), nn.Linear(16, 32)
         )
-        
+
         # Modal fusion with configurable attention (updated to include SNR embedding)
         # total_dim = metadata(96) + overlap(16) + temporal(64) + edge(32) + snr(32) = 240
-        use_modal_fusion_attention = cfg_get('use_modal_fusion', True)
-        attention_num_heads = cfg_get('attention_num_heads', 4)
-        attention_dropout = cfg_get('attention_dropout', 0.08)
-        
+        use_modal_fusion_attention = cfg_get("use_modal_fusion", True)
+        attention_num_heads = cfg_get("attention_num_heads", 4)
+        attention_dropout = cfg_get("attention_dropout", 0.08)
+
         self.modal_fusion = MultiModalFusion(
             metadata_dim=96 + 32,  # Concatenate SNR embedding with metadata
             overlap_dim=16,
@@ -829,13 +911,15 @@ class PriorityNet(nn.Module):
             output_dim=64,
             num_heads=attention_num_heads,
             use_attention=use_modal_fusion_attention,
-            attention_dropout=attention_dropout
+            attention_dropout=attention_dropout,
         )
         # Optional: overlap density head (not returned by forward; use in trainer if desired)
         self.overlap_head = nn.Linear(64, 4)
-        
+
         if use_modal_fusion_attention:
-            logging.info(f"   ✅ Modal fusion: attention enabled ({attention_num_heads} heads, dropout={attention_dropout})")
+            logging.info(
+                f"   ✅ Modal fusion: attention enabled ({attention_num_heads} heads, dropout={attention_dropout})"
+            )
         else:
             logging.info(f"   ⚠️  Modal fusion: attention disabled (projection + FFN only)")
 
@@ -845,28 +929,29 @@ class PriorityNet(nn.Module):
             nn.Linear(64, 32),
             nn.LayerNorm(32),
             nn.GELU(),
-            nn.Dropout(cfg_get('dropout', 0.12)),
+            nn.Dropout(cfg_get("dropout", 0.12)),
             nn.Linear(32, 16),
             nn.GELU(),
-            nn.Linear(16, 1)     # priority output (linear, no squashing)
+            nn.Linear(16, 1),  # priority output (linear, no squashing)
         )
-        
+
         # Initialize final layer with small weights
         final_layer = self.priority_head[-1]
         nn.init.normal_(final_layer.weight, mean=0.0, std=0.01)
         final_layer.bias.data.fill_(0.2)  # Dataset mean priority ~0.2
-        
-        self.uncertainty_head = nn.Sequential(
-            nn.Linear(64, 1),
-            nn.Softplus(beta=1.0)  # sigma > 0
-        )
-        
+
+        self.uncertainty_head = nn.Sequential(nn.Linear(64, 1), nn.Softplus(beta=1.0))  # sigma > 0
+
         # Affine calibration parameters
         self.prio_gain = nn.Parameter(torch.tensor(1.0))
         self.prio_bias = nn.Parameter(torch.tensor(0.0))
 
-        logging.info(f"🔍 PriorityNet Configuration: use_strain={self.use_strain}, use_edge_conditioning={self.use_edge_conditioning}, n_edge_types={self.n_edge_types}")
-        logging.info(f"   dropout={cfg_get('dropout', 0.2)}, hidden_dims={cfg_get('hidden_dims', [512,384,256,128])}")
+        logging.info(
+            f"🔍 PriorityNet Configuration: use_strain={self.use_strain}, use_edge_conditioning={self.use_edge_conditioning}, n_edge_types={self.n_edge_types}"
+        )
+        logging.info(
+            f"   dropout={cfg_get('dropout', 0.2)}, hidden_dims={cfg_get('hidden_dims', [512,384,256,128])}"
+        )
         logging.info(f"✅ Enhanced PriorityNet initialized with attention fusion")
 
     def _default_config(self):
@@ -874,17 +959,54 @@ class PriorityNet(nn.Module):
         Provide a minimal default configuration object for PriorityNet.
 
         Returns:
-            A dynamic object with default fields: hidden_dims, dropout, learning_rate,
-            use_strain, use_edge_conditioning, n_edge_types.
+            A dynamic object with default fields matching enhanced_training.yaml structure.
         """
-        return type('Config', (), {
-            'hidden_dims': [512, 384, 256, 128],
-            'dropout': 0.2,
-            'learning_rate': 5e-4,
-            'use_strain': True,
-            'use_edge_conditioning': True,
-            'n_edge_types': 17
-        })()
+        return type(
+            "Config",
+            (),
+            {
+                # Architecture
+                "hidden_dims": [640, 512, 384, 256],
+                "dropout": 0.25,
+                # Model flags
+                "use_strain": True,
+                "use_edge_conditioning": True,
+                "n_edge_types": 19,
+                "use_transformer_encoder": True,
+                # Optimizer
+                "optimizer": "AdamW",
+                "learning_rate": 8.0e-5,
+                "weight_decay": 1.5e-5,
+                # Training schedule
+                "batch_size": 48,
+                "epochs": 250,
+                "patience": 15,
+                "warmup_epochs": 20,
+                "warmup_start_factor": 0.02,
+                # Scheduler
+                "scheduler": "ReduceLROnPlateau",
+                "scheduler_patience": 8,
+                "scheduler_factor": 0.5,
+                "min_lr": 1.0e-6,
+                # Loss function
+                "ranking_weight": 0.60,
+                "mse_weight": 0.30,
+                "uncertainty_weight": 0.10,
+                "use_snr_weighting": True,
+                "loss_scale_factor": 0.005,
+                "label_smoothing": 0.02,
+                # Gradient management
+                "gradient_clip_norm": 2.0,
+                "gradient_log_threshold": 0.5,
+                # Attention/Modal fusion
+                "use_modal_fusion": True,
+                "attention_num_heads": 8,
+                "attention_dropout": 0.15,
+                # Overlap handling
+                "overlap_use_attention": True,
+                "overlap_importance_hidden": 32,
+            },
+        )()
 
     def _to_device_tensor(self, arr, device):
         """
@@ -907,7 +1029,7 @@ class PriorityNet(nn.Module):
         strain_segments: Optional[torch.Tensor] = None,
         edge_type_ids: Optional[torch.Tensor] = None,
         training: bool = False,
-        detector_dropout_prob: float = 0.1
+        detector_dropout_prob: float = 0.1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward with cross-modal attention fusion.
@@ -934,20 +1056,26 @@ class PriorityNet(nn.Module):
                 return torch.zeros(n, device=device), torch.ones(n, device=device)
 
             # Modal encodings
-            metadata_features = self.signal_encoder(signal_tensor)        # [N, 96]
+            metadata_features = self.signal_encoder(signal_tensor)  # [N, 96]
             overlap_features = self.cross_signal_analyzer(signal_tensor)  # [N, 16]
 
             # NEW: Extract and embed SNR (FIX #2: Strengthen SNR pathway)
             # network_snr is at index 15 in signal_tensor
             snr_raw = signal_tensor[:, 15:16]  # [N, 1] - already normalized to [0,1]
             snr_embedded = self.snr_embedding(snr_raw)  # [N, 32]
-            
+
             # Concatenate SNR embedding with metadata
-            metadata_features = torch.cat([metadata_features, snr_embedded], dim=1)  # [N, 96+32=128]
+            metadata_features = torch.cat(
+                [metadata_features, snr_embedded], dim=1
+            )  # [N, 96+32=128]
 
             # Temporal features (zeros if absent)
             if self.use_strain and strain_segments is not None and strain_segments.numel() > 0:
-                temporal_features = self.strain_encoder(strain_segments.to(device))  # [N, 64]
+                strain_seg = strain_segments.to(device)
+                # Adapt detector count for TransformerStrainEncoder (expects 2: H1, L1)
+                if self.use_transformer_encoder and strain_seg.shape[1] > 2:
+                    strain_seg = strain_seg[:, :2, :]  # Use only H1, L1 (first 2 detectors)
+                temporal_features = self.strain_encoder(strain_seg)  # [N, 64]
                 if temporal_features.shape[-1] != 64:
                     temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
             else:
@@ -957,13 +1085,17 @@ class PriorityNet(nn.Module):
             # FIX #3: Edge conditioning with dropout
             if self.use_edge_conditioning:
                 if edge_type_ids is None:
-                    edge_type_ids = torch.zeros(signal_tensor.shape[0], dtype=torch.long, device=device)
+                    edge_type_ids = torch.zeros(
+                        signal_tensor.shape[0], dtype=torch.long, device=device
+                    )
                 else:
                     edge_type_ids = edge_type_ids.to(device=device, dtype=torch.long)
                     if edge_type_ids.dim() == 0:
                         edge_type_ids = edge_type_ids.unsqueeze(0).expand(signal_tensor.shape[0])
                     elif len(edge_type_ids) != signal_tensor.shape[0]:
-                        edge_type_ids = torch.zeros(signal_tensor.shape[0], dtype=torch.long, device=device)
+                        edge_type_ids = torch.zeros(
+                            signal_tensor.shape[0], dtype=torch.long, device=device
+                        )
                 edge_embeds = self.edge_embedding(edge_type_ids)  # [N, 32]
                 # Apply dropout to edge embeddings to prevent overfitting
                 if self.training:
@@ -976,10 +1108,11 @@ class PriorityNet(nn.Module):
                 try:
                     n_sigs = signal_tensor.shape[0]
                     if n_sigs >= 2:  # only log when overlap is expected
-                        logging.info(f"   [n={n_sigs}] meta:{metadata_features.std():.2e} overlap:{overlap_features.std():.2e} temp:{temporal_features.std():.2e} edge:{edge_embeds.std():.2e} snr:{snr_embedded.std():.2e}")
+                        logging.info(
+                            f"   [n={n_sigs}] meta:{metadata_features.std():.2e} overlap:{overlap_features.std():.2e} temp:{temporal_features.std():.2e} edge:{edge_embeds.std():.2e} snr:{snr_embedded.std():.2e}"
+                        )
                 except Exception:
                     pass
-
 
             # Fusion
             fused = self.modal_fusion(
@@ -987,9 +1120,9 @@ class PriorityNet(nn.Module):
             )  # [N, 64]
 
             # Heads
-            prio = self.priority_head(fused).squeeze(-1)          # [N], linear (no sigmoid)
-            prio = prio * self.prio_gain + self.prio_bias         # affine transform
-            sigma = self.uncertainty_head(fused).squeeze(-1)      # [N], positive
+            prio = self.priority_head(fused).squeeze(-1)  # [N], linear (no sigmoid)
+            prio = prio * self.prio_gain + self.prio_bias  # affine transform
+            sigma = self.uncertainty_head(fused).squeeze(-1)  # [N], positive
 
             return prio, sigma
 
@@ -998,7 +1131,9 @@ class PriorityNet(nn.Module):
             n = len(detections)
             return torch.zeros(n, device=device), torch.ones(n, device=device)
 
-    def rank_detections(self, detections: List[Dict], strain_segments: Optional[torch.Tensor] = None) -> List[int]:
+    def rank_detections(
+        self, detections: List[Dict], strain_segments: Optional[torch.Tensor] = None
+    ) -> List[int]:
         """
         Rank detections by an uncertainty-penalized priority score.
 
@@ -1042,30 +1177,58 @@ class PriorityNet(nn.Module):
             Tensor [N, 16] of normalized features suitable for the feature extractor.
         """
         param_names = [
-            'mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
-            'geocent_time', 'theta_jn', 'psi', 'phase', 'a_1', 'a_2',
-            'tilt_1', 'tilt_2', 'phi_12', 'phi_jl',
-            'network_snr'  # ← NEW: 16th feature
+            "mass_1",
+            "mass_2",
+            "luminosity_distance",
+            "ra",
+            "dec",
+            "geocent_time",
+            "theta_jn",
+            "psi",
+            "phase",
+            "a_1",
+            "a_2",
+            "tilt_1",
+            "tilt_2",
+            "phi_12",
+            "phi_jl",
+            "network_snr",  # ← NEW: 16th feature
         ]
         ranges = {
-            'mass_1': (5.0, 100.0), 'mass_2': (5.0, 100.0),
-            'luminosity_distance': (50.0, 3000.0),
-            'ra': (0.0, 2*np.pi), 'dec': (-np.pi/2, np.pi/2),
-            'geocent_time': (-0.1, 0.1),
-            'theta_jn': (0.0, np.pi), 'psi': (0.0, np.pi),
-            'phase': (0.0, 2*np.pi),
-            'a_1': (0.0, 0.99), 'a_2': (0.0, 0.99),
-            'tilt_1': (0.0, np.pi), 'tilt_2': (0.0, np.pi),
-            'phi_12': (0.0, 2*np.pi), 'phi_jl': (0.0, 2*np.pi),
-            'network_snr': (0.0, 1.0)  # ← FIXED: SNR now pre-normalized to [0,1]
+            "mass_1": (5.0, 100.0),
+            "mass_2": (5.0, 100.0),
+            "luminosity_distance": (50.0, 3000.0),
+            "ra": (0.0, 2 * np.pi),
+            "dec": (-np.pi / 2, np.pi / 2),
+            "geocent_time": (-0.1, 0.1),
+            "theta_jn": (0.0, np.pi),
+            "psi": (0.0, np.pi),
+            "phase": (0.0, 2 * np.pi),
+            "a_1": (0.0, 0.99),
+            "a_2": (0.0, 0.99),
+            "tilt_1": (0.0, np.pi),
+            "tilt_2": (0.0, np.pi),
+            "phi_12": (0.0, 2 * np.pi),
+            "phi_jl": (0.0, 2 * np.pi),
+            "network_snr": (0.0, 1.0),  # ← FIXED: SNR now pre-normalized to [0,1]
         }
         defaults = {
-            'mass_1': 35.0, 'mass_2': 30.0, 'luminosity_distance': 500.0,
-            'ra': 1.0, 'dec': 0.0, 'geocent_time': 0.0,
-            'theta_jn': np.pi/2, 'psi': 0.0, 'phase': 0.0,
-            'a_1': 0.0, 'a_2': 0.0, 'tilt_1': 0.0, 'tilt_2': 0.0,
-            'phi_12': 0.0, 'phi_jl': 0.0,
-            'network_snr': 0.43  # ← FIXED: default mid-range SNR (15/35 ≈ 0.43)
+            "mass_1": 35.0,
+            "mass_2": 30.0,
+            "luminosity_distance": 500.0,
+            "ra": 1.0,
+            "dec": 0.0,
+            "geocent_time": 0.0,
+            "theta_jn": np.pi / 2,
+            "psi": 0.0,
+            "phase": 0.0,
+            "a_1": 0.0,
+            "a_2": 0.0,
+            "tilt_1": 0.0,
+            "tilt_2": 0.0,
+            "phi_12": 0.0,
+            "phi_jl": 0.0,
+            "network_snr": 0.43,  # ← FIXED: default mid-range SNR (15/35 ≈ 0.43)
         }
         try:
             tensor_data = []
@@ -1075,14 +1238,14 @@ class PriorityNet(nn.Module):
                     try:
                         v = detection.get(name, defaults[name])
                         if isinstance(v, dict):
-                            v = v.get('median', v.get('mean', defaults[name]))
+                            v = v.get("median", v.get("mean", defaults[name]))
                         v = float(v)
                         if not np.isfinite(v):
                             v = defaults[name]
-                        
+
                         # ← FIXED: Simple bounded scaling for SNR to preserve small differences
-                        if name == 'network_snr':
-                        # Use simple scaling: min(snr, 35) / 35.0 to preserve small variations
+                        if name == "network_snr":
+                            # Use simple scaling: min(snr, 35) / 35.0 to preserve small variations
                             v = min(float(v), 35.0) / 35.0
                             vals.append(np.clip(v, 0.0, 1.0))
                             continue  # Skip the general normalization below
@@ -1091,7 +1254,8 @@ class PriorityNet(nn.Module):
                         norm = (v - mn) / (mx - mn)
                         vals.append(np.clip(norm, 0.0, 1.0))
                     except:
-                        mn, mx = ranges[name]; dv = defaults[name]
+                        mn, mx = ranges[name]
+                        dv = defaults[name]
                         norm = (dv - mn) / (mx - mn)
                         vals.append(np.clip(norm, 0.0, 1.0))
                 tensor_data.append(vals)
@@ -1100,7 +1264,6 @@ class PriorityNet(nn.Module):
             logging.error(f"Tensor conversion failed: {e}")
             n = len(detections)
             return torch.full((n, 16), 0.5, dtype=torch.float32)  # ← NEW: 16 dims
-
 
         def _snr_fallback_ranking(self, detections: List[Dict]) -> List[int]:
             """
@@ -1115,7 +1278,9 @@ class PriorityNet(nn.Module):
             try:
                 snr_scores = []
                 for i, detection in enumerate(detections):
-                    snr = detection.get('network_snr', detection.get('target_snr', detection.get('snr', 15.0)))
+                    snr = detection.get(
+                        "network_snr", detection.get("target_snr", detection.get("snr", 15.0))
+                    )
                     snr = float(snr) if np.isfinite(snr) else 0.0
                     snr_scores.append((i, snr))
                 snr_scores.sort(key=lambda x: x[1], reverse=True)
@@ -1147,28 +1312,29 @@ class PriorityNetTrainer:
         self.current_epoch = 0
 
         def get_config(key, default):
-            if hasattr(config, 'get'):
+            if hasattr(config, "get"):
                 return config.get(key, default)
             return getattr(config, key, default) if config is not None else default
 
-        lr = get_config('learning_rate', 5e-4)
-        weight_decay = get_config('weight_decay', 1e-5)
-        self.warmup_epochs = get_config('warmup_epochs', 5)
-        warmup_start_factor = get_config('warmup_start_factor', 0.1)
-        scheduler_patience = get_config('scheduler_patience', 5)
-        scheduler_factor = get_config('scheduler_factor', 0.5)
-        min_lr = get_config('min_lr', 1e-6)
+        lr = get_config("learning_rate", 5e-4)
+        weight_decay = get_config("weight_decay", 1e-5)
+        self.warmup_epochs = get_config("warmup_epochs", 5)
+        warmup_start_factor = get_config("warmup_start_factor", 0.1)
+        scheduler_patience = get_config("scheduler_patience", 5)
+        scheduler_factor = get_config("scheduler_factor", 0.5)
+        scheduler_threshold = float(get_config("scheduler_threshold", 1e-3))
+        min_lr = get_config("min_lr", 1e-6)
 
         # Loss weights and smoothing
-        self.ranking_weight = get_config('ranking_weight', 0.7)
-        self.mse_weight = get_config('mse_weight', 0.2)
-        self.uncertainty_weight = get_config('uncertainty_weight', 0.1)
-        self.use_snr_weighting = get_config('use_snr_weighting', True)
-        self.label_smoothing = get_config('label_smoothing', 0.0)
-        lambda_calib = get_config('lambda_calib', 1e-4)
+        self.ranking_weight = get_config("ranking_weight", 0.7)
+        self.mse_weight = get_config("mse_weight", 0.2)
+        self.uncertainty_weight = get_config("uncertainty_weight", 0.1)
+        self.use_snr_weighting = get_config("use_snr_weighting", True)
+        self.label_smoothing = get_config("label_smoothing", 0.0)
+        lambda_calib = get_config("lambda_calib", 1e-4)
 
-        self.gradient_clip_norm = get_config('gradient_clip_norm', 1.0)
-        
+        self.gradient_clip_norm = get_config("gradient_clip_norm", 1.0)
+
         # Class-based loss with σ calibration and bucket-5 emphasis
         self.loss_fn = PriorityLoss(
             ranking_weight=self.ranking_weight,
@@ -1176,31 +1342,33 @@ class PriorityNetTrainer:
             uncertainty_weight=self.uncertainty_weight,
             use_snr_weighting=self.use_snr_weighting,
             label_smoothing=self.label_smoothing,
-            lambda_calib=lambda_calib
+            lambda_calib=lambda_calib,
         )
 
         # Optimizer
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(), lr=lr, weight_decay=weight_decay
+        )
 
         # Warmup scheduler (stepped in outer loop)
         self.warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
             self.optimizer,
             start_factor=warmup_start_factor,
             end_factor=1.0,
-            total_iters=self.warmup_epochs
+            total_iters=self.warmup_epochs,
         )
 
         # Main scheduler
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                self.optimizer,
-                mode='min',
-                factor=scheduler_factor,
-                patience=scheduler_patience,
-                threshold=1e-6,           # absolute min improvement
-                threshold_mode='abs',     # critical change
-                cooldown=0,
-                min_lr=min_lr
-            )
+            self.optimizer,
+            mode="min",
+            factor=scheduler_factor,
+            patience=scheduler_patience,
+            threshold=scheduler_threshold,  # configurable threshold
+            threshold_mode="rel",  # relative improvement required
+            cooldown=0,
+            min_lr=min_lr,
+        )
         self.main_scheduler = self.scheduler
 
         logging.info(f"✅ Trainer initialized:")
@@ -1208,12 +1376,18 @@ class PriorityNetTrainer:
         logging.info(f"   Weight decay: {weight_decay:.2e}")
         logging.info(f"   Warmup epochs: {self.warmup_epochs}")
         logging.info(f"   Warmup start factor: {warmup_start_factor}")
-        logging.info(f"   Scheduler patience: {scheduler_patience}")
+        logging.info(
+            f"   Scheduler patience: {scheduler_patience}, threshold: {scheduler_threshold:.2e}"
+        )
         logging.info(f"   Min LR: {min_lr:.2e}")
-        logging.info(f"   Loss weights: R={self.ranking_weight}, M={self.mse_weight}, U={self.uncertainty_weight}")
+        logging.info(
+            f"   Loss weights: R={self.ranking_weight}, M={self.mse_weight}, U={self.uncertainty_weight}"
+        )
         logging.info(f"   Gradient clip: {self.gradient_clip_norm}")
 
-    def set_affine_calibration(self, enable: bool, base_lr: Optional[float] = None, weight_decay: Optional[float] = None):
+    def set_affine_calibration(
+        self, enable: bool, base_lr: Optional[float] = None, weight_decay: Optional[float] = None
+    ):
         """
         Enter or exit affine calibration mode on the model's priority head.
 
@@ -1236,24 +1410,30 @@ class PriorityNetTrainer:
 
         if enable:
             # Use current LR; do not force an increase
-            lr = base_lr if base_lr is not None else self.optimizer.param_groups[0]['lr']
+            lr = base_lr if base_lr is not None else self.optimizer.param_groups[0]["lr"]
             wd = 0.0 if weight_decay is None else weight_decay
             self.optimizer = torch.optim.AdamW(
                 [self.model.prio_gain, self.model.prio_bias], lr=lr, weight_decay=wd
             )
         else:
             # Restore full optimizer from config (dict or object)
-            get_cfg = (self.config.get if hasattr(self.config, 'get') else lambda k, d: getattr(self.config, k, d))
-            lr = get_cfg('learning_rate', 7e-4)
-            wd = get_cfg('weight_decay', 1.5e-5)
+            get_cfg = (
+                self.config.get
+                if hasattr(self.config, "get")
+                else lambda k, d: getattr(self.config, k, d)
+            )
+            lr = get_cfg("learning_rate", 7e-4)
+            wd = get_cfg("weight_decay", 1.5e-5)
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=wd)
 
-    def train_step(self,
-                   detections_batch: List[List[Dict]],
-                   priorities_batch: List[torch.Tensor],
-                   strain_batch: Optional[List[torch.Tensor]] = None,
-                   edge_type_ids_batch: Optional[List[torch.Tensor]] = None,
-                   snr_values_batch: Optional[List[torch.Tensor]] = None) -> Dict[str, float]:
+    def train_step(
+        self,
+        detections_batch: List[List[Dict]],
+        priorities_batch: List[torch.Tensor],
+        strain_batch: Optional[List[torch.Tensor]] = None,
+        edge_type_ids_batch: Optional[List[torch.Tensor]] = None,
+        snr_values_batch: Optional[List[torch.Tensor]] = None,
+    ) -> Dict[str, float]:
         """
         Perform a single training step over a batch of scenarios.
 
@@ -1273,13 +1453,15 @@ class PriorityNetTrainer:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
-        total_losses = {'total': 0.0, 'mse': 0.0, 'ranking': 0.0}
+        total_losses = {"total": 0.0, "mse": 0.0, "ranking": 0.0}
         valid_batches = 0
 
         # CONSISTENT accumulator for a single backward at the end
         accumulated_loss_tensor = None
 
-        for i, (detections, target_priorities) in enumerate(zip(detections_batch, priorities_batch)):
+        for i, (detections, target_priorities) in enumerate(
+            zip(detections_batch, priorities_batch)
+        ):
             if not detections or len(target_priorities) == 0:
                 continue
             try:
@@ -1300,7 +1482,7 @@ class PriorityNetTrainer:
                     snr_vals = snr_vals[:m].to(preds.device)
 
                 losses = self.loss_fn(preds, targets, sigma, snr_values=snr_vals)
-                loss = losses['total']
+                loss = losses["total"]
 
                 # Accumulate graph-carrying loss tensor
                 if accumulated_loss_tensor is None:
@@ -1309,9 +1491,9 @@ class PriorityNetTrainer:
                     accumulated_loss_tensor = accumulated_loss_tensor + loss
 
                 # Track scalars for logging
-                total_losses['total'] += float(loss.detach().cpu())
-                total_losses['mse'] += float(losses['mse'].detach().cpu())
-                total_losses['ranking'] += float(losses['ranking'].detach().cpu())
+                total_losses["total"] += float(loss.detach().cpu())
+                total_losses["mse"] += float(losses["mse"].detach().cpu())
+                total_losses["ranking"] += float(losses["ranking"].detach().cpu())
                 valid_batches += 1
 
             except Exception as e:
@@ -1322,22 +1504,22 @@ class PriorityNetTrainer:
         if valid_batches > 0 and accumulated_loss_tensor is not None:
             avg_loss_tensor = accumulated_loss_tensor / valid_batches
             avg_loss_tensor.backward()
-            grad_norm = float(torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm))
+            grad_norm = float(
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm)
+            )
             self.optimizer.step()
 
         return {
-            'loss': total_losses['total'] / max(1, valid_batches),
-            'mse': total_losses['mse'] / max(1, valid_batches),
-            'ranking_loss': total_losses['ranking'] / max(1, valid_batches),
-            'priority_loss': total_losses['mse'] / max(1, valid_batches),
-            'uncertainty': 0.0,
-            'grad_norm': grad_norm,
-            'valid_batches': valid_batches
+            "loss": total_losses["total"] / max(1, valid_batches),
+            "mse": total_losses["mse"] / max(1, valid_batches),
+            "ranking_loss": total_losses["ranking"] / max(1, valid_batches),
+            "priority_loss": total_losses["mse"] / max(1, valid_batches),
+            "uncertainty": 0.0,
+            "grad_norm": grad_norm,
+            "valid_batches": valid_batches,
         }
 
 
 # Backward compatibility: alias old class names
 PriorityNet = PriorityNet
 PriorityNetTrainer = PriorityNetTrainer
-
-

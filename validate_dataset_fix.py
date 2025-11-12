@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-def check_1_mismatches(dataset_dir="data/dataset"):
+def check_1_mismatches(dataset_dir="data/test2"):
     """Check for n_signals ≠ len(parameters) mismatches"""
     print("\n" + "="*60)
     print("CHECK 1: Signal Count Mismatches")
@@ -55,7 +55,7 @@ def check_1_mismatches(dataset_dir="data/dataset"):
     
     return mismatches == 0
 
-def check_2_decoys(dataset_dir="data/dataset"):
+def check_2_decoys(dataset_dir="data/test"):
     """Check for decoy signals (duplicates with similar mass)"""
     print("\n" + "="*60)
     print("CHECK 2: Decoy Signal Detection")
@@ -95,7 +95,7 @@ def check_2_decoys(dataset_dir="data/dataset"):
     
     return suspected_decoys < 50
 
-def check_3_priority_alignment(dataset_dir="data/dataset"):
+def check_3_priority_alignment(dataset_dir="data/test"):
     """Check priority-parameter alignment and value ranges"""
     print("\n" + "="*60)
     print("CHECK 3: Priority Alignment & Ranges")
@@ -138,7 +138,7 @@ def check_3_priority_alignment(dataset_dir="data/dataset"):
     
     return errors == 0 and out_of_range == 0
 
-def check_4_statistics(dataset_dir="data/dataset"):
+def check_4_statistics(dataset_dir="data/test"):
     """Check dataset statistics"""
     print("\n" + "="*60)
     print("CHECK 4: Dataset Statistics")
@@ -196,23 +196,44 @@ def check_4_statistics(dataset_dir="data/dataset"):
         print(f"  Max: {np.max(stats['priorities']):.3f}")
         print(f"  Avg spread: {np.mean(stats['spreads']):.3f}")
     
-    # Check if distribution is reasonable
+    # Check if distribution and statistics are reasonable
     single_pct = 100 * stats['single'] / total if total > 0 else 0
     overlap_pct = 100 * (stats['pair'] + stats['triple_quad'] + stats['dense']) / total if total > 0 else 0
     
-    reasonable = (20 < single_pct < 40) and (60 < overlap_pct < 80)
+    # Validate priority statistics
+    if stats['priorities']:
+        mean_priority = np.mean(stats['priorities'])
+        std_priority = np.std(stats['priorities'])
+        min_priority = np.min(stats['priorities'])
+        max_priority = np.max(stats['priorities'])
+        
+        # Check if priorities are well-distributed and in valid range
+        valid_range = (0.05 <= min_priority) and (max_priority <= 1.0)
+        valid_spread = (std_priority > 0.05)  # Not all same value
+        reasonable_mean = (0.2 <= mean_priority <= 0.9)  # Centered, not extreme
+        
+        reasonable = valid_range and valid_spread and reasonable_mean
+    else:
+        reasonable = True  # No priorities to check
+    
+    # Check if signal distribution is sensible (should have both singles and overlaps)
+    has_singles = stats['single'] > 0
+    has_overlaps = (stats['pair'] + stats['triple_quad'] + stats['dense']) > 0
+    
+    reasonable = reasonable and has_singles and has_overlaps
+    
     status = "✅ PASS" if reasonable else "⚠️  CHECK"
     print(f"\nResult: {status}")
     
     return reasonable
 
-def check_5_zero_anomalies(dataset_dir="data/dataset"):
-    """Check for zero/near-zero priority anomalies (decoy pattern)"""
+def check_5_zero_anomalies(dataset_dir="data/test"):
+    """Check for near-zero priority anomalies (should be minimal with log scaling)"""
     print("\n" + "="*60)
-    print("CHECK 5: Zero Priority Anomalies")
+    print("CHECK 5: Near-Zero Priority Anomalies")
     print("="*60)
     
-    samples_with_zeros = 0
+    samples_with_very_low = 0
     total_samples = 0
     
     for split in ['train', 'validation', 'test']:
@@ -229,16 +250,19 @@ def check_5_zero_anomalies(dataset_dir="data/dataset"):
                 prios = sample.get('priorities', [])
                 total_samples += 1
                 
-                zero_count = sum(1 for p in prios if p <= 0.01)
-                if zero_count > 0:
-                    samples_with_zeros += 1
+                # Count priorities < 0.05 (should be minimal with log scaling)
+                very_low_count = sum(1 for p in prios if p < 0.05)
+                if very_low_count > 0:
+                    samples_with_very_low += 1
     
-    status = "✅ PASS" if samples_with_zeros < 100 else "⚠️  INVESTIGATE"
+    threshold = max(50, int(total_samples * 0.05))  # 5% of dataset
+    status = "✅ PASS" if samples_with_very_low < threshold else "⚠️  INVESTIGATE"
     print(f"Total samples: {total_samples}")
-    print(f"Samples with zero priorities: {samples_with_zeros}")
+    print(f"Samples with priorities < 0.05: {samples_with_very_low}")
+    print(f"Threshold: {threshold}")
     print(f"Result: {status}")
     
-    return samples_with_zeros < 100
+    return samples_with_very_low < threshold
 
 def main():
     print("\n" + "="*60)

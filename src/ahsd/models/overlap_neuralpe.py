@@ -112,7 +112,7 @@ class OverlapNeuralPE(nn.Module):
              "mass_1": (1.0, 100.0),
              "mass_2": (1.0, 100.0),
              "luminosity_distance": (10.0, 8000.0),  # Fixed: Allow rare events down to 10 Mpc
-             "geocent_time": (-2.0, 2.0),  # Fixed: Matches actual data range [-2,2]s
+             "geocent_time": (-2.0, 8.0),  # Fixed: Matches actual data range (i*1.5 spacing up to 4 signals)
              "ra": (0.0, 2 * np.pi),
              "dec": (-np.pi / 2, np.pi / 2),
              "theta_jn": (0.0, np.pi),

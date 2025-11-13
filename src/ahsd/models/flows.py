@@ -305,6 +305,197 @@ class MaskedAutoregressiveFlow(nn.Module):
             return torch.randn(num_samples, self.features, device=base_samples.device) * 0.5
 
 
+class TransformerBlock(nn.Module):
+    """Single transformer block with self-attention and MLP"""
+    
+    def __init__(self, hidden_dim: int, num_heads: int, dropout: float = 0.1):
+        super().__init__()
+        
+        self.attention = nn.MultiheadAttention(
+            hidden_dim, num_heads, dropout=dropout, batch_first=True
+        )
+        
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 4, hidden_dim)
+        )
+        
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        # Self-attention with residual
+        attn_out, _ = self.attention(x.unsqueeze(1), x.unsqueeze(1), x.unsqueeze(1))
+        x = self.norm1(x + self.dropout(attn_out.squeeze(1)))
+        
+        # MLP with residual
+        mlp_out = self.mlp(x)
+        x = self.norm2(x + self.dropout(mlp_out))
+        
+        return x
+
+
+class VelocityNet(nn.Module):
+    """Transformer-based velocity network for Flow Matching ODE"""
+    
+    def __init__(self, features: int, context_features: int, hidden_dim: int = 256, 
+                 num_layers: int = 2, dropout: float = 0.1, **kwargs):
+        super().__init__()
+        
+        self.features = features
+        self.context_features = context_features
+        self.hidden_dim = hidden_dim
+        self.logger = logging.getLogger(__name__)
+        
+        # ✅ Nov 13: Set seed for reproducibility
+        torch.manual_seed(42)
+        np.random.seed(42)
+        
+        # Time embedding
+        self.time_embedding = nn.Sequential(
+            nn.Linear(1, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        
+        # Input/context projections
+        self.input_projection = nn.Linear(features, hidden_dim)
+        self.context_projection = nn.Linear(context_features, hidden_dim)
+        
+        # Transformer blocks
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(hidden_dim, 8, dropout) for _ in range(num_layers)
+        ])
+        
+        # Cross-attention
+        self.cross_attention = nn.ModuleList([
+            nn.MultiheadAttention(hidden_dim, 8, dropout=dropout, batch_first=True)
+            for _ in range(num_layers)
+        ])
+        
+        # Output layer
+        self.output_layer = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, features)
+        )
+        
+        # ✅ Nov 13: Better weight initialization
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=1.0)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
+        
+        self.logger.info(f"✅ VelocityNet initialized: {features} features, {hidden_dim} hidden, {num_layers} layers")
+    
+    def forward(self, z: torch.Tensor, t: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        batch_size = z.shape[0]
+        
+        # Normalize time to [0, 1]
+        if t.dim() == 1:
+            t = t.unsqueeze(1)
+        t_normalized = torch.clamp(t, 0.0, 1.0)
+        
+        # Embed inputs
+        z_emb = self.input_projection(z)
+        t_emb = self.time_embedding(t_normalized)
+        ctx_emb = self.context_projection(context)
+        
+        # Combine z and t embeddings
+        x = z_emb + t_emb
+        
+        # Process through transformer with context conditioning
+        for transformer_block, cross_attn in zip(self.transformer_blocks, self.cross_attention):
+            x = transformer_block(x)
+            x_att, _ = cross_attn(x.unsqueeze(1), ctx_emb.unsqueeze(1), ctx_emb.unsqueeze(1))
+            x = x + x_att.squeeze(1)
+        
+        # Output velocity
+        velocity = self.output_layer(x)
+        return velocity
+
+
+class FlowMatchingPosterior(nn.Module):
+    """Flow Matching posterior (Optimal Transport Conditional Flow Matching)"""
+    
+    def __init__(self, features: int, context_features: int, hidden_dim: int = 256,
+                 num_layers: int = 2, solver_steps: int = 10, dropout: float = 0.1, **kwargs):
+        super().__init__()
+        
+        self.features = features
+        self.context_features = context_features
+        self.solver_steps = solver_steps
+        self.logger = logging.getLogger(__name__)
+        
+        # Velocity network
+        self.velocity_net = VelocityNet(
+            features=features, context_features=context_features,
+            hidden_dim=hidden_dim, num_layers=num_layers, dropout=dropout
+        )
+        
+        # Base distribution
+        self.base_distribution = distributions.StandardNormal([features])
+        
+        self.logger.info(
+            f"✅ FlowMatchingPosterior initialized: {features} features, "
+            f"{context_features} context dims, {solver_steps} solver steps"
+        )
+    
+    def _euler_step(self, z: torch.Tensor, t: torch.Tensor, dt: float, context: torch.Tensor) -> torch.Tensor:
+        velocity = self.velocity_net(z, t, context)
+        return z + velocity * dt
+    
+    def forward(self, x: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size = x.shape[0]
+        z = x.clone()
+        dt = 1.0 / self.solver_steps
+        
+        for step in range(self.solver_steps):
+            t = torch.full((batch_size,), step * dt, device=x.device)
+            z = self._euler_step(z, t, dt, context)
+        
+        # Approximate log_det
+        with torch.no_grad():
+            t_final = torch.ones(batch_size, device=x.device)
+            velocity_final = self.velocity_net(z, t_final, context)
+            log_det = -0.5 * torch.sum(velocity_final ** 2, dim=1)
+        
+        return z, log_det
+    
+    def inverse(self, z: torch.Tensor, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size = z.shape[0]
+        x = z.clone()
+        dt = 1.0 / self.solver_steps
+        
+        for step in range(self.solver_steps):
+            t = torch.full((batch_size,), step * dt, device=z.device)
+            x = self._euler_step(x, t, dt, context)
+        
+        with torch.no_grad():
+            t_final = torch.ones(batch_size, device=z.device)
+            velocity_final = self.velocity_net(x, t_final, context)
+            log_det = -0.5 * torch.sum(velocity_final ** 2, dim=1)
+        
+        return x, log_det
+    
+    def log_prob(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        z, log_det = self(x, context)
+        base_log_prob = self.base_distribution.log_prob(z)
+        return base_log_prob + log_det
+    
+    def sample(self, num_samples: int, context: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            z = self.base_distribution.sample(num_samples)
+            if context.shape[0] == 1 and num_samples > 1:
+                context = context.repeat(num_samples, 1)
+            x, _ = self.inverse(z, context)
+            return torch.clamp(x, -2.0, 2.0)
+
+
 def create_flow_model(flow_type: str, 
                      features: int,
                      context_features: int = 0,
@@ -330,6 +521,14 @@ def create_flow_model(flow_type: str,
             kwargs['num_layers'] = kwargs.pop('max_layers')
         
         return MaskedAutoregressiveFlow(
+            features=features,
+            context_features=context_features,
+            **kwargs
+        )
+    elif flow_type.lower() == "flowmatching":
+        # FlowMatching (OT-CFM) implementation
+        from ahsd.models.flows import FlowMatchingPosterior
+        return FlowMatchingPosterior(
             features=features,
             context_features=context_features,
             **kwargs

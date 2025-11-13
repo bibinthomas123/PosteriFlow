@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-def check_1_mismatches(dataset_dir="data/test2"):
+def check_1_mismatches(dataset_dir="data/test"):
     """Check for n_signals ≠ len(parameters) mismatches"""
     print("\n" + "="*60)
     print("CHECK 1: Signal Count Mismatches")

@@ -365,7 +365,77 @@ class BiasCorrector(nn.Module):
         mean_uncertainty = uncertainty.mean(dim=1)  # [batch]
         confidence = 1.0 / (1.0 + mean_uncertainty)
         
+        # Track metrics for logging (detach from graph)
+        self._track_batch_metrics(corrections, uncertainty, confidence)
+        
         return corrections, uncertainty, confidence
+    
+    def _track_batch_metrics(self, corrections: torch.Tensor, uncertainty: torch.Tensor, 
+                            confidence: torch.Tensor) -> None:
+        """Track metrics from forward pass for monitoring.
+        
+        Args:
+            corrections: [batch, param_dim] corrections applied
+            uncertainty: [batch, param_dim] uncertainty estimates
+            confidence: [batch] confidence scores
+        """
+        if not hasattr(self, '_batch_metrics'):
+            self._batch_metrics = {
+                'corrections': [],
+                'confidences': [],
+                'uncertainties': []
+            }
+        
+        # Detach and move to CPU for storage
+        self._batch_metrics['corrections'].append(torch.abs(corrections).detach().cpu().numpy())
+        self._batch_metrics['confidences'].append(confidence.detach().cpu().numpy())
+        self._batch_metrics['uncertainties'].append(uncertainty.detach().cpu().numpy())
+        
+        # Keep only last 100 batches
+        for key in self._batch_metrics:
+            if len(self._batch_metrics[key]) > 100:
+                self._batch_metrics[key] = self._batch_metrics[key][-100:]
+    
+    def get_metrics(self) -> Dict[str, float]:
+        """
+        Get metrics from recent batches for monitoring.
+        
+        Returns:
+            Dict with bias correction metrics (empty if no recent batches)
+        """
+        if not hasattr(self, '_batch_metrics') or not self._batch_metrics['corrections']:
+            return {}
+        
+        try:
+            import numpy as np
+            
+            metrics = {}
+            
+            # Correction statistics (across all params and batches)
+            all_corrections = np.concatenate(self._batch_metrics['corrections'], axis=0)
+            metrics['avg_correction'] = float(np.mean(all_corrections))
+            metrics['max_correction'] = float(np.max(all_corrections))
+            metrics['correction_std'] = float(np.std(all_corrections))
+            
+            # Confidence metrics
+            all_confidences = np.concatenate(self._batch_metrics['confidences'], axis=0)
+            metrics['avg_confidence'] = float(np.mean(all_confidences))
+            metrics['min_confidence'] = float(np.min(all_confidences))
+            
+            # Uncertainty metrics
+            all_uncertainties = np.concatenate(self._batch_metrics['uncertainties'], axis=0)
+            metrics['avg_uncertainty'] = float(np.mean(all_uncertainties))
+            metrics['max_uncertainty'] = float(np.max(all_uncertainties))
+            
+            # Acceptance rate (simple: high confidence corrections)
+            high_confidence_ratio = float(np.mean(all_confidences > 0.5))
+            metrics['correction_acceptance_rate'] = high_confidence_ratio
+            
+            return metrics
+        
+        except Exception as e:
+            self.logger.debug(f"Failed to compute bias metrics: {e}")
+            return {}
 
     
     def _initialize_physics_bounds(self) -> Dict[str, Dict[str, float]]:

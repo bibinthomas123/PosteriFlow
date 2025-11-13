@@ -4,11 +4,16 @@ Training script for OverlapNeuralPE - Complete pipeline for overlapping GW signa
 
 Features:
 - Multi-signal extraction with PriorityNet
+- FlowMatching (OT-CFM) or RealNVP normalizing flow (controlled via config flag)
 - RL-controlled adaptive complexity
 - Bias correction and adaptive subtraction
 - Comprehensive metrics and evaluation
 - WandB integration for experiment tracking
 - Fully config-driven
+
+Flow Type Control:
+  Set in config: neural_posterior.flow_type = "flowmatching" or "realnvp"
+  Auto-configures: num_layers, context_dim based on flow type
 """
 
 import sys
@@ -31,7 +36,7 @@ import json
 from ahsd.models.overlap_neuralpe import OverlapNeuralPE
 from experiments.train_priority_net import ChunkedGWDataLoader
 
-# âœ… WANDB
+# ✅ WANDB
 try:
     import wandb
     WANDB_AVAILABLE = True
@@ -65,17 +70,17 @@ class OverlapGWDataset(Dataset):
         self.config = config
         self.logger = logging.getLogger(__name__)
 
-        # âœ… Read augmentation config
+        # ✅ Read augmentation config
         aug_config = config.get('data_augmentation', {})
         self.augmentation_enabled = aug_config.get('enabled', False)
         self.noise_scaling = aug_config.get('noise_scaling', [0.95, 1.05])
         self.time_shifts = aug_config.get('time_shifts', [-0.005, 0.005])
         self.apply_probability = aug_config.get('apply_probability', 0.3)
 
-        self.samples = data_loader.samples
-        self.logger.info(f"âœ… Loaded {len(self.samples)} samples from {data_loader.split}")
+        self.samples = list(data_loader.iter_all_samples())
+        self.logger.info(f"✅ Loaded {len(self.samples)} samples from {data_loader.split}")
         if self.augmentation_enabled:
-            self.logger.info(f"âœ… Data augmentation enabled (p={self.apply_probability})")
+            self.logger.info(f"✅ Data augmentation enabled (p={self.apply_probability})")
 
     def __len__(self):
         return len(self.samples)
@@ -106,13 +111,24 @@ class OverlapGWDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
 
-        # Extract strain data
-        strain_dict = sample.get('whitened_data', {})
-        h1_strain = strain_dict.get('H1', np.zeros(4096))
-        l1_strain = strain_dict.get('L1', np.zeros(4096))
+        # Extract strain data - try detector_data first (new format), then whitened_data (legacy)
+        detector_data = sample.get('detector_data', {})
+        if detector_data:
+            # New format: detector_data with 'strain' key
+            h1_strain = detector_data.get('H1', {}).get('strain', np.zeros(16384))
+            l1_strain = detector_data.get('L1', {}).get('strain', np.zeros(16384))
+        else:
+            # Legacy format: whitened_data
+            strain_dict = sample.get('whitened_data', {})
+            h1_strain = strain_dict.get('H1', np.zeros(16384))
+            l1_strain = strain_dict.get('L1', np.zeros(16384))
+        
+        # Ensure proper numpy arrays
+        h1_strain = np.asarray(h1_strain, dtype=np.float32)
+        l1_strain = np.asarray(l1_strain, dtype=np.float32)
         strain_data = np.stack([h1_strain, l1_strain], axis=0)
 
-        # âœ… FIX: Resize to fixed length BEFORE augmentation
+        # ✅ FIX: Resize to fixed length BEFORE augmentation
         target_length = 16384
         if strain_data.shape[1] != target_length:
             if strain_data.shape[1] > target_length:
@@ -129,28 +145,35 @@ class OverlapGWDataset(Dataset):
         # Apply augmentation AFTER resizing
         strain_data = self._apply_augmentation(strain_data)
 
-        # Extract metadata
-        metadata = sample.get('metadata', {})
-        signal_params_list = metadata.get('signal_parameters', [])
-
-        # Scale parameters
+        # Extract parameters from sample (already in correct format)
+        sample_params = sample.get('parameters', [])
+        
+        # Build parameter vectors for each signal
         all_params = []
-        if signal_params_list and len(signal_params_list) > 0:
-            for sig_params in signal_params_list:
-                param_vector = self._scale_parameters(sig_params)
-                all_params.append(param_vector)
+        if sample_params:
+            # sample_params is either a list of dicts or a single dict
+            if isinstance(sample_params, dict):
+                sample_params = [sample_params]
+            
+            for sig_params in sample_params:
+                if isinstance(sig_params, dict):
+                    param_vector = self._scale_parameters(sig_params)
+                    all_params.append(param_vector)
 
         # Pad to max_signals
         max_signals = 5
         while len(all_params) < max_signals:
             all_params.append([0.0] * len(self.param_names))
         all_params = all_params[:max_signals]
+        
+        # Get n_signals from sample or metadata
+        n_signals = sample.get('n_signals', len([p for p in all_params if p != [0.0] * len(self.param_names)]))
 
         return {
             'strain_data': torch.tensor(strain_data, dtype=torch.float32),  # Always [2, 16384]
             'parameters': torch.tensor(all_params, dtype=torch.float32),
-            'n_signals': len(signal_params_list) if signal_params_list else 0,
-            'metadata': metadata
+            'n_signals': n_signals,
+            'metadata': sample.get('metadata', {})
         }
 
     def _scale_parameters(self, params_dict):
@@ -179,7 +202,7 @@ class OverlapNeuralPETrainer:
         self.use_wandb = use_wandb and WANDB_AVAILABLE
 
 
-        # âœ… ALL VALUES FROM CONFIG
+        # ✅ ALL VALUES FROM CONFIG
         self.learning_rate = config.get('learning_rate', 1e-4)
         self.batch_size = config.get('batch_size', 16)
         self.epochs = config.get('epochs', 100)
@@ -321,7 +344,41 @@ class OverlapNeuralPETrainer:
             return start_epoch + 1
 
         return None
-
+        
+    def _log_gradient_statistics(self, epoch: int):
+        """✅ Nov 13: Log per-layer gradient norms for debugging vanishing gradients."""
+        self.logger.info(f"\n=== Gradient Statistics (Epoch {epoch+1}, Batch 1) ===")
+        
+        vanishing_layers = []
+        flow_grad_found = False
+        
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.data.norm(2).item()
+                param_norm = param.data.norm(2).item() + 1e-8
+                ratio = grad_norm / param_norm
+                
+                # Flag flow-related layers
+                if 'flow' in name or 'velocity' in name:
+                    flow_grad_found = True
+                    status = "✅" if grad_norm > 1e-6 else "⚠️ "
+                    self.logger.info(
+                        f"{status} {name}: grad_norm={grad_norm:.6f}, "
+                        f"param_norm={param_norm:.6f}, ratio={ratio:.6f}"
+                    )
+                    
+                    if ratio < 1e-6 and param_norm > 1e-2:
+                        vanishing_layers.append(name)
+        
+        # Summary
+        if not flow_grad_found:
+            self.logger.warning("⚠️ No gradients found in flow layers!")
+        
+        if vanishing_layers:
+            self.logger.error(f"🔴 VANISHING GRADIENTS IN: {vanishing_layers}")
+        else:
+            self.logger.info("✅ Gradient flow OK (no vanishing gradients detected)")
+        
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train one epoch."""
         self.model.train()
@@ -329,7 +386,11 @@ class OverlapNeuralPETrainer:
         epoch_losses = []
         epoch_metrics = {
             'nll': [],
-            'gradient_norm': []
+            'gradient_norm': [],
+            'physics_loss': [],
+            'bias_loss': [],
+            'uncertainty_loss': [],
+            'jacobian_reg': []
         }
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
@@ -344,11 +405,30 @@ class OverlapNeuralPETrainer:
             # Compute loss
             loss_dict = self.model.compute_loss(strain_data, target_params)
 
+            # ✅ DEBUG: Log loss components for first batch (catch issues early)
+            if batch_idx == 0:
+                self.logger.info(f"\n[BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
+                self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
+                self.logger.info(f"  NLL: {loss_dict.get('nll', 0):.4f}")
+                self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
+                self.logger.info(f"  Bias Loss: {loss_dict.get('bias_loss', 0):.4f}")
+                self.logger.info(f"  Uncertainty Loss: {loss_dict.get('uncertainty_loss', 0):.4f}")
+                self.logger.info(f"  Jacobian Reg: {loss_dict.get('jacobian_reg', 0):.4f}")
+                
+                # Check for NaN/Inf
+                for key, val in loss_dict.items():
+                    if torch.isnan(val) or torch.isinf(val):
+                        self.logger.warning(f"⚠️  {key} = {val}")
+
             # Backward pass
             loss = loss_dict['total_loss']
             loss.backward()
-
-            # Gradient clipping
+            
+             # ✅ Nov 13: Per-layer gradient tracking for debugging
+            # if batch_idx == 0 and epoch % 5 == 0:  # Log every 5 epochs, first batch only
+            #     self._log_gradient_statistics(epoch)
+            
+             # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
 
             self.optimizer.step()
@@ -356,16 +436,36 @@ class OverlapNeuralPETrainer:
             epoch_losses.append(loss_dict['total_loss'].item())
             epoch_metrics['nll'].append(loss_dict['nll'].item())
             epoch_metrics['gradient_norm'].append(grad_norm.item())
+            
+            # Store component losses
+            if 'physics_loss' in loss_dict:
+                epoch_metrics['physics_loss'].append(loss_dict['physics_loss'].item())
+            if 'bias_loss' in loss_dict:
+                epoch_metrics['bias_loss'].append(loss_dict['bias_loss'].item())
+            if 'uncertainty_loss' in loss_dict:
+                epoch_metrics['uncertainty_loss'].append(loss_dict['uncertainty_loss'].item())
+            if 'jacobian_reg' in loss_dict:
+                epoch_metrics['jacobian_reg'].append(loss_dict['jacobian_reg'].item())
 
-            # âœ… WANDB: Log batch metrics
+            # ✅ WANDB: Log batch metrics
             if self.use_wandb and batch_idx % 10 == 0:
-                wandb.log({
+                batch_log = {
                     'batch/train_loss': loss_dict['total_loss'].item(),
                     'batch/nll': loss_dict['nll'].item(),
                     'batch/gradient_norm': grad_norm.item(),
                     'batch/learning_rate': self.optimizer.param_groups[0]['lr'],
                     'global_step': self.global_step
-                })
+                }
+                # Log component losses if available
+                if 'physics_loss' in loss_dict:
+                    batch_log['batch/physics_loss'] = loss_dict['physics_loss'].item()
+                if 'bias_loss' in loss_dict:
+                    batch_log['batch/bias_loss'] = loss_dict['bias_loss'].item()
+                if 'uncertainty_loss' in loss_dict:
+                    batch_log['batch/uncertainty_loss'] = loss_dict['uncertainty_loss'].item()
+                if 'jacobian_reg' in loss_dict:
+                    batch_log['batch/jacobian_reg'] = loss_dict['jacobian_reg'].item()
+                wandb.log(batch_log)
 
             self.global_step += 1
 
@@ -381,31 +481,56 @@ class OverlapNeuralPETrainer:
             'avg_nll': np.mean(epoch_metrics['nll']),
             'avg_gradient_norm': np.mean(epoch_metrics['gradient_norm'])
         }
+        
+        # Add component loss averages if available
+        if epoch_metrics['physics_loss']:
+            avg_metrics['avg_physics_loss'] = np.mean(epoch_metrics['physics_loss'])
+        if epoch_metrics['bias_loss']:
+            avg_metrics['avg_bias_loss'] = np.mean(epoch_metrics['bias_loss'])
+        if epoch_metrics['uncertainty_loss']:
+            avg_metrics['avg_uncertainty_loss'] = np.mean(epoch_metrics['uncertainty_loss'])
+        if epoch_metrics['jacobian_reg']:
+            avg_metrics['avg_jacobian_reg'] = np.mean(epoch_metrics['jacobian_reg'])
 
         return avg_metrics
 
     def validate_epoch(self, val_loader: DataLoader, epoch: int) -> Dict[str, float]:
-        """Validate one epoch."""
-        self.model.eval()
+         """Validate one epoch."""
+         self.model.eval()
 
-        epoch_losses = []
-        epoch_nlls = []
+         epoch_losses = []
+         epoch_nlls = []
+         epoch_physics_losses = []
 
-        with torch.no_grad():
-            for strain_data, parameters, n_signals, metadata in tqdm(val_loader, desc="Validating"):
-                strain_data = strain_data.to(self.device)
-                parameters = parameters.to(self.device)
+         with torch.no_grad():
+             for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(tqdm(val_loader, desc="Validating")):
+                 strain_data = strain_data.to(self.device)
+                 parameters = parameters.to(self.device)
 
-                target_params = parameters[:, 0, :]
-                loss_dict = self.model.compute_loss(strain_data, target_params)
+                 target_params = parameters[:, 0, :]
+                 loss_dict = self.model.compute_loss(strain_data, target_params)
 
-                epoch_losses.append(loss_dict['total_loss'].item())
-                epoch_nlls.append(loss_dict['nll'].item())
+                 # ✅ DEBUG: Log first validation batch for comparison
+                 if batch_idx == 0:
+                     self.logger.info(f"\n[VAL BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
+                     self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
+                     self.logger.info(f"  NLL: {loss_dict.get('nll', 0):.4f}")
+                     self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
+                     self.logger.info(f"  (Val physics loss should be SIMILAR to train)")
 
-        return {
-            'avg_loss': np.mean(epoch_losses),
-            'avg_nll': np.mean(epoch_nlls)
-        }
+                 epoch_losses.append(loss_dict['total_loss'].item())
+                 epoch_nlls.append(loss_dict['nll'].item())
+                 if 'physics_loss' in loss_dict:
+                     epoch_physics_losses.append(loss_dict['physics_loss'].item())
+
+         val_metrics = {
+             'avg_loss': np.mean(epoch_losses),
+             'avg_nll': np.mean(epoch_nlls)
+         }
+         if epoch_physics_losses:
+             val_metrics['avg_physics_loss'] = np.mean(epoch_physics_losses)
+         
+         return val_metrics
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader, output_dir: Path, start_epoch: int = 0):
         """Complete training loop."""
@@ -415,9 +540,9 @@ class OverlapNeuralPETrainer:
         self.logger.info(f"Validation samples: {len(val_loader.dataset)}")
 
         if self.use_wandb:
-            self.logger.info("âœ… WandB logging enabled")
+            self.logger.info("✅ WandB logging enabled")
 
-    for epoch in range(start_epoch, self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             epoch_start = time.time()
 
             # Training
@@ -445,7 +570,7 @@ class OverlapNeuralPETrainer:
 
             epoch_time = time.time() - epoch_start
 
-            # âœ… WANDB: Log epoch metrics with patience tracking
+            # ✅ WANDB: Log epoch metrics with patience tracking
             if self.use_wandb:
                 log_dict = {
                     'epoch/train_loss': train_metrics['avg_loss'],
@@ -480,6 +605,17 @@ class OverlapNeuralPETrainer:
             self.logger.info(f"  LR: {self.optimizer.param_groups[0]['lr']:.2e}")
             self.logger.info(f"  Patience: {self.patience_counter}/{self.patience}")
             self.logger.info(f"  Time: {epoch_time:.1f}s")
+            
+            # Component loss breakdown
+            self.logger.info(f"  Loss Components:")
+            if 'avg_physics_loss' in train_metrics:
+                self.logger.info(f"    Physics Loss: {train_metrics['avg_physics_loss']:.6f}")
+            if 'avg_bias_loss' in train_metrics:
+                self.logger.info(f"    Bias Loss: {train_metrics['avg_bias_loss']:.6f}")
+            if 'avg_uncertainty_loss' in train_metrics:
+                self.logger.info(f"    Uncertainty Loss: {train_metrics['avg_uncertainty_loss']:.6f}")
+            if 'avg_jacobian_reg' in train_metrics:
+                self.logger.info(f"    Jacobian Reg: {train_metrics['avg_jacobian_reg']:.6f}")
 
             # RL metrics logging
             if rl_metrics:
@@ -489,15 +625,77 @@ class OverlapNeuralPETrainer:
                         self.logger.info(f"    {key}: {value:.4f}")
                     else:
                         self.logger.info(f"    {key}: {value}")
+            else:
+                self.logger.info(f"  RL Controller:")
+                self.logger.info(f"    (metrics not available)")
 
             # Bias Corrector metrics logging
             if bias_metrics:
                 self.logger.info(f"  Bias Corrector:")
+                # Correction statistics
+                if 'avg_correction' in bias_metrics:
+                    self.logger.info(f"    ✓ Avg Correction: {bias_metrics['avg_correction']:.6f}")
+                if 'max_correction' in bias_metrics:
+                    self.logger.info(f"    ✓ Max Correction: {bias_metrics['max_correction']:.6f}")
+                if 'correction_std' in bias_metrics:
+                    self.logger.info(f"    ✓ Correction Std: {bias_metrics['correction_std']:.6f}")
+                # Confidence metrics
+                if 'avg_confidence' in bias_metrics:
+                    self.logger.info(f"    ⚡ Avg Confidence: {bias_metrics['avg_confidence']:.4f}")
+                if 'min_confidence' in bias_metrics:
+                    self.logger.info(f"    ⚡ Min Confidence: {bias_metrics['min_confidence']:.4f}")
+                # Acceptance rates
+                if 'correction_acceptance_rate' in bias_metrics:
+                    acceptance = bias_metrics['correction_acceptance_rate']
+                    self.logger.info(f"    📊 Acceptance Rate: {acceptance:.2%}")
+                # Physics violations
+                if 'physics_violations' in bias_metrics:
+                    violations = bias_metrics['physics_violations']
+                    self.logger.info(f"    ⚠️  Physics Violations: {violations}")
+                # Additional metrics
                 for key, value in bias_metrics.items():
-                    if isinstance(value, (int, float)):
-                        self.logger.info(f"    {key}: {value:.4f}")
-                    else:
-                        self.logger.info(f"    {key}: {value}")
+                    if key not in ['avg_correction', 'max_correction', 'correction_std', 'avg_confidence', 
+                                   'min_confidence', 'correction_acceptance_rate', 'physics_violations']:
+                        if isinstance(value, (int, float)):
+                            self.logger.info(f"    {key}: {value:.4f}")
+                        else:
+                            self.logger.info(f"    {key}: {value}")
+            else:
+                self.logger.info(f"  Bias Corrector:")
+                self.logger.info(f"    (disabled or metrics not available)")
+
+            # Integration summary logging
+            if hasattr(self.model, 'get_integration_summary'):
+                try:
+                    summary = self.model.get_integration_summary()
+                    metrics = summary.get('metrics', {})
+                    bias_metrics_summary = metrics.get('bias_metrics', {})
+                    rl_metrics_summary = metrics.get('rl_metrics', {})
+                    
+                    self.logger.info(f"  Integration Summary:")
+                    self.logger.info(f"    Total Parameters: {metrics.get('total_parameters', 0):,}")
+                    self.logger.info(f"    Trainable Parameters: {metrics.get('trainable_parameters', 0):,}")
+                    
+                    if rl_metrics_summary:
+                        self.logger.info(f"  RL State:")
+                        if 'epsilon' in rl_metrics_summary:
+                            self.logger.info(f"    Exploration (ε): {rl_metrics_summary['epsilon']:.4f}")
+                        if 'avg_complexity' in rl_metrics_summary:
+                            self.logger.info(f"    Avg Complexity: {rl_metrics_summary['avg_complexity']:.2f}")
+                        if 'action_entropy' in rl_metrics_summary:
+                            self.logger.info(f"    Action Entropy: {rl_metrics_summary['action_entropy']:.4f}")
+                        if 'avg_reward' in rl_metrics_summary:
+                            self.logger.info(f"    Avg Reward: {rl_metrics_summary['avg_reward']:.4f}")
+                    
+                    if bias_metrics_summary:
+                        self.logger.info(f"  Bias State:")
+                        if 'avg_correction' in bias_metrics_summary:
+                            self.logger.info(f"    Magnitude: {bias_metrics_summary['avg_correction']:.6f}")
+                        if 'correction_acceptance_rate' in bias_metrics_summary:
+                            accept_rate = bias_metrics_summary['correction_acceptance_rate']
+                            self.logger.info(f"    Acceptance: {accept_rate:.2%}")
+                except Exception as e:
+                    self.logger.debug(f"Could not log integration summary: {e}")
 
 
             # Early stopping
@@ -512,7 +710,7 @@ class OverlapNeuralPETrainer:
                 self.save_checkpoint(str(best_path), epoch, val_metrics, is_best=True)
                 self.logger.info(f"ðŸ’¾ Best model saved: {val_metrics['avg_loss']:.4f}")
 
-                # âœ… WANDB: Log best model
+                # ✅ WANDB: Log best model
                 if self.use_wandb:
                     wandb.run.summary['best_val_loss'] = self.best_val_loss
                     wandb.run.summary['best_epoch'] = epoch + 1
@@ -535,10 +733,10 @@ class OverlapNeuralPETrainer:
         # Final save
         final_path = output_dir / 'final_model.pth'
         self.save_checkpoint(str(final_path), epoch, val_metrics)
-        self.logger.info("\nâœ… Training completed!")
+        self.logger.info("\n✅ Training completed!")
         self.logger.info(f"ðŸŽ¯ Best validation loss: {self.best_val_loss:.4f} at epoch {self.best_epoch+1}")
 
-        # âœ… WANDB: Log final summary
+        # ✅ WANDB: Log final summary
         if self.use_wandb:
             wandb.run.summary['total_epochs'] = epoch + 1
             wandb.run.summary['stopped_early'] = self.patience_counter >= self.patience
@@ -587,7 +785,7 @@ def main():
 
     logger.info(f"Parameters: {param_names}")
 
-    # âœ… WANDB: Initialize with full config
+    # ✅ WANDB: Initialize with full config
     use_wandb = not args.no_wandb and WANDB_AVAILABLE
     if use_wandb:
         # Add training metadata to config
@@ -604,7 +802,7 @@ def main():
             config=config,
             tags=['overlap-neural-pe', 'gravitational-waves', 'normalizing-flows']
         )
-        logger.info(f"âœ… WandB initialized: {wandb.run.name}")
+        logger.info(f"✅ WandB initialized: {wandb.run.name}")
 
     try:
         # Initialize model
@@ -616,7 +814,7 @@ def main():
             device='cuda' if torch.cuda.is_available() else 'cpu'
         )
 
-        # âœ… WANDB: Watch model
+        # ✅ WANDB: Watch model
         if use_wandb:
             wandb.watch(model, log='all', log_freq=100)
 
@@ -638,7 +836,10 @@ def main():
         train_dataset = OverlapGWDataset(train_data_loader, param_names, config)
         val_dataset = OverlapGWDataset(val_data_loader, param_names, config)
         
-        # Create data loaders
+        # Get batch size from config
+        batch_size = config.get('batch_size', 16)
+        
+        # Create data loaders (num_workers=0 to avoid pickling issues)
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
@@ -663,7 +864,7 @@ def main():
             logger.info(f"  Time shifts: {aug_config.get('time_shifts')}")
             logger.info(f"  Apply probability: {aug_config.get('apply_probability')}")
 
-        # âœ… Log dropout config
+        # ✅ Log dropout config
         dropout = config.get('dropout', 0.1)
         flow_dropout = config.get('flow_config', {}).get('dropout', 0.15)
         logger.info(f"ðŸ”§ Regularization:")
@@ -695,7 +896,7 @@ def main():
         logger.info(f"ðŸŽ‰ All done! Results saved to {output_dir}")
 
 
-        # âœ… WANDB: Save history artifact
+        # ✅ WANDB: Save history artifact
         if use_wandb:
             artifact = wandb.Artifact('training_history', type='training_log')
             artifact.add_file(str(history_path))

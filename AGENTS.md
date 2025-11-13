@@ -49,11 +49,19 @@ Do not create a NEW FIX document every time just see if there is any document wh
 - `ahsd-test` - Run inference and evaluation
 
 **New Tools (Nov 2025):**
-- **TransformerStrainEncoder:**
+- **TransformerStrainEncoder (✅ VERIFIED WORKING - Nov 13):**
   - `python validate_transformer_encoder.py` - Validate TransformerStrainEncoder implementation
   - `pytest tests/test_transformer_encoder_enhanced.py -v` - Run encoder tests
   - `python scripts/benchmark_encoder.py --iterations 100` - Benchmark encoder performance
   - `python scripts/benchmark_encoder.py --amp --masks --iterations 100` - Full benchmark with AMP/masks
+  - **Health Check (NEW):**
+    - `python check_transformer_health.py` - Comprehensive health check (forward pass, gradients, dimensions)
+    - `python test_transformer_training.py` - Full training simulation with detailed logging
+  - **Enable in training:** Set `use_transformer_encoder: true` in config YAML
+  - **Logging:** Use DEBUG level to see detailed transformer execution traces
+  - **Status:** ✅ Working correctly - forward pass, gradient flow, loss computation all verified
+  - **Checkpoint Loading (Nov 13 FIXED):** Transformer-trained checkpoints now load perfectly (strict=True, perfect match)
+  - **See:** FIX_DOCS/TRANSFORMER_HEALTH_CHECK.md and FIX_DOCS/SIGNAL_FEATURE_EXTRACTOR_CONFIG_FIX.md for details
 - **Neural Noise Integration (10,000× speedup):**
   - `python test_neural_noise_integration.py` - Validate neural noise generation (expects ✓ PASS)
   - See FIX_DOCS/NEURAL_NOISE_SETUP.md for configuration and usage
@@ -225,14 +233,32 @@ Only when asked to test please follow the below conditions
       - **Verification**: Checkpoints resume without warnings, encoder type matches config, state_dict loads cleanly
       - See FIX_DOCS/CHECKPOINT_ENCODER_TYPE_MISMATCH_FIX.md for details
 - **Prediction Compression/Saturation** (FIXED - Nov 12, 2025): Output range severely limited to 25% of target range:
-      - **Issue**: Predictions stuck in (0.297, 0.471) while targets span (0.263, 0.950) — compression ratio only 25%
-      - **Root causes**: (1) Calibration penalties weak (0.05 each), (2) Output bias initialized to 0.2 not 0.5, (3) Weight init std too small (0.01 not 0.05), (4) No range regularization, (5) Affine params unconstrained
-      - **Fix**: (1) Config-driven calibration weights (calib_mean_weight=0.15, calib_max_weight=0.40), (2) Output init from config (bias=0.5, std=0.05), (3) Range regularization loss term, (4) Affine param clamping (gain [0.7,1.5], bias [-0.1,0.1]), (5) Stronger penalties in loss function
-      - **Config changes** in `configs/enhanced_training.yaml` (lines 59-71): 6 new parameters for calibration control
-      - **Code changes** in `src/ahsd/core/priority_net.py`: 6 locations across PriorityLoss, PriorityNet, TrainerForPriorityNet
-      - **Expected improvement**: Range 0.174 → ≥0.50 (287% increase), max_gap 0.687 → <0.10 (93% reduction)
-      - **Timeline**: Epoch 30 target (prediction range ≥0.60, max_gap <0.10), full convergence by epoch 40-50
-      - See FIX_DOCS/PREDICTION_COMPRESSION_FIX.md, COMPRESSION_FIX_SUMMARY.md, MONITORING_CHECKLIST.md for details
+       - **Issue**: Predictions stuck in (0.297, 0.471) while targets span (0.263, 0.950) — compression ratio only 25%
+       - **Root causes**: (1) Calibration penalties weak (0.05 each), (2) Output bias initialized to 0.2 not 0.5, (3) Weight init std too small (0.01 not 0.05), (4) No range regularization, (5) Affine params unconstrained
+       - **Fix**: (1) Config-driven calibration weights (calib_mean_weight=0.15, calib_max_weight=0.40), (2) Output init from config (bias=0.5, std=0.05), (3) Range regularization loss term, (4) Affine param clamping (gain [0.7,1.5], bias [-0.1,0.1]), (5) Stronger penalties in loss function
+       - **Config changes** in `configs/enhanced_training.yaml` (lines 59-71): 6 new parameters for calibration control
+       - **Code changes** in `src/ahsd/core/priority_net.py`: 6 locations across PriorityLoss, PriorityNet, TrainerForPriorityNet
+       - **Expected improvement**: Range 0.174 → ≥0.50 (287% increase), max_gap 0.687 → <0.10 (93% reduction)
+       - **Timeline**: Epoch 30 target (prediction range ≥0.60, max_gap <0.10), full convergence by epoch 40-50
+       - See FIX_DOCS/PREDICTION_COMPRESSION_FIX.md, COMPRESSION_FIX_SUMMARY.md, MONITORING_CHECKLIST.md for details
+- **Uncertainty Calibration** (FIXED - Nov 13, 2025): Model uncertainty estimates not correlating with actual errors:
+        - **Issue**: Block 5️⃣ failure - corr(|error|, unc)=0.096 (target: ≥0.15); uncertainty head undertrained
+        - **Root causes**: (1) Weak loss weight (0.10), (2) Naive MSE-only loss, (3) Insufficient gradient flow (Softplus beta=1.0)
+        - **Fix**: (1) Increased uncertainty_weight 0.10 → 0.35 (3.5x), (2) Two-part loss: MSE toward error + log-scale calibration, (3) Added bounds penalty [0.01, 0.50] to prevent collapse/explosion, (4) Increased Softplus beta 1.0 → 2.0
+        - **Config changes** in `configs/enhanced_training.yaml` (line 48): uncertainty_weight=0.35; lines 51-53: new bounds/weight params
+        - **Code changes** in `src/ahsd/core/priority_net.py`: PriorityLoss.__init__ (add bounds params), forward (two-part uncertainty loss + bounds penalty), PriorityNet (beta=2.0), PriorityNetTrainer (pass config params)
+        - **Expected improvement**: corr(|error|, unc) → ≥0.20 by epoch 15-20; convergence by epoch 50
+        - **Verification**: Run `python experiments/test_priority_net.py` → Block 5️⃣ should pass
+        - See FIX_DOCS/UNCERTAINTY_CALIBRATION_FIX.md and UNCERTAINTY_CALIBRATION_SUMMARY.md for details
+- **Neural PE Output Denormalization** (FIXED - Nov 13, 2025): Posterior samples returned in normalized form instead of physical units:
+        - **Issue**: Model outputs were in normalized range [-1, 1] instead of physical parameters (e.g., mass in Msun, distance in Mpc)
+        - **Root cause**: `sample_posterior()` called `flow.inverse()` but didn't denormalize results. Comment claimed "flow trained on physical units" but actually trained on normalized params
+        - **Fix**: Added `_denormalize_parameters()` call in `src/ahsd/models/overlap_neuralpe.py` lines 341-345
+        - **Code changes**: (1) Line 342: renamed `samples_physical` → `samples_normalized`, (2) Line 345: added `samples_physical = self._denormalize_parameters(samples_normalized)`
+        - **Test update**: Updated `test_overlap_neural_pe.py` lines 430-441 to use `sample_posterior()` API instead of calling `flow.inverse()` directly
+        - **Results**: All 9 parameters now in physical units (e.g., mass_1: [-61, 162] Msun vs [-2.1, 2.2] before)
+        - **Verification**: Run `python test_overlap_neural_pe.py --model_path models/neural_pe/best_model.pth --device cpu` → TEST 7 shows physical units
+        - See FIX_DOCS/NEURAL_PE_DENORMALIZATION_FIX.md and NEURAL_PE_DENORMALIZATION_SUMMARY.md for details
 
 **Model Training:**
 - Monitor calibration and output dynamic range

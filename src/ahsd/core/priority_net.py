@@ -326,14 +326,35 @@ class SignalFeatureExtractor(nn.Module):
         super().__init__()
 
         if isinstance(config, dict) or hasattr(config, "get"):
-            hidden_dims = config.get("hidden_dims", [512, 384, 256, 128])
-            dropout = config.get("dropout", 0.15)
+            # Try top level first, then nested priority_net
+            hidden_dims = config.get("hidden_dims", None)
+            if hidden_dims is None and "priority_net" in config:
+                hidden_dims = config["priority_net"].get("hidden_dims", [640, 512, 384, 256])
+            if hidden_dims is None:
+                hidden_dims = [640, 512, 384, 256]
+            
+            dropout = config.get("dropout", None)
+            if dropout is None and "priority_net" in config:
+                dropout = config["priority_net"].get("dropout", 0.25)
+            if dropout is None:
+                dropout = 0.25
         elif config is not None:
-            hidden_dims = getattr(config, "hidden_dims", [512, 384, 256, 128])
-            dropout = getattr(config, "dropout", 0.15)
+            hidden_dims = getattr(config, "hidden_dims", None)
+            if hidden_dims is None and hasattr(config, "priority_net"):
+                pn_cfg = getattr(config, "priority_net")
+                hidden_dims = getattr(pn_cfg, "hidden_dims", [640, 512, 384, 256])
+            if hidden_dims is None:
+                hidden_dims = [640, 512, 384, 256]
+            
+            dropout = getattr(config, "dropout", None)
+            if dropout is None and hasattr(config, "priority_net"):
+                pn_cfg = getattr(config, "priority_net")
+                dropout = getattr(pn_cfg, "dropout", 0.25)
+            if dropout is None:
+                dropout = 0.25
         else:
-            hidden_dims = [512, 384, 256, 128]
-            dropout = 0.15
+            hidden_dims = [640, 512, 384, 256]
+            dropout = 0.25
 
         # Input embedding
         self.input_embed = nn.Linear(input_dim, hidden_dims[0])
@@ -636,10 +657,16 @@ class PriorityLoss(nn.Module):
         self,
         ranking_weight: float = 0.4,
         mse_weight: float = 0.5,
-        uncertainty_weight: float = 0.1,
+        uncertainty_weight: float = 0.35,
         use_snr_weighting: bool = True,
         label_smoothing: float = 0.05,
         lambda_calib: float = 0.3,
+        uncertainty_lower_bound: float = 0.01,
+        uncertainty_upper_bound: float = 0.50,
+        uncertainty_bounds_weight: float = 0.05,
+        calib_mean_weight: float = 0.15,
+        calib_max_weight: float = 0.50,
+        calib_range_weight: float = 0.30,
     ):
         """
         Initialize PriorityLoss.
@@ -651,6 +678,12 @@ class PriorityLoss(nn.Module):
             use_snr_weighting: Enable SNR-based weighting in 5+ overlaps for hard cases.
             label_smoothing: Smooth targets toward 0.5 by ε to reduce overfitting to extremes.
             lambda_calib: Batch mean/std alignment penalty coefficient.
+            uncertainty_lower_bound: Minimum uncertainty value (prevent collapse).
+            uncertainty_upper_bound: Maximum uncertainty value (prevent explosion).
+            uncertainty_bounds_weight: Penalty weight for uncertainty bounds violations.
+            calib_mean_weight: Weight for mean calibration loss (Nov 13 fix).
+            calib_max_weight: Weight for max range expansion loss (Nov 13 fix).
+            calib_range_weight: Weight for range regularization loss (Nov 13 fix).
         """
         super().__init__()
         self.ranking_weight = ranking_weight
@@ -659,6 +692,12 @@ class PriorityLoss(nn.Module):
         self.use_snr_weighting = use_snr_weighting
         self.label_smoothing = label_smoothing
         self.lambda_calib = lambda_calib
+        self.uncertainty_lower_bound = uncertainty_lower_bound
+        self.uncertainty_upper_bound = uncertainty_upper_bound
+        self.uncertainty_bounds_weight = uncertainty_bounds_weight
+        self.calib_mean_weight = calib_mean_weight  # NEW (Nov 13)
+        self.calib_max_weight = calib_max_weight    # NEW (Nov 13)
+        self.calib_range_weight = calib_range_weight  # NEW (Nov 13)
         self.ranking_loss_fn = AdaptiveRankingLoss()
 
     def forward(
@@ -709,23 +748,59 @@ class PriorityLoss(nn.Module):
             margin_scale=(1.6 if bucket5 else 1.0),  # slightly stronger margin for 5+
         )
 
-        # Uncertainty regularization toward |error|
+        # Uncertainty calibration loss (Nov 13 fix)
         pred_error = torch.abs(predictions - targets)
-        uncertainty_loss = F.mse_loss(uncertainties, pred_error.detach())
+        
+        # Clamp error to [0.001, 1.0] to avoid log(0) and extreme scales
+        clamped_error = torch.clamp(pred_error, min=0.001, max=1.0)
+        
+        # Two-part uncertainty loss:
+        # Part 1: MSE toward error magnitude (L2 regression)
+        mse_unc_loss = F.mse_loss(uncertainties, clamped_error.detach())
+        
+        # Part 2: Calibration sharpness (log-scale alignment)
+        # Penalize |log(unc) - log(error)| to keep log-scale aligned
+        log_unc = torch.log(uncertainties.clamp(min=1e-4))
+        log_err = torch.log(clamped_error.clamp(min=1e-4))
+        calibration_loss = F.mse_loss(log_unc, log_err.detach())
+        
+        # Combine: MSE + scaled calibration term
+        uncertainty_loss = 0.7 * mse_unc_loss + 0.3 * calibration_loss
+        
+        # Uncertainty bounds penalty (prevent collapse/explosion)
+        unc_lower_penalty = torch.relu(self.uncertainty_lower_bound - uncertainties).mean()
+        unc_upper_penalty = torch.relu(uncertainties - self.uncertainty_upper_bound).mean()
+        uncertainty_bounds_loss = self.uncertainty_bounds_weight * (unc_lower_penalty + unc_upper_penalty)
 
-        # FIX #4: Calibrated training objective
-        # L = L_rank + L_mse + λ1·|mean(ŷ) − mean(y)| + λ2·|max(ŷ) − max(y)|
-
+        # FIX #4: Calibrated training objective with stronger range expansion
+        # L = L_rank + L_mse + λ1·|mean(ŷ) − mean(y)| + λ2·|max(ŷ) − max(y)| + λ3·range_penalty
+        
+        # Use configured calibration weights (Nov 13 fix)
+        lambda1 = self.calib_mean_weight  # mean alignment
+        lambda2 = self.calib_max_weight   # max range expansion
+        lambda3 = self.calib_range_weight # range regularization
+        
         # Mean calibration loss
         mean_gap = torch.abs(predictions.mean() - targets.mean())
-
+        
         # Max calibration loss (widen spread)
         max_gap = torch.abs(predictions.max() - targets.max())
-
-        # Calibration penalties (λ1 = λ2 = 0.05 as specified)
-        lambda1 = 0.3
-        lambda2 = 0.5
-        calib_loss = lambda1 * mean_gap + lambda2 * max_gap
+        
+        # NEW (Nov 13, UPDATE): Dynamic range regularization - continuously push expansion
+        # Instead of fixed 85% threshold, use dynamic target that always stays 5% above current max
+        # This ensures ongoing gradient signal for range expansion even after reaching initial threshold
+        target_max = targets.max()
+        pred_max = predictions.max()
+        
+        # Dynamic threshold: min of (85% of target, current_max + 5%)
+        # Rationale: 85% ensures we reach 85% of target, then +5% ensures continued push
+        static_threshold = torch.clamp(target_max * 0.85, min=0.60)
+        dynamic_threshold = pred_max * 1.05  # Always push 5% higher
+        min_target_max = torch.min(static_threshold, dynamic_threshold)
+        
+        range_penalty = F.relu(min_target_max - pred_max)
+        
+        calib_loss = lambda1 * mean_gap + lambda2 * max_gap + lambda3 * range_penalty
 
         # Bucket-aware weights
         effective_ranking_weight = self.ranking_weight
@@ -740,6 +815,7 @@ class PriorityLoss(nn.Module):
             effective_mse_weight * mse_loss
             + effective_ranking_weight * ranking_loss
             + self.uncertainty_weight * uncertainty_loss
+            + uncertainty_bounds_loss  # NEW: Bounds penalty
             + calib_loss  # Calibration term to widen spread
         )
 
@@ -829,9 +905,9 @@ class PriorityNet(nn.Module):
                 # Lazy import to avoid circular dependency
                 from ahsd.models.transformer_encoder import TransformerStrainEncoder
 
-                # Use Transformer-based encoder (faster, leverages Whisper pre-training)
+                # Use Transformer-based encoder (lightweight, matches checkpoint training)
                 self.strain_encoder = TransformerStrainEncoder(
-                    use_whisper=True,
+                    use_whisper=False,  # Use lightweight transformer to match checkpoint
                     freeze_layers=4,
                     input_length=2048,
                     n_detectors=2,  # H1, L1 detectors
@@ -935,16 +1011,23 @@ class PriorityNet(nn.Module):
             nn.Linear(16, 1),  # priority output (linear, no squashing)
         )
 
-        # Initialize final layer with small weights
+        # Initialize final layer with stronger gradients and higher bias (Nov 13 fix)
         final_layer = self.priority_head[-1]
-        nn.init.normal_(final_layer.weight, mean=0.0, std=0.01)
-        final_layer.bias.data.fill_(0.2)  # Dataset mean priority ~0.2
+        nn.init.normal_(final_layer.weight, mean=0.0, std=0.05)  # ⬆️ 5x larger for steeper gradients
+        output_bias_init = cfg_get("output_bias_init", 0.5)  # Read from config, default 0.5
+        final_layer.bias.data.fill_(output_bias_init)  # Initialize to dataset mean (0.5) not 0.2
 
-        self.uncertainty_head = nn.Sequential(nn.Linear(64, 1), nn.Softplus(beta=1.0))  # sigma > 0
+        self.uncertainty_head = nn.Sequential(nn.Linear(64, 1), nn.Softplus(beta=2.0))  # sigma > 0, ⬆️ beta 2.0 for stronger gradients (Nov 13 fix)
 
-        # Affine calibration parameters
+        # Affine calibration parameters with bounds (Nov 13 fix)
         self.prio_gain = nn.Parameter(torch.tensor(1.0))
         self.prio_bias = nn.Parameter(torch.tensor(0.0))
+        
+        # Store affine bounds as instance variables for forward pass
+        self.affine_gain_min = cfg_get("affine_gain_min", 0.7)
+        self.affine_gain_max = cfg_get("affine_gain_max", 1.5)
+        self.affine_bias_min = cfg_get("affine_bias_min", -0.1)
+        self.affine_bias_max = cfg_get("affine_bias_max", 0.1)
 
         logging.info(
             f"🔍 PriorityNet Configuration: use_strain={self.use_strain}, use_edge_conditioning={self.use_edge_conditioning}, n_edge_types={self.n_edge_types}"
@@ -1072,14 +1155,34 @@ class PriorityNet(nn.Module):
             # Temporal features (zeros if absent)
             if self.use_strain and strain_segments is not None and strain_segments.numel() > 0:
                 strain_seg = strain_segments.to(device)
+                # Log transformer input details
+                if self.use_transformer_encoder and self.training:
+                    logging.debug(f"   [TRANSFORMER] Input shape: {strain_seg.shape}")
                 # Adapt detector count for TransformerStrainEncoder (expects 2: H1, L1)
                 if self.use_transformer_encoder and strain_seg.shape[1] > 2:
                     strain_seg = strain_seg[:, :2, :]  # Use only H1, L1 (first 2 detectors)
-                temporal_features = self.strain_encoder(strain_seg)  # [N, 64]
+                    if self.training:
+                        logging.debug(f"   [TRANSFORMER] Reduced to 2 detectors: {strain_seg.shape}")
+                try:
+                    temporal_features = self.strain_encoder(strain_seg)  # [N, 64]
+                    if self.use_transformer_encoder and self.training:
+                        logging.debug(f"   [TRANSFORMER] Output shape: {temporal_features.shape}")
+                        logging.debug(f"   [TRANSFORMER] Output stats: mean={temporal_features.mean():.4f}, std={temporal_features.std():.4f}")
+                        if torch.isnan(temporal_features).any():
+                            logging.error("   [TRANSFORMER] ❌ NaN detected in output!")
+                        if torch.isinf(temporal_features).any():
+                            logging.error("   [TRANSFORMER] ❌ Inf detected in output!")
+                except Exception as e:
+                    logging.error(f"   [TRANSFORMER] ❌ Forward pass failed: {e}", exc_info=True)
+                    temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
+                
                 if temporal_features.shape[-1] != 64:
+                    logging.warning(f"   [TRANSFORMER] Shape mismatch: expected 64, got {temporal_features.shape[-1]}")
                     temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
             else:
                 temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
+                if self.use_strain and self.training:
+                    logging.debug("   [TRANSFORMER] No strain segments provided, using zeros")
 
             # Edge conditioning inputs (IDs provided by caller or default 0)
             # FIX #3: Edge conditioning with dropout
@@ -1121,7 +1224,13 @@ class PriorityNet(nn.Module):
 
             # Heads
             prio = self.priority_head(fused).squeeze(-1)  # [N], linear (no sigmoid)
-            prio = prio * self.prio_gain + self.prio_bias  # affine transform
+            
+            # Apply clamped affine transform (Nov 13 fix: prevent saturation)
+            # Use instance variables set in __init__
+            gain_clamped = torch.clamp(self.prio_gain, min=self.affine_gain_min, max=self.affine_gain_max)
+            bias_clamped = torch.clamp(self.prio_bias, min=self.affine_bias_min, max=self.affine_bias_max)
+            prio = prio * gain_clamped + bias_clamped
+            
             sigma = self.uncertainty_head(fused).squeeze(-1)  # [N], positive
 
             return prio, sigma
@@ -1197,7 +1306,7 @@ class PriorityNet(nn.Module):
         ranges = {
             "mass_1": (5.0, 100.0),
             "mass_2": (5.0, 100.0),
-            "luminosity_distance": (50.0, 3000.0),
+            "luminosity_distance": (50.0, 1500.0),  # ← FIXED: Narrowed from 3000 for better distance sensitivity
             "ra": (0.0, 2 * np.pi),
             "dec": (-np.pi / 2, np.pi / 2),
             "geocent_time": (-0.1, 0.1),
@@ -1265,7 +1374,7 @@ class PriorityNet(nn.Module):
             n = len(detections)
             return torch.full((n, 16), 0.5, dtype=torch.float32)  # ← NEW: 16 dims
 
-        def _snr_fallback_ranking(self, detections: List[Dict]) -> List[int]:
+    def _snr_fallback_ranking(self, detections: List[Dict]) -> List[int]:
             """
             Fallback ranking by available SNR-like fields when model ranking fails.
 
@@ -1328,10 +1437,20 @@ class PriorityNetTrainer:
         # Loss weights and smoothing
         self.ranking_weight = get_config("ranking_weight", 0.7)
         self.mse_weight = get_config("mse_weight", 0.2)
-        self.uncertainty_weight = get_config("uncertainty_weight", 0.1)
+        self.uncertainty_weight = get_config("uncertainty_weight", 0.35)  # ⬆️ Nov 13 default
         self.use_snr_weighting = get_config("use_snr_weighting", True)
         self.label_smoothing = get_config("label_smoothing", 0.0)
         lambda_calib = get_config("lambda_calib", 1e-4)
+        
+        # Uncertainty bounds (Nov 13 fix)
+        uncertainty_lower_bound = get_config("uncertainty_lower_bound", 0.01)
+        uncertainty_upper_bound = get_config("uncertainty_upper_bound", 0.50)
+        uncertainty_bounds_weight = get_config("uncertainty_bounds_weight", 0.05)
+        
+        # Calibration weights for range expansion (Nov 13 fix)
+        calib_mean_weight = get_config("calib_mean_weight", 0.15)
+        calib_max_weight = get_config("calib_max_weight", 0.50)
+        calib_range_weight = get_config("calib_range_weight", 0.30)
 
         self.gradient_clip_norm = get_config("gradient_clip_norm", 1.0)
 
@@ -1343,6 +1462,12 @@ class PriorityNetTrainer:
             use_snr_weighting=self.use_snr_weighting,
             label_smoothing=self.label_smoothing,
             lambda_calib=lambda_calib,
+            uncertainty_lower_bound=uncertainty_lower_bound,
+            uncertainty_upper_bound=uncertainty_upper_bound,
+            uncertainty_bounds_weight=uncertainty_bounds_weight,
+            calib_mean_weight=calib_mean_weight,
+            calib_max_weight=calib_max_weight,
+            calib_range_weight=calib_range_weight,
         )
 
         # Optimizer
@@ -1382,6 +1507,9 @@ class PriorityNetTrainer:
         logging.info(f"   Min LR: {min_lr:.2e}")
         logging.info(
             f"   Loss weights: R={self.ranking_weight}, M={self.mse_weight}, U={self.uncertainty_weight}"
+        )
+        logging.info(
+            f"   Uncertainty bounds: [{uncertainty_lower_bound:.3f}, {uncertainty_upper_bound:.3f}], weight={uncertainty_bounds_weight:.3f}"
         )
         logging.info(f"   Gradient clip: {self.gradient_clip_norm}")
 

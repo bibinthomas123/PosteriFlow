@@ -127,7 +127,7 @@ neural_posterior:
   # --- TRAINING ---
   learning_rate: 3.0e-4
   batch_size: 64                          # Flow training batch size
-  epochs: 40                              # Training epochs
+  epochs: 2                              # Training epochs (reduced for quick test)
   patience: 10
   weight_decay: 1.0e-5
   gradient_clip: 5.0
@@ -140,8 +140,11 @@ neural_posterior:
   min_lr: 1.0e-6
   
   # --- PHYSICS LOSS (Nov 13 FIX: prevent out-of-range predictions) ---
-  physics_loss_weight: 1.0                # ✅ Increased from 0.2 to 1.0 (hard constraint)
-  bounds_penalty_weight: 0.01             # ✅ REDUCED from 1.0 → 0.01 (Nov 13 FIX: prevent Epoch 1 spike)
+  # ⚠️ CRITICAL: Nov 13 09:55 - Rebalanced weights to prevent physics loss dominance (99.8% of total)
+  # Nov 13 19:18 UPDATE: Sample loss 0.43 too small; flow still violating bounds
+  physics_loss_weight: 0.05               # ✅ DOWN from 1.0 → 0.05 (soft constraint guides optimization, not hard constraint)
+  bounds_penalty_weight: 0.5              # ✅ UP from 0.1 → 0.5 (strong penalty on ground truth bounds violations)
+  sample_loss_weight: 2.0                 # ✅ UP from 0.5 → 2.0 (stronger constraint - was 0.43 too weak)
   
   # --- JACOBIAN REGULARIZATION ---
   jacobian_reg_weight: 0.001              # Flow weight regularization (10x default)

@@ -262,11 +262,11 @@ Only when asked to test please follow the below conditions
 - **Geocent_time & Luminosity_distance Bounds Mismatch** (FIXED - Nov 13, 2025): Parameter bounds not matching actual data generated:
          - **Issue**: Physics loss penalty detected massive violations (70%+ of validation data) - validation loss 12.4× higher than training
          - **Root cause**: OverlapNeuralPE bounds were too restrictive: `geocent_time [-0.1, 0.1]s` vs actual data `[-1.77, 6.63]s`; `luminosity_distance [20, 8000]` Mpc vs actual `[15.9, 1170]` Mpc
-         - **Dataset generator reality**: Edge case samples intentionally create out-of-bounds timing (lines 2674, 4351, 4522, 4662 in `dataset_generator.py`)
+         - **Dataset generator reality**: Edge case samples intentionally create out-of-bounds timing (lines 2674, 4351, 4522, 4662, 4665 in `dataset_generator.py`); line 4665 uses `i*1.5` spacing for overlapping signals
          - **Fix**: Updated bounds in `src/ahsd/models/overlap_neuralpe.py` lines 114-115:
-            - `geocent_time: (-0.1, 0.1)` → `(-2.0, 2.0)` (matches 4s observation window, typical signal timing variations)
+            - `geocent_time: (-0.1, 0.1)` → `(-2.0, 8.0)` (covers 99th percentile 6.05s with safety margin for i*1.5 spacing)
             - `luminosity_distance: (20.0, 8000.0)` → `(10.0, 8000.0)` (allows rare nearby events)
-         - **Verification**: All 9 parameters now within bounds: mass_1 [1.2, 73] ⊆ [1, 100], mass_2 [1.0, 61] ⊆ [1, 100], etc.
+         - **Verification**: All 9 parameters now within bounds: mass_1 [1.2, 73] ⊆ [1, 100], geocent_time [-1.77, 6.63] ⊆ [-2.0, 8.0], etc. ✓
          - **Impact**: Eliminates spurious physics penalties on valid edge case samples; training convergence improves; loss reflects real vs false violations
          - See FIX_DOCS/GEOCENT_TIME_BOUNDS_FIX.md for details
 

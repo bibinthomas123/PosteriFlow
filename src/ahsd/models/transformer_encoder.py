@@ -101,7 +101,10 @@ class TransformerStrainEncoder(nn.Module):
                     f"pos_encoding for {n_patches} patches"
                 )
             except Exception as e:
-                logging.warning(f"Failed to load Whisper: {e}. Using lightweight fallback.")
+                logging.error(f"❌ Whisper loading FAILED: {e}")
+                logging.warning(f"⚠️  Falling back to lightweight Transformer encoder")
+                logging.warning(f"   This will create a checkpoint with mismatched encoder architecture!")
+                logging.warning(f"   The checkpoint will use 256-D lightweight, not 768-D Whisper!")
                 self.use_whisper = False
                 self.encoder = None
                 self.pos_encoding_adapter = None
@@ -143,7 +146,7 @@ class TransformerStrainEncoder(nn.Module):
 
         Args:
             strain_data: Tensor [batch, n_detectors, time_samples]
-                        (e.g., [B, 2, 2048] for H1+L1 at 2048 Hz)
+                         (e.g., [B, 2, 2048] for H1+L1 at 2048 Hz)
             attention_mask: Optional [batch, n_patches] mask (1=valid, 0=padding)
                            For variable-length sequences
 
@@ -153,49 +156,75 @@ class TransformerStrainEncoder(nn.Module):
         batch_size = strain_data.shape[0]
         device = strain_data.device
 
-        # Patch embedding: [batch, n_detectors, time_samples] → [batch, encoder_dim, n_patches]
-        patches = self.patch_embed(strain_data)  # [B, encoder_dim, n_patches]
-        patches = patches.transpose(1, 2)  # [B, n_patches, encoder_dim]
+        try:
+            # Patch embedding: [batch, n_detectors, time_samples] → [batch, encoder_dim, n_patches]
+            patches = self.patch_embed(strain_data)  # [B, encoder_dim, n_patches]
+            logging.debug(f"   [TRANSFORMER_ENCODER] Patch embed output: {patches.shape}")
+            
+            patches = patches.transpose(1, 2)  # [B, n_patches, encoder_dim]
+            logging.debug(f"   [TRANSFORMER_ENCODER] After transpose: {patches.shape}")
 
-        # ✅ FIX: Add positional encoding for Whisper
-        if self.use_whisper and self.pos_encoding_adapter is not None:
-            patches = patches + self.pos_encoding_adapter
+            # ✅ FIX: Add positional encoding for Whisper
+            if self.use_whisper and self.pos_encoding_adapter is not None:
+                patches = patches + self.pos_encoding_adapter
+                logging.debug(f"   [TRANSFORMER_ENCODER] After positional encoding: {patches.shape}")
 
-        # Pass through Transformer encoder
-        if self.encoder is not None:
-            try:
-                if self.use_whisper:
-                    # Whisper pathway with optional attention mask
-                    encoder_output = self.encoder(
-                        inputs_embeds=patches,
-                        attention_mask=attention_mask,  # ✅ ADD MASK SUPPORT
-                        return_dict=True,
-                    )
-                else:
-                    # Lightweight Transformer
-                    encoder_output = self.encoder(inputs_embeds=patches, return_dict=True)
-                hidden_states = encoder_output.last_hidden_state  # [B, n_patches, encoder_dim]
-            except Exception as e:
-                logging.debug(f"Encoder forward failed: {e}. Using fallback pooling.")
+            # Pass through Transformer encoder
+            if self.encoder is not None:
+                try:
+                    if self.use_whisper:
+                        # Whisper pathway with optional attention mask
+                        logging.debug(f"   [TRANSFORMER_ENCODER] Using Whisper encoder")
+                        encoder_output = self.encoder(
+                            inputs_embeds=patches,
+                            attention_mask=attention_mask,  # ✅ ADD MASK SUPPORT
+                            return_dict=True,
+                        )
+                    else:
+                        # Lightweight Transformer
+                        logging.debug(f"   [TRANSFORMER_ENCODER] Using lightweight Transformer")
+                        encoder_output = self.encoder(inputs_embeds=patches, return_dict=True)
+                    
+                    hidden_states = encoder_output.last_hidden_state  # [B, n_patches, encoder_dim]
+                    logging.debug(f"   [TRANSFORMER_ENCODER] Encoder output: {hidden_states.shape}")
+                except Exception as e:
+                    logging.error(f"   [TRANSFORMER_ENCODER] ❌ Encoder forward failed: {e}")
+                    logging.debug(f"   [TRANSFORMER_ENCODER] Falling back to patch embeddings")
+                    hidden_states = patches
+            else:
+                logging.warning(f"   [TRANSFORMER_ENCODER] ⚠️  Encoder is None, using patches")
                 hidden_states = patches
-        else:
-            hidden_states = patches
 
-        # ✅ IMPROVED: Masked average pooling over time dimension
-        if attention_mask is not None:
-            # Masked pooling: ignore padding tokens
-            mask_expanded = attention_mask.unsqueeze(-1)  # [B, n_patches, 1]
-            sum_pooled = (hidden_states * mask_expanded).sum(dim=1)  # [B, encoder_dim]
-            sum_mask = mask_expanded.sum(dim=1).clamp(min=1e-9)  # [B, 1]
-            pooled = sum_pooled / sum_mask
-        else:
-            # Standard global average pooling
-            pooled = hidden_states.mean(dim=1)  # [B, encoder_dim]
+            # ✅ IMPROVED: Masked average pooling over time dimension
+            if attention_mask is not None:
+                # Masked pooling: ignore padding tokens
+                mask_expanded = attention_mask.unsqueeze(-1)  # [B, n_patches, 1]
+                sum_pooled = (hidden_states * mask_expanded).sum(dim=1)  # [B, encoder_dim]
+                sum_mask = mask_expanded.sum(dim=1).clamp(min=1e-9)  # [B, 1]
+                pooled = sum_pooled / sum_mask
+                logging.debug(f"   [TRANSFORMER_ENCODER] Masked pooling: {pooled.shape}")
+            else:
+                # Standard global average pooling
+                pooled = hidden_states.mean(dim=1)  # [B, encoder_dim]
+                logging.debug(f"   [TRANSFORMER_ENCODER] Global average pooling: {pooled.shape}")
 
-        # Project to output dimension
-        features = self.output_proj(pooled)  # [B, output_dim]
+            # Project to output dimension
+            features = self.output_proj(pooled)  # [B, output_dim]
+            logging.debug(f"   [TRANSFORMER_ENCODER] Final output: {features.shape}")
+            logging.debug(f"   [TRANSFORMER_ENCODER] Output stats: mean={features.mean():.4f}, std={features.std():.4f}")
+            
+            # Check for NaN/Inf
+            if torch.isnan(features).any():
+                logging.error("   [TRANSFORMER_ENCODER] ❌ NaN in output!")
+            if torch.isinf(features).any():
+                logging.error("   [TRANSFORMER_ENCODER] ❌ Inf in output!")
 
-        return features
+            return features
+            
+        except Exception as e:
+            logging.error(f"   [TRANSFORMER_ENCODER] ❌ FATAL: Forward pass crashed: {e}", exc_info=True)
+            # Return zeros as fallback
+            return torch.zeros(batch_size, self.output_dim, device=device, dtype=strain_data.dtype)
 
 
 class LightweightTransformerEncoder(nn.Module):

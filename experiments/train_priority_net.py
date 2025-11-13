@@ -1874,6 +1874,14 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
                     "use_edge_conditioning": model.use_edge_conditioning,
                     "use_transformer_encoder": model.use_transformer_encoder,
                     "n_edge_types": model.n_edge_types,
+                    # ✅ Track actual encoder type (Whisper or lightweight)
+                    "strain_encoder_type": (
+                        "whisper" 
+                        if (hasattr(model, 'strain_encoder') and 
+                            hasattr(model.strain_encoder, 'use_whisper') and 
+                            model.strain_encoder.use_whisper) 
+                        else "lightweight"
+                    ),
                 },
                 
                 "training_config": {
@@ -2461,12 +2469,13 @@ def load_checkpoint(
     checkpoint_path: Optional[str], config, device=None
 ) -> Optional[Dict[str, Any]]:
     """
-    Load a PriorityNet training checkpoint safely (backward-compatible).
+    Load a PriorityNet training checkpoint with full validation and compatibility.
 
-    Tolerates missing or unexpected keys caused by architectural evolution
-    (e.g., new heads like overlap_head) by filtering/merging the model state
-    and loading with strict=False. Optimizer and scheduler states are restored
-    when present. Designed for unattended (nohup) resume.
+    Validates:
+    1. Encoder type matches (Transformer vs CNN+BiLSTM)
+    2. Architecture components compatible
+    3. State dict keys/shapes match
+    4. Training metrics structure valid
 
     Args:
         checkpoint_path: Path to checkpoint file (or None to start fresh).
@@ -2477,23 +2486,24 @@ def load_checkpoint(
         Dict with resume state: model, trainer, start_epoch, best_val_loss, patience_counter,
         training_metrics, checkpoint_path; or None if no checkpoint or on failure.
     """
-    # Check if checkpoint exists
+    # 1. CHECK EXISTENCE
     if checkpoint_path is None or not Path(checkpoint_path).exists():
         logging.info("No checkpoint found, starting fresh training")
         return None
 
     logging.info(f"📂 Found checkpoint: {checkpoint_path}")
-    logging.info(f"🔄 Auto-resuming training...")
+    logging.info(f"🔄 Validating checkpoint...")
 
     try:
+        # 2. LOAD CHECKPOINT
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-        # Helper to extract config value (same logic as cfg_get in PriorityNet)
-        def get_config_value(cfg, key, default):
-            """Extract config value from top level or nested priority_net section."""
+        # 3. CONFIG ACCESSOR (handles nested priority_net)
+        def cfg_get(cfg, key, default):
+            """Extract config value from top or nested priority_net section."""
             if isinstance(cfg, dict):
                 if key in cfg:
                     return cfg[key]
@@ -2505,134 +2515,196 @@ def load_checkpoint(
                 if hasattr(cfg, key):
                     return getattr(cfg, key)
                 if hasattr(cfg, "priority_net"):
-                    priority_net_cfg = getattr(cfg, "priority_net")
-                    if hasattr(priority_net_cfg, key):
-                        return getattr(priority_net_cfg, key)
+                    pn_cfg = getattr(cfg, "priority_net")
+                    if hasattr(pn_cfg, key):
+                        return getattr(pn_cfg, key)
                 return default
 
-        # 🔧 CHECK ENCODER TYPE COMPATIBILITY
+        # 4. ENCODER TYPE COMPATIBILITY CHECK
         checkpoint_encoder_type = checkpoint.get("use_transformer_encoder", False)
-        config_encoder_type = get_config_value(config, "use_transformer_encoder", False)
+        config_encoder_type = cfg_get(config, "use_transformer_encoder", False)
+
+        # ✅ NEW: Check actual encoder type used (Whisper vs Lightweight)
+        model_arch = checkpoint.get("model_architecture", {})
+        actual_encoder_type = model_arch.get("strain_encoder_type", "lightweight")
+        
+        logging.info(
+            f"📊 Encoder architecture: config={config_encoder_type}, "
+            f"checkpoint={checkpoint_encoder_type}, actual={actual_encoder_type}"
+        )
 
         if checkpoint_encoder_type != config_encoder_type:
             logging.warning(
-                f"⚠️  Encoder type mismatch: checkpoint={checkpoint_encoder_type}, config={config_encoder_type}"
+                f"⚠️  Encoder use_transformer_encoder flag mismatch: "
+                f"checkpoint={checkpoint_encoder_type}, config={config_encoder_type}"
             )
             logging.warning(
-                f"   Checkpoint expects {'Transformer' if checkpoint_encoder_type else 'CNN+BiLSTM'}, config specifies {'Transformer' if config_encoder_type else 'CNN+BiLSTM'}"
+                f"   Checkpoint expects {'Transformer' if checkpoint_encoder_type else 'CNN+BiLSTM'}, "
+                f"config specifies {'Transformer' if config_encoder_type else 'CNN+BiLSTM'}"
             )
-            logging.warning(f"   Starting fresh training with config encoder type")
-            return None  # 🔥 THIS IS WHERE YOUR MISMATCH IS CAUGHT
+            logging.warning(f"   Cannot safely resume with mismatched architecture. Starting fresh.")
+            return None
 
-        # Extract model architecture from checkpoint (for proper restoration)
+        # 5. EXTRACT ARCHITECTURE (with fallbacks)
         checkpoint_arch = checkpoint.get("model_architecture", {})
         checkpoint_use_strain = checkpoint_arch.get("use_strain", True)
         checkpoint_use_edge = checkpoint_arch.get("use_edge_conditioning", True)
-        checkpoint_use_transformer = checkpoint_arch.get("use_transformer_encoder", False)
         checkpoint_n_edge_types = checkpoint_arch.get("n_edge_types", 19)
 
-        # Create model with checkpoint's architecture if available, else use config
+        # 6. CREATE MODEL WITH CHECKPOINT ARCHITECTURE
         model = PriorityNet(
             config,
-            use_strain=checkpoint_use_strain if checkpoint_arch else True,
-            use_edge_conditioning=checkpoint_use_edge if checkpoint_arch else True,
-            n_edge_types=checkpoint_n_edge_types if checkpoint_arch else 19,
+            use_strain=checkpoint_use_strain,
+            use_edge_conditioning=checkpoint_use_edge,
+            n_edge_types=checkpoint_n_edge_types,
         ).to(device)
 
-        # Load state dict with proper error handling
-        pretrained = checkpoint.get("model_state_dict", {})
+        # 7. STATE DICT VALIDATION & LOADING
+        pretrained_state = checkpoint.get("model_state_dict", {})
+        current_state = model.state_dict()
+
+        # Validate keys/shapes
+        missing = []
+        unexpected = []
+        shape_mismatches = []
+
+        for k in current_state.keys():
+            if k not in pretrained_state:
+                missing.append(k)
+            elif current_state[k].shape != pretrained_state[k].shape:
+                shape_mismatches.append((k, current_state[k].shape, pretrained_state[k].shape))
+
+        for k in pretrained_state.keys():
+            if k not in current_state:
+                unexpected.append(k)
+
+        # Log detailed mismatch info
+        if missing or unexpected or shape_mismatches:
+            logging.warning(f"⚠️  State dict mismatch detected during checkpoint load")
+            if shape_mismatches:
+                logging.warning(f"   Shape mismatches ({len(shape_mismatches)}):")
+                for k, exp, got in shape_mismatches[:3]:  # Show first 3
+                    logging.warning(f"      {k}: expected {exp}, got {got}")
+                if len(shape_mismatches) > 3:
+                    logging.warning(f"      ... and {len(shape_mismatches)-3} more")
+
+            if missing and len(missing) <= 10:
+                logging.warning(f"   Missing keys: {missing}")
+            elif missing:
+                logging.warning(f"   Missing {len(missing)} keys (too many to list)")
+
+            if unexpected and len(unexpected) <= 10:
+                logging.warning(f"   Unexpected keys: {unexpected}")
+            elif unexpected:
+                logging.warning(f"   Unexpected {len(unexpected)} keys (too many to list)")
+
+        # Attempt strict load first
+        had_mismatches = False
         try:
-            model.load_state_dict(pretrained, strict=True)
-            logging.info("✅ Model state loaded (strict=True, all keys matched)")
+            model.load_state_dict(pretrained_state, strict=True)
+            logging.info("✅ Model state loaded (strict=True, perfect match)")
         except RuntimeError as e:
-            # Strict load failed - check if it's due to architecture mismatch
-            current_sd = model.state_dict()
-            filtered = {
-                k: v
-                for k, v in pretrained.items()
-                if k in current_sd and current_sd[k].shape == v.shape
-            }
-            missing = [k for k in current_sd.keys() if k not in filtered]
-            unexpected = [k for k in pretrained.keys() if k not in current_sd]
-
-            if missing or unexpected:
-                logging.warning(f"⚠️ Architecture mismatch detected during checkpoint load")
-                if missing:
-                    logging.warning(
-                        f"   Missing keys (will use init): {missing[:5]}{' ...' if len(missing)>5 else ''}"
-                    )
-                if unexpected:
-                    logging.warning(
-                        f"   Unexpected keys (will ignore): {unexpected[:5]}{' ...' if len(unexpected)>5 else ''}"
-                    )
-
-                # Load only matching weights
-                model.load_state_dict(filtered, strict=False)
-                logging.info(f"✅ Loaded {len(filtered)}/{len(pretrained)} checkpoint weights")
+            # Strict load failed, try non-strict with key filtering
+            if shape_mismatches or missing or unexpected:
+                # Only load keys that match exactly
+                compatible_keys = {
+                    k: v
+                    for k, v in pretrained_state.items()
+                    if k in current_state and current_state[k].shape == v.shape
+                }
+                model.load_state_dict(compatible_keys, strict=False)
+                loaded_count = len(compatible_keys)
+                total_count = len(pretrained_state)
+                logging.warning(
+                    f"⚠️  Loaded {loaded_count}/{total_count} compatible state dict keys"
+                )
+                logging.warning(f"   Architecture changes detected but loading what we can")
+                had_mismatches = True
             else:
+                # Unexpected error
                 raise
 
-        had_shape_mismatches = (
-            len(missing) > 0 or len(unexpected) > 0 if "missing" in locals() else False
-        )
-
-        # Create trainer
+        # 8. CREATE TRAINER
         trainer = PriorityNetTrainer(model, config)
 
-        # Load optimizer and scheduler states when available
-        # BUT: Reset optimizer if model architecture changed (shape mismatches detected)
-        if (
-            "optimizer_state_dict" in checkpoint
-            and trainer.optimizer is not None
-            and not had_shape_mismatches
-        ):
-            try:
-                trainer.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-                logging.info("✅ Optimizer state restored")
-            except Exception as e:
-                logging.warning(f"Optimizer state not loaded: {e}")
-        elif had_shape_mismatches:
-            logging.info(
-                "🔄 Optimizer reset due to model architecture changes (shape mismatches detected)"
-            )
+        # 9. RESTORE OPTIMIZER & SCHEDULER (skip if architecture changed)
+        if not had_mismatches:
+            if "optimizer_state_dict" in checkpoint and trainer.optimizer is not None:
+                try:
+                    trainer.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                    logging.info("✅ Optimizer state restored")
+                except Exception as e:
+                    logging.warning(f"⚠️  Could not restore optimizer state: {e}")
 
-        if "scheduler_state_dict" in checkpoint and trainer.scheduler is not None:
-            try:
-                trainer.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            except Exception as e:
-                logging.warning(f"Scheduler state not loaded: {e}")
+            if "scheduler_state_dict" in checkpoint and trainer.scheduler is not None:
+                try:
+                    trainer.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                    logging.info("✅ Scheduler state restored")
+                except Exception as e:
+                    logging.warning(f"⚠️  Could not restore scheduler state: {e}")
+        else:
+            logging.info("🔄 Optimizer/scheduler reset due to architecture changes")
 
-        # Extract training state
+        # 10. RESTORE TRAINING STATE
         checkpoint_training_config = checkpoint.get("training_config", {})
         start_epoch = checkpoint.get("epoch", 0) + 1
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         patience_counter = checkpoint_training_config.get("patience_counter", 0)
 
-        # Restore all training metrics
-        checkpoint_training_data = checkpoint.get("training_data", {})
-        training_metrics = checkpoint.get(
-            "training_metrics",
-            {
-                "train_losses": checkpoint_training_data.get("train_losses", []),
-                "val_losses": checkpoint_training_data.get("val_losses", []),
-                "train_ranking_losses": checkpoint_training_data.get("train_ranking_losses", []),
-                "val_ranking_losses": checkpoint_training_data.get("val_ranking_losses", []),
-                "train_priority_losses": checkpoint_training_data.get("train_priority_losses", []),
-                "val_priority_losses": checkpoint_training_data.get("val_priority_losses", []),
-                "grad_norms": checkpoint_training_data.get("grad_norms", []),
-                "learning_rates": checkpoint_training_data.get("learning_rates", []),
-                "val_spearman": checkpoint_training_data.get("val_spearman", []),
-                "warmup_epochs": get_config_value(config, "warmup_epochs", 5),
+        # 11. RESTORE TRAINING METRICS (with full backward compat)
+        checkpoint_metrics = checkpoint.get("training_metrics", {})
+        if not checkpoint_metrics:
+            # Fallback to training_data if training_metrics not present
+            checkpoint_metrics = {
+                "train_losses": checkpoint.get("training_data", {}).get("train_losses", []),
+                "val_losses": checkpoint.get("training_data", {}).get("val_losses", []),
+                "train_ranking_losses": checkpoint.get("training_data", {}).get(
+                    "train_ranking_losses", []
+                ),
+                "val_ranking_losses": checkpoint.get("training_data", {}).get(
+                    "val_ranking_losses", []
+                ),
+                "train_priority_losses": checkpoint.get("training_data", {}).get(
+                    "train_priority_losses", []
+                ),
+                "val_priority_losses": checkpoint.get("training_data", {}).get(
+                    "val_priority_losses", []
+                ),
+                "grad_norms": checkpoint.get("training_data", {}).get("grad_norms", []),
+                "learning_rates": checkpoint.get("training_data", {}).get("learning_rates", []),
+                "val_spearman": checkpoint.get("training_data", {}).get("val_spearman", []),
                 "best_epoch": checkpoint_training_config.get("best_epoch", 0),
                 "epochs_completed": start_epoch - 1,
-            },
-        )
+            }
+        else:
+            # Ensure all expected keys present
+            expected_keys = [
+                "train_losses",
+                "val_losses",
+                "train_ranking_losses",
+                "val_ranking_losses",
+                "train_priority_losses",
+                "val_priority_losses",
+                "grad_norms",
+                "learning_rates",
+                "val_spearman",
+                "best_epoch",
+                "epochs_completed",
+            ]
+            for key in expected_keys:
+                if key not in checkpoint_metrics:
+                    checkpoint_metrics[key] = checkpoint.get("training_data", {}).get(key, [])
 
+        # 12. LOG RESUMPTION INFO
         logging.info(f"✅ Checkpoint loaded successfully!")
         logging.info(f"   📍 Resuming from epoch {start_epoch}")
         logging.info(f"   📊 Best validation loss: {best_val_loss:.2e}")
-        patience_val = get_config_value(config, "patience", 30)
+        patience_val = cfg_get(config, "patience", 30)
         logging.info(f"   ⏱️  Patience counter: {patience_counter}/{patience_val}")
+        logging.info(
+            f"   🏗️  Architecture: use_strain={checkpoint_use_strain}, "
+            f"use_edge={checkpoint_use_edge}, use_transformer={checkpoint_encoder_type}"
+        )
 
         return {
             "model": model,
@@ -2640,7 +2712,7 @@ def load_checkpoint(
             "start_epoch": start_epoch,
             "best_val_loss": best_val_loss,
             "patience_counter": patience_counter,
-            "training_metrics": training_metrics,
+            "training_metrics": checkpoint_metrics,
             "checkpoint_path": checkpoint_path,
         }
 

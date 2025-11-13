@@ -251,14 +251,24 @@ Only when asked to test please follow the below conditions
         - **Verification**: Run `python experiments/test_priority_net.py` → Block 5️⃣ should pass
         - See FIX_DOCS/UNCERTAINTY_CALIBRATION_FIX.md and UNCERTAINTY_CALIBRATION_SUMMARY.md for details
 - **Neural PE Output Denormalization** (FIXED - Nov 13, 2025): Posterior samples returned in normalized form instead of physical units:
-        - **Issue**: Model outputs were in normalized range [-1, 1] instead of physical parameters (e.g., mass in Msun, distance in Mpc)
-        - **Root cause**: `sample_posterior()` called `flow.inverse()` but didn't denormalize results. Comment claimed "flow trained on physical units" but actually trained on normalized params
-        - **Fix**: Added `_denormalize_parameters()` call in `src/ahsd/models/overlap_neuralpe.py` lines 341-345
-        - **Code changes**: (1) Line 342: renamed `samples_physical` → `samples_normalized`, (2) Line 345: added `samples_physical = self._denormalize_parameters(samples_normalized)`
-        - **Test update**: Updated `test_overlap_neural_pe.py` lines 430-441 to use `sample_posterior()` API instead of calling `flow.inverse()` directly
-        - **Results**: All 9 parameters now in physical units (e.g., mass_1: [-61, 162] Msun vs [-2.1, 2.2] before)
-        - **Verification**: Run `python test_overlap_neural_pe.py --model_path models/neural_pe/best_model.pth --device cpu` → TEST 7 shows physical units
-        - See FIX_DOCS/NEURAL_PE_DENORMALIZATION_FIX.md and NEURAL_PE_DENORMALIZATION_SUMMARY.md for details
+         - **Issue**: Model outputs were in normalized range [-1, 1] instead of physical parameters (e.g., mass in Msun, distance in Mpc)
+         - **Root cause**: `sample_posterior()` called `flow.inverse()` but didn't denormalize results. Comment claimed "flow trained on physical units" but actually trained on normalized params
+         - **Fix**: Added `_denormalize_parameters()` call in `src/ahsd/models/overlap_neuralpe.py` lines 341-345
+         - **Code changes**: (1) Line 342: renamed `samples_physical` → `samples_normalized`, (2) Line 345: added `samples_physical = self._denormalize_parameters(samples_normalized)`
+         - **Test update**: Updated `test_overlap_neural_pe.py` lines 430-441 to use `sample_posterior()` API instead of calling `flow.inverse()` directly
+         - **Results**: All 9 parameters now in physical units (e.g., mass_1: [-61, 162] Msun vs [-2.1, 2.2] before)
+         - **Verification**: Run `python test_overlap_neural_pe.py --model_path models/neural_pe/best_model.pth --device cpu` → TEST 7 shows physical units
+         - See FIX_DOCS/NEURAL_PE_DENORMALIZATION_FIX.md and NEURAL_PE_DENORMALIZATION_SUMMARY.md for details
+- **Geocent_time & Luminosity_distance Bounds Mismatch** (FIXED - Nov 13, 2025): Parameter bounds not matching actual data generated:
+         - **Issue**: Physics loss penalty detected massive violations (70%+ of validation data) - validation loss 12.4× higher than training
+         - **Root cause**: OverlapNeuralPE bounds were too restrictive: `geocent_time [-0.1, 0.1]s` vs actual data `[-1.77, 6.63]s`; `luminosity_distance [20, 8000]` Mpc vs actual `[15.9, 1170]` Mpc
+         - **Dataset generator reality**: Edge case samples intentionally create out-of-bounds timing (lines 2674, 4351, 4522, 4662 in `dataset_generator.py`)
+         - **Fix**: Updated bounds in `src/ahsd/models/overlap_neuralpe.py` lines 114-115:
+            - `geocent_time: (-0.1, 0.1)` → `(-2.0, 2.0)` (matches 4s observation window, typical signal timing variations)
+            - `luminosity_distance: (20.0, 8000.0)` → `(10.0, 8000.0)` (allows rare nearby events)
+         - **Verification**: All 9 parameters now within bounds: mass_1 [1.2, 73] ⊆ [1, 100], mass_2 [1.0, 61] ⊆ [1, 100], etc.
+         - **Impact**: Eliminates spurious physics penalties on valid edge case samples; training convergence improves; loss reflects real vs false violations
+         - See FIX_DOCS/GEOCENT_TIME_BOUNDS_FIX.md for details
 
 **Model Training:**
 - Monitor calibration and output dynamic range

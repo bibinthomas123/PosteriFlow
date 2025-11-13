@@ -141,10 +141,11 @@ neural_posterior:
   
   # --- PHYSICS LOSS (Nov 13 FIX: prevent out-of-range predictions) ---
   # ⚠️ CRITICAL: Nov 13 09:55 - Rebalanced weights to prevent physics loss dominance (99.8% of total)
-  # Nov 13 19:18 UPDATE: Sample loss 0.43 too small; flow still violating bounds
-  physics_loss_weight: 0.05               # ✅ DOWN from 1.0 → 0.05 (soft constraint guides optimization, not hard constraint)
-  bounds_penalty_weight: 0.5              # ✅ UP from 0.1 → 0.5 (strong penalty on ground truth bounds violations)
-  sample_loss_weight: 2.0                 # ✅ UP from 0.5 → 2.0 (stronger constraint - was 0.43 too weak)
+  # Nov 13 20:06 UPDATE: sample_loss_weight 2.0 too high; NLL still stuck at 8.3 (over-constraining)
+  # Sample loss should regularize, not dominate. Flow needs to learn likelihood first.
+  physics_loss_weight: 0.05               # ✅ Soft constraint guides optimization (not hard)
+  bounds_penalty_weight: 0.5              # ✅ Strong penalty on ground truth bounds violations
+  sample_loss_weight: 0.3                 # ⬇️ DOWN from 2.0 → 0.3 (regularize bounds, not dominate NLL)
   
   # --- JACOBIAN REGULARIZATION ---
   jacobian_reg_weight: 0.001              # Flow weight regularization (10x default)

@@ -1,0 +1,107 @@
+{
+  "n_samples": 1000,
+  "n_batches": 11,
+  "generation_time": 822.41126537323,
+  "samples_per_second": 1.2159366512886665,
+  "output_dir": "data/test",
+  "output_format": "pkl",
+  "elapsed_time": 822.41126537323,
+  "resumed": false,
+  "configuration": {
+    "sample_rate": 4096,
+    "duration": 4.0,
+    "detectors": [
+      "H1",
+      "L1",
+      "V1"
+    ],
+    "overlap_fraction": 0.45,
+    "edge_case_fraction": 0.08,
+    "premerger_fraction": 0.15,
+    "edge_cases": {
+      "high_mass_ratio": 5,
+      "extreme_spins": 4,
+      "eccentric_mergers": 3,
+      "precessing_systems": 5,
+      "short_duration_high_mass": 3,
+      "strong_glitches": 8,
+      "psd_drift": 5,
+      "detector_dropout": 4,
+      "sky_position_extremes": 3,
+      "multimodal_posteriors": 6,
+      "heavy_tailed_regions": 5,
+      "uninformative_priors": 4
+    }
+  },
+  "statistics": {
+    "event_types": {
+      "BBH": 269,
+      "BNS": 174,
+      "NSBH": 86,
+      "overlap": 454,
+      "noise": 17
+    },
+    "snr_regimes": {
+      "medium": 902,
+      "low": 651,
+      "high": 306,
+      "loud": 97,
+      "weak": 102
+    },
+    "edge_cases": {
+      "high_spin_aligned": 2,
+      "extreme_mass_ratio": 1,
+      "high_mass_ratio": 5,
+      "extreme_spins": 4,
+      "eccentric": 3,
+      "precessing": 5,
+      "short_duration_high_mass": 3,
+      "strong_glitches": 8,
+      "psd_drift": 5,
+      "detector_dropout": 4,
+      "sky_position_extremes": 3,
+      "multimodal_posteriors": 6,
+      "heavy_tailed": 5,
+      "uninformative_prior": 4
+    },
+    "extreme_cases": {
+      "near_simultaneous_mergers": 2,
+      "high_spin_aligned": 2,
+      "weak_strong_overlaps": 1,
+      "extreme_mass_ratio": 1,
+      "noise_confused_overlaps": 1
+    },
+    "joint_quotas": {
+      "weak": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "low": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "medium": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "high": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      },
+      "loud": {
+        "BBH": 0,
+        "BNS": 0,
+        "NSBH": 0,
+        "noise": 0
+      }
+    }
+  }
+}

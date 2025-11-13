@@ -106,7 +106,7 @@ def run_synthetic(model, device="cpu"):
             passed += 1; total += 1
             continue
         rho, _ = spearmanr(case['exp'], p)
-        ok = rho >= (1.0 - case['tol'])
+        ok = rho >= (1.0 - case['tol']) - 1e-10  # Add epsilon for floating-point comparison
         L.info(f"{'✅' if ok else '❌'} {case['name']}: ρ={rho:.3f}")
         passed += int(ok); total += 1
     rate = passed / max(1, total)

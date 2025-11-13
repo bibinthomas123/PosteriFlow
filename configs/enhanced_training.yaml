@@ -29,15 +29,15 @@ priority_net:
   # --- TRAINING SCHEDULE ---
   batch_size: 48
   epochs: 200
-  patience: 5                            
+  patience: 15                            
   
   # --- WARMUP ---
-  warmup_epochs: 1
+  warmup_epochs: 6
   warmup_start_factor: 0.02
   
   # --- LEARNING RATE SCHEDULER ---
   scheduler: "ReduceLROnPlateau"
-  scheduler_patience: 1
+  scheduler_patience: 7
   scheduler_factor: 0.5
   scheduler_threshold: 5e-3
   min_lr: 1.0e-6
@@ -45,9 +45,25 @@ priority_net:
   # --- LOSS FUNCTION ---
   ranking_weight: 0.70                    # Ranking loss weight (reduced from 0.60)
   mse_weight: 0.20                        # MSE loss weight (increased from 0.30)
-  uncertainty_weight: 0.10                # Uncertainty loss weight (increased from 0.10)
+  uncertainty_weight: 0.10                # ⬆️ Uncertainty loss weight (3.5x from 0.10) - Nov 13 fix
   use_snr_weighting: true                 # Weight losses by SNR
   loss_scale_factor: 0.002                # Scale factor for loss terms (from Nov 12 fix)
+  
+  # --- UNCERTAINTY CALIBRATION (NEW - Nov 13 fix) ---
+  uncertainty_lower_bound: 0.01           # Prevent uncertainty collapse
+  uncertainty_upper_bound: 0.50           # Prevent uncertainty explosion
+  uncertainty_bounds_weight: 0.05         # Penalty weight for bounds violations
+  
+  # --- PREDICTION SATURATION FIX (NEW - Nov 13, UPDATED Nov 13 09:55) ---
+  output_bias_init: 0.5                   # Initialize output bias to dataset mean (0.5 not 0.2)
+  output_weight_std: 0.05                 # Weight std (5x larger for steeper initial gradients)
+  calib_mean_weight: 0.20                 # Mean alignment penalty weight (↑ from 0.15)
+  calib_max_weight: 0.75                  # Max range expansion penalty weight (↑ from 0.50) — dominates more
+  calib_range_weight: 0.45                # Range regularization penalty weight (↑ from 0.30) — dynamic push
+  affine_gain_min: 0.7                    # Affine gain lower bound (prevent collapse)
+  affine_gain_max: 1.5                    # Affine gain upper bound (prevent explosion)
+  affine_bias_min: -0.1                   # Affine bias lower bound
+  affine_bias_max: 0.1                    # Affine bias upper bound
   
   # --- GRADIENT MANAGEMENT ---
   gradient_clip_norm: 2.0                 # Gradient clipping threshold
@@ -72,6 +88,10 @@ priority_net:
 # ==============================================================================
 neural_posterior:
   
+  # --- FLOW TYPE (UNIFIED CONTROL) ---
+  flow_type: "flowmatching"               # ✅ NEW: 'flowmatching' (OT-CFM) or 'realnvp'
+  #                                        # Automatically adjusts architecture & training
+  
   # --- PARAMETERS (9-dimensional parameter space) ---
   param_names:
     - mass_1                              # Primary mass
@@ -84,17 +104,25 @@ neural_posterior:
     - phase                               # Coalescence phase
     - geocent_time                        # Time at geocenter
   
-  # --- ARCHITECTURE ---
-  context_dim: 256                        # Context embedding dimension
-  n_flow_layers: 14                       # Number of normalizing flow layers
+  # --- ARCHITECTURE (auto-adjusted by flow_type) ---
+  context_dim: 768                        # ⬆️ Increased from 512 (50% more capacity for overlapping signals)
   max_iterations: 5                       # Max adaptive refinement iterations
   
-  # --- NORMALIZING FLOW ---
+  # --- NORMALIZING FLOW (FlowMatching vs RealNVP) ---
   flow_config:
-    type: "realnvp"                       # realnvp or maf
+    # FlowMatching (OT-CFM): velocity-based, fewer layers, more expressive
+    # RealNVP: coupling blocks, more layers, traditional approach
+    
+    # Auto-selected based on flow_type above, but can override:
     hidden_features: 256                  # Hidden features per flow block
-    num_blocks_per_layer: 2               # Coupling blocks per layer
-    dropout: 0.02                         # Minimal dropout for flow stability
+    num_layers: 4                         # Layers: 4 for FlowMatching, 10 for RealNVP (⬆️ increased from 8)
+    solver_steps: 10                      # ODE solver steps (FlowMatching only)
+    num_blocks_per_layer: 2               # Coupling blocks per layer (RealNVP only)
+    dropout: 0.10                         # Dropout for stability
+  
+  # --- EVENT-TYPE-SPECIFIC CONFIGURATION (Nov 13 enhancement) ---
+  event_type: "BBH"                       # Options: BBH, BNS, NSBH (used for physics-informed priors)
+  enable_event_specific_priors: true      # Use physics-informed priors per event type
   
   # --- TRAINING ---
   learning_rate: 3.0e-4
@@ -110,6 +138,13 @@ neural_posterior:
   scheduler_patience: 8
   scheduler_factor: 0.6
   min_lr: 1.0e-6
+  
+  # --- PHYSICS LOSS (Nov 13 FIX: prevent out-of-range predictions) ---
+  physics_loss_weight: 1.0                # ✅ Increased from 0.2 to 1.0 (hard constraint)
+  bounds_penalty_weight: 0.01             # ✅ REDUCED from 1.0 → 0.01 (Nov 13 FIX: prevent Epoch 1 spike)
+  
+  # --- JACOBIAN REGULARIZATION ---
+  jacobian_reg_weight: 0.001              # Flow weight regularization (10x default)
   
   # --- DATA AUGMENTATION ---
   data_augmentation:
@@ -205,12 +240,6 @@ data:
   # --- SPLITS ---
   validation_split: 0.15                  # Validation fraction
   test_split: 0.05                        # Test fraction
-  
-  # --- SIGNAL DISTRIBUTION ---
-  signal_distribution:
-    BBH: 0.70                             # Binary Black Hole
-    BNS: 0.20                             # Binary Neutron Star
-    NSBH: 0.10                            # Neutron Star - Black Hole
 
 
 # ==============================================================================

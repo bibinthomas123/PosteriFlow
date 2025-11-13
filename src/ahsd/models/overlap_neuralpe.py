@@ -760,9 +760,30 @@ class OverlapNeuralPE(nn.Module):
         flow_loss = -log_prob.mean()
 
         # ✅ 2. PHYSICS CONSTRAINT LOSS
-        physics_loss = self._compute_physics_loss(true_params)
+        # ✅ FIX (Nov 13): Only apply physics loss to first signal (ground truth)
+        # Secondary signals in overlaps are edge cases and shouldn't constrain the flow
+        physics_loss, physics_violations = self._compute_physics_loss(true_params[:1, :])
 
-        # ✅ 3. BIAS CORRECTION LOSS (if bias corrector enabled)
+        # ✅ 3. SAMPLE-BASED BOUNDS LOSS (Nov 13 FIX: Constrain flow outputs directly)
+        # This is CRITICAL: forces flow to learn bounded outputs, not just fit ground truth
+        sample_loss = torch.tensor(0.0, device=strain_data.device)
+        sample_loss_weight = self.config.get("neural_posterior", {}).get("sample_loss_weight") or self.config.get("sample_loss_weight", 0.1)
+        
+        # Sample multiple times to ensure good coverage
+        n_sample_batches = 3
+        for _ in range(n_sample_batches):
+            z_samples = torch.randn(true_params.size(0), self.param_dim, device=self.device)
+            samples_norm, _ = self.flow.inverse(z_samples, context)
+            
+            # Penalize samples outside [-1, 1] range
+            # Use smooth penalty: magnitude of violation squared
+            out_of_bounds = F.relu(torch.abs(samples_norm) - 1.0)
+            sample_loss += torch.mean(out_of_bounds**2)
+        
+        sample_loss = sample_loss / n_sample_batches
+        sample_loss = sample_loss_weight * sample_loss
+
+        # ✅ 4. BIAS CORRECTION LOSS (if bias corrector enabled)
         bias_loss = torch.tensor(0.0, device=strain_data.device)
         if self.bias_corrector is not None:
             with torch.no_grad():
@@ -777,11 +798,11 @@ class OverlapNeuralPE(nn.Module):
                 torch.mean(torch.abs(corrections)) + 0.1 * torch.mean(torch.abs(1.0 - confidence))
             )
 
-        # ✅ 4. UNCERTAINTY REGULARIZATION
+        # ✅ 5. UNCERTAINTY REGULARIZATION
         uncertainties = self.uncertainty_estimator(torch.cat([true_params_norm, context], dim=1))
         uncertainty_loss = 0.01 * torch.mean(uncertainties)
 
-        # ✅ 5. FLOW REGULARIZATION (weight norm penalty) - configurable strength
+        # ✅ 6. FLOW REGULARIZATION (weight norm penalty) - configurable strength
         jacobian_reg_weight = self.config.get(
             "jacobian_reg_weight"
         ) or self.config.get("neural_posterior", {}).get("jacobian_reg_weight", 0.001)  # 10x stronger than default 1e-4
@@ -790,11 +811,9 @@ class OverlapNeuralPE(nn.Module):
         )
 
         # ✅ TOTAL LOSS: All components integrated
-        # ✅ CRITICAL FIX (Nov 13): Increased physics_loss weight from 0.2 → 1.0
-        # to prevent flow from extrapolating beyond physical bounds and causing NLL explosion
-        physics_loss_weight = self.config.get(
-            "physics_loss_weight", 1.0
-        ) or self.config.get("neural_posterior", {}).get("physics_loss_weight", 1.0)  # ✅ Default 1.0 (was 0.2)
+        # ✅ CRITICAL FIX (Nov 13 09:55): Rebalanced physics_loss to 0.05 (soft constraint)
+        # Higher weights like 1.0 cause physics loss to dominate (99.8% of total), starving NLL and other losses
+        physics_loss_weight = self.config.get("neural_posterior", {}).get("physics_loss_weight") or self.config.get("physics_loss_weight", 0.05)  # ✅ Default 0.05 (soft constraint)
 
         total_loss = (
             flow_loss  # Main likelihood
@@ -803,6 +822,7 @@ class OverlapNeuralPE(nn.Module):
             * physics_loss  # ✅ Physics constraints (1.0x for hard constraint)
             + bias_loss  # Bias correction regularization
             + uncertainty_loss  # Uncertainty regularization
+            + sample_loss  # ✅ NEW (Nov 13): Penalize flow samples outside bounds
         )
 
         return {
@@ -811,19 +831,30 @@ class OverlapNeuralPE(nn.Module):
             "physics_loss": physics_loss,
             "bias_loss": bias_loss,
             "uncertainty_loss": uncertainty_loss,
+            "sample_loss": sample_loss,  # ✅ NEW
             "jacobian_reg": jacobian_reg,
+            "physics_violations": physics_violations,  # ⚠️ DEBUG
         }
 
-    def _compute_physics_loss(self, params: torch.Tensor) -> torch.Tensor:
+    def _compute_physics_loss(self, params: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
         """Enforce physical constraints with hard bounds penalty.
 
         ✅ CRITICAL FIX (Nov 13): Added bounds penalties to prevent flow from
         extrapolating beyond physical parameter ranges. Without this, the flow
         learns to predict negative masses and negative distances.
 
-        ✅ FIX 2: Stronger physics loss weight (1.0 default) to constrain flow outputs.
+        ✅ FIX 2 (Nov 13 10:30): Restrict physics loss to first signal only.
+        Secondary signals in overlapping data are edge cases intentionally
+        generated out-of-bounds for training robustness. We only constrain
+        the flow for the primary (first) signal to avoid spurious physics loss.
+
+        Args:
+            params: [batch_size, param_dim] - typically just [1, param_dim] (first signal only)
         """
         loss = torch.tensor(0.0, device=params.device)
+        
+        # ⚠️ DEBUG: Check which parameters are violating bounds
+        debug_violations = {}
 
         # ✅ 0. BOUNDS PENALTY: Penalize parameters outside training domain
         # This is CRUCIAL to prevent NLL explosion from out-of-range predictions
@@ -833,12 +864,22 @@ class OverlapNeuralPE(nn.Module):
             # Soft penalty for exceeding bounds (quadratic for smooth gradients)
             lower_violation = F.relu(min_val - params[:, i])  # Penalty if param < min
             upper_violation = F.relu(params[:, i] - max_val)  # Penalty if param > max
+            
+            # ⚠️ DEBUG
+            n_lower = (lower_violation > 1e-6).sum().item()
+            n_upper = (upper_violation > 1e-6).sum().item()
+            debug_violations[param_name] = {
+                'lower': n_lower,
+                'upper': n_upper,
+                'lower_max': lower_violation.max().item(),
+                'upper_max': upper_violation.max().item(),
+                'range': (params[:, i].min().item(), params[:, i].max().item())
+            }
 
-            # ✅ FIX 3 (Nov 13): REDUCED penalty weight from 1.0 → 0.01
-            # Nov 13 physics_loss_weight doubled (0.2 → 1.0) which amplified bounds penalty
-            # Squared violations cause 1750x spike at Epoch 1 when model outputs go out-of-range
-            # Reducing to 0.01 provides gentle constraint without dominating loss
-            penalty_weight = self.config.get("bounds_penalty_weight") or self.config.get("neural_posterior", {}).get("bounds_penalty_weight", 0.01)  # ✅ Reduced from 1.0
+            # ✅ FIX 4 (Nov 13 09:55): Updated bounds penalty weight to 0.5
+            # Strong penalty protects ground truth parameters from going out of bounds
+            # Three-part loss balance: physics (0.05) + bounds (0.5) + sample (0.5)
+            penalty_weight = self.config.get("neural_posterior", {}).get("bounds_penalty_weight") or self.config.get("bounds_penalty_weight", 0.5)  # ✅ Increased to 0.5
             loss += penalty_weight * (
                 torch.mean(lower_violation**2) + torch.mean(upper_violation**2)
             )
@@ -865,7 +906,8 @@ class OverlapNeuralPE(nn.Module):
                     lambda_violation = F.relu(lambda_val - 5000.0)
                     loss += 0.3 * torch.mean(lambda_violation**2)
 
-        return loss
+        # ✅ Always return loss and violations for logging
+        return loss, debug_violations
 
     def update_training_metrics(
         self, loss_dict: Dict[str, torch.Tensor], processing_time: float, gradient_norm: float

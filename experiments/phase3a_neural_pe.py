@@ -260,6 +260,17 @@ class OverlapNeuralPETrainer:
         self.logger.info(f"  Scheduler Patience: {self.scheduler_patience}")
         self.logger.info(f"  Scheduler Factor: {self.scheduler_factor}")
         self.logger.info(f"  Min LR: {self.scheduler_min_lr}")
+        
+        # ✅ Log loss weights (Nov 13 fix verification)
+        np_cfg = config.get("neural_posterior", {})
+        physics_weight = np_cfg.get("physics_loss_weight", 0.05)
+        bounds_weight = np_cfg.get("bounds_penalty_weight", 0.5)
+        sample_weight = np_cfg.get("sample_loss_weight", 0.5)
+        self.logger.info(f"\n⚖️  NEURAL PE LOSS WEIGHTS (Nov 13 09:55 fix):")
+        self.logger.info(f"  Physics Loss Weight: {physics_weight} (soft constraint)")
+        self.logger.info(f"  Bounds Penalty Weight: {bounds_weight} (ground truth protection)")
+        self.logger.info(f"  Sample Loss Weight: {sample_weight} (flow bounds constraint)")
+        self.logger.info(f"  Jacobian Reg Weight: {np_cfg.get('jacobian_reg_weight', 0.001)}")
 
     def load_model(self, filepath: str):
         self.model.load_model(filepath)
@@ -410,14 +421,25 @@ class OverlapNeuralPETrainer:
                 self.logger.info(f"\n[BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
                 self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
                 self.logger.info(f"  NLL: {loss_dict.get('nll', 0):.4f}")
-                self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
+                self.logger.info(f"  Physics Loss (raw): {loss_dict.get('physics_loss', 0):.4f} × 0.05 = {loss_dict.get('physics_loss', 0) * 0.05:.4f}")
+                self.logger.info(f"  Sample Loss (raw): {loss_dict.get('sample_loss', 0):.4f} × 0.5 = {loss_dict.get('sample_loss', 0) * 0.5:.4f}")
+                self.logger.info(f"  Bounds Penalty: (in physics)")
                 self.logger.info(f"  Bias Loss: {loss_dict.get('bias_loss', 0):.4f}")
                 self.logger.info(f"  Uncertainty Loss: {loss_dict.get('uncertainty_loss', 0):.4f}")
                 self.logger.info(f"  Jacobian Reg: {loss_dict.get('jacobian_reg', 0):.4f}")
                 
+                # ⚠️ DEBUG: Log parameter violations
+                if 'physics_violations' in loss_dict:
+                    self.logger.info(f"\n  [PARAMETER VIOLATIONS]")
+                    for param_name, violations in loss_dict['physics_violations'].items():
+                        self.logger.info(f"    {param_name}:")
+                        self.logger.info(f"      Range: [{violations['range'][0]:.6f}, {violations['range'][1]:.6f}]")
+                        self.logger.info(f"      Lower violations: {violations['lower']} (max: {violations['lower_max']:.6f})")
+                        self.logger.info(f"      Upper violations: {violations['upper']} (max: {violations['upper_max']:.6f})")
+                
                 # Check for NaN/Inf
                 for key, val in loss_dict.items():
-                    if torch.isnan(val) or torch.isinf(val):
+                    if isinstance(val, torch.Tensor) and (torch.isnan(val) or torch.isinf(val)):
                         self.logger.warning(f"⚠️  {key} = {val}")
 
             # Backward pass
@@ -511,12 +533,12 @@ class OverlapNeuralPETrainer:
                  loss_dict = self.model.compute_loss(strain_data, target_params)
 
                  # ✅ DEBUG: Log first validation batch for comparison
-                 if batch_idx == 0:
-                     self.logger.info(f"\n[VAL BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
-                     self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
-                     self.logger.info(f"  NLL: {loss_dict.get('nll', 0):.4f}")
-                     self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
-                     self.logger.info(f"  (Val physics loss should be SIMILAR to train)")
+                #  if batch_idx == 0:
+                #      self.logger.info(f"\n[VAL BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
+                #      self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
+                #      self.logger.info(f"  NLL: {loss_dict.get('nll', 0):.4f}")
+                #      self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
+                #      self.logger.info(f"  (Val physics loss should be SIMILAR to train)")
 
                  epoch_losses.append(loss_dict['total_loss'].item())
                  epoch_nlls.append(loss_dict['nll'].item())

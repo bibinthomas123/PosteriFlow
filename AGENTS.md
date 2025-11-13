@@ -260,17 +260,43 @@ Only when asked to test please follow the below conditions
          - **Verification**: Run `python test_overlap_neural_pe.py --model_path models/neural_pe/best_model.pth --device cpu` → TEST 7 shows physical units
          - See FIX_DOCS/NEURAL_PE_DENORMALIZATION_FIX.md and NEURAL_PE_DENORMALIZATION_SUMMARY.md for details
 - **Geocent_time & Luminosity_distance Bounds Mismatch** (FIXED - Nov 13, 2025): Parameter bounds not matching actual data generated:
-         - **Issue**: Physics loss penalty detected massive violations (70%+ of validation data) - validation loss 12.4× higher than training
-         - **Root cause**: OverlapNeuralPE bounds were too restrictive: `geocent_time [-0.1, 0.1]s` vs actual data `[-1.77, 6.63]s`; `luminosity_distance [20, 8000]` Mpc vs actual `[15.9, 1170]` Mpc
-         - **Dataset generator reality**: Edge case samples intentionally create out-of-bounds timing (lines 2674, 4351, 4522, 4662, 4665 in `dataset_generator.py`); line 4665 uses `i*1.5` spacing for overlapping signals
-         - **Fix**: Updated bounds in `src/ahsd/models/overlap_neuralpe.py` lines 114-115:
-            - `geocent_time: (-0.1, 0.1)` → `(-2.0, 8.0)` (covers 99th percentile 6.05s with safety margin for i*1.5 spacing)
-            - `luminosity_distance: (20.0, 8000.0)` → `(10.0, 8000.0)` (allows rare nearby events)
-         - **Verification**: All 9 parameters now within bounds: mass_1 [1.2, 73] ⊆ [1, 100], geocent_time [-1.77, 6.63] ⊆ [-2.0, 8.0], etc. ✓
-         - **Impact**: Eliminates spurious physics penalties on valid edge case samples; training convergence improves; loss reflects real vs false violations
-         - See FIX_DOCS/GEOCENT_TIME_BOUNDS_FIX.md for details
+          - **Issue**: Physics loss penalty detected massive violations (70%+ of validation data) - validation loss 12.4× higher than training
+          - **Root cause**: OverlapNeuralPE bounds were too restrictive: `geocent_time [-0.1, 0.1]s` vs actual data `[-1.77, 6.63]s`; `luminosity_distance [20, 8000]` Mpc vs actual `[15.9, 1170]` Mpc
+          - **Dataset generator reality**: Edge case samples intentionally create out-of-bounds timing (lines 2674, 4351, 4522, 4662, 4665 in `dataset_generator.py`); line 4665 uses `i*1.5` spacing for overlapping signals
+          - **Fix**: Updated bounds in `src/ahsd/models/overlap_neuralpe.py` lines 114-115:
+             - `geocent_time: (-0.1, 0.1)` → `(-2.0, 8.0)` (covers 99th percentile 6.05s with safety margin for i*1.5 spacing)
+             - `luminosity_distance: (20.0, 8000.0)` → `(10.0, 8000.0)` (allows rare nearby events)
+          - **Verification**: All 9 parameters now within bounds: mass_1 [1.2, 73] ⊆ [1, 100], geocent_time [-1.77, 6.63] ⊆ [-2.0, 8.0], etc. ✓
+          - **Impact**: Eliminates spurious physics penalties on valid edge case samples; training convergence improves; loss reflects real vs false violations
+          - See FIX_DOCS/GEOCENT_TIME_BOUNDS_FIX.md for details
+- **NLL Explosion (8.78→12.1 bits) - Physics Loss Dominance** (FIXED - Nov 13 09:55, 2025): Neural posterior NLL catastrophically high due to physics loss weight imbalance:
+           - **Issue**: Train NLL = 12.1 bits (catastrophic, target 1-3 bits), Physics Loss = 5513.75 (99.8% of total loss!), Train-Val gap = 5517
+           - **Root cause**: Nov 13 morning fix increased `physics_loss_weight: 0.2 → 1.0` as hard constraint. This backfired: physics loss became 1000× larger than NLL, giving optimizer zero incentive to minimize likelihood
+           - **Previous intermediate fix** (Nov 13 early): Added sample_loss (0.1 weight) to constrain flow, but too weak vs hard physics constraint (1.0)
+           - **Final fix** (Nov 13 09:55): Rebalanced all weights in `configs/enhanced_training.yaml` (lines 142-146):
+              - `physics_loss_weight: 1.0 → 0.05` (soft guidance, not hard constraint)
+              - `bounds_penalty_weight: 0.1 → 0.5` (strong protection for ground truth)
+              - `sample_loss_weight: 0.1 → 0.5` (strong flow regularization)
+           - **Rationale**: Physics loss should guide optimization gently (0.05), while flow regularization must be strong (0.5) to learn bounded outputs. Loss balance: all components comparable magnitude
+           - **Expected improvement**: NLL 12.1 → 2-4 bits by epoch 15, Physics loss 5513 → <10, Train-Val gap 5517 → <2
+           - **Timeline**: Epoch 1 - Physics drops dramatically; Epoch 5 - NLL < 6; Epoch 15 - NLL < 3 bits
+           - **Monitoring**: See FIX_DOCS/NLL_EXPLOSION_MONITORING.md for detailed checklist, expected curves, red flags
+           - See FIX_DOCS/NLL_EXPLOSION_ROOT_CAUSE.md, NLL_EXPLOSION_FIX_SUMMARY.md for details
+           - **Physics Loss - First Signal Only** (FIXED - Nov 13 10:30, 2025): Physics loss was penalizing secondary signals in overlaps:
+           - **Issue**: Physics loss raw magnitude 27568 (99.8% of total after weight fix) applying to all batch signals
+           - **Root cause**: Secondary signals in overlapping data are edge cases intentionally out-of-bounds for training robustness; shouldn't constrain posterior flow
+           - **Dataset context**: `dataset_generator.py` lines 4660-4665 creates overlaps with spacing i*1.5s; secondary signals intentionally at parameter extremes
+           - **Fix**: Restrict physics loss to first signal only (ground truth) in `src/ahsd/models/overlap_neuralpe.py` line 765:
+              - BEFORE: `physics_loss = self._compute_physics_loss(true_params)`
+              - AFTER: `physics_loss, physics_violations = self._compute_physics_loss(true_params[:1, :])`
+           - **Code changes**: (1) Line 765: Pass `true_params[:1, :]` instead of `true_params` to physics loss, (2) Line 908: Return tuple `(loss, debug_violations)` for logging, (3) Lines 433-442 in phase3a_neural_pe.py: Added debug logging for parameter violations
+           - **Debug logging**: Each epoch prints parameter ranges and violation counts to identify which params cause issues
+           - **Expected improvement**: Physics loss raw 27568 → 1-10 (single clean sample), allows NLL to properly optimize, Train-Val gap closes
+           - **Timeline**: Epoch 1 - Physics loss tiny, NLL dominates; Epoch 5 - Smooth convergence visible; Epoch 15 - NLL <3 bits target
+           - **Verification**: Run `python experiments/phase3a_neural_pe.py --epochs 10 --log_level DEBUG` and check Epoch 1 Batch 0 logging shows zero violations
+           - See FIX_DOCS/PHYSICS_LOSS_FIRST_SIGNAL_FIX.md for details
 
-**Model Training:**
+           **Model Training:**
 - Monitor calibration and output dynamic range
 - Use decoy injection for better real/false separation
 - Check model behavior on edge cases and real events

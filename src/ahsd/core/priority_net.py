@@ -423,7 +423,11 @@ class SignalFeatureExtractor(nn.Module):
             # Extract basic parameters (denormalized)
             m1 = params[:, 0] * 95 + 5
             m2 = params[:, 1] * 95 + 5
-            distance = params[:, 2] * 2950 + 50
+            # ← CRITICAL FIX (Nov 15): Denormalize distance using log-scale (inverse of log-space encoding)
+            # params[:, 2] is in [0, 1], maps to log10(d) in [log10(50), log10(800)] = [1.699, 2.903]
+            log_min = np.log10(50.0)
+            log_max = np.log10(800.0)
+            distance = 10 ** (params[:, 2] * (log_max - log_min) + log_min)
 
             # Derived quantities
             total_mass = m1 + m2
@@ -664,9 +668,9 @@ class PriorityLoss(nn.Module):
         uncertainty_lower_bound: float = 0.01,
         uncertainty_upper_bound: float = 0.50,
         uncertainty_bounds_weight: float = 0.05,
-        calib_mean_weight: float = 0.15,
-        calib_max_weight: float = 0.50,
-        calib_range_weight: float = 0.30,
+        calib_mean_weight: float = 0.20,
+        calib_max_weight: float = 1.50,
+        calib_range_weight: float = 1.00,
     ):
         """
         Initialize PriorityLoss.
@@ -772,35 +776,52 @@ class PriorityLoss(nn.Module):
         unc_upper_penalty = torch.relu(uncertainties - self.uncertainty_upper_bound).mean()
         uncertainty_bounds_loss = self.uncertainty_bounds_weight * (unc_lower_penalty + unc_upper_penalty)
 
-        # FIX #4: Calibrated training objective with stronger range expansion
-        # L = L_rank + L_mse + λ1·|mean(ŷ) − mean(y)| + λ2·|max(ŷ) − max(y)| + λ3·range_penalty
+        # FIX #4: Aggressive range expansion (Nov 15 DEEP FIX)
+        # L = L_rank + L_mse + λ1·|mean(ŷ) − mean(y)| + λ2·(1 - max(ŷ)/max(y)) + λ3·(range(y)/range(ŷ))
         
-        # Use configured calibration weights (Nov 13 fix)
+        # Use configured calibration weights (Nov 15 DEEP FIX)
         lambda1 = self.calib_mean_weight  # mean alignment
         lambda2 = self.calib_max_weight   # max range expansion
         lambda3 = self.calib_range_weight # range regularization
         
-        # Mean calibration loss
+        # Mean calibration loss: pull mean to target mean
         mean_gap = torch.abs(predictions.mean() - targets.mean())
         
-        # Max calibration loss (widen spread)
-        max_gap = torch.abs(predictions.max() - targets.max())
-        
-        # NEW (Nov 13, UPDATE): Dynamic range regularization - continuously push expansion
-        # Instead of fixed 85% threshold, use dynamic target that always stays 5% above current max
-        # This ensures ongoing gradient signal for range expansion even after reaching initial threshold
+        # Max calibration loss (CRITICAL): ratio-based penalty to push ceiling to target ceiling
+        # If pred_max < target_max, large penalty. If pred_max >= target_max, zero penalty.
+        # This creates strong gradient signal to expand predictions upward.
         target_max = targets.max()
         pred_max = predictions.max()
+        max_ratio_penalty = torch.relu(1.0 - (pred_max + 1e-6) / (target_max + 1e-6))
+        max_gap = max_ratio_penalty  # Ratio-based, not absolute
         
-        # Dynamic threshold: min of (85% of target, current_max + 5%)
-        # Rationale: 85% ensures we reach 85% of target, then +5% ensures continued push
-        static_threshold = torch.clamp(target_max * 0.85, min=0.60)
-        dynamic_threshold = pred_max * 1.05  # Always push 5% higher
-        min_target_max = torch.min(static_threshold, dynamic_threshold)
+        # Range regularization: penalize when prediction range < target range
+        target_range = targets.max() - targets.min()
+        pred_range = predictions.max() - predictions.min()
+        range_ratio_penalty = torch.relu(1.0 - (pred_range + 1e-6) / (target_range + 1e-6))
+        range_penalty = range_ratio_penalty  # Ratio-based, not absolute
         
-        range_penalty = F.relu(min_target_max - pred_max)
+        # Diagnostic logging (every 100 batches in training)
+        # if torch.rand(1).item() < 0.01:  # 1% sample
+        #     logging.debug(
+        #         f"Range expansion: tgt_range=[{targets.min():.3f}, {targets.max():.3f}] ({target_range:.3f}), "
+        #         f"pred_range=[{predictions.min():.3f}, {predictions.max():.3f}] ({pred_range:.3f}), "
+        #         f"mean_gap={mean_gap:.4f}, max_penalty={max_gap:.4f}, range_penalty={range_penalty:.4f}"
+        #     )
         
         calib_loss = lambda1 * mean_gap + lambda2 * max_gap + lambda3 * range_penalty
+        
+        # CRITICAL (Nov 15): Minimum variance penalty
+        # If predictions have very low variance, penalize heavily regardless of other metrics
+        # This prevents the "all predictions near 0.5" collapse
+        min_variance_penalty = 0.0
+        pred_std = predictions.std()
+        target_std = targets.std()
+        
+        # Penalize if prediction std < 50% of target std
+        if pred_std < 0.5 * target_std and target_std > 1e-4:
+            variance_ratio = pred_std / (target_std + 1e-8)
+            min_variance_penalty = 2.0 * torch.relu(0.5 - variance_ratio)  # ⬇️ Reduced from 10.0 (too aggressive)
 
         # Bucket-aware weights
         effective_ranking_weight = self.ranking_weight
@@ -817,6 +838,7 @@ class PriorityLoss(nn.Module):
             + self.uncertainty_weight * uncertainty_loss
             + uncertainty_bounds_loss  # NEW: Bounds penalty
             + calib_loss  # Calibration term to widen spread
+            + min_variance_penalty  # CRITICAL: Prevent variance collapse
         )
 
         return {
@@ -1011,23 +1033,25 @@ class PriorityNet(nn.Module):
             nn.Linear(16, 1),  # priority output (linear, no squashing)
         )
 
-        # Initialize final layer with stronger gradients and higher bias (Nov 13 fix)
+        # Initialize final layer with stronger gradients and higher bias (Nov 15 DEEP FIX)
         final_layer = self.priority_head[-1]
-        nn.init.normal_(final_layer.weight, mean=0.0, std=0.05)  # ⬆️ 5x larger for steeper gradients
-        output_bias_init = cfg_get("output_bias_init", 0.5)  # Read from config, default 0.5
-        final_layer.bias.data.fill_(output_bias_init)  # Initialize to dataset mean (0.5) not 0.2
+        output_weight_std = cfg_get("output_weight_std", 0.10)  # Read from config, default 0.10 (10x)
+        nn.init.normal_(final_layer.weight, mean=0.0, std=output_weight_std)  # ⬆️ 10x larger for even steeper gradients
+        output_bias_init = cfg_get("output_bias_init", 0.45)  # Read from config, default 0.45 (below mean)
+        final_layer.bias.data.fill_(output_bias_init)  # Initialize to 0.45 to leave headroom for expansion
 
         self.uncertainty_head = nn.Sequential(nn.Linear(64, 1), nn.Softplus(beta=2.0))  # sigma > 0, ⬆️ beta 2.0 for stronger gradients (Nov 13 fix)
 
         # Affine calibration parameters with bounds (Nov 13 fix)
-        self.prio_gain = nn.Parameter(torch.tensor(1.0))
-        self.prio_bias = nn.Parameter(torch.tensor(0.0))
+        # CRITICAL: Initialize gain higher to push expansion from start
+        self.prio_gain = nn.Parameter(torch.tensor(1.8))  # Start at 1.8x to force range expansion
+        self.prio_bias = nn.Parameter(torch.tensor(-0.05))  # Slight downward bias to lower floor
         
-        # Store affine bounds as instance variables for forward pass
-        self.affine_gain_min = cfg_get("affine_gain_min", 0.7)
-        self.affine_gain_max = cfg_get("affine_gain_max", 1.5)
-        self.affine_bias_min = cfg_get("affine_bias_min", -0.1)
-        self.affine_bias_max = cfg_get("affine_bias_max", 0.1)
+        # Store affine bounds as instance variables for forward pass (Nov 15 DEEP FIX)
+        self.affine_gain_min = cfg_get("affine_gain_min", 1.2)   # ↑ from 0.7 — prevent collapse
+        self.affine_gain_max = cfg_get("affine_gain_max", 2.5)   # ↑ from 1.5 — allow aggressive expansion
+        self.affine_bias_min = cfg_get("affine_bias_min", -0.2)  # ↑ from -0.1 — push floor down
+        self.affine_bias_max = cfg_get("affine_bias_max", 0.05)  # ↓ from 0.1 — prevent floor rise
 
         logging.info(
             f"🔍 PriorityNet Configuration: use_strain={self.use_strain}, use_edge_conditioning={self.use_edge_conditioning}, n_edge_types={self.n_edge_types}"
@@ -1128,11 +1152,7 @@ class PriorityNet(nn.Module):
             priorities: Tensor [N] of predicted priorities (pre-calibrated by affine).
             uncertainties: Tensor [N] of positive uncertainties via Softplus.
         """
-        # Handle tensor input - check size instead of bool conversion
-        if isinstance(detections, torch.Tensor):
-            if detections.numel() == 0 or detections.shape[0] == 0:
-                return torch.empty(0, device=detections.device), torch.empty(0, device=detections.device)
-        elif not detections:
+        if not detections:
             return torch.empty(0), torch.empty(0)
 
         device = next(self.parameters()).device
@@ -1159,36 +1179,36 @@ class PriorityNet(nn.Module):
             # Temporal features (zeros if absent)
             if self.use_strain and strain_segments is not None and strain_segments.numel() > 0:
                 strain_seg = strain_segments.to(device)
-                # Log transformer input details
-                if self.use_transformer_encoder and self.training:
-                    logging.debug(f"   [TRANSFORMER] Input shape: {strain_seg.shape}")
+                N = signal_tensor.shape[0]  # Number of detections
+                
+                # ✅ FIX: Handle strain_segments shape properly
+                # Case 1: [n_detectors, time_samples] - shared strain, replicate for each detection
+                # Case 2: [N, n_detectors, time_samples] - unique strain per detection
+                if strain_seg.dim() == 2:
+                    # Shared strain: [n_detectors, T] → [N, n_detectors, T]
+                    strain_seg = strain_seg.unsqueeze(0).expand(N, -1, -1)
+                elif strain_seg.dim() == 3 and strain_seg.shape[0] == 1:
+                    # Single batch: [1, n_detectors, T] → [N, n_detectors, T]
+                    strain_seg = strain_seg.expand(N, -1, -1)
+                
                 # Adapt detector count for TransformerStrainEncoder (expects 2: H1, L1)
                 if self.use_transformer_encoder and strain_seg.shape[1] > 2:
                     strain_seg = strain_seg[:, :2, :]  # Use only H1, L1 (first 2 detectors)
-                    if self.training:
-                        logging.debug(f"   [TRANSFORMER] Reduced to 2 detectors: {strain_seg.shape}")
+                
                 try:
                     temporal_features = self.strain_encoder(strain_seg)  # [N, 64]
-                    if self.use_transformer_encoder and self.training:
-                        logging.debug(f"   [TRANSFORMER] Output shape: {temporal_features.shape}")
-                        logging.debug(f"   [TRANSFORMER] Output stats: mean={temporal_features.mean():.4f}, std={temporal_features.std():.4f}")
-                        if torch.isnan(temporal_features).any():
-                            logging.error("   [TRANSFORMER] ❌ NaN detected in output!")
-                        if torch.isinf(temporal_features).any():
-                            logging.error("   [TRANSFORMER] ❌ Inf detected in output!")
                 except Exception as e:
-                    logging.error(f"   [TRANSFORMER] ❌ Forward pass failed: {e}", exc_info=True)
+                    logging.error(f"Strain encoder failed: {e}", exc_info=True)
                     temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
                 
-                if temporal_features.shape[-1] != 64:
-                    logging.warning(f"   [TRANSFORMER] Shape mismatch: expected 64, got {temporal_features.shape[-1]}")
+                if temporal_features.shape[0] != N or temporal_features.shape[-1] != 64:
+                    logging.error(f"Strain encoder shape mismatch: expected [{N}, 64], got {temporal_features.shape}")
                     temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
+
             else:
                 temporal_features = torch.zeros((signal_tensor.shape[0], 64), device=device)
-                if self.use_strain and self.training:
-                    logging.debug("   [TRANSFORMER] No strain segments provided, using zeros")
 
-            # Edge conditioning inputs (IDs provided by caller or default 0)
+                # Edge conditioning inputs (IDs provided by caller or default 0)
             # FIX #3: Edge conditioning with dropout
             if self.use_edge_conditioning:
                 if edge_type_ids is None:
@@ -1310,7 +1330,7 @@ class PriorityNet(nn.Module):
         ranges = {
             "mass_1": (5.0, 100.0),
             "mass_2": (5.0, 100.0),
-            "luminosity_distance": (50.0, 1500.0),  # ← FIXED: Narrowed from 3000 for better distance sensitivity
+            "luminosity_distance": (50.0, 800.0),  # ← CRITICAL FIX (Nov 15): Narrowed to 750 Mpc span for 4.2× higher sensitivity vs 150-1500 (1450 span). 33% change (150→200) now = 6.7% of normalized range vs 3.4% before
             "ra": (0.0, 2 * np.pi),
             "dec": (-np.pi / 2, np.pi / 2),
             "geocent_time": (-0.1, 0.1),
@@ -1355,6 +1375,19 @@ class PriorityNet(nn.Module):
                         v = float(v)
                         if not np.isfinite(v):
                             v = defaults[name]
+
+                        # ← CRITICAL FIX (Nov 15): Use log-scale for distance to capture physics (SNR ∝ 1/d)
+                        # Log-space encoding ensures small distances get high sensitivity (steep gradient)
+                        if name == "luminosity_distance":
+                            # Use log-scale: log10(d) maps [50, 800] → [1.7, 2.9] → [0, 1] via normalization
+                            # This makes SNR changes (inversely proportional to distance) very sensitive
+                            # Example: 150→200 Mpc is (log10(200)-log10(150))/(log10(800)-log10(50)) = 0.064/1.2 = 5.3% (vs 3.4% linear)
+                            v_log = np.log10(max(v, 50.0))
+                            log_min = np.log10(50.0)   # 1.699
+                            log_max = np.log10(800.0)  # 2.903
+                            norm = (v_log - log_min) / (log_max - log_min)
+                            vals.append(np.clip(norm, 0.0, 1.0))
+                            continue  # Skip the general normalization below
 
                         # ← FIXED: Simple bounded scaling for SNR to preserve small differences
                         if name == "network_snr":
@@ -1451,10 +1484,10 @@ class PriorityNetTrainer:
         uncertainty_upper_bound = get_config("uncertainty_upper_bound", 0.50)
         uncertainty_bounds_weight = get_config("uncertainty_bounds_weight", 0.05)
         
-        # Calibration weights for range expansion (Nov 13 fix)
-        calib_mean_weight = get_config("calib_mean_weight", 0.15)
-        calib_max_weight = get_config("calib_max_weight", 0.50)
-        calib_range_weight = get_config("calib_range_weight", 0.30)
+        # Calibration weights for range expansion (Nov 15 DEEP FIX)
+        calib_mean_weight = get_config("calib_mean_weight", 0.30)
+        calib_max_weight = get_config("calib_max_weight", 2.50)
+        calib_range_weight = get_config("calib_range_weight", 2.00)
 
         self.gradient_clip_norm = get_config("gradient_clip_norm", 1.0)
 

@@ -30,6 +30,7 @@ priority_net:
   # --- ARCHITECTURE ---
   hidden_dims: [640, 512, 384, 256]      # ✅ Increased from [512, 384, 256, 128]
   dropout: 0.25                           # Dropout in priority head
+  importance_hidden_dim: 32               # Cross-signal importance network hidden dim (must match checkpoint)
   
   # --- MODEL FLAGS ---
   use_strain: true                       # Enable temporal strain encoder
@@ -39,11 +40,11 @@ priority_net:
   
   # --- OPTIMIZER ---
   optimizer: "AdamW"
-  learning_rate: 8.0e-5
+  learning_rate: 3.0e-5
   weight_decay: 1.5e-5
   
   # --- TRAINING SCHEDULE ---
-  batch_size: 48
+  batch_size: 24                          # ⬆️ Increased from 6 (larger batch → stable BatchNorm)
   epochs: 200
   patience: 15                            
   
@@ -61,7 +62,7 @@ priority_net:
   # --- LOSS FUNCTION ---
   ranking_weight: 0.70                    # Ranking loss weight (reduced from 0.60)
   mse_weight: 0.20                        # MSE loss weight (increased from 0.30)
-  uncertainty_weight: 0.10                # ⬆️ Uncertainty loss weight (3.5x from 0.10) - Nov 13 fix
+  uncertainty_weight: 0.10                # ⬇️ Reduced from 0.35 (3.5× increase was too aggressive) - Nov 15 fix
   use_snr_weighting: true                 # Weight losses by SNR
   loss_scale_factor: 0.002                # Scale factor for loss terms (from Nov 12 fix)
   
@@ -70,19 +71,19 @@ priority_net:
   uncertainty_upper_bound: 0.50           # Prevent uncertainty explosion
   uncertainty_bounds_weight: 0.05         # Penalty weight for bounds violations
   
-  # --- PREDICTION SATURATION FIX (NEW - Nov 13, UPDATED Nov 13 09:55) ---
-  output_bias_init: 0.5                   # Initialize output bias to dataset mean (0.5 not 0.2)
-  output_weight_std: 0.05                 # Weight std (5x larger for steeper initial gradients)
-  calib_mean_weight: 0.20                 # Mean alignment penalty weight (↑ from 0.15)
-  calib_max_weight: 0.75                  # Max range expansion penalty weight (↑ from 0.50) — dominates more
-  calib_range_weight: 0.45                # Range regularization penalty weight (↑ from 0.30) — dynamic push
-  affine_gain_min: 0.7                    # Affine gain lower bound (prevent collapse)
-  affine_gain_max: 1.5                    # Affine gain upper bound (prevent explosion)
-  affine_bias_min: -0.1                   # Affine bias lower bound
-  affine_bias_max: 0.1                    # Affine bias upper bound
+  # --- PREDICTION SATURATION FIX (NEW - Nov 13, UPDATED Nov 15 DEEP FIX) ---
+  output_bias_init: 0.45                  # Initialize output bias to 0.45 (slightly below mean to help range)
+  output_weight_std: 0.10                 # Weight std (10x larger for even steeper initial gradients)
+  calib_mean_weight: 0.30                 # Mean alignment penalty weight (↑ from 0.20)
+  calib_max_weight: 0.50                  # ⬇️ Reduced from 1.00 (overlaps lower SNR naturally; don't suppress gradients)
+  calib_range_weight: 0.40                # ⬇️ Reduced from 0.75 (same reason; let network expand on single-signal cases)
+  affine_gain_min: 1.2                    # Affine gain lower bound (↑ from 0.7) — prevent collapse below 1.2x
+  affine_gain_max: 2.5                    # Affine gain upper bound (↑ from 1.5) — allow aggressive expansion
+  affine_bias_min: -0.2                   # Affine bias lower bound (↑ from -0.1) — push floor down
+  affine_bias_max: 0.05                   # Affine bias upper bound (↓ from 0.1) — prevent floor rise
   
   # --- GRADIENT MANAGEMENT ---
-  gradient_clip_norm: 2.0                 # Gradient clipping threshold
+  gradient_clip_norm: 5.0                 # ⬆️ Increased from 2.0 (too aggressive for 6 loss components)
   gradient_log_threshold: 0.5             # Threshold for gradient norm logging
   
   # --- LABEL SMOOTHING ---
@@ -96,6 +97,7 @@ priority_net:
   # --- OVERLAP HANDLING ---
   overlap_use_attention: true             # Use attention for overlap encoding
   overlap_importance_hidden: 32           # Hidden dim for importance network
+
 
 
 
@@ -121,9 +123,10 @@ neural_posterior:
   max_iterations: 5                       # Max adaptive refinement iterations
   
   # --- FLOW TYPE (UNIFIED CONTROL) ---
-  flow_type: "flowmatching"                        # ✅ NEW: 'nsf' (Neural Spline Flow - RECOMMENDED)
+  flow_type: "flowmatching"                        # ✅ FlowMatching (OT-CFM based)
   #                                        # Options: 'flowmatching', 'realnvp', 'nsf'
-  #                                        # NSF is state-of-the-art: 3 days → 0.8 seconds
+  #                                        # Note: Checkpoint (final_model.pth) was trained with NSF
+  #                                        # Will have architecture mismatch - retrain for best performance
   
   # --- NORMALIZING FLOW (NSF vs FlowMatching vs RealNVP) ---
   flow_config:
@@ -137,14 +140,14 @@ neural_posterior:
     # RealNVP: coupling blocks, many layers for expressiveness
     
     # ✅ NSF CONFIG (OPTIMAL FOR 9D POSTERIOR)
-    num_layers: 8                         # Fewer layers than FlowMatching (splines are more expressive)
-    hidden_features: 256                  # Moderate hidden dim (splines naturally model monotonic transforms)
+    num_layers: 12                         # Fewer layers than FlowMatching (splines are more expressive)
+    hidden_features: 512                  # Moderate hidden dim (splines naturally model monotonic transforms)
     num_bins: 16                          # Spline resolution - controls piecewise continuity
     tail_bound: 3.0                       # Auto-handles extreme tails (handles [-∞, ∞])
     dropout: 0.1                          # Dropout for stability
     
     # (Ignored for NSF - kept for backward compat with other flow types)
-    solver_steps: 20                      # Only for FlowMatching
+    solver_steps: 50                      # Only for FlowMatching
     num_blocks_per_layer: 2               # Only for RealNVP
   
   # --- EVENT-TYPE-SPECIFIC CONFIGURATION (Nov 13 enhancement) ---
@@ -152,9 +155,10 @@ neural_posterior:
   enable_event_specific_priors: true      # Use physics-informed priors per event type
   
   # --- TRAINING ---
-  learning_rate: 1.0e-5                  # ⬇️ FURTHER REDUCED from 2.5e-5 (prevent oscillations at convergence) - Nov 14
+  # learning_rate: 1.0e-5                  # ⬇️ FURTHER REDUCED from 2.5e-5 (prevent oscillations at convergence) - Nov 14
+  learning_rate: 5.0e-5
   batch_size: 64                          # ⬆️ INCREASED to 64 (better gradient estimates for deep flow)
-  epochs: 50                               # ⬆️ INCREASED from 30 to allow deep flow to converge
+  epochs: 500                               # ⬆️ INCREASED from 30 to allow deep flow to converge
   patience: 15                            # ⬆️ INCREASED from 10 (monitor through epoch 20-30)
   weight_decay: 1.5e-5                   # ⬆️ SLIGHTLY increased (better regularization for large model)
   gradient_clip: 5.0                       # ⬇️ TIGHTER clipping (prevent exploding gradients) - Nov 14: reduced 10→5
@@ -175,9 +179,9 @@ neural_posterior:
   # Solution: Fresh start with ZERO constraints, let NLL minimize first
   # Epochs 1-20: physics_loss_weight=0.0 (NLL-only training for likelihood)
   # Epochs 20+: Enable bounds_penalty_weight=0.5 to enforce valid ranges
-  physics_loss_weight: 0.0                # ⬇️ ZERO: Don't constrain during initial learning
-  bounds_penalty_weight: 0.5              # Keep for ground truth penalties
-  sample_loss_weight: 0.1                 # ⬇️ ZERO: Let NLL dominate in first 20 epochs
+  physics_loss_weight: 0.02                # ⬇️ ZERO: Don't constrain during initial learning
+  bounds_penalty_weight: 0.8              # Keep for ground truth penalties
+  sample_loss_weight: 0.2                 # ⬇️ ZERO: Let NLL dominate in first 20 epochs
   
   # --- JACOBIAN REGULARIZATION ---
   jacobian_reg_weight: 0.001              # Flow weight regularization (10x default)

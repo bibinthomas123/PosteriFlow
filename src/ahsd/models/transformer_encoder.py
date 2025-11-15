@@ -157,24 +157,25 @@ class TransformerStrainEncoder(nn.Module):
         device = strain_data.device
 
         try:
+            # ✅ FIX: Sanitize input for NaN/Inf before processing
+            if torch.isnan(strain_data).any():
+                strain_data = torch.nan_to_num(strain_data, nan=0.0, posinf=1e-3, neginf=-1e-3)
+            if torch.isinf(strain_data).any():
+                strain_data = torch.clamp(strain_data, min=-1e2, max=1e2)
+            
             # Patch embedding: [batch, n_detectors, time_samples] → [batch, encoder_dim, n_patches]
             patches = self.patch_embed(strain_data)  # [B, encoder_dim, n_patches]
-            logging.debug(f"   [TRANSFORMER_ENCODER] Patch embed output: {patches.shape}")
-            
             patches = patches.transpose(1, 2)  # [B, n_patches, encoder_dim]
-            logging.debug(f"   [TRANSFORMER_ENCODER] After transpose: {patches.shape}")
 
             # ✅ FIX: Add positional encoding for Whisper
             if self.use_whisper and self.pos_encoding_adapter is not None:
                 patches = patches + self.pos_encoding_adapter
-                logging.debug(f"   [TRANSFORMER_ENCODER] After positional encoding: {patches.shape}")
 
             # Pass through Transformer encoder
             if self.encoder is not None:
                 try:
                     if self.use_whisper:
                         # Whisper pathway with optional attention mask
-                        logging.debug(f"   [TRANSFORMER_ENCODER] Using Whisper encoder")
                         encoder_output = self.encoder(
                             inputs_embeds=patches,
                             attention_mask=attention_mask,  # ✅ ADD MASK SUPPORT
@@ -182,17 +183,13 @@ class TransformerStrainEncoder(nn.Module):
                         )
                     else:
                         # Lightweight Transformer
-                        logging.debug(f"   [TRANSFORMER_ENCODER] Using lightweight Transformer")
                         encoder_output = self.encoder(inputs_embeds=patches, return_dict=True)
                     
                     hidden_states = encoder_output.last_hidden_state  # [B, n_patches, encoder_dim]
-                    logging.debug(f"   [TRANSFORMER_ENCODER] Encoder output: {hidden_states.shape}")
                 except Exception as e:
-                    logging.error(f"   [TRANSFORMER_ENCODER] ❌ Encoder forward failed: {e}")
-                    logging.debug(f"   [TRANSFORMER_ENCODER] Falling back to patch embeddings")
+                    logging.error(f"Transformer encoder forward failed: {e}")
                     hidden_states = patches
             else:
-                logging.warning(f"   [TRANSFORMER_ENCODER] ⚠️  Encoder is None, using patches")
                 hidden_states = patches
 
             # ✅ IMPROVED: Masked average pooling over time dimension
@@ -202,27 +199,17 @@ class TransformerStrainEncoder(nn.Module):
                 sum_pooled = (hidden_states * mask_expanded).sum(dim=1)  # [B, encoder_dim]
                 sum_mask = mask_expanded.sum(dim=1).clamp(min=1e-9)  # [B, 1]
                 pooled = sum_pooled / sum_mask
-                logging.debug(f"   [TRANSFORMER_ENCODER] Masked pooling: {pooled.shape}")
             else:
                 # Standard global average pooling
                 pooled = hidden_states.mean(dim=1)  # [B, encoder_dim]
-                logging.debug(f"   [TRANSFORMER_ENCODER] Global average pooling: {pooled.shape}")
 
             # Project to output dimension
             features = self.output_proj(pooled)  # [B, output_dim]
-            logging.debug(f"   [TRANSFORMER_ENCODER] Final output: {features.shape}")
-            logging.debug(f"   [TRANSFORMER_ENCODER] Output stats: mean={features.mean():.4f}, std={features.std():.4f}")
-            
-            # Check for NaN/Inf
-            if torch.isnan(features).any():
-                logging.error("   [TRANSFORMER_ENCODER] ❌ NaN in output!")
-            if torch.isinf(features).any():
-                logging.error("   [TRANSFORMER_ENCODER] ❌ Inf in output!")
 
             return features
             
         except Exception as e:
-            logging.error(f"   [TRANSFORMER_ENCODER] ❌ FATAL: Forward pass crashed: {e}", exc_info=True)
+            logging.error(f"Transformer encoder forward failed: {e}", exc_info=True)
             # Return zeros as fallback
             return torch.zeros(batch_size, self.output_dim, device=device, dtype=strain_data.dtype)
 

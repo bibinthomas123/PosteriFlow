@@ -242,9 +242,14 @@ class OverlapNeuralPE(nn.Module):
                 )
             )
 
-        self.logger.info(
-            f"Loaded {len(checkpoint_state) - len(incompatible_keys)}/{len(checkpoint_state)} checkpoint weights"
-        )
+        if len(checkpoint_state) == 0:
+            self.logger.warning(
+                "⚠️  Empty checkpoint (0 weights) - model initialized with random weights"
+            )
+        else:
+            self.logger.info(
+                f"Loaded {len(checkpoint_state) - len(incompatible_keys)}/{len(checkpoint_state)} checkpoint weights"
+            )
 
     def _init_components(self, priority_net_path: str):
         """Initialize all pipeline components."""

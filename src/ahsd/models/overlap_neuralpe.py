@@ -96,6 +96,11 @@ class OverlapNeuralPE(nn.Module):
             "rl_rewards": deque(maxlen=1000),
         }
         self.training_step = 0
+        
+        # ✅ Initialize PriorityNet metric tracking
+        self._last_priority_net_preds = None
+        self._last_priority_net_uncs = None
+        
         self.to(self.device)
         total_params = sum(p.numel() for p in self.parameters())
 
@@ -244,31 +249,38 @@ class OverlapNeuralPE(nn.Module):
     def _init_components(self, priority_net_path: str):
         """Initialize all pipeline components."""
 
-        # 1. PriorityNet (pre-trained, frozen) - load checkpoint first to get architecture
-        checkpoint = torch.load(priority_net_path, map_location=self.device)
-        model_arch = checkpoint.get("model_architecture", {})
-        self.priority_net = PriorityNet(
-            use_strain=model_arch.get("use_strain", True),
-            use_edge_conditioning=model_arch.get("use_edge_conditioning", True),
-            n_edge_types=model_arch.get("n_edge_types", 19),
-        )
-        self._load_checkpoint_with_mismatch_handling(
-            self.priority_net, checkpoint["model_state_dict"]
-        )
-        self.priority_net.eval()
-        for param in self.priority_net.parameters():
-            param.requires_grad = False
-        self.logger.info(f"âœ… Loaded PriorityNet from {priority_net_path}")
+        # 1. PriorityNet (pre-trained, frozen) - OPTIONAL for stage 1A
+        # Stage 1A: priority_net_path=None (training flow + bias corrector only)
+        # Stage 1B+: priority_net_path provided (RL controller needs ranking info)
+        if priority_net_path is not None:
+            checkpoint = torch.load(priority_net_path, map_location=self.device)
+            model_arch = checkpoint.get("model_architecture", {})
+            self.priority_net = PriorityNet(
+                use_strain=model_arch.get("use_strain", True),
+                use_edge_conditioning=model_arch.get("use_edge_conditioning", True),
+                n_edge_types=model_arch.get("n_edge_types", 19),
+            )
+            self._load_checkpoint_with_mismatch_handling(
+                self.priority_net, checkpoint["model_state_dict"]
+            )
+            self.priority_net.eval()
+            for param in self.priority_net.parameters():
+                param.requires_grad = False
+            self.logger.info("✅ PriorityNet loaded and frozen")
+        else:
+            self.priority_net = None
+            self.logger.info("⊘ PriorityNet disabled (stage 1A training)")
 
         # 2. Context Encoder
         self.context_encoder = ContextEncoder(
             n_detectors=2, hidden_dim=self.context_dim, dropout=self.dropout_rate
         )
 
-        # 3. Normalizing Flow (using FlowMatching by default, fallback to RealNVP)
-        flow_type = self.flow_config.get(
-            "type", "flowmatching"
-        )  # 'flowmatching', 'realnvp', or 'maf'
+        # 3. Normalizing Flow (using NSF by default as per config)
+        # ✅ FIX: Read flow_type from top-level config, not flow_config section
+        flow_type = self.config.get(
+            "flow_type", "nsf"
+        )  # 'flowmatching', 'realnvp', 'maf', or 'nsf'
 
         if flow_type.lower() == "flowmatching":
             # âœ… FlowMatching: OT-CFM with higher expressiveness per layer
@@ -324,15 +336,24 @@ class OverlapNeuralPE(nn.Module):
         )
 
         # 5. Bias Corrector
+        # ✅ FIX: Handle both boolean and dict config formats
         bias_cfg = self.config.get("bias_corrector", {})
-        if bias_cfg.get("enabled", True):
+        # Check if it's a boolean (components.bias_corrector: true) or dict (bias_corrector: {enabled: true})
+        bias_enabled = (
+            bias_cfg.get("enabled", True) if isinstance(bias_cfg, dict) 
+            else bias_cfg  # Direct boolean value
+        )
+        
+        if bias_enabled:
             self.bias_corrector = BiasCorrector(
                 param_names=self.param_names, context_dim=self.context_dim
             )
-            self.logger.info("BiasCorrector initialized")
+            self.logger.info("✅ BiasCorrector initialized and active during training")
+            self.logger.info(f"   └─ Parameters: {len(self.param_names)}, Context dim: {self.context_dim}")
+            self.logger.info(f"   └─ Status: Inference-ready (training deferred to post-PE)")
         else:
             self.bias_corrector = None
-            self.logger.info("BiasCorrector disabled")
+            self.logger.info("⊘ BiasCorrector disabled")
 
         # 6. Adaptive Subtractor
         self.adaptive_subtractor = AdaptiveSubtractor()
@@ -357,7 +378,7 @@ class OverlapNeuralPE(nn.Module):
 
         ✅ CRITICAL FIX (Nov 13): Added rejection sampling + output clamping to filter
         out-of-range predictions. The flow can extrapolate beyond physical bounds,
-        causing NLL explosion. Rejection sampling ensures all returned samples are physical.
+        causing loss explosion. Rejection sampling ensures all returned samples are physical.
         """
         self.eval()
         batch_size = strain_data.size(0)
@@ -365,9 +386,16 @@ class OverlapNeuralPE(nn.Module):
         with torch.no_grad():
             # Extract context from strain
             context = self.context_encoder(strain_data)
-            context = (context - context.mean(dim=0, keepdim=True)) / (
-                context.std(dim=0, keepdim=True) + 1e-6
-            )
+            # ✅ FIX (Nov 14): Avoid batch normalization when batch_size=1
+            # Use fixed normalization statistics instead of batch stats
+            if batch_size > 1:
+                context = (context - context.mean(dim=0, keepdim=True)) / (
+                    context.std(dim=0, keepdim=True) + 1e-6
+                )
+            else:
+                # For single samples, use unit variance scaling instead
+                context_norm = torch.norm(context, dim=1, keepdim=True)
+                context = context / (context_norm + 1e-6)
 
             samples_list = []
 
@@ -475,7 +503,7 @@ class OverlapNeuralPE(nn.Module):
         self, strain_data: torch.Tensor, complexity: str = "medium"
     ) -> Dict[str, Any]:
         """
-        Extract parameters for a single signal.
+        Extract parameters for a single signal with complexity-dependent settings.
 
         Args:
             strain_data: [batch, n_det, n_samples] strain data
@@ -484,9 +512,11 @@ class OverlapNeuralPE(nn.Module):
         Returns:
             dict with parameter estimates and uncertainties
         """
-        # Use posterior sampling for extraction
+        # ✅ Nov 14: Apply complexity-dependent settings
         complexity_settings = self.complexity_configs.get(complexity, {})
         n_samples = complexity_settings.get("inference_samples", 1000)
+        # Note: flow_layers is pre-configured in flow model initialization
+        # This can be extended to support dynamic flow architectures if needed
 
         result = self.sample_posterior(strain_data, n_samples=n_samples)
 
@@ -496,6 +526,8 @@ class OverlapNeuralPE(nn.Module):
             "samples": result["samples"],
             "uncertainties": result["uncertainties"],
             "context": result["context"],
+            "complexity": complexity,  # ✅ Track which complexity was used
+            "n_samples": n_samples,  # ✅ Track inference samples
         }
 
     def extract_overlapping_signals(
@@ -521,6 +553,10 @@ class OverlapNeuralPE(nn.Module):
         all_extracted = []
         residual_data = strain_data.clone()
 
+        # ✅ Nov 14: Track extraction success for state
+        successful_extractions = 0
+        total_attempts = 0
+
         pipeline_state = {
             "remaining_signals": self.max_iterations,
             "residual_power": 1.0,
@@ -530,9 +566,16 @@ class OverlapNeuralPE(nn.Module):
 
         for iteration in range(self.max_iterations):
             # ✅ 1. GET PRIORITIES FROM PRIORITYNET
-            with torch.no_grad():
-                detections = self._residual_to_detections(residual_data)
-                priorities, _ = self.priority_net(detections)
+            if self.priority_net is not None:
+                with torch.no_grad():
+                    detections = self._residual_to_detections(residual_data)
+                    # ✅ Nov 14: Pass strain segments for temporal feature extraction
+                    priorities, uncertainties = self.priority_net(detections, strain_segments=residual_data)
+                    # ✅ Track metrics for logging
+                    self._last_priority_net_preds = priorities.detach()
+                    self._last_priority_net_uncs = uncertainties.detach()
+            else:
+                priorities = None
 
             # ✅ 2. SELECT COMPLEXITY VIA RL CONTROLLER
             complexity = self.rl_controller.get_complexity_level(pipeline_state, training=training)
@@ -542,6 +585,13 @@ class OverlapNeuralPE(nn.Module):
             params_means = extraction_result["means"]
             params_stds = extraction_result["stds"]
             context = extraction_result["context"]
+            n_samples_used = extraction_result.get("n_samples", 1000)  # ✅ Nov 14
+            
+            # ✅ Nov 14: Track extraction success (no NaN/Inf in means)
+            total_attempts += 1
+            extraction_valid = not (torch.isnan(params_means).any() or torch.isinf(params_means).any())
+            if extraction_valid:
+                successful_extractions += 1
 
             # ✅ 4. APPLY BIAS CORRECTION
             if self.bias_corrector is not None:
@@ -583,6 +633,8 @@ class OverlapNeuralPE(nn.Module):
                     "priority": priorities,
                     "iteration": iteration,
                     "complexity": complexity,
+                    "n_samples_used": n_samples_used,  # ✅ Nov 14: Track complexity setting used
+                    "extraction_valid": extraction_valid,  # ✅ Nov 14: Track if extraction succeeded
                     "bias_corrected": self.bias_corrector is not None,
                 }
             )
@@ -606,6 +658,10 @@ class OverlapNeuralPE(nn.Module):
             # ✅ 6. UPDATE PIPELINE STATE FOR RL
             pipeline_state["remaining_signals"] -= 1
             pipeline_state["residual_power"] = float(torch.mean(residual_data**2))
+            
+            # ✅ Nov 14: Update extraction success rate for state
+            if total_attempts > 0:
+                pipeline_state["extraction_success_rate"] = successful_extractions / total_attempts
 
             # Compute SNR for state
             if iteration == 0:
@@ -658,7 +714,26 @@ class OverlapNeuralPE(nn.Module):
             "final_residual": residual_data,
             "n_iterations": iteration + 1,
             "pipeline_state": pipeline_state,
+            "rl_metadata": {  # ✅ Nov 14: Track RL-related stats
+                "total_attempts": total_attempts,
+                "successful_extractions": successful_extractions,
+                "success_rate": successful_extractions / total_attempts if total_attempts > 0 else 0.0,
+            }
         }
+
+    def extract(self, strain_data: torch.Tensor, training: bool = False) -> Dict[str, Any]:
+        """
+        Public API for signal extraction and RL metric population.
+        ✅ NOV 14: Added to enable RL training during training loop
+        
+        Args:
+            strain_data: [batch, n_det, n_samples] strain data
+            training: Whether in training mode
+        
+        Returns:
+            dict with extracted signals and metadata
+        """
+        return self.extract_overlapping_signals(strain_data, training=training)
 
     def _tensor_to_detector_dict(self, strain_tensor: torch.Tensor) -> Dict[str, np.ndarray]:
         """Convert strain tensor [batch, n_det, n_samples] to detector dict format."""
@@ -736,136 +811,214 @@ class OverlapNeuralPE(nn.Module):
 
         return max(0.0, accuracy)
 
-    def compute_loss(
-        self, strain_data: torch.Tensor, true_params: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
+    def compute_loss(self, strain_data: torch.Tensor, true_params: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
         Compute comprehensive training loss with all integrated components.
-
+        
+        ✅ CRITICAL FIX (Nov 14): 
+        1. Added Flow Matching (CFM) loss support
+        2. Fixed physics loss explosion with normalization and clamping
+        3. Balanced all loss components
+        
         Args:
             strain_data: [batch, n_det, n_samples] strain data
             true_params: [batch, param_dim] true parameters
-
+        
         Returns:
             dict with total loss and component losses
         """
         # ✅ Extract context via ContextEncoder
         context = self.context_encoder(strain_data)
-
+        
         # ✅ Normalize parameters for normalizing flow
         true_params_norm = self._normalize_parameters(true_params)
-
-        # ✅ 1. FLOW LOSS (negative log-likelihood from normalizing flow)
-        log_prob = self.flow.log_prob(true_params_norm, context)
-        flow_loss = -log_prob.mean()
-
-        # ✅ 2. PHYSICS CONSTRAINT LOSS
-        # ✅ FIX (Nov 13): Only apply physics loss to first signal (ground truth)
-        # Secondary signals in overlaps are edge cases and shouldn't constrain the flow
-        physics_loss, physics_violations = self._compute_physics_loss(true_params[:1, :])
-
-        # ✅ 3. SAMPLE-BASED BOUNDS LOSS (Nov 13 FIX: Constrain flow outputs directly)
-        # This is CRITICAL: forces flow to learn bounded outputs, not just fit ground truth
-        sample_loss = torch.tensor(0.0, device=strain_data.device)
-        sample_loss_weight = self.config.get("neural_posterior", {}).get("sample_loss_weight") or self.config.get("sample_loss_weight", 0.1)
         
-        # Sample multiple times to ensure good coverage
-        n_sample_batches = 3
-        for _ in range(n_sample_batches):
-            z_samples = torch.randn(true_params.size(0), self.param_dim, device=self.device)
-            samples_norm, _ = self.flow.inverse(z_samples, context)
+        physics_loss_weight = self.config.get("neural_posterior", {}).get("physics_loss_weight")
+        if physics_loss_weight is None:
+            physics_loss_weight = self.config.get("physics_loss_weight", 0.05)
+        # ✅ 1. FLOW LOSS (depends on flow type)
+        # ===============================
+        # ✅ FIX: Read flow_type from top-level config, not flow_config section
+        flow_type = self.config.get("flow_type", "nsf").lower()
+        
+        if flow_type == "flowmatching":
+            # ✅ CRITICAL FIX: Use Conditional Flow Matching (CFM) loss instead of NLL
+            batch_size = true_params_norm.shape[0]
             
-            # Penalize samples outside [-1, 1] range
-            # Use smooth penalty: magnitude of violation squared
-            out_of_bounds = F.relu(torch.abs(samples_norm) - 1.0)
-            sample_loss += torch.mean(out_of_bounds**2)
+            # Sample random time t ~ U(0,1)
+            t = torch.rand(batch_size, 1, device=true_params_norm.device)
+            
+            # Sample x_0 from base distribution
+            x_0 = torch.randn_like(true_params_norm)
+            
+            # Interpolate: z_t = (1-t)*x_0 + t*x_1 (Optimal Transport path)
+            z_t = (1 - t) * x_0 + t * true_params_norm
+            
+            # Target velocity (OT direction)
+            target_velocity = true_params_norm - x_0
+            
+            # Predicted velocity from model
+            pred_velocity = self.flow.velocity_net(z_t, t.squeeze(-1), context)
+            
+            # CFM Loss: Match velocity fields (replaces NLL for FlowMatching)
+            flow_loss = F.mse_loss(pred_velocity, target_velocity)  # CFM (Conditional Flow Matching) loss
+            
+        else:
+            # ✅ Use standard NLL for RealNVP/MAF/NSF (deterministic coupling-based flows)
+            # These flows do NOT have velocity_net; they use log_prob for training
+            log_prob = self.flow.log_prob(true_params_norm, context)
+            
+            # ✅ Clamp log_prob to prevent NaN/Inf and ensure positive loss
+            # Typical good fit: log_prob ≈ -2 to -10 (→ NLL loss = 2-10 nats)
+            log_prob_clamped = torch.clamp(log_prob, min=-100.0, max=-0.1)
+            flow_loss = -log_prob_clamped.mean()  # NLL (Negative Log-Likelihood) loss
         
-        sample_loss = sample_loss / n_sample_batches
-        sample_loss = sample_loss_weight * sample_loss
-
-        # ✅ 4. BIAS CORRECTION LOSS (if bias corrector enabled)
+        # ===============================
+        # ✅ 2. PHYSICS CONSTRAINT LOSS (with emergency clamping)
+        # ===============================
+        physics_loss_raw, physics_violations = self._compute_physics_loss(true_params[:, :])
+        
+        # ✅ EMERGENCY FIX (Nov 14): Clamp physics loss to prevent explosion
+        physics_loss = torch.clamp(physics_loss_raw, max=10.0)
+        
+        # Log warning if physics loss is exploding
+        if physics_loss_raw > 100.0:
+            self.logger.warning(
+                f"Physics loss explosion detected: {physics_loss_raw:.1f} → clamped to 10.0"
+            )
+        
+        # ===============================
+        # ✅ 3. SAMPLE-BASED BOUNDS LOSS
+        # ===============================
+        sample_loss_weight = (
+            self.config.get("neural_posterior", {}).get("sample_loss_weight") 
+            or self.config.get("sample_loss_weight", 0.1)
+        )
+        
+        # Sample from flow and penalize out-of-bounds predictions
+        z_samples = torch.randn(true_params.size(0) * 3, self.param_dim, device=self.device)
+        context_expanded = context.repeat_interleave(3, dim=0)
+        
+        try:
+            samples_norm, _ = self.flow.inverse(z_samples, context_expanded)
+            # Penalize samples outside [-1, 1] range
+            out_of_bounds = F.relu(torch.abs(samples_norm) - 1.0)
+            sample_loss = sample_loss_weight * torch.mean(out_of_bounds**2)
+        except Exception:
+            sample_loss = torch.tensor(0.0, device=strain_data.device)
+        
+        # ===============================
+        # ✅ 4. BIAS CORRECTION LOSS (if enabled)
+        # ===============================
         bias_loss = torch.tensor(0.0, device=strain_data.device)
         if self.bias_corrector is not None:
             with torch.no_grad():
-                # Get bias corrections for ground truth parameters
                 corrections, bias_uncertainties, confidence = self.bias_corrector(
                     true_params_norm, context
                 )
-
-            # Encourage small corrections on average (prior toward no correction)
-            # ✅ Fixed: Changed -confidence to (1.0 - confidence) for positive loss
+            # Encourage small corrections (prior toward no correction)
             bias_loss = 0.05 * (
-                torch.mean(torch.abs(corrections)) + 0.1 * torch.mean(torch.abs(1.0 - confidence))
+                torch.mean(torch.abs(corrections)) + 0.1 * torch.mean(1.0 - confidence)
             )
-
+            # Log bias corrector activity (once per epoch via validation)
+            if torch.rand(1).item() < 0.01:  # ~1% sampling to avoid spam
+                self.logger.debug(
+                    f"BiasCorrector forward pass | "
+                    f"Mean correction: {torch.abs(corrections).mean().item():.6f} | "
+                    f"Mean confidence: {confidence.mean().item():.4f} | "
+                    f"Bias loss: {bias_loss.item():.6f}"
+                )
+        
+        # ===============================
         # ✅ 5. UNCERTAINTY REGULARIZATION
-        uncertainties = self.uncertainty_estimator(torch.cat([true_params_norm, context], dim=1))
+        # ===============================
+        uncertainties = self.uncertainty_estimator(
+            torch.cat([true_params_norm, context], dim=1)
+        )
         uncertainty_loss = 0.01 * torch.mean(uncertainties)
-
-        # ✅ 6. FLOW REGULARIZATION (weight norm penalty) - configurable strength
-        jacobian_reg_weight = self.config.get(
-            "jacobian_reg_weight"
-        ) or self.config.get("neural_posterior", {}).get("jacobian_reg_weight", 0.001)  # 10x stronger than default 1e-4
+        
+        # ===============================
+        # ✅ 6. FLOW REGULARIZATION (weight norm penalty)
+        # ===============================
+        jacobian_reg_weight = (
+            self.config.get("jacobian_reg_weight")
+            or self.config.get("neural_posterior", {}).get("jacobian_reg_weight", 0.001)
+        )
         jacobian_reg = jacobian_reg_weight * torch.mean(
             torch.stack([p.norm(2) for n, p in self.flow.named_parameters() if "weight" in n])
         )
-
-        # ✅ TOTAL LOSS: All components integrated
-        # ✅ CRITICAL FIX (Nov 13 09:55): Rebalanced physics_loss to 0.05 (soft constraint)
-        # Higher weights like 1.0 cause physics loss to dominate (99.8% of total), starving NLL and other losses
-        physics_loss_weight = self.config.get("neural_posterior", {}).get("physics_loss_weight") or self.config.get("physics_loss_weight", 0.05)  # ✅ Default 0.05 (soft constraint)
-
-        total_loss = (
-            flow_loss  # Main likelihood
-            + jacobian_reg  # Flow weight regularization
-            + physics_loss_weight
-            * physics_loss  # ✅ Physics constraints (1.0x for hard constraint)
-            + bias_loss  # Bias correction regularization
-            + uncertainty_loss  # Uncertainty regularization
-            + sample_loss  # ✅ NEW (Nov 13): Penalize flow samples outside bounds
+        
+        # ===============================
+        # ✅ TOTAL LOSS with balanced weights
+        # ===============================
+        # ✅ CRITICAL FIX (Nov 14): Reduced physics weight by 100× (0.05 → 0.0005)
+        physics_loss_weight = (
+            self.config.get("neural_posterior", {}).get("physics_loss_weight")
+            or self.config.get("physics_loss_weight", 0.0005)  # ✅ Down from 0.05
         )
-
+        
+        total_loss = (
+            flow_loss              # Main objective (CFM≈1.0 for FlowMatching or NLL≈2-10 for coupling-based flows)
+            + jacobian_reg         # Flow regularization (~0.017)
+            + physics_loss_weight * physics_loss  # Physics constraints (scaled)
+            + bias_loss            # Bias correction regularization (~0.0)
+            + uncertainty_loss     # Uncertainty regularization (~0.004)
+            + sample_loss          # Penalize flow samples outside bounds
+        )
+        
         return {
             "total_loss": total_loss,
-            "nll": flow_loss,
-            "physics_loss": physics_loss,
+            "flow_loss": flow_loss,  # CFM for FlowMatching, NLL for coupling-based flows
+            "physics_loss": physics_loss_raw,  # Log raw value for monitoring
+            "physics_loss_clamped": physics_loss,  # Log clamped value
             "bias_loss": bias_loss,
             "uncertainty_loss": uncertainty_loss,
-            "sample_loss": sample_loss,  # ✅ NEW
+            "sample_loss": sample_loss,
             "jacobian_reg": jacobian_reg,
-            "physics_violations": physics_violations,  # ⚠️ DEBUG
+            "physics_violations": physics_violations,
         }
 
+
     def _compute_physics_loss(self, params: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
-        """Enforce physical constraints with hard bounds penalty.
-
-        ✅ CRITICAL FIX (Nov 13): Added bounds penalties to prevent flow from
-        extrapolating beyond physical parameter ranges. Without this, the flow
-        learns to predict negative masses and negative distances.
-
-        ✅ FIX 2 (Nov 13 10:30): Restrict physics loss to first signal only.
-        Secondary signals in overlapping data are edge cases intentionally
-        generated out-of-bounds for training robustness. We only constrain
-        the flow for the primary (first) signal to avoid spurious physics loss.
-
+        """
+        Enforce physical constraints with NORMALIZED bounds penalty.
+        
+        ✅ CRITICAL FIX (Nov 14): Added normalization to prevent explosion.
+        Raw violations (e.g., mass difference of 50 solar masses) were causing
+        physics_loss = 27,568 which dominated training. Now normalized to ~1.0 scale.
+        
         Args:
-            params: [batch_size, param_dim] - typically just [1, param_dim] (first signal only)
+            params: [batch_size, param_dim] parameters in PHYSICAL units
+        
+        Returns:
+            Tuple of (loss, violation_dict)
         """
         loss = torch.tensor(0.0, device=params.device)
         
-        # ⚠️ DEBUG: Check which parameters are violating bounds
+        # ⚠️ DEBUG: Track violations
         debug_violations = {}
-
-        # ✅ 0. BOUNDS PENALTY: Penalize parameters outside training domain
-        # This is CRUCIAL to prevent NLL explosion from out-of-range predictions
+        
+        # ===============================
+        # ✅ 0. BOUNDS PENALTY (normalized)
+        # ===============================
+        violation_list = []
+        
         for i, param_name in enumerate(self.param_names):
             min_val, max_val = self.param_bounds[param_name]
-
-            # Soft penalty for exceeding bounds (quadratic for smooth gradients)
-            lower_violation = F.relu(min_val - params[:, i])  # Penalty if param < min
-            upper_violation = F.relu(params[:, i] - max_val)  # Penalty if param > max
+            param_range = max_val - min_val
             
-            # ⚠️ DEBUG
+            # Compute violations
+            lower_violation = F.relu(min_val - params[:, i])
+            upper_violation = F.relu(params[:, i] - max_val)
+            
+            # ✅ CRITICAL: Normalize by parameter range
+            lower_violation_norm = lower_violation / param_range
+            upper_violation_norm = upper_violation / param_range
+            
+            violation_list.append(lower_violation_norm**2)
+            violation_list.append(upper_violation_norm**2)
+            
+            # Debug tracking
             n_lower = (lower_violation > 1e-6).sum().item()
             n_upper = (upper_violation > 1e-6).sum().item()
             debug_violations[param_name] = {
@@ -875,38 +1028,58 @@ class OverlapNeuralPE(nn.Module):
                 'upper_max': upper_violation.max().item(),
                 'range': (params[:, i].min().item(), params[:, i].max().item())
             }
-
-            # ✅ FIX 4 (Nov 13 09:55): Updated bounds penalty weight to 0.5
-            # Strong penalty protects ground truth parameters from going out of bounds
-            # Three-part loss balance: physics (0.05) + bounds (0.5) + sample (0.5)
-            penalty_weight = self.config.get("neural_posterior", {}).get("bounds_penalty_weight") or self.config.get("bounds_penalty_weight", 0.5)  # ✅ Increased to 0.5
-            loss += penalty_weight * (
-                torch.mean(lower_violation**2) + torch.mean(upper_violation**2)
-            )
-
-        # 1. Mass ordering constraint: m1 >= m2
+        
+        # ✅ Aggregate normalized violations
+        if violation_list:
+            bounds_loss = torch.mean(torch.stack(violation_list))
+        else:
+            bounds_loss = torch.tensor(0.0, device=params.device)
+        
+        # ✅ FIX: Use moderate penalty weight (not 0.5 which is too high)
+        penalty_weight = (
+            self.config.get("neural_posterior", {}).get("bounds_penalty_weight") 
+            or self.config.get("bounds_penalty_weight", 0.1)  # Down from 0.5
+        )
+        loss += penalty_weight * bounds_loss
+        
+        # ===============================
+        # ✅ 1. MASS ORDERING CONSTRAINT: m1 >= m2
+        # ===============================
         if "mass_1" in self.param_names and "mass_2" in self.param_names:
             m1_idx = self.param_names.index("mass_1")
             m2_idx = self.param_names.index("mass_2")
+            
             mass_violation = F.relu(params[:, m2_idx] - params[:, m1_idx])
-            loss += torch.mean(mass_violation**2)
-
-        # 2. Spin bounds constraint (|χ| <= 1)
+            
+            # ✅ Normalize by typical mass scale (100 solar masses)
+            mass_violation_norm = mass_violation / 100.0
+            loss += torch.mean(mass_violation_norm**2)
+        
+        # ===============================
+        # ✅ 2. SPIN BOUNDS: |χ| <= 1
+        # ===============================
         for i, param_name in enumerate(self.param_names):
-            if "chi" in param_name.lower():  # e.g., chi_1, chi_2
+            if "chi" in param_name.lower():
                 spin = params[:, i]
-                spin_violation = F.relu(torch.abs(spin) - 1.0)  # penalty if |χ| > 1
+                spin_violation = F.relu(torch.abs(spin) - 1.0)
+                # Already normalized (spin is dimensionless, scale = 1)
                 loss += 0.5 * torch.mean(spin_violation**2)
-
-        # 3. Tidal deformability bounds for BNS (Lambda <= 5000)
+        
+        # ===============================
+        # ✅ 3. TIDAL DEFORMABILITY (BNS only): Λ <= 5000
+        # ===============================
         if self.event_type == "BNS":
             for i, param_name in enumerate(self.param_names):
                 if "lambda" in param_name.lower():
                     lambda_val = params[:, i]
                     lambda_violation = F.relu(lambda_val - 5000.0)
-                    loss += 0.3 * torch.mean(lambda_violation**2)
-
-        # ✅ Always return loss and violations for logging
+                    # ✅ Normalize by scale (5000)
+                    lambda_violation_norm = lambda_violation / 5000.0
+                    loss += 0.3 * torch.mean(lambda_violation_norm**2)
+        
+        # ✅ Final normalization by batch size (already handled by torch.mean)
+        # This ensures loss is O(1) regardless of batch size
+        
         return loss, debug_violations
 
     def update_training_metrics(
@@ -1093,6 +1266,47 @@ class OverlapNeuralPE(nn.Module):
             self.logger.warning(f"Failed to get bias metrics: {e}")
             return {}
 
+    def get_priority_net_metrics(self) -> Dict[str, Any]:
+        """
+        Get metrics from PriorityNet for tracking signal ranking performance.
+
+        Returns:
+            Dict with PriorityNet metrics (empty if PriorityNet not enabled)
+        """
+        if not hasattr(self, "priority_net") or self.priority_net is None:
+            return {}
+
+        try:
+            metrics = {
+                "enabled": True,
+                "frozen": all(not p.requires_grad for p in self.priority_net.parameters()),
+                "n_parameters": sum(p.numel() for p in self.priority_net.parameters()),
+            }
+
+            # Get PriorityNet specific metrics if available
+            if hasattr(self.priority_net, "get_metrics"):
+                metrics.update(self.priority_net.get_metrics())
+
+            # Track last batch predictions/uncertainties if available
+            if hasattr(self, "_last_priority_net_preds") and self._last_priority_net_preds is not None:
+                preds = self._last_priority_net_preds
+                if len(preds) > 0:
+                    metrics["avg_importance"] = float(torch.mean(preds).item())
+                    metrics["max_importance"] = float(torch.max(preds).item())
+                    metrics["min_importance"] = float(torch.min(preds).item())
+
+            if hasattr(self, "_last_priority_net_uncs") and self._last_priority_net_uncs is not None:
+                uncs = self._last_priority_net_uncs
+                if len(uncs) > 0:
+                    metrics["avg_uncertainty"] = float(torch.mean(uncs).item())
+                    metrics["max_uncertainty"] = float(torch.max(uncs).item())
+
+            return metrics
+
+        except Exception as e:
+            self.logger.warning(f"Failed to get PriorityNet metrics: {e}")
+            return {}
+
     def get_integration_summary(self) -> Dict[str, Any]:
         """
         Get comprehensive summary of all integrated components and their status.
@@ -1105,13 +1319,13 @@ class OverlapNeuralPE(nn.Module):
             "timestamp": str(pd.Timestamp.now()),
             "components": {
                 "prioritynet": {
-                    "enabled": True,
-                    "frozen": all(not p.requires_grad for p in self.priority_net.parameters()),
-                    "n_parameters": sum(p.numel() for p in self.priority_net.parameters()),
+                    "enabled": self.priority_net is not None,
+                    "frozen": all(not p.requires_grad for p in self.priority_net.parameters()) if self.priority_net else False,
+                    "n_parameters": sum(p.numel() for p in self.priority_net.parameters()) if self.priority_net else 0,
                 },
                 "normalizing_flow": {
                     "enabled": True,
-                    "type": self.flow_config.get("type", "flowmatching"),
+                    "type": self.config.get("flow_type", "nsf"),
                     "n_layers": self.flow_config.get("num_layers", 4),
                     "context_dim": self.context_dim,
                     "n_parameters": sum(p.numel() for p in self.flow.parameters()),

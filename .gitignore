@@ -26,7 +26,10 @@ MANIFEST
 
 FIX_DOCS/*
 AGENTS.md
-
+.noise_cache
+*pkl
+.npy
+.npz
 
 
 # PyTorch

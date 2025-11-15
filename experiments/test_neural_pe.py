@@ -522,7 +522,9 @@ def main():
     config = checkpoint['config']
     priority_net_path = config['training_metadata']['priority_net']
     
-    model = OverlapNeuralPE(param_names, priority_net_path, config)
+    # ✅ FIXED: Extract neural_posterior config section if it exists
+    neural_pe_config = config.get("neural_posterior", config)
+    model = OverlapNeuralPE(param_names, priority_net_path, neural_pe_config)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device).eval()
     

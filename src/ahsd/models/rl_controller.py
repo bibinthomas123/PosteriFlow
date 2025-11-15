@@ -46,7 +46,7 @@ class DQNController(nn.Module):
     return self.network(state)
 
 
-class AdaptiveComplexityController:
+class AdaptiveComplexityController(nn.Module):
   """RL-based adaptive complexity controller."""
   
   def __init__(self,
@@ -57,6 +57,7 @@ class AdaptiveComplexityController:
         epsilon_decay: float = 0.995,
         memory_size: int = 10000,
         batch_size: int = 32):
+    super().__init__()
     
     self.state_features = state_features
     self.complexity_levels = complexity_levels
@@ -76,6 +77,11 @@ class AdaptiveComplexityController:
     
     # Experience replay
     self.memory = deque(maxlen=memory_size)
+    
+    # Metrics tracking
+    self.action_history = deque(maxlen=100)  # Last 100 actions
+    self.reward_history = deque(maxlen=100)  # Last 100 rewards
+    self.action_counts = {i: 0 for i in range(self.action_dim)}  # Action frequency
     
     # Update target network
     self.update_target_network()
@@ -124,14 +130,19 @@ class AdaptiveComplexityController:
     return self.complexity_levels[action]
   
   def store_experience(self,
-            state: torch.Tensor,
-            action: int,
-            reward: float,
-            next_state: torch.Tensor,
-            done: bool):
-    """Store experience in replay buffer."""
-    
-    self.memory.append((state, action, reward, next_state, done))
+             state: torch.Tensor,
+             action: int,
+             reward: float,
+             next_state: torch.Tensor,
+             done: bool):
+     """Store experience in replay buffer."""
+     
+     self.memory.append((state, action, reward, next_state, done))
+     
+     # Track metrics
+     self.action_history.append(action)
+     self.reward_history.append(reward)
+     self.action_counts[action] += 1
   
   def compute_reward(self,
            pipeline_metrics: Dict,
@@ -202,8 +213,76 @@ class AdaptiveComplexityController:
     return loss.item()
   
   def update_target_network(self):
-    """Update target network with main network weights."""
-    self.target_network.load_state_dict(self.q_network.state_dict())
+     """Update target network with main network weights."""
+     self.target_network.load_state_dict(self.q_network.state_dict())
+  
+  def get_metrics(self) -> Dict[str, float]:
+     """Get current RL controller metrics for monitoring."""
+     
+     metrics = {}
+     
+     # Epsilon (exploration rate)
+     metrics["epsilon"] = float(self.epsilon)
+     
+     # Complexity distribution from recent actions
+     if self.action_history:
+       action_array = np.array(list(self.action_history))
+       metrics["avg_complexity"] = float(np.mean(action_array))
+       metrics["complexity_std"] = float(np.std(action_array))
+     else:
+       metrics["avg_complexity"] = 0.0
+       metrics["complexity_std"] = 0.0
+     
+     # Rewards
+     if self.reward_history:
+       reward_array = np.array(list(self.reward_history))
+       metrics["avg_reward"] = float(np.mean(reward_array))
+       metrics["total_reward"] = float(np.sum(reward_array))
+     else:
+       metrics["avg_reward"] = 0.0
+       metrics["total_reward"] = 0.0
+     
+     # Action entropy (measures exploration diversity)
+     counts = np.array(list(self.action_counts.values()))
+     if counts.sum() > 0:
+       probs = counts / counts.sum()
+       entropy = -np.sum(probs * np.log(probs + 1e-10))
+       metrics["action_entropy"] = float(entropy)
+     else:
+       metrics["action_entropy"] = 0.0
+     
+     # Memory size
+     metrics["memory_size"] = len(self.memory)
+     
+     return metrics
+  
+  def state_dict(self, destination=None, prefix='', keep_vars=False):
+    """Override state_dict to include non-tensor attributes."""
+    # Get module state dict
+    module_state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+    
+    # Add non-tensor attributes as metadata
+    state = {
+      'module_state': module_state,
+      'epsilon': self.epsilon,
+      'epsilon_decay': self.epsilon_decay,
+      'state_features': self.state_features,
+      'complexity_levels': self.complexity_levels,
+    }
+    return state
+  
+  def load_state_dict(self, state_dict, strict=True):
+    """Override load_state_dict to restore non-tensor attributes."""
+    if isinstance(state_dict, dict) and 'module_state' in state_dict:
+      # New format with metadata
+      module_state = state_dict['module_state']
+      super().load_state_dict(module_state, strict=strict)
+      
+      self.epsilon = state_dict.get('epsilon', self.epsilon)
+      self.epsilon_decay = state_dict.get('epsilon_decay', self.epsilon_decay)
+    else:
+      # Fallback: assume it's pure module state
+      super().load_state_dict(state_dict, strict=strict)
   
   def save_model(self, filepath: str):
     """Save controller model."""

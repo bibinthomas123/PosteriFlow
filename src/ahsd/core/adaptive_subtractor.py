@@ -261,7 +261,18 @@ class NeuralPE:
             
             # Compile enhanced features
             features['network_power'] = network_power
-            features['estimated_snr'] = min(np.sqrt(network_power * 1e46), 50.0)
+            # Safely compute SNR with overflow protection
+            try:
+                snr_value = network_power * 1e46
+                # Clamp intermediate value to prevent overflow
+                snr_value = np.clip(snr_value, 0, 1e10)
+                estimated_snr = min(np.sqrt(snr_value), 50.0)
+                # Handle NaN from overflow
+                if np.isnan(estimated_snr) or np.isinf(estimated_snr):
+                    estimated_snr = 10.0  # Default fallback
+                features['estimated_snr'] = float(estimated_snr)
+            except (OverflowError, RuntimeWarning):
+                features['estimated_snr'] = 10.0
             features['peak_frequency'] = np.median(peak_frequencies) if peak_frequencies else 100.0
             features['cross_correlation'] = np.mean(cross_correlations) if cross_correlations else 0.1
             features['n_detectors'] = len(detector_data)

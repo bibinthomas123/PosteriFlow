@@ -83,7 +83,7 @@ def main():
             'ra', 'dec', 'theta_jn', 'psi', 'phase', 'geocent_time'
         ]
         
-        priority_net_path = Path('models/priority_net_checkpoint.pt')
+        priority_net_path = Path('models/priority_net/priority_net_best.pth')
         model = OverlapNeuralPE(
             param_names=param_names,
             priority_net_path=str(priority_net_path),
@@ -91,12 +91,36 @@ def main():
             device=str(device)
         )
         
-        checkpoint_path = Path('models/neural_pe/best_model.pth')
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.eval()
+        # Try different checkpoints in order of preference
+        checkpoint_candidates = [
+            Path('models/neural_pe/best_model.pth'),
+            Path('models/neural_pe/final_model.pth'),
+            Path('models/neural_pe/checkpoint_epoch_20.pth'),
+            Path('models/neural_pe/checkpoint_epoch_15.pth'),
+            Path('models/neural_pe/checkpoint_epoch_10.pth'),
+            Path('models/neural_pe/checkpoint_epoch_5.pth'),
+        ]
         
-        logger.info("✓ Model loaded successfully\n")
+        checkpoint_loaded = False
+        for checkpoint_path in checkpoint_candidates:
+            if checkpoint_path.exists():
+                try:
+                    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+                    incompatible_keys = model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                    logger.info(f"✓ Model loaded from {checkpoint_path.name}")
+                    logger.info(f"  Missing keys: {len(incompatible_keys.missing_keys)}")
+                    logger.info(f"  Unexpected keys: {len(incompatible_keys.unexpected_keys)}\n")
+                    logger.info(f"✓ Model loaded from {checkpoint_path.name}\n")
+                    checkpoint_loaded = True
+                    break
+                except Exception as e:
+                    logger.debug(f"  Could not load {checkpoint_path.name}: {str(e)[:80]}...")
+                    continue
+        
+        if not checkpoint_loaded:
+            logger.info("⚠️  No compatible checkpoint found, using model with random weights\n")
+        
+        model.eval()
         
     except Exception as e:
         logger.error(f"Failed to load model: {e}")

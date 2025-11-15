@@ -594,6 +594,7 @@ class ChunkedGWDataLoader:
                 "is_edge_case": sample.get("is_edge_case", False),
                 "edge_case_type": edge_case_type,
                 "edge_type_id": int(edge_type_id),
+                "detector_data": sample.get("detector_data", {}),  # ✅ Preserve strain data
             }
         except Exception as e:
             self._conversion_error_count = getattr(self, "_conversion_error_count", 0) + 1
@@ -642,6 +643,7 @@ class ChunkedGWDataLoader:
                 "is_edge_case": sample.get("is_edge_case", False),
                 "edge_case_type": edge_case_type,
                 "edge_type_id": int(edge_type_id),
+                "detector_data": sample.get("detector_data", {}),  # ✅ Preserve strain data
             }
         except Exception as e:
             self.logger.debug(f"Overlap conversion error: {e}")
@@ -674,7 +676,9 @@ class ChunkedGWDataLoader:
                 if base_strain is None:
                     return None
                 base_strain = np.asarray(base_strain)
-                combined_detector_data[det] = np.zeros_like(base_strain, dtype=base_strain.dtype)
+                combined_detector_data[det] = {
+                    "strain": np.zeros_like(base_strain, dtype=base_strain.dtype)
+                }
 
             detections = []
             for i, s in enumerate(selected):
@@ -699,10 +703,10 @@ class ChunkedGWDataLoader:
                     if det_strain is None:
                         continue
                     det_strain = np.asarray(det_strain)
-                    m = min(len(combined_detector_data[det]), len(det_strain))
+                    m = min(len(combined_detector_data[det]["strain"]), len(det_strain))
                     if m <= 0:
                         continue
-                    combined_detector_data[det][:m] += det_strain[:m] * snr_reduction
+                    combined_detector_data[det]["strain"][:m] += det_strain[:m] * snr_reduction
 
                 det_params = {
                     "mass_1": sig.get("mass_1", 30.0),
@@ -865,6 +869,7 @@ class PriorityNetDataset(Dataset):
                     "is_edge_case": is_edge_case,
                     "edge_case_type": edge_case_type,
                     "metadata": scenario.get("metadata", {}),
+                    "detector_data": scenario.get("detector_data", {}),  # ✅ Preserve strain data
                 }
 
                 self.data.append(scenario_data)
@@ -1341,12 +1346,16 @@ class PriorityNetDataset(Dataset):
         n_detections = len(detections)
         edge_type_ids = torch.full((n_detections,), edge_type_id, dtype=torch.long)
 
+        # ✅ Include detector_data with strain segments
+        detector_data = scenario.get("detector_data", {})
+
         return {
             "detections": detections,
             "priorities": priorities,  # ✅ Now properly normalized [0.05-0.95]
             "class_ids": class_ids,
             "edge_type_ids": edge_type_ids,
             "scenario_id": scenario["scenario_id"],
+            "detector_data": detector_data,  # ✅ For strain encoder
         }
 
 
@@ -1364,10 +1373,10 @@ def _config_get(cfg: Any, key: str, default: Any) -> Any:
 
 def collate_priority_batch(batch):
     """
-    Collate function for PriorityNet datasets with optional SNR per signal.
+    Collate function for PriorityNet datasets with optional SNR per signal and strain segments.
 
     Accepts either dict samples or tuple samples; ensures edge_type_ids is present.
-    Optionally passes through per-signal snr_values tensors when available.
+    Extracts strain segments from detector_data (H1, L1, V1) and passes them through.
 
     Args:
         batch: Iterable of samples where each sample is a dict with keys:
@@ -1375,18 +1384,21 @@ def collate_priority_batch(batch):
                - 'priorities': torch.Tensor [n]
                - 'edge_type_ids': Optional[torch.LongTensor [n]]
                - 'snr_values': Optional[torch.Tensor [n]]
-               or a tuple (detections, priorities, [edge_type_ids], [snr_values])
+               - 'detector_data': Optional[Dict] with H1/L1/V1 strain data
+               or a tuple (detections, priorities, [edge_type_ids], [snr_values], [strain])
 
     Returns:
-        Tuple of 4 lists:
+        Tuple of 5 lists:
           detections_batch: List[List[Dict]]
           priorities_batch: List[torch.Tensor]
           edge_type_ids_batch: List[torch.LongTensor]
+          strain_batch: List[Optional[torch.Tensor]] - strain segments [n_detectors, time_samples]
           snr_values_batch: List[Optional[torch.Tensor]]
     """
     detections_batch = []
     priorities_batch = []
     edge_type_ids_batch = []
+    strain_batch = []
     snr_values_batch = []
 
     for item in batch:
@@ -1409,23 +1421,51 @@ def collate_priority_batch(batch):
 
             snr_vals = item.get("snr_values", None)
 
+            # ✅ EXTRACT STRAIN SEGMENTS from detector_data
+            detector_data = item.get("detector_data", {})
+            strain_tensor = None
+            if detector_data:
+                # Stack H1, L1, V1 strain data into [3, time_samples]
+                strain_list = []
+                for detector in ["H1", "L1", "V1"]:
+                    if detector in detector_data and isinstance(detector_data[detector], dict):
+                        strain_data = detector_data[detector].get("strain", None)
+                        if strain_data is not None:
+                            if isinstance(strain_data, np.ndarray):
+                                strain_data = torch.from_numpy(strain_data).float()
+                            strain_list.append(strain_data)
+                    
+                    if len(strain_list) < len([d for d in ["H1", "L1", "V1"] if d in detector_data]):
+                        # Detector data exists but strain field missing - use zeros
+                        if len(strain_list) == 0:
+                            # Assume 16384 samples (4s @ 4096 Hz)
+                            strain_list.append(torch.zeros(16384, dtype=torch.float32))
+                        else:
+                            strain_list.append(torch.zeros_like(strain_list[0]))
+                
+                if strain_list:
+                    strain_tensor = torch.stack(strain_list)  # [3, time_samples]
+
             detections_batch.append(dets)
             priorities_batch.append(prios)
             edge_type_ids_batch.append(edge_ids)
+            strain_batch.append(strain_tensor)
             snr_values_batch.append(snr_vals)
         else:
-            # Tuple format: (detections, priorities, [edge_type_ids], [snr_values])
+            # Tuple format: (detections, priorities, [edge_type_ids], [strain], [snr_values])
             dets = item[0]
             prios = item[1]
             edge_ids = item[2] if len(item) > 2 else None
-            snr_vals = item[3] if len(item) > 3 else None
+            strain = item[3] if len(item) > 3 else None
+            snr_vals = item[4] if len(item) > 4 else None
 
             detections_batch.append(dets)
             priorities_batch.append(prios)
             edge_type_ids_batch.append(edge_ids)
+            strain_batch.append(strain)
             snr_values_batch.append(snr_vals)
 
-    return detections_batch, priorities_batch, edge_type_ids_batch, snr_values_batch
+    return detections_batch, priorities_batch, edge_type_ids_batch, strain_batch, snr_values_batch
 
 
 def train_priority_net_with_validation(config, train_dataset, val_dataset, output_dir: Path, resume_state: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1497,7 +1537,7 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
         }
 
     # Read top-level training settings using unified config access
-    batch_size = get_config_value(config, "batch_size", 32, int)
+    batch_size = get_config_value(config, "batch_size", 16, int)
     n_epochs = get_config_value(config, "epochs", 250, int)
     patience = get_config_value(config, "patience", 30, int)
     warmup_epochs = get_config_value(config, "warmup_epochs", 5, int)
@@ -1515,7 +1555,7 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
         train_dataset,
         batch_size=batch_size,
         collate_fn=collate_priority_batch,
-        num_workers=2,
+        num_workers=1,
         pin_memory=True,
         persistent_workers=True,
         sampler=train_sampler,
@@ -1525,7 +1565,7 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_priority_batch,
-        num_workers=2,
+        num_workers=1,
         pin_memory=True,
         persistent_workers=True,
     )
@@ -2090,14 +2130,39 @@ def evaluate_priority_net(
 
                 total_multidet += 1
 
-                # CORRECT: Use full model forward pass with edge_type_id
+                # CORRECT: Use full model forward pass with edge_type_id and strain segments
                 try:
                     edge_type_id = item.get("edge_type_id", None)
                     if edge_type_id is not None:
                         edge_ids = torch.full((len(detections),), edge_type_id, dtype=torch.long)
                     else:
                         edge_ids = None
-                    pred_priorities, uncertainties = model(detections, edge_type_ids=edge_ids)
+                    
+                    # Extract strain segments from detector_data
+                    strain_segments = None
+                    detector_data = item.get("detector_data", {})
+                    if detector_data:
+                        strain_list = []
+                        detectors = ["H1", "L1", "V1"]  # Standard detector order
+                        for det in detectors:
+                            if det in detector_data:
+                                strain_data = detector_data[det].get("strain", None)
+                                if strain_data is not None:
+                                    if isinstance(strain_data, np.ndarray):
+                                        strain_list.append(torch.from_numpy(strain_data).float())
+                                    elif isinstance(strain_data, torch.Tensor):
+                                        strain_list.append(strain_data.float())
+                        
+                        if strain_list and len(strain_list) > 0:
+                            # Stack strain segments: [n_detectors, time_samples] -> [1, n_detectors, time_samples]
+                            strain_tensor = torch.stack(strain_list, dim=0).unsqueeze(0)  # [1, n_det, time]
+                            strain_segments = strain_tensor.to(device)
+                    
+                    pred_priorities, uncertainties = model(
+                        detections, 
+                        strain_segments=strain_segments,
+                        edge_type_ids=edge_ids
+                    )
                 except Exception as e:
                     if item_idx < 5:
                         logging.error(f"Forward pass failed at {item_idx}: {e}")

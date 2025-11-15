@@ -2335,7 +2335,7 @@ def plot_research_figure_19_snr_efficiency(df, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="GW Dataset Analysis (Research-Grade)")
-    parser.add_argument("--data_dir", default="data/ahsd_dataset")
+    parser.add_argument("--data_dir", default="data/dataset")
     parser.add_argument("--output_dir", default="analysis")
     parser.add_argument("--export_violations", action="store_true")
     args = parser.parse_args()

@@ -295,6 +295,10 @@ class OverlapNeuralPETrainer:
             'val_metrics': val_metrics,
             'config': self.config
         }
+        
+        # ✅ Save RL controller state (now that it's nn.Module)
+        if hasattr(self.model, 'rl_controller') and self.model.rl_controller is not None:
+            checkpoint['rl_controller_state_dict'] = self.model.rl_controller.state_dict()
 
         torch.save(checkpoint, filepath)
         self.logger.info(f"Checkpoint saved: {filepath}")
@@ -391,72 +395,69 @@ class OverlapNeuralPETrainer:
             self.logger.info("✅ Gradient flow OK (no vanishing gradients detected)")
         
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
-        """Train one epoch."""
+        """Train one epoch with integrated RL controller training."""
         self.model.train()
-
+        
         epoch_losses = []
         epoch_metrics = {
-            'nll': [],
+            'flow_loss': [],
             'gradient_norm': [],
             'physics_loss': [],
             'bias_loss': [],
             'uncertainty_loss': [],
-            'jacobian_reg': []
+            'jacobian_reg': [],
+            'rl_loss': [],  # ✅ Track RL losses
+            'rl_complexity': []  # Track complexity distribution
         }
+
+        # RL state tracking
+        prev_loss = float('inf')
+        batch_time_start = time.time()
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
 
         for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(progress_bar):
+            batch_start = time.time()
             self.optimizer.zero_grad()
             strain_data = strain_data.to(self.device)
             parameters = parameters.to(self.device)
 
             target_params = parameters[:, 0, :]
 
+            # ✅ Nov 14: GET RL STATE AND COMPLEXITY RECOMMENDATION
+            complexity = 'medium'
+            complexity_id = 1
+            if hasattr(self.model, 'rl_controller') and self.model.rl_controller is not None:
+                # Extract pipeline state
+                avg_n_signals = float(n_signals.float().mean().item())
+                pipeline_state = {
+                    'remaining_signals': avg_n_signals,
+                    'residual_power': prev_loss if prev_loss != float('inf') else 0.5,
+                    'processing_time': time.time() - batch_time_start,
+                    'current_snr': 20.0,
+                    'extraction_success_rate': 0.8
+                }
+                
+                # Get complexity (training=True for exploration)
+                complexity = self.model.rl_controller.get_complexity_level(pipeline_state, training=True)
+                complexity_id = self.model.rl_controller.complexity_levels.index(complexity)
+                epoch_metrics['rl_complexity'].append(complexity_id)
+
             # Compute loss
             loss_dict = self.model.compute_loss(strain_data, target_params)
-
-            # ✅ DEBUG: Log loss components for first batch (catch issues early)
-            if batch_idx == 0:
-                self.logger.info(f"\n[BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
-                self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
-                self.logger.info(f"  NLL: {loss_dict.get('nll', 0):.4f}")
-                self.logger.info(f"  Physics Loss (raw): {loss_dict.get('physics_loss', 0):.4f} × 0.05 = {loss_dict.get('physics_loss', 0) * 0.05:.4f}")
-                self.logger.info(f"  Sample Loss (raw): {loss_dict.get('sample_loss', 0):.4f} × 0.5 = {loss_dict.get('sample_loss', 0) * 0.5:.4f}")
-                self.logger.info(f"  Bounds Penalty: (in physics)")
-                self.logger.info(f"  Bias Loss: {loss_dict.get('bias_loss', 0):.4f}")
-                self.logger.info(f"  Uncertainty Loss: {loss_dict.get('uncertainty_loss', 0):.4f}")
-                self.logger.info(f"  Jacobian Reg: {loss_dict.get('jacobian_reg', 0):.4f}")
-                
-                # ⚠️ DEBUG: Log parameter violations
-                if 'physics_violations' in loss_dict:
-                    self.logger.info(f"\n  [PARAMETER VIOLATIONS]")
-                    for param_name, violations in loss_dict['physics_violations'].items():
-                        self.logger.info(f"    {param_name}:")
-                        self.logger.info(f"      Range: [{violations['range'][0]:.6f}, {violations['range'][1]:.6f}]")
-                        self.logger.info(f"      Lower violations: {violations['lower']} (max: {violations['lower_max']:.6f})")
-                        self.logger.info(f"      Upper violations: {violations['upper']} (max: {violations['upper_max']:.6f})")
-                
-                # Check for NaN/Inf
-                for key, val in loss_dict.items():
-                    if isinstance(val, torch.Tensor) and (torch.isnan(val) or torch.isinf(val)):
-                        self.logger.warning(f"⚠️  {key} = {val}")
 
             # Backward pass
             loss = loss_dict['total_loss']
             loss.backward()
             
-             # ✅ Nov 13: Per-layer gradient tracking for debugging
-            # if batch_idx == 0 and epoch % 5 == 0:  # Log every 5 epochs, first batch only
-            #     self._log_gradient_statistics(epoch)
-            
-             # Gradient clipping
+            # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
 
             self.optimizer.step()
+            
             # Store metrics
             epoch_losses.append(loss_dict['total_loss'].item())
-            epoch_metrics['nll'].append(loss_dict['nll'].item())
+            epoch_metrics['flow_loss'].append(loss_dict['flow_loss'].item())
             epoch_metrics['gradient_norm'].append(grad_norm.item())
             
             # Store component losses
@@ -469,11 +470,52 @@ class OverlapNeuralPETrainer:
             if 'jacobian_reg' in loss_dict:
                 epoch_metrics['jacobian_reg'].append(loss_dict['jacobian_reg'].item())
 
+            # ✅ Nov 14: RL EXPERIENCE COLLECTION AND TRAINING
+            if hasattr(self.model, 'rl_controller') and self.model.rl_controller is not None:
+                batch_time = time.time() - batch_start
+                current_loss = loss_dict['total_loss'].item()
+                
+                # Compute reward
+                reward = self.model.rl_controller.compute_reward({
+                    'parameter_bias': current_loss,
+                    'extraction_time': batch_time
+                }, complexity)
+                
+                # Build next state
+                next_pipeline_state = {
+                    'remaining_signals': avg_n_signals,
+                    'residual_power': current_loss,
+                    'processing_time': batch_time,
+                    'current_snr': 20.0,
+                    'extraction_success_rate': 0.8
+                }
+                
+                state_vector = self.model.rl_controller.get_state_vector(pipeline_state)
+                next_state_vector = self.model.rl_controller.get_state_vector(next_pipeline_state)
+                
+                # Store experience
+                self.model.rl_controller.store_experience(
+                    state_vector,
+                    complexity_id,
+                    reward,
+                    next_state_vector,
+                    done=False
+                )
+                
+                # Train when buffer filled
+                rl_memory = self.model.rl_controller.memory
+                if len(rl_memory) >= self.model.rl_controller.batch_size:
+                    rl_loss = self.model.rl_controller.train_step()
+                    if rl_loss is not None:
+                        epoch_metrics['rl_loss'].append(rl_loss)
+                
+                prev_loss = current_loss
+
             # ✅ WANDB: Log batch metrics
             if self.use_wandb and batch_idx % 10 == 0:
                 batch_log = {
                     'batch/train_loss': loss_dict['total_loss'].item(),
-                    'batch/nll': loss_dict['nll'].item(),
+                    'batch/flow_loss': loss_dict['flow_loss'].item(),
                     'batch/gradient_norm': grad_norm.item(),
                     'batch/learning_rate': self.optimizer.param_groups[0]['lr'],
                     'global_step': self.global_step
@@ -487,20 +529,31 @@ class OverlapNeuralPETrainer:
                     batch_log['batch/uncertainty_loss'] = loss_dict['uncertainty_loss'].item()
                 if 'jacobian_reg' in loss_dict:
                     batch_log['batch/jacobian_reg'] = loss_dict['jacobian_reg'].item()
+                
+                # Log RL metrics if available
+                if epoch_metrics['rl_loss']:
+                    batch_log['batch/rl_loss'] = epoch_metrics['rl_loss'][-1]
+                
                 wandb.log(batch_log)
 
             self.global_step += 1
 
             progress_bar.set_postfix({
                 'Loss': f"{loss_dict['total_loss'].item():.4f}",
-                'NLL': f"{loss_dict['nll'].item():.4f}",
+                'FlowLoss': f"{loss_dict['flow_loss'].item():.4f}",
                 'GradNorm': f"{grad_norm.item():.3f}"
             })
+
+        # ✅ Nov 14: PERIODIC TARGET NETWORK UPDATE (every 5 epochs)
+        if hasattr(self.model, 'rl_controller') and self.model.rl_controller is not None:
+            if (epoch + 1) % 5 == 0:
+                self.model.rl_controller.update_target_network()
+                self.logger.info(f"✅ RL target network updated at epoch {epoch+1}")
 
         # Compute epoch averages
         avg_metrics = {
             'avg_loss': np.mean(epoch_losses),
-            'avg_nll': np.mean(epoch_metrics['nll']),
+            'avg_flow_loss': np.mean(epoch_metrics['flow_loss']),
             'avg_gradient_norm': np.mean(epoch_metrics['gradient_norm'])
         }
         
@@ -513,46 +566,60 @@ class OverlapNeuralPETrainer:
             avg_metrics['avg_uncertainty_loss'] = np.mean(epoch_metrics['uncertainty_loss'])
         if epoch_metrics['jacobian_reg']:
             avg_metrics['avg_jacobian_reg'] = np.mean(epoch_metrics['jacobian_reg'])
+        
+        # ✅ Nov 14: Add RL metrics
+        if epoch_metrics['rl_loss']:
+            avg_metrics['avg_rl_loss'] = np.mean(epoch_metrics['rl_loss'])
+        
+        # Add complexity distribution
+        if epoch_metrics['rl_complexity']:
+            complexity_array = np.array(epoch_metrics['rl_complexity'])
+            avg_metrics['avg_complexity'] = float(np.mean(complexity_array))
+            avg_metrics['complexity_std'] = float(np.std(complexity_array))
+            # Count selections
+            avg_metrics['complexity_low_count'] = int(np.sum(complexity_array == 0))
+            avg_metrics['complexity_medium_count'] = int(np.sum(complexity_array == 1))
+            avg_metrics['complexity_high_count'] = int(np.sum(complexity_array == 2))
 
         return avg_metrics
 
     def validate_epoch(self, val_loader: DataLoader, epoch: int) -> Dict[str, float]:
-         """Validate one epoch."""
-         self.model.eval()
+        """Validate one epoch."""
+        self.model.eval()
 
-         epoch_losses = []
-         epoch_nlls = []
-         epoch_physics_losses = []
+        epoch_losses = []
+        epoch_nlls = []
+        epoch_physics_losses = []
 
-         with torch.no_grad():
-             for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(tqdm(val_loader, desc="Validating")):
-                 strain_data = strain_data.to(self.device)
-                 parameters = parameters.to(self.device)
+        with torch.no_grad():
+            for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(tqdm(val_loader, desc="Validating")):
+                strain_data = strain_data.to(self.device)
+                parameters = parameters.to(self.device)
 
-                 target_params = parameters[:, 0, :]
-                 loss_dict = self.model.compute_loss(strain_data, target_params)
+                target_params = parameters[:, 0, :]
+                loss_dict = self.model.compute_loss(strain_data, target_params)
 
-                 # ✅ DEBUG: Log first validation batch for comparison
-                #  if batch_idx == 0:
-                #      self.logger.info(f"\n[VAL BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
-                #      self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
-                #      self.logger.info(f"  NLL: {loss_dict.get('nll', 0):.4f}")
-                #      self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
-                #      self.logger.info(f"  (Val physics loss should be SIMILAR to train)")
+                # ✅ DEBUG: Log first validation batch for comparison
+                # if batch_idx == 0:
+                #     self.logger.info(f"\n[VAL BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
+                #     self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
+                #     self.logger.info(f"  Flow Loss: {loss_dict.get('flow_loss', 0):.4f}")
+                #     self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
+                #     self.logger.info(f"  (Val physics loss should be SIMILAR to train)")
 
-                 epoch_losses.append(loss_dict['total_loss'].item())
-                 epoch_nlls.append(loss_dict['nll'].item())
-                 if 'physics_loss' in loss_dict:
-                     epoch_physics_losses.append(loss_dict['physics_loss'].item())
+                epoch_losses.append(loss_dict['total_loss'].item())
+                epoch_nlls.append(loss_dict['flow_loss'].item())
+                if 'physics_loss' in loss_dict:
+                    epoch_physics_losses.append(loss_dict['physics_loss'].item())
 
-         val_metrics = {
-             'avg_loss': np.mean(epoch_losses),
-             'avg_nll': np.mean(epoch_nlls)
-         }
-         if epoch_physics_losses:
-             val_metrics['avg_physics_loss'] = np.mean(epoch_physics_losses)
-         
-         return val_metrics
+        val_metrics = {
+            'avg_loss': np.mean(epoch_losses),
+            'avg_flow_loss': np.mean(epoch_nlls)
+        }
+        if epoch_physics_losses:
+            val_metrics['avg_physics_loss'] = np.mean(epoch_physics_losses)
+        
+        return val_metrics
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader, output_dir: Path, start_epoch: int = 0):
         """Complete training loop."""
@@ -581,6 +648,7 @@ class OverlapNeuralPETrainer:
 
             rl_metrics = self.model.get_rl_metrics() if hasattr(self.model, 'get_rl_metrics') else {}
             bias_metrics = self.model.get_bias_metrics() if hasattr(self.model, 'get_bias_metrics') else {}
+            priority_net_metrics = self.model.get_priority_net_metrics() if hasattr(self.model, 'get_priority_net_metrics') else {}
 
 
             # Store history
@@ -596,10 +664,10 @@ class OverlapNeuralPETrainer:
             if self.use_wandb:
                 log_dict = {
                     'epoch/train_loss': train_metrics['avg_loss'],
-                    'epoch/train_nll': train_metrics['avg_nll'],
+                    'epoch/train_flow_loss': train_metrics['avg_flow_loss'],
                     'epoch/train_gradient_norm': train_metrics['avg_gradient_norm'],
                     'epoch/val_loss': val_metrics['avg_loss'],
-                    'epoch/val_nll': val_metrics['avg_nll'],
+                    'epoch/val_flow_loss': val_metrics['avg_flow_loss'],
                     'epoch/train_val_gap': train_val_gap,
                     'epoch/learning_rate': self.optimizer.param_groups[0]['lr'],
                     'epoch/time': epoch_time,
@@ -609,19 +677,25 @@ class OverlapNeuralPETrainer:
                     'config/early_stop_patience': self.patience,
                     'config/scheduler_patience': self.scheduler_patience,
                 }
-                # Merge RL and bias metrics dicts into main log_dict
+                # ✅ Nov 14: Merge RL training metrics
+                if 'avg_rl_loss' in train_metrics:
+                    log_dict['epoch/rl_loss'] = train_metrics['avg_rl_loss']
+                
+                # Merge RL, bias, and priority net metrics dicts into main log_dict
                 if rl_metrics:
                     log_dict.update({f'rl/{key}': val for key, val in rl_metrics.items()})
                 if bias_metrics:
                     log_dict.update({f'bias/{key}': val for key, val in bias_metrics.items()})
+                if priority_net_metrics:
+                    log_dict.update({f'priority_net/{key}': val for key, val in priority_net_metrics.items()})
 
                 wandb.log(log_dict)
 
 
             # Logging
             self.logger.info(f"\nEpoch {epoch+1}/{self.epochs}")
-            self.logger.info(f"  Train Loss: {train_metrics['avg_loss']:.4f} (NLL: {train_metrics['avg_nll']:.4f})")
-            self.logger.info(f"  Val Loss: {val_metrics['avg_loss']:.4f} (NLL: {val_metrics['avg_nll']:.4f})")
+            self.logger.info(f"  Train Loss: {train_metrics['avg_loss']:.4f} (Flow Loss: {train_metrics['avg_flow_loss']:.4f})")
+            self.logger.info(f"  Val Loss: {val_metrics['avg_loss']:.4f} (Flow Loss: {val_metrics['avg_flow_loss']:.4f})")
             self.logger.info(f"  Train-Val Gap: {train_val_gap:.4f}")
             self.logger.info(f"  Gradient Norm: {train_metrics['avg_gradient_norm']:.3f}")
             self.logger.info(f"  LR: {self.optimizer.param_groups[0]['lr']:.2e}")
@@ -638,6 +712,12 @@ class OverlapNeuralPETrainer:
                 self.logger.info(f"    Uncertainty Loss: {train_metrics['avg_uncertainty_loss']:.6f}")
             if 'avg_jacobian_reg' in train_metrics:
                 self.logger.info(f"    Jacobian Reg: {train_metrics['avg_jacobian_reg']:.6f}")
+            # ✅ Nov 14: Log RL loss and complexity
+            if 'avg_rl_loss' in train_metrics:
+                self.logger.info(f"    RL Loss: {train_metrics['avg_rl_loss']:.6f}")
+            if 'avg_complexity' in train_metrics:
+                self.logger.info(f"    Complexity (avg±std): {train_metrics['avg_complexity']:.2f}±{train_metrics['complexity_std']:.2f}")
+                self.logger.info(f"      Low: {train_metrics.get('complexity_low_count', 0)}, Medium: {train_metrics.get('complexity_medium_count', 0)}, High: {train_metrics.get('complexity_high_count', 0)}")
 
             # RL metrics logging
             if rl_metrics:
@@ -684,6 +764,30 @@ class OverlapNeuralPETrainer:
                             self.logger.info(f"    {key}: {value}")
             else:
                 self.logger.info(f"  Bias Corrector:")
+                self.logger.info(f"    (disabled or metrics not available)")
+
+            # Priority Net logging
+            if priority_net_metrics:
+                self.logger.info(f"  Priority Net:")
+                if 'enabled' in priority_net_metrics and priority_net_metrics['enabled']:
+                    if 'avg_importance' in priority_net_metrics:
+                        self.logger.info(f"    ✓ Avg Importance: {priority_net_metrics['avg_importance']:.4f}")
+                    if 'max_importance' in priority_net_metrics:
+                        self.logger.info(f"    ✓ Max Importance: {priority_net_metrics['max_importance']:.4f}")
+                    if 'min_importance' in priority_net_metrics:
+                        self.logger.info(f"    ✓ Min Importance: {priority_net_metrics['min_importance']:.4f}")
+                    if 'avg_uncertainty' in priority_net_metrics:
+                        self.logger.info(f"    ⚡ Avg Uncertainty: {priority_net_metrics['avg_uncertainty']:.4f}")
+                    if 'max_uncertainty' in priority_net_metrics:
+                        self.logger.info(f"    ⚡ Max Uncertainty: {priority_net_metrics['max_uncertainty']:.4f}")
+                    if 'edge_type_accuracy' in priority_net_metrics:
+                        self.logger.info(f"    📊 Edge Type Accuracy: {priority_net_metrics['edge_type_accuracy']:.2%}")
+                    if 'n_parameters' in priority_net_metrics:
+                        self.logger.info(f"    🔧 Parameters: {priority_net_metrics['n_parameters']:,}")
+                else:
+                    self.logger.info(f"    (disabled or frozen)")
+            else:
+                self.logger.info(f"  Priority Net:")
                 self.logger.info(f"    (disabled or metrics not available)")
 
             # Integration summary logging
@@ -796,7 +900,10 @@ def main():
 
     # Load config
     with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+        full_config = yaml.safe_load(f)
+
+    # ✅ FIX: Extract neural_posterior section from YAML
+    config = full_config.get('neural_posterior', full_config)
 
     # Parameter names
     param_names = config.get('param_names', [

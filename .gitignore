@@ -98,3 +98,9 @@ noise_cache
 .noise_cache/
 cache/
 huggingface/
+
+outputs/
+data/
+nohup.out*
+*.pkl.gz
+*.png

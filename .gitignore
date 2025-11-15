@@ -92,3 +92,9 @@ test.py
 *.out
 
 *.backup
+
+noise_cache
+
+.noise_cache/
+cache/
+huggingface/

@@ -50,20 +50,22 @@ def setup_logging(log_file: str = "train_bias_corrector.log", verbose: bool = Fa
 
 
 class BiasDataset(Dataset):
-    """Streaming dataset for bias correction training - loads data on-the-fly"""
+    """Streaming dataset for bias correction training - loads pre-generated biases from disk"""
     
     def __init__(self, data_dir: str, param_names: List[str], 
-                 context_dim: int = 256, split: str = 'train'):
+                 context_dim: int = 256, split: str = 'train', seed: int = 42):
         """
         Args:
             data_dir: Path to data directory with train/validation/test splits
             param_names: List of parameter names
             context_dim: Context feature dimension
             split: 'train', 'validation', or 'test'
+            seed: Random seed for reproducible bias generation (used in preprocessing)
         """
         self.data_dir = Path(data_dir) / split
         self.param_names = param_names
         self.context_dim = context_dim
+        self.seed = seed
         self.logger = logging.getLogger(__name__)
         
         # Collect all chunk files
@@ -71,9 +73,23 @@ class BiasDataset(Dataset):
         if not self.batch_files:
             self.logger.warning(f"No chunk files found in {self.data_dir}")
         
+        # Collect pre-generated bias files (created during preprocessing)
+        self.bias_files = sorted(self.data_dir.glob('biases_*.pkl'))
+        self.has_pregenerated_biases = len(self.bias_files) > 0
+        if not self.has_pregenerated_biases:
+            self.logger.warning(
+                "No pre-generated bias files found. Biases will be generated on-the-fly (not reproducible). "
+                "Run preprocessing script to generate biases: "
+                "python scripts/preprocess_biases.py"
+            )
+        
         # Build index: (batch_idx, sample_idx_in_batch) -> sample
         self.sample_index = []
+        self.pregenerated_biases = {}  # Load if available
         self._build_index()
+        
+        if self.has_pregenerated_biases:
+            self._load_pregenerated_biases()
         
     def _build_index(self):
         """Build index of all samples across all chunks"""
@@ -97,6 +113,22 @@ class BiasDataset(Dataset):
                 continue
         
         self.logger.info(f"Built index with {len(self.sample_index)} total samples")
+    
+    def _load_pregenerated_biases(self):
+        """Load pre-generated biases from disk"""
+        self.logger.info(f"Loading pre-generated biases from {len(self.bias_files)} files...")
+        
+        for bias_file in self.bias_files:
+            try:
+                with open(bias_file, 'rb') as f:
+                    biases = pickle.load(f)
+                
+                if isinstance(biases, dict):
+                    self.pregenerated_biases.update(biases)
+            except Exception as e:
+                self.logger.warning(f"Failed to load biases from {bias_file}: {e}")
+        
+        self.logger.info(f"Loaded {len(self.pregenerated_biases)} pre-generated bias entries")
     
     def __len__(self):
         return len(self.sample_index)
@@ -135,23 +167,33 @@ class BiasDataset(Dataset):
                 float(params.get(param_name, 0.0)) for param_name in self.param_names
             ])
             
-            # Generate biased estimates
-            estimated_params = true_params.copy()
-            for j, param_name in enumerate(self.param_names):
-                if param_name in ['mass_1', 'mass_2']:
-                    bias = np.random.normal(0, 0.08)
-                elif param_name == 'luminosity_distance':
-                    bias = np.random.normal(0, 0.15)
-                elif param_name == 'geocent_time':
-                    bias = np.random.normal(0, 0.001)
-                elif param_name in ['ra', 'dec']:
-                    bias = np.random.normal(0, 0.1)
-                else:
-                    bias = np.random.normal(0, 0.05)
-                
-                estimated_params[j] += bias * true_params[j] if abs(true_params[j]) > 1e-3 else bias
+            # Load or generate biased estimates (reproducibility via pre-generated biases)
+            sample_key = f"{batch_idx}_{sample_idx}"
             
-            true_correction = true_params - estimated_params
+            if self.has_pregenerated_biases and sample_key in self.pregenerated_biases:
+                # ✅ Load pre-generated bias values (reproducible)
+                bias_data = self.pregenerated_biases[sample_key]
+                estimated_params = bias_data.get('estimated_params', true_params.copy())
+                true_correction = bias_data.get('true_correction', true_params - estimated_params)
+            else:
+                # Fallback: generate on-the-fly (non-reproducible, only when preprocessing not run)
+                self.logger.debug(f"Sample {sample_key} not found in pre-generated biases. Generating on-the-fly.")
+                estimated_params = true_params.copy()
+                for j, param_name in enumerate(self.param_names):
+                    if param_name in ['mass_1', 'mass_2']:
+                        bias = np.random.normal(0, 0.08)
+                    elif param_name == 'luminosity_distance':
+                        bias = np.random.normal(0, 0.15)
+                    elif param_name == 'geocent_time':
+                        bias = np.random.normal(0, 0.001)
+                    elif param_name in ['ra', 'dec']:
+                        bias = np.random.normal(0, 0.1)
+                    else:
+                        bias = np.random.normal(0, 0.05)
+                    
+                    estimated_params[j] += bias * true_params[j] if abs(true_params[j]) > 1e-3 else bias
+                
+                true_correction = true_params - estimated_params
             
             # Normalize parameters
             param_min = np.array([-100, -100, 10, -np.pi, -np.pi, -1, -1, -1, -1])
@@ -181,9 +223,12 @@ class BiasDataset(Dataset):
             # Signal quality from SNR
             signal_quality = float(params.get('target_snr', 15.0)) / 50.0
             
+            # ✅ FIXED: Encode strain segments to context tensor (for trainer compatibility)
+            context_tensor = self._encode_strain_to_context(strain_segments)
+            
             return {
                 'param_tensor': torch.tensor(normalized_params, dtype=torch.float32),
-                'strain_segments': strain_segments,  # ✅ Pass actual strain data to transformer
+                'context_tensor': context_tensor,  # ✅ Now returns context_tensor as trainer expects
                 'true_correction': torch.tensor(true_correction, dtype=torch.float32),
                 'signal_quality': torch.tensor(signal_quality, dtype=torch.float32)
             }
@@ -192,11 +237,54 @@ class BiasDataset(Dataset):
             self.logger.debug(f"Error loading sample {idx}: {e}")
             return self._get_empty_item()
     
+    def _encode_strain_to_context(self, strain_segments: Dict[str, np.ndarray]) -> torch.Tensor:
+        """
+        Encode strain segments to context tensor [context_dim].
+        
+        Simple implementation: concatenate detector strain power as features.
+        In production, use TransformerStrainEncoder for sophisticated encoding.
+        
+        Args:
+            strain_segments: Dict of {detector: strain_array}
+        
+        Returns:
+            context_tensor: [context_dim] feature vector
+        """
+        try:
+            features = []
+            
+            # Extract power features from each detector
+            for detector in ['H1', 'L1', 'V1']:
+                if detector in strain_segments:
+                    strain = np.array(strain_segments[detector])
+                    # Simple features: RMS, variance, peak, spectral properties
+                    rms = float(np.sqrt(np.mean(strain**2))) if len(strain) > 0 else 0.0
+                    var = float(np.var(strain)) if len(strain) > 0 else 0.0
+                    peak = float(np.max(np.abs(strain))) if len(strain) > 0 else 0.0
+                    features.extend([rms, var, peak])
+                else:
+                    features.extend([0.0, 0.0, 0.0])  # Zeros for missing detector
+            
+            # Pad or truncate to context_dim
+            features_array = np.array(features, dtype=np.float32)
+            
+            if len(features_array) >= self.context_dim:
+                context = features_array[:self.context_dim]
+            else:
+                # Pad with zeros to reach context_dim
+                context = np.pad(features_array, (0, self.context_dim - len(features_array)))
+            
+            return torch.tensor(context, dtype=torch.float32)
+        
+        except Exception as e:
+            self.logger.debug(f"Context encoding failed: {e}")
+            return torch.zeros(self.context_dim, dtype=torch.float32)
+    
     def _get_empty_item(self):
         """Return empty/default item on error"""
         return {
             'param_tensor': torch.zeros(len(self.param_names), dtype=torch.float32),
-            'strain_segments': {},  # ✅ Empty strain dict
+            'context_tensor': torch.zeros(self.context_dim, dtype=torch.float32),  # ✅ Empty context tensor
             'true_correction': torch.zeros(len(self.param_names), dtype=torch.float32),
             'signal_quality': torch.tensor(0.3, dtype=torch.float32)
         }
@@ -325,13 +413,20 @@ class BiasCorrectorTrainer:
         
         # ✅ Acceptance metrics (from phase3a_neural_pe.py)
         # Acceptance based on uncertainty: corrections with low uncertainty are accepted
-        uncertainty_threshold = torch.quantile(pred_uncertainties, 0.75)  # Top 25% confidence
-        accepted_mask = pred_uncertainties < uncertainty_threshold
-        acceptance_rate = float(torch.mean(accepted_mask.float()).item())
-        
-        # Average confidence (inverse of uncertainty)
-        avg_confidence = float(torch.mean(1.0 / (pred_uncertainties + 1e-8)).item())
-        min_confidence = float(torch.min(1.0 / (pred_uncertainties + 1e-8)).item())
+        if pred_uncertainties.numel() > 0:
+            # ✅ FIXED: Handle small batches or empty predictions
+            uncertainty_threshold = torch.quantile(pred_uncertainties.flatten(), 0.75)  # Top 25% confidence
+            accepted_mask = pred_uncertainties < uncertainty_threshold
+            acceptance_rate = float(torch.mean(accepted_mask.float()).item())
+            
+            # Average confidence (inverse of uncertainty)
+            avg_confidence = float(torch.mean(1.0 / (pred_uncertainties + 1e-8)).item())
+            min_confidence = float(torch.min(1.0 / (pred_uncertainties + 1e-8)).item())
+        else:
+            # Handle empty batch gracefully
+            acceptance_rate = 0.0
+            avg_confidence = 0.0
+            min_confidence = 0.0
         
         # Correction statistics
         correction_mean = float(torch.mean(torch.abs(pred_corrections)).item())
@@ -647,21 +742,23 @@ def main():
     bias_corrector = BiasCorrector(param_names=param_names, context_dim=context_dim)
     logger.info(f"Initialized BiasCorrector with {len(param_names)} parameters, context_dim={context_dim}")
     
-    # Create streaming datasets (loads data on-the-fly)
+    # Create streaming datasets (loads pre-generated biases from disk)
     data_dir = 'data/dataset'
     
     train_dataset = BiasDataset(
         data_dir=data_dir,
         param_names=param_names,
         context_dim=context_dim,
-        split='train'
+        split='train',
+        seed=args.seed
     )
     
     val_dataset = BiasDataset(
         data_dir=data_dir,
         param_names=param_names,
         context_dim=context_dim,
-        split='validation'
+        split='validation',
+        seed=args.seed
     )
     
     logger.info(f"Training set: {len(train_dataset)} samples (streamed)")
@@ -672,13 +769,14 @@ def main():
         return
     
     # Create data loaders with streaming (loads batches on-the-fly)
+    # ✅ FIXED: persistent_workers=True requires num_workers >= 1; use num_workers=0 for no workers
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=0,  # Reduced for streaming efficiency
-        pin_memory=True,
-        persistent_workers=True
+        num_workers=0,  # No multiprocessing for streaming (dataset loads on-demand)
+        pin_memory=torch.cuda.is_available(),  # Only pin if using GPU
+        persistent_workers=False  # ✅ Removed invalid persistent_workers=True with num_workers=0
     )
     
     val_loader = DataLoader(
@@ -686,8 +784,8 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0,
-        pin_memory=True,
-        persistent_workers=True
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=False
     ) if len(val_dataset) > 0 else None
     
     # Initialize trainer

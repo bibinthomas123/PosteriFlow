@@ -110,7 +110,6 @@ def main():
                     logger.info(f"✓ Model loaded from {checkpoint_path.name}")
                     logger.info(f"  Missing keys: {len(incompatible_keys.missing_keys)}")
                     logger.info(f"  Unexpected keys: {len(incompatible_keys.unexpected_keys)}\n")
-                    logger.info(f"✓ Model loaded from {checkpoint_path.name}\n")
                     checkpoint_loaded = True
                     break
                 except Exception as e:

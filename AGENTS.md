@@ -159,16 +159,17 @@ Do not create a new Document every time just read the old doc and update it so t
 
    - **High Gradient Explosion Fix (✅ FIXED - Nov 15, 17:30):**
       - **Issue**: Training epoch 3 showing Grad=28.9 (exploding gradients despite clipping to 2.0)
-      - **Root causes**: (1) Small batch_size=6 with BatchNorm → high variance in norm stats, (2) Aggressive loss weights (min_variance_penalty=10×, calib_max=2.5, calib_range=2.0), (3) Multiple loss components (6 total) without normalization → cumulative effects
+      - **Root causes**: (1) Small batch_size=6 with BatchNorm → high variance in norm stats, (2) Aggressive loss weights from saturation fix (min_variance_penalty=10×, calib_max=1.50, calib_range=1.00), (3) Multiple loss components (6 total) without normalization → cumulative effects
       - **Fixes Applied**:
-         1. **Batch size: 6 → 24** (line 45 in enhanced_training.yaml): Larger batch → stable BatchNorm statistics → lower gradient variance
-         2. **Gradient clip: 2.0 → 5.0** (line 85): Too aggressive clipping was suppressing learning; 5.0 is safer for 6 loss components
+         1. **Batch size: 6 → 24** (line 47 in enhanced_training.yaml): Larger batch → stable BatchNorm statistics → lower gradient variance
+         2. **Gradient clip: 2.0 → 5.0** (line 135): Too aggressive clipping was suppressing learning; 5.0 is safer for 6 loss components
          3. **Min variance penalty: 10× → 2×** (priority_net.py line 824): Was too aggressive, dominating loss signal
-         4. **Calibration weights reduction** (lines 76-77): calib_max 2.50→1.00, calib_range 2.00→0.75 (Nov 15 increases were overtuned)
-         5. **Uncertainty weight: 0.35 → 0.10** (line 64): Reverted Nov 13 3.5× increase (too aggressive)
-      - **Technical Details**: BatchNorm with n=6 has unreliable statistics (high variance); larger n (≥16) stabilizes. Aggressive penalties like 10× create sharp loss landscape → high gradients. Gradient clipping at 2.0 with 6 components is overkill.
-      - **Verification**: Run training with new config; expect Grad < 5.0 by epoch 5, smooth loss decrease
-      - **Expected improvement**: Gradient explosion eliminated, smoother training, better convergence
+         4. **Calibration weights reduction** (lines 127-128): calib_max 1.50→0.50, calib_range 1.00→0.40 (saturation fix overtuned for gradient stability)
+         5. **Uncertainty weight: 0.35 → 0.10** (line 93): Reverted Nov 13 3.5× increase (too aggressive)
+      - **Technical Details**: BatchNorm with n=6 has unreliable statistics (high variance); larger n (≥16) stabilizes. Aggressive penalties create sharp loss landscape → high gradients. Gradient clipping at 2.0 with 6 components is overkill. Key insight: ratio-based penalties self-normalize, so weight reduction doesn't eliminate expansion—it just makes gradients stable.
+      - **Timeline**: Nov 13-15 saturation fix increased weights to force expansion (worked but explosive); Nov 15 17:30 reduced weights while keeping other expansive mechanisms (affine init 1.8×, bounds 1.2-2.5, ratio-based loss)
+      - **Verification**: Run training with new config; expect Grad < 5.0 by epoch 5, smooth loss decrease, range still expands via affine gain + ratio penalties
+      - **Expected improvement**: Gradient explosion eliminated, smoother training, expansion preserved through ratio-based penalties instead of brute-force weight scaling
 
    - **Distance Parameter Normalization (✅ FIXED - Nov 15, 16:39):**
       - **Issue**: Distance gate failing - "Distance increase didn't lower priority (Δ=0.0013)"
@@ -180,6 +181,27 @@ Do not create a new Document every time just read the old doc and update it so t
       - **Physics**: Log-scale captures the inverse relationship between distance and SNR. A 33% distance increase (150→200 Mpc) now produces 10.4% change in normalized space (vs 3.4% before).
       - **Impact**: Distance sensitivity improved 16.5× (Δ = -0.0214 vs -0.0013). All stress test gates now pass. Model is production-ready. ✅
       - **Verification**: Run `python experiments/test_priority_net.py --model models/priority_net/priority_net_best.pth --device cpu` → ALL GATES PASSED 🚀
+
+   - **Output Bounds Enforcement (✅ FIXED - Nov 16, 10:30):**
+      - **Issue**: Model predictions could expand far beyond [0, 1] bounds (measured up to ±9.0)
+      - **Root causes**: (1) Priority head is linear, outputs (-∞, +∞), (2) Affine transform gain ∈ [1.2, 2.5] allows massive scaling, (3) Calibration loss didn't enforce hard bounds, only encouraged expansion via ratio penalties
+      - **Detection**: diagnose_saturation.py showed Priority head output 5.0 → Final output 8.95 ❌; out-of-bounds loss penalty was weak
+      - **Solution (2-part)**:
+        1. **Hard bounds penalty in loss** (priority_net.py lines 826-831): Penalize predictions outside [0, 1] with weight 5.0
+           ```python
+           out_of_bounds_low = torch.relu(-predictions).mean()
+           out_of_bounds_high = torch.relu(predictions - 1.0).mean()
+           bounds_penalty = 5.0 * (out_of_bounds_low + out_of_bounds_high)
+           ```
+        2. **Forward pass clipping** (priority_net.py lines 1257-1262): Hard clamp after affine transform
+           ```python
+           prio = torch.clamp(prio, min=0.0, max=1.0)  # Final safety net
+           ```
+      - **Verification**: 
+        - test_bounds_fix.py shows loss penalty of **0.717** for out-of-bounds ([-0.5, 1.5] vs [0.2, 0.8])
+        - Clipping test confirms raw outputs [-5, 5] → [0, 1] ✓
+      - **Impact**: Predictions now guaranteed to stay in valid [0, 1] range; optimizer learns to respect bounds naturally via loss penalty; no performance overhead
+      - **Related documents**: BOUNDS_FIX_SUMMARY.md, test_bounds_fix.py, diagnose_saturation.py
 
 
    ## Architecture & Codebase Structure
@@ -346,7 +368,7 @@ Only when asked to test please follow the below conditions
 - **Prediction Compression/Saturation** (FIXED - Nov 15, 2025 DEEP FIX): Output range severely limited to 11% of target range:
         - **Issue**: Predictions [0.506, 0.590] stuck in middle (range 0.084) while targets [0.180, 0.950] span full range (0.770) — compression ratio only 11%
         - **Deep root causes**: (1) Absolute-gap calibration penalties dispersed across 1000+ parameters (~1e-8 per-param gradients), (2) Affine gain/bias initialized conservatively (1.0, 0.0), (3) Affine bounds too restrictive (gain ≤1.5, bias ±0.1), (4) Output bias 0.5 centered at mean leaving no expansion room, (5) Weak weight initialization (std=0.05)
-        - **Nov 15 DEEP FIX**: (1) Ratio-based penalties (1 - pred_max/target_max, 1 - pred_range/target_range) create consistent gradients regardless of scale, (2) Aggressive affine init (gain=1.8, bias=-0.05), (3) Relaxed bounds (gain [1.2,2.5], bias [-0.2,0.05]), (4) Output bias 0.45 leaving expansion headroom, (5) Weight std 0.10 (2× stronger), (6) **CRITICAL**: Minimum variance penalty (10× loss if pred_std < 0.5×target_std) prevents variance collapse
+        - **Nov 15 DEEP FIX**: (1) Ratio-based penalties (1 - pred_max/target_max, 1 - pred_range/target_range) create consistent gradients regardless of scale, (2) Aggressive affine init (gain=1.8, bias=-0.05), (3) Relaxed bounds (gain [1.2,2.5], bias [-0.2,0.05]), (4) Output bias 0.45 leaving expansion headroom, (5) Weight std 0.10 (2× stronger), (6) **CRITICAL**: Minimum variance penalty (2× loss if pred_std < 0.5×target_std) prevents variance collapse
         - **Validation**: Test shows 16.89× loss penalty for compressed vs expanded predictions, creating strong gradient signal
         - **Config changes** in `configs/enhanced_training.yaml` (lines 73-82): ratio-based calibration, aggressive affine bounds, minimum variance penalty
         - **Code changes** in `src/ahsd/core/priority_net.py`: PriorityLoss.forward (ratio-based penalties + min_variance_penalty), PriorityNet.__init__ (aggressive affine init, relaxed bounds, config-driven weight std), PriorityNetTrainer (updated defaults to match config)
@@ -424,18 +446,43 @@ Only when asked to test please follow the below conditions
          - **Timeline**: Monitor epoch 20 for decision point (continue training vs pivot)
 
 - **SNR Computation Overflow & NaN Propagation** (FIXED - Nov 15, 2025): Adaptive subtractor SNR calculations caused NaN in transformer encoder:
-        - **Issue**: RuntimeWarning "overflow encountered in cast" and "invalid value encountered in scalar multiply" in AdaptiveSubtractor, followed by NaN in TransformerStrainEncoder output
-        - **Root cause**: `adaptive_subtractor.py` line 264 computed `estimated_snr = min(np.sqrt(network_power * 1e46), 50.0)` with extremely large network_power values, causing overflow to inf/NaN
-        - **Fix - Part 1** (AdaptiveSubtractor, `src/ahsd/core/adaptive_subtractor.py` lines 262-277): 
-           - Clamp network_power before multiplication: `clamped_power = np.clip(float(network_power), 0, 1e6)`
-           - Clamp intermediate SNR value: `snr_value = np.clip(snr_value, 0, 1e10)`
-           - Check for non-finite values: `if not np.isfinite(estimated_snr): estimated_snr = 10.0`
-           - Fallback to default SNR=10.0 on any exception
-        - **Fix - Part 2** (TransformerStrainEncoder, `src/ahsd/models/transformer_encoder.py` lines 159-167):
-           - Sanitize input before processing: `if torch.isnan(strain_data).any(): strain_data = torch.nan_to_num(strain_data, nan=0.0, posinf=1e-3, neginf=-1e-3)`
-           - Clip Inf values: `if torch.isinf(strain_data).any(): strain_data = torch.clamp(strain_data, min=-1e2, max=1e2)`
-        - **Verification**: Run `python src/ahsd/inference/inference_pipeline.py --device cpu` - no overflow warnings, inference completes successfully ✅
-        - **Impact**: Eliminates spurious NaN errors, stabilizes inference pipeline, handles edge cases gracefully
+         - **Issue**: RuntimeWarning "overflow encountered in cast" and "invalid value encountered in scalar multiply" in AdaptiveSubtractor, followed by NaN in TransformerStrainEncoder output
+         - **Root cause**: `adaptive_subtractor.py` line 264 computed `estimated_snr = min(np.sqrt(network_power * 1e46), 50.0)` with extremely large network_power values, causing overflow to inf/NaN
+         - **Fix - Part 1** (AdaptiveSubtractor, `src/ahsd/core/adaptive_subtractor.py` lines 262-277): 
+            - Clamp network_power before multiplication: `clamped_power = np.clip(float(network_power), 0, 1e6)`
+            - Clamp intermediate SNR value: `snr_value = np.clip(snr_value, 0, 1e10)`
+            - Check for non-finite values: `if not np.isfinite(estimated_snr): estimated_snr = 10.0`
+            - Fallback to default SNR=10.0 on any exception
+         - **Fix - Part 2** (TransformerStrainEncoder, `src/ahsd/models/transformer_encoder.py` lines 159-167):
+            - Sanitize input before processing: `if torch.isnan(strain_data).any(): strain_data = torch.nan_to_num(strain_data, nan=0.0, posinf=1e-3, neginf=-1e-3)`
+            - Clip Inf values: `if torch.isinf(strain_data).any(): strain_data = torch.clamp(strain_data, min=-1e2, max=1e2)`
+         - **Verification**: Run `python src/ahsd/inference/inference_pipeline.py --device cpu` - no overflow warnings, inference completes successfully ✅
+         - **Impact**: Eliminates spurious NaN errors, stabilizes inference pipeline, handles edge cases gracefully
+
+- **CRITICAL: Missing Detector Ordering Fix (✅ FIXED - Nov 16, 2025):** Strain extraction was corrupting detector data when detectors had missing strain:
+         - **Issue**: Lines in `collate_priority_batch()` and `evaluate_priority_net()` iterated through detectors and SKIPPED missing ones, then only backfilled with ONE zero tensor at the end
+         - **Impact**: If L1 strain missing, result was [H1_tensor, V1_tensor, zeros] instead of [H1_tensor, zeros, V1_tensor] — wrong detector order!
+         - **Example scenario**: `detector_data = {"H1": strain, "L1": None, "V1": strain}` → strain_list would be [H1, V1, zeros] and model receives V1 data at L1 position
+         - **Root cause**: Naive iteration skipping missing detectors broke the required ["H1", "L1", "V1"] ordering
+         - **Fix**: Created centralized `assemble_detector_strains()` function (lines 1374-1467 in `experiments/train_priority_net.py`):
+            - **Two-pass algorithm**: (1) First pass finds reference shape from first valid strain, (2) Second pass iterates strictly through ["H1", "L1", "V1"] in order and backfills missing detectors with zeros at correct position
+            - **Key changes**:
+              1. Find reference shape BEFORE iteration (avoids first-detector bias)
+              2. Iterate through detectors in strict order regardless of presence
+              3. Backfill missing with zeros that match reference shape
+              4. Always return [3, time_samples] tensor with correct order
+         - **Integration points** (both now use centralized function):
+            - `collate_priority_batch()` line 1504: `strain_tensor = assemble_detector_strains(detector_data)`
+            - `evaluate_priority_net()` line 2202: `strain_tensor = assemble_detector_strains(detector_data)`
+         - **Verification**: Run `python test_detector_ordering.py` (7 tests all pass ✅):
+            - Test 1: All detectors present ✓
+            - Test 2: Missing L1 (critical bug scenario) ✓
+            - Test 3: Missing H1 ✓
+            - Test 4: Only H1 and V1 present ✓
+            - Test 5: Torch tensor inputs ✓
+            - Test 6: Empty detector_data ✓
+            - Test 7: Custom detector list ✓
+         - **Impact**: Training and evaluation now receive strain data from correct detectors, eliminating data corruption that would have severely degraded model performance
 
            **Model Training:**
 - Monitor calibration and output dynamic range

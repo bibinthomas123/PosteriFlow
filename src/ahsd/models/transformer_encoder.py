@@ -158,10 +158,11 @@ class TransformerStrainEncoder(nn.Module):
 
         try:
             # ✅ FIX: Sanitize input for NaN/Inf before processing
-            if torch.isnan(strain_data).any():
-                strain_data = torch.nan_to_num(strain_data, nan=0.0, posinf=1e-3, neginf=-1e-3)
-            if torch.isinf(strain_data).any():
-                strain_data = torch.clamp(strain_data, min=-1e2, max=1e2)
+            has_invalid = torch.isnan(strain_data).any() or torch.isinf(strain_data).any()
+            if has_invalid:
+                logging.warning("Detected NaN/Inf in strain_data input; sanitizing")
+            strain_data = torch.nan_to_num(strain_data, nan=0.0, posinf=1e2, neginf=-1e2)
+            strain_data = torch.clamp(strain_data, min=-1e2, max=1e2)
             
             # Patch embedding: [batch, n_detectors, time_samples] → [batch, encoder_dim, n_patches]
             patches = self.patch_embed(strain_data)  # [B, encoder_dim, n_patches]

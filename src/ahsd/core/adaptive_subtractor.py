@@ -261,19 +261,56 @@ class NeuralPE:
             
             # Compile enhanced features
             features['network_power'] = network_power
-            # Safely compute SNR with overflow protection
+            # Estimate SNR from signal and noise power with physical motivation
             try:
-                # Clamp network_power to prevent overflow in multiplication
-                clamped_power = np.clip(float(network_power), 0, 1e6)
-                snr_value = clamped_power * 1e46
-                # Further clamp intermediate value
-                snr_value = np.clip(snr_value, 0, 1e10)
-                estimated_snr = float(min(np.sqrt(snr_value), 50.0))
-                # Handle NaN from any edge case
+                # Robust noise estimation: use multiple segments and take minimum variance
+                # (assumes signal is localized and noise is stationary)
+                # This handles: pre-triggered data, centered data, early-arrival signals
+                noise_samples = min(4096, min(len(s) for s in detector_data.values()) // 8) if detector_data else 0
+                
+                if noise_samples > 0 and len(detector_data) > 0:
+                    # Estimate baseline noise power from multiple quiet segments
+                    noise_powers = []
+                    for strain in detector_data.values():
+                        strain_array = np.array(strain)
+                        if len(strain_array) >= noise_samples:
+                            # Try three regions: start, end, and middle
+                            # Take minimum variance as most likely to be signal-free
+                            variances = []
+                            variances.append(np.var(strain_array[:noise_samples]))  # Start
+                            variances.append(np.var(strain_array[-noise_samples:]))  # End
+                            # Middle segment (if long enough)
+                            if len(strain_array) >= 3 * noise_samples:
+                                mid_start = len(strain_array) // 2 - noise_samples // 2
+                                variances.append(np.var(strain_array[mid_start:mid_start + noise_samples]))
+                            # Use minimum variance as noise baseline (assumes signal is localized)
+                            noise_powers.append(min(variances))
+                    
+                    avg_noise_power = np.mean(noise_powers) if noise_powers else 1e-46
+                else:
+                    avg_noise_power = 1e-46
+                
+                # Signal power = network power minus noise baseline (per detector)
+                n_detectors = len(detector_data)
+                if n_detectors > 0:
+                    signal_power = max(network_power / n_detectors - avg_noise_power, 0)
+                else:
+                    signal_power = 0.0
+                
+                # Compute SNR as sqrt(signal_power / noise_power)
+                if avg_noise_power > 1e-50:
+                    raw_snr = np.sqrt(signal_power / avg_noise_power)
+                    estimated_snr = float(np.clip(raw_snr, 0, 50.0))
+                else:
+                    estimated_snr = 10.0
+                
+                # Ensure finite result
                 if not np.isfinite(estimated_snr):
                     estimated_snr = 10.0
+                
                 features['estimated_snr'] = estimated_snr
-            except Exception:
+            except Exception as e:
+                self.logger.debug(f"SNR estimation failed: {e}")
                 features['estimated_snr'] = 10.0
             features['peak_frequency'] = np.median(peak_frequencies) if peak_frequencies else 100.0
             features['cross_correlation'] = np.mean(cross_correlations) if cross_correlations else 0.1

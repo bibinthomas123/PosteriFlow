@@ -92,10 +92,15 @@ def encode_edge_type(dets):
 # ============================================================================
 
 
-def calculate_priority(signal: Dict[str, Any], is_overlap: bool = False) -> float:
+def calculate_priority(signal: Dict[str, Any], is_overlap: bool = False, time_lag_ms: float = 0.0) -> float:
     """
-    Calculate priority based on SNR and signal characteristics.
-    FIXED to work with your data structure!
+    Enhanced priority calculation with SNR sensitivity boost and context-aware edge bonuses.
+    
+    IMPROVEMENTS (Nov 16, 2025):
+    - SNR sensitivity: Non-linear scaling with amplification in 15-35 range
+    - Edge bonuses: Context-aware (scale with SNR)
+    - Distance bonus: Closer events are higher priority (easier to extract)
+    - Overlap penalty: Depends on signal separation
     """
     # Step 1: Get target SNR (it's directly in signal dict!)
     target_snr = signal.get("target_snr", 0.0)
@@ -118,58 +123,184 @@ def calculate_priority(signal: Dict[str, Any], is_overlap: bool = False) -> floa
     if target_snr < 8.0:
         return 0.0
 
-    base_priority = target_snr
+    # ========================================================================
+    # A1: SNR SENSITIVITY BOOST (Non-linear scaling for better discrimination)
+    # ========================================================================
+    # The key insight: SNR 15-35 range is most discriminative.
+    # Use power-law scaling to amplify discrimination in the mid-range.
+    # Power < 1 suppresses low SNR, power > 1 amplifies.
+    
+    if target_snr < 8.0:
+        base_priority = 0.0  # Already handled above
+    elif target_snr < 12.0:
+        # Very low SNR: suppress slightly (power = 0.9)
+        base_priority = target_snr ** 0.9
+    elif target_snr < 20.0:
+        # Low-mid SNR: amplify moderately (power = 1.15) for better discrimination
+        base_priority = target_snr ** 1.15
+    elif target_snr < 35.0:
+        # High sensitivity zone: strong amplification (power = 1.25)
+        base_priority = target_snr ** 1.25
+    else:
+        # Very high SNR: saturation with power = 1.1 (diminishing returns)
+        base_priority = target_snr ** 1.1
     edge_bonus = 0.0
 
-    # High mass ratio
+    # ========================================================================
+    # A2: CONTEXT-AWARE EDGE BONUSES (Scale with SNR)
+    # ========================================================================
+    # Edge cases are more interesting when SNR is moderate.
+    # Keep bonuses as relative multipliers applied after SNR sensitivity.
+    
+    snr_context = np.clip(target_snr / 30.0, 0.0, 1.0)  # Normalize to [0,1] at SNR=30
+
+    # High mass ratio (stronger impact at moderate SNR)
     try:
         mass_1 = float(signal.get("mass_1", 10.0))
         mass_2 = float(signal.get("mass_2", 10.0))
         if mass_1 > 0 and mass_2 > 0:
             q = max(mass_1, mass_2) / min(mass_1, mass_2)
             if q > 8.0:
-                edge_bonus += 0.1
+                edge_bonus += 0.10 * snr_context  # High mass ratio: up to 0.1 bonus
+            elif q > 4.0:
+                edge_bonus += 0.05 * snr_context  # Moderate mass ratio
     except:
         pass
 
-    # High spin (check both 'a1' and 'a_1')
+    # High spin (spinning objects are more scientifically interesting)
     try:
         a1 = abs(float(signal.get("a1", signal.get("a_1", 0.0))))
         a2 = abs(float(signal.get("a2", signal.get("a_2", 0.0))))
-        if max(a1, a2) > 0.8:
-            edge_bonus += 0.15
+        a_max = max(a1, a2)
+        if a_max > 0.8:
+            edge_bonus += 0.12 * snr_context  # Highly spinning: up to 0.12
+        elif a_max > 0.5:
+            edge_bonus += 0.06 * snr_context  # Moderately spinning
     except:
         pass
 
-    # Eccentric
+    # Eccentric (orbital eccentricity is rare and important)
     try:
         eccentricity = float(signal.get("eccentricity", 0.0))
         if eccentricity > 0.1:
-            edge_bonus += 0.2
+            edge_bonus += 0.15 * snr_context  # Context-aware eccentricity bonus
     except:
         pass
 
-    # Very high SNR
-    if target_snr > 30.0:
-        edge_bonus += 0.1
+    # Cap edge bonus (multiplicative, so small multipliers)
+    edge_bonus = min(edge_bonus, 0.40)  # Max 40% boost from edge features
+    
+    # ========================================================================
+    # A3: OVERLAP PENALTY REFINEMENT (Distance-dependent)
+    # ========================================================================
+    if is_overlap:
+        if time_lag_ms < 500:
+            overlap_penalty = 0.70  # Close overlaps: significant penalty
+        elif time_lag_ms < 1000:
+            overlap_penalty = 0.82  # Medium overlaps: moderate penalty
+        else:
+            overlap_penalty = 0.95  # Distant overlaps: minor penalty
+    else:
+        overlap_penalty = 1.0
+    
+    # ========================================================================
+    # A4: DISTANCE-BASED PRIORITIZATION (Closer = higher priority)
+    # ========================================================================
+    # Closer events are intrinsically higher priority (easier to extract accurately)
+    distance_bonus = 1.0
+    try:
+        luminosity_distance = float(signal.get("luminosity_distance", 500.0))
+        if luminosity_distance < 100:
+            distance_bonus = 1.18  # Very close: 18% bonus
+        elif luminosity_distance < 200:
+            distance_bonus = 1.10  # Close: 10% bonus
+        elif luminosity_distance < 400:
+            distance_bonus = 1.04  # Moderate: 4% bonus
+        # else: distance_bonus = 1.0 (no bonus for distant)
+    except:
+        pass
 
-    edge_bonus = min(edge_bonus, 0.5)
-    overlap_penalty = 0.9 if is_overlap else 1.0
-    priority = base_priority * (1.0 + edge_bonus) * overlap_penalty
+    # Combine all factors
+    priority = base_priority * (1.0 + edge_bonus) * overlap_penalty * distance_bonus
 
     return float(priority)
 
 
-def create_weighted_sampler(dataset, n_signals_threshold=5, oversample_factor=1.35):
-    """Create sampler that oversamples n≥5 scenarios by oversample_factor."""
+def estimate_scenario_difficulty(priorities: np.ndarray) -> float:
+    """
+    Estimate scenario difficulty based on priority gaps.
+    
+    Hard scenarios (close priorities) should be oversampled for better learning.
+    
+    Difficulty is inverse of top-2 priority gap:
+    - Large gap (easy): difficulty ≈ 0.5
+    - Small gap (hard): difficulty ≈ 2.0 (oversampled 4x)
+    
+    Args:
+        priorities: Array of signal priorities
+    
+    Returns:
+        difficulty weight in range [0.5, 2.0]
+    """
+    if len(priorities) < 2:
+        return 1.0
+    
+    # Sort in descending order
+    prios_sorted = np.sort(priorities)[::-1]
+    
+    # Gap between top-2 priorities
+    gap = float(prios_sorted[0] - prios_sorted[1])
+    
+    # Difficulty is inverse of gap: small gap = large difficulty
+    # gap=0.5 -> difficulty=2.0 (hard)
+    # gap=5.0 -> difficulty=0.5 (easy)
+    difficulty = 1.0 / np.clip(gap + 0.1, 0.1, 2.0)
+    
+    # Clamp to reasonable range
+    return float(np.clip(difficulty, 0.5, 2.0))
+
+
+def create_weighted_sampler(dataset, n_signals_threshold=5, oversample_factor=1.35, use_difficulty=True):
+    """
+    Create sampler that oversamples hard scenarios.
+    
+    IMPROVEMENTS (Nov 16, 2025):
+    - Oversample scenarios with ≥5 signals (more training signal)
+    - Oversample hard scenarios (close priorities = hard to rank)
+    
+    Args:
+        dataset: PriorityNetDataset
+        n_signals_threshold: Min signals to trigger oversampling
+        oversample_factor: Base oversampling multiplier for n≥threshold
+        use_difficulty: If True, apply difficulty-based weighting
+    
+    Returns:
+        WeightedRandomSampler
+    """
     weights = []
     for i in range(len(dataset)):
         try:
             sample = dataset[i]
             n = len(sample.get("detections", []))
+            
+            # Base weight: oversample multi-detection scenarios
             weight = oversample_factor if n >= n_signals_threshold else 1.0
+            
+            # Difficulty weighting: hard scenarios get higher weight
+            if use_difficulty and n >= 2:
+                priorities_raw = sample.get("priorities", [])
+                if isinstance(priorities_raw, np.ndarray):
+                    priorities = priorities_raw.astype(np.float32)
+                else:
+                    # Convert to list first to avoid NumPy 2.0 copy keyword issues
+                    priorities = np.array(list(priorities_raw), dtype=np.float32)
+                if len(priorities) >= 2:
+                    difficulty = estimate_scenario_difficulty(priorities)
+                    weight *= difficulty  # Hard scenarios: up to 2x more weight
+            
             weights.append(weight)
-        except:
+        except Exception as e:
+            logging.debug(f"Weight calculation failed at {i}: {e}")
             weights.append(1.0)
 
     return WeightedRandomSampler(weights, num_samples=len(dataset), replacement=True)
@@ -1371,6 +1502,102 @@ def _config_get(cfg: Any, key: str, default: Any) -> Any:
     return default
 
 
+def assemble_detector_strains(
+    detector_data: Dict,
+    detectors: List[str] = None,
+    default_length: int = 16384
+) -> Optional[torch.Tensor]:
+    """
+    Assemble strain data from multiple detectors into a stacked tensor.
+    
+    Extracts strain data from detector_data dict, handles format conversions,
+    and backfills missing detectors with zeros. Ensures consistent shape across
+    all detectors by using the first available shape as reference.
+    
+    CRITICAL FIX: Iterates through detectors in strict order and backfills missing
+    detectors with zeros at their correct position to preserve detector ordering.
+    
+    Args:
+        detector_data: Dict mapping detector names to data (e.g., {"H1": {...}, "L1": {...}})
+        detectors: List of detector names to extract (default: ["H1", "L1", "V1"])
+        default_length: Default length for zero-padding if no reference available (default: 16384)
+        
+    Returns:
+        Stacked tensor [n_detectors, time_samples] or None if detector_data is empty
+        
+    Example:
+        >>> detector_data = {
+        ...     "H1": {"strain": np.array([...])},
+        ...     "L1": {"strain": torch.tensor([...])}
+        ... }
+        >>> strain_tensor = assemble_detector_strains(detector_data)
+        >>> strain_tensor.shape
+        torch.Size([3, 16384])
+    """
+    if detectors is None:
+        detectors = ["H1", "L1", "V1"]
+    
+    strain_list = []
+    reference_shape = None
+    
+    # FIRST PASS: Find reference shape from first valid strain data
+    for detector in detectors:
+        if detector in detector_data and isinstance(detector_data[detector], dict):
+            strain_data = detector_data[detector].get("strain", None)
+            if strain_data is not None:
+                try:
+                    if isinstance(strain_data, np.ndarray):
+                        reference_shape = strain_data.shape
+                        break
+                    elif isinstance(strain_data, torch.Tensor):
+                        reference_shape = strain_data.shape
+                        break
+                except Exception:
+                    pass
+    
+    # If still no reference shape, use default
+    if reference_shape is None:
+        reference_shape = (default_length,)
+    
+    # SECOND PASS: Extract and backfill in detector order
+    for detector in detectors:
+        strain_data = None
+        
+        # Extract strain data from detector_data
+        if detector in detector_data and isinstance(detector_data[detector], dict):
+            strain_data = detector_data[detector].get("strain", None)
+            
+            if strain_data is not None:
+                # Convert to torch tensor if needed
+                if isinstance(strain_data, np.ndarray):
+                    strain_data = torch.from_numpy(strain_data).float()
+                elif isinstance(strain_data, torch.Tensor):
+                    strain_data = strain_data.float()
+                else:
+                    strain_data = None
+                
+                # Check shape consistency
+                if strain_data is not None:
+                    if strain_data.shape != reference_shape:
+                        logging.warning(
+                            f"Detector {detector} shape mismatch: "
+                            f"{strain_data.shape} != {reference_shape}, using zeros"
+                        )
+                        strain_data = None
+        
+        # Backfill missing detectors with zeros (preserving order)
+        if strain_data is None:
+            strain_data = torch.zeros(reference_shape, dtype=torch.float32)
+        
+        strain_list.append(strain_data)
+    
+    if len(strain_list) == len(detectors):
+        return torch.stack(strain_list)
+    else:
+        logging.debug(f"Incomplete strain data: {len(strain_list)}/{len(detectors)} detectors")
+        return None
+
+
 def collate_priority_batch(batch):
     """
     Collate function for PriorityNet datasets with optional SNR per signal and strain segments.
@@ -1423,28 +1650,7 @@ def collate_priority_batch(batch):
 
             # ✅ EXTRACT STRAIN SEGMENTS from detector_data
             detector_data = item.get("detector_data", {})
-            strain_tensor = None
-            if detector_data:
-                # Stack H1, L1, V1 strain data into [3, time_samples]
-                strain_list = []
-                for detector in ["H1", "L1", "V1"]:
-                    if detector in detector_data and isinstance(detector_data[detector], dict):
-                        strain_data = detector_data[detector].get("strain", None)
-                        if strain_data is not None:
-                            if isinstance(strain_data, np.ndarray):
-                                strain_data = torch.from_numpy(strain_data).float()
-                            strain_list.append(strain_data)
-                    
-                    if len(strain_list) < len([d for d in ["H1", "L1", "V1"] if d in detector_data]):
-                        # Detector data exists but strain field missing - use zeros
-                        if len(strain_list) == 0:
-                            # Assume 16384 samples (4s @ 4096 Hz)
-                            strain_list.append(torch.zeros(16384, dtype=torch.float32))
-                        else:
-                            strain_list.append(torch.zeros_like(strain_list[0]))
-                
-                if strain_list:
-                    strain_tensor = torch.stack(strain_list)  # [3, time_samples]
+            strain_tensor = assemble_detector_strains(detector_data) if detector_data else None
 
             detections_batch.append(dets)
             priorities_batch.append(prios)
@@ -2112,6 +2318,7 @@ def evaluate_priority_net(
     spearmans_all = []
     precisions = []
     lens = []
+    pairwise_accuracies = []  # NEW: Track pairwise ranking accuracy
 
     successful_evaluations = 0
     total_multidet = 0
@@ -2142,21 +2349,10 @@ def evaluate_priority_net(
                     strain_segments = None
                     detector_data = item.get("detector_data", {})
                     if detector_data:
-                        strain_list = []
-                        detectors = ["H1", "L1", "V1"]  # Standard detector order
-                        for det in detectors:
-                            if det in detector_data:
-                                strain_data = detector_data[det].get("strain", None)
-                                if strain_data is not None:
-                                    if isinstance(strain_data, np.ndarray):
-                                        strain_list.append(torch.from_numpy(strain_data).float())
-                                    elif isinstance(strain_data, torch.Tensor):
-                                        strain_list.append(strain_data.float())
-                        
-                        if strain_list and len(strain_list) > 0:
-                            # Stack strain segments: [n_detectors, time_samples] -> [1, n_detectors, time_samples]
-                            strain_tensor = torch.stack(strain_list, dim=0).unsqueeze(0)  # [1, n_det, time]
-                            strain_segments = strain_tensor.to(device)
+                        strain_tensor = assemble_detector_strains(detector_data)
+                        if strain_tensor is not None:
+                            # Add batch dimension: [n_detectors, time] -> [1, n_detectors, time]
+                            strain_segments = strain_tensor.unsqueeze(0).to(device)
                     
                     pred_priorities, uncertainties = model(
                         detections, 
@@ -2210,6 +2406,27 @@ def evaluate_priority_net(
                         logging.debug(f"No variation in scenario {item_idx}")
                     continue
 
+                # ========================================================================
+                # PAIRWISE RANKING ACCURACY (NEW METRIC - Nov 16, 2025)
+                # ========================================================================
+                # Measure what fraction of pairwise rankings are correct
+                # This is more robust than correlation for hard scenarios
+                n_correct_pairs = 0
+                n_total_pairs = 0
+                
+                for i in range(len(detections)):
+                    for j in range(i + 1, len(detections)):
+                        # Ground truth ordering
+                        true_order = true_priorities[i] > true_priorities[j]
+                        # Predicted ordering
+                        pred_order = pred_priorities[i] > pred_priorities[j]
+                        
+                        if true_order == pred_order:
+                            n_correct_pairs += 1
+                        n_total_pairs += 1
+                
+                pairwise_accuracy = n_correct_pairs / max(1, n_total_pairs)
+
                 # Z-score normalization per scenario
                 t_mean, t_std = true_priorities.mean(), true_priorities.std()
                 p_mean, p_std = pred_priorities.mean(), pred_priorities.std()
@@ -2240,6 +2457,7 @@ def evaluate_priority_net(
                             corr_val = 0.0
 
                     correlations.append(corr_val)
+                    pairwise_accuracies.append(pairwise_accuracy)  # NEW: Track pairwise
                     lens.append(m)
 
                 except Exception as e:
@@ -2289,6 +2507,7 @@ def evaluate_priority_net(
         lens_arr = np.asarray(lens, dtype=np.int32)
         spears_arr = np.asarray(spearmans_all, dtype=np.float64) if spearmans_all else np.array([])
         kend_arr = np.asarray(kendalls_all, dtype=np.float64) if kendalls_all else np.array([])
+        pairwise_arr = np.asarray(pairwise_accuracies, dtype=np.float64) if pairwise_accuracies else np.array([])
 
         results.update(
             {
@@ -2304,6 +2523,8 @@ def evaluate_priority_net(
                 "avg_kendall": float(np.nanmean(kend_arr[lens_arr < 3])) if kend_arr.size else 0.0,
                 "avg_topk_precision": float(np.mean(prec_arr)),
                 "std_topk_precision": float(np.std(prec_arr)),
+                "avg_pairwise_accuracy": float(np.mean(pairwise_arr)) if pairwise_arr.size else 0.0,
+                "std_pairwise_accuracy": float(np.std(pairwise_arr)) if pairwise_arr.size else 0.0,
             }
         )
 
@@ -2325,6 +2546,9 @@ def evaluate_priority_net(
         )
         logging.info(
             f"   Spearman(avg, m≥3): {results['avg_spearman']:.3f} | Kendall(avg, m<3): {results['avg_kendall']:.3f}"
+        )
+        logging.info(
+            f"   Pairwise Accuracy: {results['avg_pairwise_accuracy']:.3f} ± {results['std_pairwise_accuracy']:.3f}"
         )
         logging.info(
             f"   Precision@3: {results['avg_topk_precision']:.3f} | Time: {results['eval_time_sec']:.2f}s"

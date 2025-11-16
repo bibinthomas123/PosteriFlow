@@ -415,7 +415,7 @@ PosteriFlow/
 │   ├── phase3a_output_X/
 │   ├── phase3b_production/
 │   └── logs/
-├── 📁 gw_segments_cleaned/         # Pre-cached GWOSC segments
+├── 📁 gw_segments/         # Pre-cached GWOSC segments
 │   └── [133 real noise segments]
 ├── 📁 notebooks/                   # Analysis & visualization
 ├── 📁 docs/                        # Additional documentation

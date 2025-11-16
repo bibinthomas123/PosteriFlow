@@ -56,7 +56,7 @@ def build_config_from_checkpoint(ckpt):
     cfg_dict = ckpt.get('model_config') or ckpt.get('config') or {}
     
     # Try to load from training config file for consistency
-    config_path = Path("configs/enhanced_training.yaml")
+    config_path = project_root / "configs/enhanced_training.yaml"
     if config_path.exists():
         with open(config_path) as f:
             file_cfg = yaml.safe_load(f) or {}
@@ -91,7 +91,7 @@ def load_prioritynet(checkpoint_path, device="cpu"):
             'use_transformer_encoder': priority_cfg.get('use_transformer_encoder', True),
             'hidden_dims': priority_cfg.get('hidden_dims', [640, 512, 384, 256]),
             'dropout': priority_cfg.get('dropout', 0.2),
-            'overlap_importance_hidden': priority_cfg.get('importance_hidden_dim', 32),
+            'overlap_importance_hidden': priority_cfg.get('importance_hidden_dim', 16),
             'use_strain': True,
             'use_edge_conditioning': True,
             'n_edge_types': 19

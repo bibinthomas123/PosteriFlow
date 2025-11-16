@@ -822,6 +822,13 @@ class PriorityLoss(nn.Module):
         if pred_std < 0.5 * target_std and target_std > 1e-4:
             variance_ratio = pred_std / (target_std + 1e-8)
             min_variance_penalty = 2.0 * torch.relu(0.5 - variance_ratio)  # ⬇️ Reduced from 10.0 (too aggressive)
+        
+        # CRITICAL (Nov 16 FIX): Hard bounds penalty to prevent out-of-range predictions
+        # Penalize predictions outside [0, 1] range BEFORE clipping in forward pass
+        # This encourages optimizer to learn valid predictions rather than relying on clipping
+        out_of_bounds_low = torch.relu(-predictions).mean()  # Penalize < 0
+        out_of_bounds_high = torch.relu(predictions - 1.0).mean()  # Penalize > 1
+        bounds_penalty = 5.0 * (out_of_bounds_low + out_of_bounds_high)  # Strong penalty
 
         # Bucket-aware weights
         effective_ranking_weight = self.ranking_weight
@@ -839,6 +846,7 @@ class PriorityLoss(nn.Module):
             + uncertainty_bounds_loss  # NEW: Bounds penalty
             + calib_loss  # Calibration term to widen spread
             + min_variance_penalty  # CRITICAL: Prevent variance collapse
+            + bounds_penalty  # CRITICAL (Nov 16): Hard bounds enforcement
         )
 
         return {
@@ -1254,6 +1262,11 @@ class PriorityNet(nn.Module):
             gain_clamped = torch.clamp(self.prio_gain, min=self.affine_gain_min, max=self.affine_gain_max)
             bias_clamped = torch.clamp(self.prio_bias, min=self.affine_bias_min, max=self.affine_bias_max)
             prio = prio * gain_clamped + bias_clamped
+            
+            # CRITICAL (Nov 16 FIX): Hard bounds enforcement to prevent out-of-range predictions
+            # Unconstrained affine can expand predictions beyond [0, 1] with gain ∈ [1.2, 2.5]
+            # Clipping ensures all predictions stay valid without suppressing learning
+            prio = torch.clamp(prio, min=0.0, max=1.0)
             
             sigma = self.uncertainty_head(fused).squeeze(-1)  # [N], positive
 

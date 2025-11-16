@@ -50,7 +50,7 @@ detectors = {
 # -------------------------
 # Output folder
 # -------------------------
-out_dir = "gw_segments_cleaned"
+out_dir = "gw_segments"
 os.makedirs(out_dir, exist_ok=True)
 
 # -------------------------

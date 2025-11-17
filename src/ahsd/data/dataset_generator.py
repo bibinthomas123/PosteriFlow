@@ -33,7 +33,7 @@ from .noise_generator import NoiseGenerator
 from .injection import SignalInjector
 from .preprocessing import DataPreprocessor
 from .io_utils import DatasetWriter, MetadataManager
-from .simulation import OverlappingSignalSimulator
+from .simulation import OverlappingSignalSimulator, estimate_snr_from_strain
 import random
 
 _EDGE_MAP = {}  # Global edge type mapping
@@ -41,19 +41,29 @@ _EDGE_MAP = {}  # Global edge type mapping
 import numpy as np
 
 
-def sample_overlap_size(p_heavy=0.45, base_lambda=2.2, heavy_min=4, heavy_max=6):
+def sample_overlap_size(p_heavy=0.95, base_lambda=3.0, heavy_min=5, heavy_max=10, max_overall = None):
     """
-    Mixture sampler:
-      - with probability p_heavy draw from a heavy tail (discrete uniform or truncated power-law)
-      - otherwise draw from a light Poisson-like distribution (1-4)
+    Mixture sampler for overlapping signals:
+      - with probability p_heavy draw from a heavy tail (5-10 signals for heavy overlaps)
+      - otherwise draw from a light Poisson-like distribution (2-5 signals for regular overlaps)
+    
+    Args:
+        max_overall: Maximum number of overlapping signals (clips heavy_max if specified)
+    
+    MODIFIED (Nov 17): p_heavy=0.95 (95% heavy), heavy_min=5, heavy_max=10
+    This ensures ~95% of overlaps have 5+ signals for training on multi-source scenarios
     """
+    # Use provided max_overall to clip heavy_max
+    if max_overall is not None:
+        heavy_max = min(heavy_max, max_overall)
+    
     if np.random.random() < p_heavy:
-        # heavy tail: discrete uniform or truncated Pareto
+        # heavy tail: 5-10 signals (heavy overlaps)
         return int(np.random.randint(heavy_min, heavy_max + 1))
     else:
-        # light component: Poisson truncated to [1,4]
+        # light component: Poisson truncated to [2,5] (was [1,4], increased minimum)
         val = np.random.poisson(base_lambda)
-        val = max(1, min(val, 4))
+        val = max(2, min(val, 8))  # Changed from (1, 4) to (2, 5)
         return int(val)
 
 
@@ -205,6 +215,9 @@ class GWDatasetGenerator:
         self.extreme_enabled = self.extreme_config.get("enabled", False)
         self.extreme_fraction = self.extreme_config.get("fraction", 0.10)
         self.extreme_types_config = self.extreme_config.get("types", {})
+        
+        # Maximum overlapping signals from config
+        self.max_overlapping_signals = self.config.get("max_overlapping_signals", 6)
 
         # Setup logging FIRST (simulator needs it)
         self.logger = logging.getLogger(__name__)
@@ -263,10 +276,11 @@ class GWDatasetGenerator:
         self.metadata_manager = MetadataManager()
 
         # Initialize real noise generators with pre-downloaded cache
-        # First tries to load from gw_segments_cleaned/, falls back to RealNoiseGenerator
-        self.use_real_noise_prob = self.config.get("use_real_noise_prob", 0.0)
+        # Priority: cached segments > RealNoiseGenerator > synthetic noise
+        self.use_real_noise_prob = self.config.get("use_real_noise_prob", 0.3)
         self.real_noise_generators = {}
         self.cached_noise_segments = {}  # {detector: [array, array, ...]}
+        self.noise_source_stats = {"cached": 0, "real": 0, "synthetic": 0}  # Track usage
         
         # Try to load pre-downloaded segments from gw_segments_cleaned/
         self._load_cached_noise_segments()
@@ -338,43 +352,98 @@ class GWDatasetGenerator:
             else:
                 self.logger.info(f"No cached segments found for {detector} in {cache_dir}")
 
+    def _normalize_noise_power(self, noise: np.ndarray, target_std: float = 0.5) -> np.ndarray:
+        """
+        Normalize noise to consistent power level across all samples.
+        Prevents non-stationarity issues when mixing real and synthetic noise.
+        
+        Args:
+            noise: Noise array
+            target_std: Target standard deviation (default 0.5)
+        
+        Returns:
+            Normalized noise array
+        """
+        current_std = np.std(noise)
+        if current_std > 0:
+            noise = noise * (target_std / current_std)
+        return noise
+
     def _get_noise_for_detector(self, detector_name: str, psd_dict: Dict) -> Tuple[np.ndarray, str]:
         """
-        Get noise for a detector, preferring real LIGO/Virgo noise (30% probability).
-
-        Falls back to synthetic colored Gaussian noise if:
-        - Real noise disabled (use_real_noise_prob == 0)
-        - Random check fails (70% probability)
-        - Real noise generator unavailable
-        - Real noise fetch fails
+        Get noise for a detector with priority order:
+        1. Cached pre-downloaded GWOSC segments (if use_real_noise_prob > 0)
+        2. Real LIGO/Virgo noise via RealNoiseGenerator (if use_real_noise_prob > 0)
+        3. Synthetic colored Gaussian noise (fallback)
 
         Args:
             detector_name: Detector name ('H1', 'L1', 'V1')
             psd_dict: PSD dictionary for the detector
 
         Returns:
-            Tuple of (noise_data, noise_type) where noise_type is 'real' or 'synthetic'
+            Tuple of (noise_data, noise_type) where noise_type is 'cached', 'real', or 'synthetic'
         """
-        # Check if real noise should be used
-        if (
-            self.use_real_noise_prob > 0
-            and np.random.random() < self.use_real_noise_prob
-            and detector_name in self.real_noise_generators
-            and self.real_noise_generators[detector_name] is not None
-        ):
-
-            try:
-                noise = self.real_noise_generators[detector_name].get_noise_chunk(
-                    duration=self.duration, sample_rate=self.sample_rate
-                )
-                return noise, "real"
-            except Exception as e:
-                self.logger.debug(
-                    f"Failed to fetch real noise for {detector_name}: {e}. Using synthetic."
-                )
-
-        # Fallback: generate synthetic colored Gaussian noise
+        # Check if real noise should be used (includes cached segments)
+        if self.use_real_noise_prob > 0 and np.random.random() < self.use_real_noise_prob:
+            
+            # Priority 1: Try cached segments first (fastest, 10-25× speedup)
+            if detector_name in self.cached_noise_segments and self.cached_noise_segments[detector_name]:
+                try:
+                    # Randomly select a cached segment
+                    segment_idx = np.random.randint(0, len(self.cached_noise_segments[detector_name]))
+                    noise = self.cached_noise_segments[detector_name][segment_idx]
+                    
+                    # Ensure correct length
+                    expected_len = int(self.duration * self.sample_rate)
+                    if len(noise) != expected_len:
+                        # Trim or pad as needed
+                        if len(noise) > expected_len:
+                            start_idx = np.random.randint(0, len(noise) - expected_len + 1)
+                            noise = noise[start_idx : start_idx + expected_len]
+                        else:
+                            # Pad with repetition
+                            noise = np.tile(noise, (expected_len // len(noise)) + 1)[:expected_len]
+                    
+                    # CRITICAL: Check for NaN/Inf (skip corrupted cached segments)
+                    if not np.all(np.isfinite(noise)):
+                        self.logger.debug(f"Cached segment for {detector_name} contains NaN/Inf, skipping to fallback")
+                        raise ValueError("Cached segment has NaN/Inf values")
+                    
+                    # Normalize to consistent power (prevents non-stationarity issues)
+                    noise = self._normalize_noise_power(noise)
+                    
+                    self.noise_source_stats["cached"] += 1
+                    return noise.astype(np.float32), "cached"
+                except Exception as e:
+                    self.logger.debug(f"Failed to use cached segment for {detector_name}: {e}")
+            
+            # Priority 2: Try RealNoiseGenerator (on-demand fetching)
+            if (
+                detector_name in self.real_noise_generators
+                and self.real_noise_generators[detector_name] is not None
+            ):
+                try:
+                    noise = self.real_noise_generators[detector_name].get_noise_chunk(
+                        duration=self.duration, sample_rate=self.sample_rate
+                    )
+                    
+                    # Normalize to consistent power (prevents non-stationarity issues)
+                    noise = self._normalize_noise_power(noise)
+                    
+                    self.noise_source_stats["real"] += 1
+                    return noise, "real"
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed to fetch real noise for {detector_name}: {e}. Using synthetic."
+                    )
+        
+        # Fallback: generate synthetic colored Gaussian noise (default path)
         noise = self.noise_generator.generate_colored_noise(psd_dict)
+        self.noise_source_stats["synthetic"] += 1
+        
+        # Normalize to consistent power (prevents non-stationarity issues)
+        noise = self._normalize_noise_power(noise)
+        
         return noise, "synthetic"
 
     def create_noise_augmentations(self, sample: Dict, k: int) -> List[Dict]:
@@ -506,7 +575,13 @@ class GWDatasetGenerator:
                 return "loud"
 
         def _track_sample(sample):
-            """Track statistics for generated sample"""
+            """Track statistics for generated sample
+            
+            IMPORTANT: For overlapping samples, only count FIRST signal's SNR regime.
+            Overlapping signals are pre-sorted by decreasing SNR (brightest first).
+            Counting all signals would inflate SNR regime counts: a 3-signal overlap
+            would count as +3 instead of +1, distorting the sample-level distribution.
+            """
             if sample is None:
                 return
             # Track top-level sample type (single vs overlap vs noise)
@@ -517,16 +592,21 @@ class GWDatasetGenerator:
             params = sample.get("parameters")
             if params:
                 if isinstance(params, list):
-                    # Overlapping - track each signal
-                    for p in params:
+                    # Overlapping sample: track each signal for event types
+                    # BUT count SNR regime only for the FIRST (brightest) signal
+                    for i, p in enumerate(params):
                         if isinstance(p, dict):
-                            # signal-level event type (BBH/BNS/NSBH)
+                            # Count all signals for event type distribution
                             sig_type = p.get("type") or p.get("event_type") or "unknown"
                             signal_type_counts[sig_type] += 1
-                            if "target_snr" in p:
+                            
+                            # Count only FIRST signal's SNR for sample-level histogram
+                            # First signal = brightest = best SNR = represents sample's detectability
+                            if i == 0 and "target_snr" in p:
                                 regime = _categorize_snr(p["target_snr"])
                                 snr_regime_counts[regime] += 1
                 elif isinstance(params, dict):
+                    # Single signal sample - count normally
                     sig_type = params.get("type") or params.get("event_type") or "unknown"
                     signal_type_counts[sig_type] += 1
                     if "target_snr" in params:
@@ -1619,7 +1699,7 @@ class GWDatasetGenerator:
                 for i in range(n_regular_overlap):
                     # Quota-mode: construct per-signal forced regimes/types when enabled
                     if quota_mode:
-                        n_sigs = sample_overlap_size()
+                        n_sigs = sample_overlap_size(max_overall=self.max_overlapping_signals)
                         forced_signals = []
                         for j in range(n_sigs):
                             snr_choice, evt_choice = _select_joint_cell()
@@ -1648,10 +1728,10 @@ class GWDatasetGenerator:
                                     priorities.append(priority)
                             sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
                     else:
-                        #  Use simulator for overlaps
+                         #  Use simulator for overlaps
                         if self.simulation is not None:
                             try:
-                                n_sigs = sample_overlap_size()
+                                n_sigs = sample_overlap_size(max_overall=self.max_overlapping_signals)
                                 sample = self._generate_sample_with_simulator(
                                     sample_id, n_signals=n_sigs
                                 )
@@ -1685,7 +1765,7 @@ class GWDatasetGenerator:
                                 # Respect any existing sampled target_snr (don't overwrite)
                                 if "target_snr" not in params:
                                     self._set_target_snr(
-                                        params, priority, reason="regular_overlap_legacy"
+                                         params, priority, reason="regular_overlap_legacy"
                                     )
                                 priorities.append(priority)
                             sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
@@ -1892,6 +1972,18 @@ class GWDatasetGenerator:
         self.logger.info("=" * 80)
         self.logger.info(f"Total samples: {total_samples:,}")
         self.logger.info(f"Generation time: {generation_time/60:.1f}m")
+        
+        # Log noise source statistics
+        if sum(self.noise_source_stats.values()) > 0:
+            total_noise_calls = sum(self.noise_source_stats.values())
+            self.logger.info(f"\nNoise Source Statistics (Total: {total_noise_calls:,} calls):")
+            for source, count in sorted(self.noise_source_stats.items(), key=lambda x: x[1], reverse=True):
+                pct = (count / total_noise_calls) * 100 if total_noise_calls > 0 else 0
+                self.logger.info(f"  - {source:12s}: {count:6,} calls ({pct:5.1f}%)")
+            
+            # Add to summary
+            summary["statistics"]["noise_sources"] = self.noise_source_stats
+        
         self.logger.info("=" * 80)
 
         self.writer.save_json("generation_summary.json", summary)
@@ -3706,19 +3798,19 @@ class GWDatasetGenerator:
             # Final validation: ensure no NaN/Inf in strain or noise
             strain_final = injected.astype(np.float32)
             noise_final = noise.astype(np.float32)
-
-            # If NaN detected, replace with noise-only
-            if np.any(~np.isfinite(strain_final)):
-                self.logger.warning(
-                    f"NaN/Inf in final strain for {detector_name}, using noise-only"
-                )
-                strain_final = np.copy(noise_final)
-
+            
+            # Check noise first - if noise has NaN, generate fallback BEFORE using it as strain fallback
             if np.any(~np.isfinite(noise_final)):
                 self.logger.warning(
                     f"NaN/Inf in noise for {detector_name}, using Gaussian fallback"
                 )
-                noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-21
+                noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-20
+            
+            # If strain has NaN, replace with noise (now guaranteed to be valid)
+            if np.any(~np.isfinite(strain_final)):
+                self.logger.warning(
+                    f"NaN/Inf in final strain for {detector_name}, using noise-only"
+                )
                 strain_final = np.copy(noise_final)
 
             detector_data[detector_name] = {
@@ -3763,7 +3855,7 @@ class GWDatasetGenerator:
     ) -> Dict:
         """Generate sample with overlapping signals"""
 
-        n_signals = sample_overlap_size()
+        n_signals = sample_overlap_size(max_overall=self.max_overlapping_signals)
 
         signal_params_list = []
         target_snrs = []
@@ -3847,29 +3939,29 @@ class GWDatasetGenerator:
             # Final validation: ensure no NaN/Inf in strain or noise
             strain_final = injected.astype(np.float32)
             noise_final = noise.astype(np.float32)
-
-            # If NaN detected, replace with noise-only
+            
+            # Check noise first - if noise has NaN, generate fallback BEFORE using it as strain fallback
+            if np.any(~np.isfinite(noise_final)):
+                self.logger.warning(
+                    f"NaN/Inf in noise for {detector_name}, using Gaussian fallback"
+                )
+                noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-20
+            
+            # If strain has NaN, replace with noise (now guaranteed to be valid)
             if np.any(~np.isfinite(strain_final)):
                 self.logger.warning(
                     f"NaN/Inf in final strain for {detector_name}, using noise-only"
                 )
                 strain_final = np.copy(noise_final)
-
-            if np.any(~np.isfinite(noise_final)):
-                self.logger.warning(
-                    f"NaN/Inf in noise for {detector_name}, using Gaussian fallback"
-                )
-                noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-21
-                strain_final = np.copy(noise_final)
-
+            
             detector_data[detector_name] = {
                 "strain": strain_final,
                 "noise": noise_final,
                 "metadata": metadata_list,
                 "noise_type": noise_type,
             }
-
-        # ✅ FIX (Nov 11, 2025): Don't inject decoys into training data
+            
+            # ✅ FIX (Nov 11, 2025): Don't inject decoys into training data
         # Decoys cause n_signals ≠ len(parameters) mismatch (12.9% of samples affected)
         # Decoys should only be used for evaluation/validation, not training
         # signal_params_list = maybe_inject_decoy(signal_params_list, p=0.30)
@@ -5491,9 +5583,12 @@ class GWDatasetGenerator:
                     strain = None
 
                 if strain is not None:
+                    # For real GWTC data, add placeholder noise_type metadata
                     detector_data[detector_name] = {
                         "strain": strain.astype(np.float32),
                         "is_real_data": True,
+                        "noise": None,  # Real data doesn't have separate noise
+                        "noise_type": "gwtc_real",  # Metadata indicating real GWTC strain
                         "psd": (
                             self.psds.get(detector_name, {}).get("psd")
                             if hasattr(self, "psds")
@@ -5533,9 +5628,15 @@ class GWDatasetGenerator:
                 except Exception:
                     synth = np.array(synth, dtype=np.float32)
 
+                # Generate noise for synthesized GWTC strain
+                psd_dict = self.psds[detector_name]
+                noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
+
                 detector_data[detector_name] = {
                     "strain": synth,
+                    "noise": noise.astype(np.float32),
                     "is_real_data": False,
+                    "noise_type": noise_type,
                     "psd": (
                         self.psds.get(detector_name, {}).get("psd")
                         if hasattr(self, "psds")

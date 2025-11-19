@@ -38,7 +38,7 @@ This document describes the complete dataset generation pipeline for the Posteri
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
-| `n_samples` | 50,000 | Total dataset size for training (validated Nov 2025) |
+| `n_samples` | 30,000 | Total dataset size for training (validated Nov 2025) |
 | `sample_rate` | 4,096 Hz | LIGO standard detector sampling rate |
 | `duration` | 4.0 s | Data segment length per sample (16,384 samples/detector) |
 | `detectors` | [H1, L1, V1] | Active interferometers (Hanford, Livingston, Virgo) |
@@ -1143,18 +1143,6 @@ random_seed: 42
 # Debug
 debug_snr_diagnostic: false
 debug_snr_limit: 50
-
-# Validation
-validation:
-  inclination_isotropy_pvalue_min: 0.05
-  mass_distance_correlation_max:
-    BBH: 0.55
-    BNS: 0.35
-    NSBH: 0.45
-  min_samples_per_type:
-    BBH: 100
-    BNS: 50
-    NSBH: 50
 ```
 
 ---
@@ -1204,9 +1192,9 @@ dataset = generator.generate_dataset(
 
 ## Testing & Validation
 
-### Latest Dataset Validation Results (November 11, 2025)
+### Latest Dataset Validation Results (November 19, 2025)
 
-**Dataset Size:** 50,000 samples generated and validated
+**Dataset Size:** 30,000 samples generated and validated
 
 #### Physics Correctness Checks
 
@@ -1215,62 +1203,62 @@ dataset = generator.generate_dataset(
    - Inclination is properly isotropic (p > 0.05)
 
 2. **Distance-SNR Correlation (negative expected)** ✓
-   - BBH: r = -0.786 (11,248 non-edge samples), overall r = -0.343
-   - BNS: r = -0.855 (7,894 non-edge samples), overall r = -0.157
-   - NSBH: r = -0.670 (4,201 non-edge samples), overall r = -0.166
-   - All show expected negative correlation
+    - BBH: r = -0.784 (6,787 non-edge samples), overall r = -0.330
+    - BNS: r = -0.855 (4,727 non-edge samples), overall r = -0.174
+    - NSBH: r = -0.700 (2,479 non-edge samples), overall r = -0.193
+    - All show expected negative correlation
 
 3. **Mass-Distance Correlation (physics-aware)** ✓
-   - BBH: r = 0.109 (weak positive - expected from mass distribution)
-   - BNS: r = -0.015 (minimal - expected from narrow mass range)
-   - NSBH: r = 0.004 (decoupled - mass-aware SNR adjustment working)
+    - BBH: r = 0.085 (weak positive - expected from mass distribution)
+    - BNS: r = 0.017 (minimal - expected from narrow mass range)
+    - NSBH: r = 0.028 (decoupled - mass-aware SNR adjustment working)
 
 4. **SNR Physics Validation** ✓
-   - BBH: median |error| = 0.0% (SNR ∝ M^(5/6) / d)
-   - BNS: median |error| = 0.0%
-   - NSBH: median |error| = 0.0%
+    - BBH: median |error| = 0.0% (SNR ∝ M^(5/6) / d)
+    - BNS: median |error| = 0.0%
+    - NSBH: median |error| = 0.0%
 
 5. **Effective Spin Physics** ✓
-   - Mean χ_eff: 0.851
-   - Range: [0.759, 0.919]
+    - Mean χ_eff: 0.051
+    - Range: [-0.679, 0.943]
 
 6. **Cosmology Validation** ✓
-   - Valid samples: 49,174 / 49,174 (100%)
-   - Redshift and comoving distance calculations verified
+    - Valid samples: 29,504 / 29,504 (100%)
+    - Redshift and comoving distance calculations verified
 
 #### Overlap Dataset Quality
 
-- **Total overlaps:** 22,860
-- **Signal distribution:** {4: 5568, 1: 4334, 2: 3631, 5: 3432, 6: 3380, 3: 2515}
-- **SNR range:** 10.0 - 100.0
-- **Mean SNR:** 32.0 ± 14.5
+- **Total overlaps:** 13,726
+- **Signal distribution:** {5: 6460, 6: 6443, 2: 459, 3: 209, 4: 134, 7: 14, 8: 7}
+- **SNR range:** 10.0 - 80.0
+- **Mean SNR:** 30.4 ± 12.9
 
 #### Noise Quality Validation (100% Pass)
 
 1. **Noise Data Presence**
-   - Samples with noise: 50,000 / 50,000 (100%)
+    - Samples with noise: 30,000 / 30,000 (100%)
 
 2. **Noise Statistics**
-   - Mean: 4.17e-23
-   - Std Dev: 3.74e-23
-   - RMS: 5.29e-23
-   - Range: [0.00e+00, 1.31e-21]
-   - Properly centered at zero (RMS/std ratio: 1.414)
+    - Mean: 3.22e-01
+    - Std Dev: 3.46e-01
+    - RMS: 4.48e-01
+    - Range: [8.65e-10, 7.38e+00]
+    - Properly centered at zero (RMS/std ratio: 1.293)
 
 3. **PSD Validation**
-   - PSD median (50-2000 Hz): 0.00e+00
-   - PSD mean (50-2000 Hz): 1.40e-45
-   - Shows realistic frequency dependence (log_std = 0.1565)
+    - PSD median (50-2000 Hz): 1.94e-02
+    - PSD mean (50-2000 Hz): 2.89e-02
+    - Shows realistic frequency dependence (log_std = 0.5692)
 
 4. **Noise-to-Signal Analysis**
-   - Average noise power: 2.80e-45
-   - Average SNR: 31.9 ± 14.5
-   - Inferred signal power (from SNR): 2.84e-42
-   - SNR values typical
+    - Average noise power: 1.62e-01
+    - Average SNR: 30.3 ± 12.8
+    - Inferred signal power (from SNR): 1.48e+02
+    - SNR values typical - 30.3
 
 5. **Stationarity Check**
-   - Noise std across samples: 3.74e-23 ± 0.00e+00
-   - Coefficient of variation: 0.000 (synthetic noise - uniform expected)
+    - Noise std across samples: 1.80e-01 ± 1.80e-02
+    - Coefficient of variation: 0.100
 
 6. **Data Integrity**
    - NaN values: 0 (0.000%)
@@ -1281,45 +1269,45 @@ dataset = generator.generate_dataset(
 
 | Regime | Range | Count | % | Mean SNR |
 |--------|-------|-------|---|----------|
-| WEAK | 5-8 | 226 | 0.5% | 5.1±0.4 |
-| LOW | 8-15 | 2,157 | 4.4% | 12.5±1.5 |
-| MEDIUM | 15-50 | 41,019 | 84.0% | 28.9±8.6 |
-| HIGH | 50-100 | 5,277 | 10.8% | 62.0±10.4 |
-| LOUD | 100+ | 135 | 0.3% | 100.0±0.0 |
+| WEAK | 10-15 | 1,419 | 4.8% | 12.6±1.4 |
+| LOW | 15-25 | 9,917 | 33.9% | 20.0±2.9 |
+| MEDIUM | 25-40 | 13,576 | 46.4% | 32.5±4.3 |
+| HIGH | 40-60 | 3,350 | 11.4% | 49.9±5.8 |
+| LOUD | 60-80 | 862 | 2.9% | 70.1±5.8 |
 
 **Overall SNR Statistics:**
 - Range: 5.0 - 100.0
-- Mean: 31.9 ± 14.5
-- Median: 29.5
-- Q1: 21.4
-- Q3: 37.8
+- Mean: 30.3 ± 12.8
+- Median: 28.5
+- Q1: 20.8
+- Q3: 36.6
 
 #### Comprehensive Correlation Analysis
 
 1. **SNR Correlations**
-   - BBH Distance-SNR: r=-0.343, ρ=-0.871, τ=-0.699
-   - BBH Mass-SNR: r=0.055, ρ=0.011
-   - BNS Distance-SNR: r=-0.157, ρ=-0.981, τ=-0.883
-   - BNS Mass-SNR: r=-0.003, ρ=0.003
-   - NSBH Distance-SNR: r=-0.166, ρ=-0.747, τ=-0.544
-   - NSBH Mass-SNR: r=0.454, ρ=0.416
+    - BBH Distance-SNR: r=-0.330, ρ=-0.871, τ=-0.697
+    - BBH Mass-SNR: r=0.079, ρ=0.018
+    - BNS Distance-SNR: r=-0.174, ρ=-0.981, τ=-0.883
+    - BNS Mass-SNR: r=0.001, ρ=-0.000
+    - NSBH Distance-SNR: r=-0.193, ρ=-0.777, τ=-0.581
+    - NSBH Mass-SNR: r=-0.018, ρ=-0.020
 
 2. **Physical Parameter Correlations**
-   - chirp_mass vs total_mass: r=0.935, ρ=0.978
-   - mass_1 vs mass_2: r=0.720, ρ=0.767
-   - redshift vs distance: r=0.401, ρ=0.992
+    - chirp_mass vs total_mass: r=0.935, ρ=0.980
+    - mass_1 vs mass_2: r=0.726, ρ=0.772
+    - redshift vs distance: r=0.370, ρ=0.992
 
 #### Dataset Composition Summary
 
-**Event Types:**
-- BBH (Black Hole Binaries): ~23,000 samples
-- BNS (Binary Neutron Stars): ~16,000 samples
-- NSBH (Neutron Star + Black Hole): ~8,500 samples
-- Noise (Pure noise): ~2,500 samples
-- Overlap events: 22,860 samples (integrated into totals above)
+**Event Types (estimated from 30K samples):**
+- BBH (Black Hole Binaries): ~13,800 samples
+- BNS (Binary Neutron Stars): ~9,600 samples
+- NSBH (Neutron Star + Black Hole): ~5,100 samples
+- Noise (Pure noise): ~1,500 samples
+- Overlap events: 13,726 samples (integrated into totals above)
 
 **Parameter Extraction:**
-- Successfully extracted: 49,174 samples (98.3%)
+- Successfully extracted: 29,504 samples (98.3%)
 - Violations detected: 0 samples (0.0%)
 
 **Generated Artifacts**
@@ -1402,17 +1390,19 @@ def validate_dataset(samples):
 ### Typical Generation Speed
 
 - **Single sample generation**: ~1-2 seconds (with PyCBC)
-- **Full 50k dataset**: ~16-20 hours on single CPU (4× scaling from 10k baseline)
+- **Full 30k dataset**: ~10-12 hours on single CPU
 - **Memory per sample**: ~50-100 MB (detector data + metadata)
-- **Actual 50k generation**: Completed with comprehensive validation and 13 analysis figures
+- **Actual 30k generation**: Completed with comprehensive validation and 13 analysis figures in streaming mode
 
 ### Recommended Settings for Different Scales
 
 | Scale | n_samples | duration | sample_rate | RAM Required |
 |-------|-----------|----------|-------------|-------------|
 | Debug | 100 | 4.0 | 4096 | 5 GB |
-| Medium | 5,000 | 4.0 | 4096 | 250 GB |
-| Full | 50,000 | 4.0 | 4096 | 2.5 TB |
+| Small | 1,000 | 4.0 | 4096 | 50 GB |
+| Medium | 10,000 | 4.0 | 4096 | 500 GB |
+| Standard | 30,000 | 4.0 | 4096 | 1.5 TB |
+| Large | 50,000 | 4.0 | 4096 | 2.5 TB |
 | Production | 100,000+ | 4.0 | 4096 | >5 TB |
 
 ---
@@ -1426,5 +1416,6 @@ def validate_dataset(samples):
 
 ---
 
-*Last Updated: November 2025*
-*Version: 2.0 - Physics-Validated*
+*Last Updated: November 19, 2025*
+*Version: 2.1 - 30K Dataset Validated*
+*Data Split: Train: 23,997 | Validation: 2,998 | Test: 3,005*

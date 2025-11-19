@@ -123,6 +123,10 @@ class OverlapNeuralPE(nn.Module):
              "theta_jn": (0.0, np.pi),
              "psi": (0.0, np.pi),
              "phase": (0.0, 2 * np.pi),
+             "a1": (0.0, 0.99),  # Spin magnitude
+             "a2": (0.0, 0.99),  # Spin magnitude
+             "tilt1": (0.0, np.pi),  # Spin tilt angle
+             "tilt2": (0.0, np.pi),  # Spin tilt angle
          }
          return {param: bounds.get(param, (0.0, 1.0)) for param in self.param_names}
 
@@ -1061,13 +1065,18 @@ class OverlapNeuralPE(nn.Module):
             loss += torch.mean(mass_violation_norm**2)
         
         # ===============================
-        # ✅ 2. SPIN BOUNDS: |χ| <= 1
+        # ✅ 2. SPIN BOUNDS: |a| <= 0.99
         # ===============================
         for i, param_name in enumerate(self.param_names):
-            if "chi" in param_name.lower():
+            if param_name in ["a1", "a2"]:
+                spin = params[:, i]
+                spin_violation = F.relu(spin - 0.99)
+                # Already normalized (spin magnitude bounded by 0.99)
+                loss += 0.5 * torch.mean(spin_violation**2)
+            elif "chi" in param_name.lower():
                 spin = params[:, i]
                 spin_violation = F.relu(torch.abs(spin) - 1.0)
-                # Already normalized (spin is dimensionless, scale = 1)
+                # Already normalized (effective spin is dimensionless, scale = 1)
                 loss += 0.5 * torch.mean(spin_violation**2)
         
         # ===============================

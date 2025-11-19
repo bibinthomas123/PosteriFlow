@@ -1,11 +1,11 @@
 {
   "n_samples": 1000,
   "n_batches": 11,
-  "generation_time": 822.41126537323,
-  "samples_per_second": 1.2159366512886665,
+  "generation_time": 1407.0869421958923,
+  "samples_per_second": 0.7106881387438685,
   "output_dir": "data/test",
   "output_format": "pkl",
-  "elapsed_time": 822.41126537323,
+  "elapsed_time": 1407.0869421958923,
   "resumed": false,
   "configuration": {
     "sample_rate": 4096,
@@ -35,22 +35,22 @@
   },
   "statistics": {
     "event_types": {
-      "BBH": 269,
-      "BNS": 174,
-      "NSBH": 86,
-      "overlap": 454,
-      "noise": 17
+      "BBH": 275,
+      "noise": 18,
+      "BNS": 166,
+      "NSBH": 88,
+      "overlap": 453
     },
     "snr_regimes": {
-      "medium": 902,
-      "low": 651,
-      "high": 306,
-      "loud": 97,
-      "weak": 102
+      "medium": 461,
+      "high": 103,
+      "low": 332,
+      "weak": 57,
+      "loud": 30
     },
     "edge_cases": {
-      "high_spin_aligned": 2,
-      "extreme_mass_ratio": 1,
+      "extreme_mass_ratio": 4,
+      "high_spin_aligned": 1,
       "high_mass_ratio": 5,
       "extreme_spins": 4,
       "eccentric": 3,
@@ -65,11 +65,10 @@
       "uninformative_prior": 4
     },
     "extreme_cases": {
-      "near_simultaneous_mergers": 2,
-      "high_spin_aligned": 2,
-      "weak_strong_overlaps": 1,
-      "extreme_mass_ratio": 1,
-      "noise_confused_overlaps": 1
+      "long_duration_bns_overlaps": 1,
+      "extreme_mass_ratio": 4,
+      "noise_confused_overlaps": 2,
+      "high_spin_aligned": 1
     },
     "joint_quotas": {
       "weak": {
@@ -102,6 +101,11 @@
         "NSBH": 0,
         "noise": 0
       }
+    },
+    "noise_sources": {
+      "cached": 308,
+      "real": 0,
+      "synthetic": 2707
     }
   }
 }

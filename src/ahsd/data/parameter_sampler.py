@@ -369,29 +369,46 @@ class ParameterSampler:
         
         chirp_mass = (mass_1 * mass_2)**(3/5) / (mass_1 + mass_2)**(1/5)
         
-        # ✅ FIX: Make target_snr mass-aware for NSBH to avoid mass-distance correlation
-        # Heavier BHs have larger chirp masses → would naturally be at larger distances
-        # Sample higher target_snr for heavier BHs to compensate and keep distances uniform
+        # Sample SNR regime if not provided
+        if snr_regime is None:
+            snr_regime = self._sample_snr_regime()
+        
+        # ✅ CRITICAL FIX: Adjust SNR regime BEFORE sampling to preserve distribution
+        # Problem: NSBH samples are boosted post-sampling, shifting them into higher regimes
+        # Example: sample 'low' [15,25) but medium_bh → [18.75,31.25) → misclassified as 'medium'
+        # Result: 'low' gets fewer samples, 'medium'+'high'+'loud' get more
+        # 
+        # Solution: Pre-adjust regime bounds by dividing by boost multiplier, then multiply result
+        # This ensures post-boost SNR stays in the originally-sampled regime
+        
+        # Determine boost multiplier for this BH mass
+        if bh_mass_type == 'light':
+            boost_mult = 1.0
+        elif bh_mass_type == 'medium':
+            boost_mult = 1.25
+        elif bh_mass_type == 'heavy':
+            boost_mult = 1.55
+        else:  # extreme
+            boost_mult = 2.0
+        
+        # Pre-adjust regime bounds by dividing by boost multiplier
+        snr_min_orig, snr_max_orig = self.snr_ranges[snr_regime]
+        if boost_mult > 1.0:
+            snr_min_adj = snr_min_orig / boost_mult
+            snr_max_adj = snr_max_orig / boost_mult
+        else:
+            snr_min_adj = snr_min_orig
+            snr_max_adj = snr_max_orig
+        
+        # Sample from adjusted regime bounds, then apply boost
         self._sampling_event_type = 'NSBH'
         try:
-            base_snr = self._sample_target_snr(snr_regime)
-            # Adjust SNR based on BH mass to decouple mass from distance
-            # Light BH: chirp_mass ~1.8-3.0 → lower SNR (keep at baseline)
-            # Medium BH: chirp_mass ~2.9-4.1 → slightly higher SNR
-            # Heavy BH: chirp_mass ~3.9-4.6 → significantly higher SNR
-            if bh_mass_type == 'light':
-                target_snr = base_snr
-            elif bh_mass_type == 'medium':
-                # ~40-50% mass increase → boost SNR by ~25% to offset chirp_mass scaling
-                target_snr = base_snr * 1.25
-            elif bh_mass_type == 'heavy':
-                # ~100-200% mass increase → boost SNR by ~55% to offset chirp_mass scaling
-                target_snr = base_snr * 1.55
-            else:  # extreme
-                # ~300-400% mass increase → boost SNR by ~100% to offset chirp_mass scaling
-                target_snr = base_snr * 2.0
-            # Clip to valid SNR range to prevent extreme values
-            target_snr = float(np.clip(target_snr, 5.0, 100.0))
+            # Sample from pre-adjusted bounds instead of using _sample_target_snr()
+            base_snr = float(np.random.uniform(snr_min_adj, snr_max_adj))
+            # Apply boost multiplier
+            target_snr = float(np.clip(base_snr * boost_mult, 5.0, 100.0))
+            # Track statistics: count original regime, not post-boost regime
+            self.stats['snr_regimes'][snr_regime] = self.stats['snr_regimes'].get(snr_regime, 0) + 1
         finally:
             self._sampling_event_type = None
 

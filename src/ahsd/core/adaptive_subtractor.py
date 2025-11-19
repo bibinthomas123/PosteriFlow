@@ -300,7 +300,7 @@ class NeuralPE:
                 # Compute SNR as sqrt(signal_power / noise_power)
                 if avg_noise_power > 1e-50:
                     raw_snr = np.sqrt(signal_power / avg_noise_power)
-                    estimated_snr = float(np.clip(raw_snr, 0, 50.0))
+                    estimated_snr = float(np.clip(raw_snr, 0, 100.0))
                 else:
                     estimated_snr = 10.0
                 
@@ -1135,7 +1135,7 @@ class UncertaintyAwareSubtractor:
 
 
 class AdaptiveSubtractor:
-    """adaptive subtractor with physics-based logic - keeping original name"""
+    """adaptive subtractor with physics-based logic"""
     
     def __init__(self, neural_pe=None, uncertainty_subtractor=None):
         # Use implementations with original names

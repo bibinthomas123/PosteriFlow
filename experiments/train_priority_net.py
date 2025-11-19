@@ -1821,6 +1821,8 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
                     "Loss": f"{loss_info['loss']:.2e}",
                     "Prior": f"{loss_info.get('priority_loss', 0):.2e}",
                     "Grad": f"{loss_info.get('grad_norm', 0):.2e}",
+                    "Gain": f"{loss_info.get('affine_gain', 0):.2f}",  # NEW: Track range expansion
+                    "Bias": f"{loss_info.get('affine_bias', 0):.2f}",  # NEW: Track offset
                 }
             )
 
@@ -2754,9 +2756,9 @@ def evaluate_priority_net(
 #         logging.error(f"Traceback: {traceback.format_exc()}")
 #         logging.warning("⚠️ Starting from scratch instead")
 #         return None
-def load_checkpoint(
-    checkpoint_path: Optional[str], config, device=None
-) -> Optional[Dict[str, Any]]:
+
+
+def load_checkpoint(checkpoint_path: Optional[str], config, device=None) -> Optional[Dict[str, Any]]:
     """
     Load a PriorityNet training checkpoint with full validation and compatibility.
 

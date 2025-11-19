@@ -10,10 +10,10 @@
 # ==============================================================================
 
 # Number of samples to generate (start with 50k for full training)
-n_samples: 500
+n_samples: 1000
 
 # Output configuration
-output_dir: "data/test2"
+output_dir: "data/test"
 output_format: "pkl"  # Efficient binary format
 
 # Batch size for saving samples to disk
@@ -56,7 +56,7 @@ train_frac: 0.80
 val_frac: 0.10
 test_frac: 0.10
 
-chunk_size: 500
+chunk_size: 100
 
 max_overlapping_signals: 10
 
@@ -268,7 +268,7 @@ edge_cases:
       
       heavy_overlaps:
         fraction: 0.40
-        n_signals_range: [3, 8]  # Allow up to 8 signals
+        n_signals_range: [3, 10]  # Allow up to 10 signals
       
       partial_overlaps:
         fraction: 0.20

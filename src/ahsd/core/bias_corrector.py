@@ -612,32 +612,36 @@ class BiasCorrector(nn.Module):
                 else:
                     normalized_params[i] = 0.5  # Default to middle
             
-            # Create comprehensive context features
-            n_signals = len(all_signals)
-            signal_quality = signal.get('signal_quality', 0.5)
-            
-            context_features = np.array([
-                position / max(n_signals, 1),              # Hierarchical position
-                signal_quality,                             # Signal quality
-                np.log10(max(n_signals, 1)),              # Log number of signals
-                np.mean(param_uncertainties),              # Average parameter uncertainty
-                np.std(param_uncertainties),               # Uncertainty spread
-                signal.get('network_snr', 10.0) / 50.0,   # Normalized SNR
-                signal.get('context_snr', signal_quality * 20.0) / 50.0,  # Context SNR
+            # Check if actual context embedding is provided
+            if 'context_embedding' in signal:
+                context_features = np.array(signal['context_embedding'])
+            else:
+                # Create comprehensive context features as fallback
+                n_signals = len(all_signals)
+                signal_quality = signal.get('signal_quality', 0.5)
                 
-                # Statistical features
-                np.mean(normalized_params),                # Average parameter value
-                np.std(normalized_params),                 # Parameter spread
-                np.min(normalized_params),                 # Minimum parameter
-                np.max(normalized_params),                 # Maximum parameter
-                
-                # Physics-based features
-                self._compute_chirp_mass_feature(param_values),
-                self._compute_mass_ratio_feature(param_values),
-                self._compute_effective_distance_feature(param_values),
-                self._compute_sky_area_feature(param_values),
-                min(1.0, position * 0.1)                  # Hierarchy degradation factor
-            ])
+                context_features = np.array([
+                    position / max(n_signals, 1),              # Hierarchical position
+                    signal_quality,                             # Signal quality
+                    np.log10(max(n_signals, 1)),              # Log number of signals
+                    np.mean(param_uncertainties),              # Average parameter uncertainty
+                    np.std(param_uncertainties),               # Uncertainty spread
+                    signal.get('network_snr', 10.0) / 50.0,   # Normalized SNR
+                    signal.get('context_snr', signal_quality * 20.0) / 50.0,  # Context SNR
+                    
+                    # Statistical features
+                    np.mean(normalized_params),                # Average parameter value
+                    np.std(normalized_params),                 # Parameter spread
+                    np.min(normalized_params),                 # Minimum parameter
+                    np.max(normalized_params),                 # Maximum parameter
+                    
+                    # Physics-based features
+                    self._compute_chirp_mass_feature(param_values),
+                    self._compute_mass_ratio_feature(param_values),
+                    self._compute_effective_distance_feature(param_values),
+                    self._compute_sky_area_feature(param_values),
+                    min(1.0, position * 0.1)                  # Hierarchy degradation factor
+                ])
             
             # Convert to tensors
             param_tensor = torch.tensor(normalized_params, dtype=torch.float32).unsqueeze(0)
@@ -1110,12 +1114,28 @@ class BiasCorrector(nn.Module):
         
         # Loss function with uncertainty
         def loss_function(corrections_pred, uncertainties_pred, corrections_true, quality_weights):
-            # Negative log-likelihood assuming Gaussian corrections
-            mse_loss = torch.mean(((corrections_pred - corrections_true) ** 2) / (uncertainties_pred + 1e-8))
-            uncertainty_reg = torch.mean(torch.log(uncertainties_pred + 1e-8))  # Encourage reasonable uncertainties
-            quality_weighting = torch.mean(quality_weights * ((corrections_pred - corrections_true) ** 2))
+            # Compute per-parameter MSE with uncertainty weighting
+            # Shape: (batch, 9) each
+            squared_errors = (corrections_pred - corrections_true) ** 2
             
-            return mse_loss + 0.1 * uncertainty_reg + 0.3 * quality_weighting
+            # Normalize by parameter range to handle different scales (mass vs distance)
+            # Use adaptive scaling based on correction magnitude
+            param_scales = torch.clamp(torch.abs(corrections_true).mean(dim=0, keepdim=True), min=1.0)
+            normalized_errors = squared_errors / (param_scales + 1e-8)
+            
+            # NLL: errors weighted by inverse uncertainty
+            mse_loss = torch.mean(normalized_errors / (uncertainties_pred + 1e-8))
+            
+            # Regularization: encourage reasonable uncertainty estimates
+            uncertainty_reg = torch.mean(torch.log(uncertainties_pred + 1e-8))
+            
+            # Quality weighting: higher quality signals get stronger training signal
+            quality_weights_expanded = quality_weights.unsqueeze(1)  # Shape: (batch, 1)
+            quality_weighted_loss = torch.mean(quality_weights_expanded * normalized_errors)
+            
+            # Combined loss with balanced weighting
+            total_loss = mse_loss + 0.1 * uncertainty_reg + 0.1 * quality_weighted_loss
+            return total_loss
         
         # Training loop
         training_history = {
@@ -1144,7 +1164,11 @@ class BiasCorrector(nn.Module):
                 # Prepare batch tensors
                 param_tensors = torch.cat([item['param_tensor'] for item in batch_data], dim=0)
                 context_tensors = torch.cat([item['context_tensor'] for item in batch_data], dim=0)
-                true_corrections = torch.tensor([item['true_correction'] for item in batch_data], dtype=torch.float32)
+                # Convert list of corrections (each is 1D array of shape (9,)) to 2D tensor
+                true_corrections = torch.stack([
+                    torch.tensor(item['true_correction'], dtype=torch.float32) 
+                    for item in batch_data
+                ], dim=0)  # Result: (batch_size, 9)
                 quality_weights = torch.tensor([item['signal_quality'] for item in batch_data], dtype=torch.float32)
                 
                 # Forward pass

@@ -68,6 +68,10 @@ class SignalInjector:
             injected = np.copy(noise)
             actual_snr = 0.0
         
+        # Double-check: if noise itself has NaN, sanitize it
+        if np.any(~np.isfinite(injected)):
+            injected = np.nan_to_num(injected, nan=0.0, posinf=1e-6, neginf=-1e-6).astype(np.float32)
+        
         # Metadata
         metadata = {
             'detector': detector_name,
@@ -145,6 +149,10 @@ class SignalInjector:
             for metadata in metadata_list:
                 metadata['actual_snr'] = 0.0
         
+        # Double-check: if noise itself has NaN, sanitize it
+        if np.any(~np.isfinite(injected)):
+            injected = np.nan_to_num(injected, nan=0.0, posinf=1e-6, neginf=-1e-6).astype(np.float32)
+        
         return injected, metadata_list
     
     def _scale_to_target_snr(self,
@@ -182,13 +190,19 @@ class SignalInjector:
         # Calculate optimal SNR
         sig = sigma(signal_ts, psd=psd, low_frequency_cutoff=20.0)
         
-        if sig > 0:
+        if sig > 0 and np.isfinite(sig):
             scale_factor = target_snr / sig
+            # Clamp to prevent overflow
+            scale_factor = np.clip(scale_factor, 1e-6, 1e6)
         else:
             scale_factor = 1.0
         
         scaled_signal = signal * scale_factor
-        actual_snr = float(sig * scale_factor)
+        # Ensure result is finite
+        if not np.all(np.isfinite(scaled_signal)):
+            scaled_signal = np.nan_to_num(scaled_signal, nan=0.0, posinf=1e-6, neginf=-1e-6)
+        
+        actual_snr = float(sig * scale_factor) if np.isfinite(sig) else target_snr
         
         return scaled_signal, actual_snr
     
@@ -204,15 +218,18 @@ class SignalInjector:
         # Signal power
         signal_rms = np.sqrt(np.mean(signal**2))
         
-        if signal_rms > 0 and noise_rms > 0:
+        if signal_rms > 0 and noise_rms > 1e-30:
             # Current SNR estimate
             current_snr = signal_rms / noise_rms
             
-            # Scale factor
+            # Scale factor - clamp to prevent overflow
             scale_factor = target_snr / current_snr
+            # Clamp extreme scale factors to prevent NaN/Inf
+            scale_factor = np.clip(scale_factor, 1e-6, 1e6)
         else:
-            # Fallback
-            scale_factor = target_snr * noise_rms / 1e-21
+            # Fallback: use target SNR directly if noise is too small
+            # Don't divide by 1e-21! That creates enormous scale factors
+            scale_factor = target_snr * 1e-6  # Conservative default
         
         scaled_signal = signal * scale_factor
         actual_snr = float(target_snr)  # Approximate

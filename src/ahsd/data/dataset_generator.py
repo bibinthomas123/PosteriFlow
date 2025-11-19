@@ -1554,7 +1554,7 @@ class GWDatasetGenerator:
 
         last_log_time = time.time()
         log_interval = 300  # Log stats every 5 minutes
-        checkpoint_interval = 1000  # Detailed stats every 1000 samples
+        checkpoint_interval = 10000  # Detailed stats every 10000 samples
 
         self.logger.info("=" * 80)
         self.logger.info("STARTING SAMPLE GENERATION")

@@ -35,39 +35,49 @@ class DataPreprocessor:
                   whiten: bool = True,
                   bandpass: bool = True,
                   remove_edges: bool = True) -> np.ndarray:
-        """
-        Complete preprocessing pipeline
-        
-        Args:
-            strain: Raw strain data
-            psd_dict: PSD for whitening
-            whiten: Apply whitening
-            bandpass: Apply bandpass filter
-            remove_edges: Apply edge tapering
-            
-        Returns:
-            Preprocessed strain
-        """
-        
-        # Ensure correct dtype
-        data = np.array(strain, dtype=np.float64)
-        
-        # Remove DC offset
-        data = data - np.mean(data)
-        
-        # Bandpass filter
-        if bandpass:
-            data = self.bandpass_filter(data, self.f_low, self.f_high)
-        
-        # Whiten
-        if whiten and psd_dict is not None:
-            data = self.whiten_data(data, psd_dict)
-        
-        # Edge tapering
-        if remove_edges:
-            data = self.apply_tukey_window(data, alpha=0.1)
-        
-        return data.astype(np.float32)
+         """
+         Complete preprocessing pipeline
+         
+         Args:
+             strain: Raw strain data
+             psd_dict: PSD for whitening
+             whiten: Apply whitening
+             bandpass: Apply bandpass filter
+             remove_edges: Apply edge tapering
+             
+         Returns:
+             Preprocessed strain
+         """
+         
+         # Ensure correct dtype
+         data = np.array(strain, dtype=np.float64)
+         
+         # Check for NaN/Inf early
+         if np.any(~np.isfinite(data)):
+             self.logger.warning("Input strain contains NaN/Inf, sanitizing before preprocessing")
+             data = np.nan_to_num(data, nan=0.0, posinf=1e-6, neginf=-1e-6)
+         
+         # Remove DC offset
+         data = data - np.mean(data)
+         
+         # Bandpass filter
+         if bandpass:
+             data = self.bandpass_filter(data, self.f_low, self.f_high)
+         
+         # Whiten
+         if whiten and psd_dict is not None:
+             data = self.whiten_data(data, psd_dict)
+         
+         # Edge tapering
+         if remove_edges:
+             data = self.apply_tukey_window(data, alpha=0.1)
+         
+         # Final check: if NaN appears after preprocessing, sanitize
+         if np.any(~np.isfinite(data)):
+             self.logger.warning("Output strain contains NaN/Inf after preprocessing, sanitizing")
+             data = np.nan_to_num(data, nan=0.0, posinf=1e-6, neginf=-1e-6)
+         
+         return data.astype(np.float32)
     
     def whiten_data(self, strain: np.ndarray, psd_dict: Dict) -> np.ndarray:
         """
@@ -97,17 +107,36 @@ class DataPreprocessor:
                 fill_value=(psd[0], psd[-1])
             )(freqs_fft)
             
-            # Avoid division by zero
-            psd_interp = np.maximum(psd_interp, 1e-50)
+            # Avoid division by zero (use larger minimum to avoid numerical issues)
+            psd_interp = np.maximum(psd_interp, 1e-30)
+            
+            # Compute whitening denominator safely
+            whitening_denom = np.sqrt(psd_interp * self.sample_rate / 2)
+            whitening_denom = np.maximum(whitening_denom, 1e-15)  # Clamp minimum
             
             # Whiten
-            whitened_fft = strain_fft / np.sqrt(psd_interp * self.sample_rate / 2)
+            whitened_fft = strain_fft / whitening_denom
+            
+            # Sanitize FFT result before IFFT
+            if np.any(~np.isfinite(whitened_fft)):
+                self.logger.warning("Whitened FFT contains NaN/Inf, using original FFT")
+                whitened_fft = strain_fft
             
             # IFFT
             whitened = np.fft.irfft(whitened_fft, n=len(strain))
             
+            # Sanitize time-domain result
+            if np.any(~np.isfinite(whitened)):
+                self.logger.warning("Whitened time-domain contains NaN/Inf, using original strain")
+                return strain
+            
             # High-pass to remove low-freq artifacts
             whitened = self.highpass_filter(whitened, 10.0)
+            
+            # Final sanitization
+            if np.any(~np.isfinite(whitened)):
+                self.logger.warning("High-pass filtered whitened contains NaN/Inf, using original strain")
+                return strain
             
             return whitened
             

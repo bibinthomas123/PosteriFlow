@@ -50,7 +50,7 @@ detectors = {
 # -------------------------
 # Output folder
 # -------------------------
-out_dir = "gw_segments"
+out_dir = "gw_segments_cleaned"
 os.makedirs(out_dir, exist_ok=True)
 
 # -------------------------
@@ -74,11 +74,15 @@ def process_segment(det, gps):
         # Convert to numpy
         arr = strain.value.astype(np.float32)
 
-        # Validate
+        # Validate length
         if len(arr) != duration * sample_rate:
-            print(f"WARNING: length mismatch ({len(arr)} vs {duration * sample_rate})")
+            print(f"✗ SKIPPED: length mismatch ({len(arr)} vs {duration * sample_rate})")
+            return False
+        
+        # CRITICAL: Skip any segment with NaN/Inf (corrupted from GWOSC)
         if np.any(~np.isfinite(arr)):
-            print(f"WARNING: contains NaN/Inf")
+            print(f"✗ SKIPPED: contains NaN/Inf ({np.isnan(arr).sum()} NaN values)")
+            return False
 
         # Save cleaned strain
         fname = f"{out_dir}/{det}_{gps}.npy"

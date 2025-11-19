@@ -112,6 +112,9 @@ def validate_config(config: Dict) -> Dict:
         # ✅ ADD THESE TWO CRITICAL SECTIONS:
         "edge_cases": config.get("edge_cases", {}),
         "extreme_cases": config.get("extreme_cases", {}),
+        # ✅ ADD REAL NOISE CONFIGURATION:
+        "use_real_noise_prob": config.get("use_real_noise_prob", 0.0),
+        "real_noise_cache_dir": config.get("real_noise_cache_dir", "gw_segments"),
     }
 
     # Validate ranges

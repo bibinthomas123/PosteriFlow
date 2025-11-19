@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-def check_1_mismatches(dataset_dir="data/test"):
+def check_1_mismatches(dataset_dir="data/dataset"):
     """Check for n_signals ≠ len(parameters) mismatches"""
     print("\n" + "="*60)
     print("CHECK 1: Signal Count Mismatches")
@@ -55,7 +55,7 @@ def check_1_mismatches(dataset_dir="data/test"):
     
     return mismatches == 0
 
-def check_2_decoys(dataset_dir="data/test"):
+def check_2_decoys(dataset_dir="data/dataset"):
     """Check for decoy signals (duplicates with similar mass)"""
     print("\n" + "="*60)
     print("CHECK 2: Decoy Signal Detection")
@@ -95,7 +95,7 @@ def check_2_decoys(dataset_dir="data/test"):
     
     return suspected_decoys < 50
 
-def check_3_priority_alignment(dataset_dir="data/test"):
+def check_3_priority_alignment(dataset_dir="data/dataset"):
     """Check priority-parameter alignment and value ranges"""
     print("\n" + "="*60)
     print("CHECK 3: Priority Alignment & Ranges")
@@ -138,7 +138,7 @@ def check_3_priority_alignment(dataset_dir="data/test"):
     
     return errors == 0 and out_of_range == 0
 
-def check_4_statistics(dataset_dir="data/test"):
+def check_4_statistics(dataset_dir="data/dataset"):
     """Check dataset statistics"""
     print("\n" + "="*60)
     print("CHECK 4: Dataset Statistics")
@@ -227,7 +227,7 @@ def check_4_statistics(dataset_dir="data/test"):
     
     return reasonable
 
-def check_5_zero_anomalies(dataset_dir="data/test"):
+def check_5_zero_anomalies(dataset_dir="data/dataset"):
     """Check for near-zero priority anomalies (should be minimal with log scaling)"""
     print("\n" + "="*60)
     print("CHECK 5: Near-Zero Priority Anomalies")

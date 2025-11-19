@@ -25,6 +25,7 @@ share/python-wheels/
 MANIFEST
 
 FIX_DOCS/*
+
 AGENTS.md
 .noise_cache
 *pkl
@@ -100,7 +101,6 @@ cache/
 huggingface/
 
 outputs/
-data/
+
 nohup.out*
 *.pkl.gz
-*.png

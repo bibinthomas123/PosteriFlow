@@ -15,7 +15,9 @@ from types import SimpleNamespace
 from pathlib import Path
 import numpy as np
 import torch
+from scipy import stats
 from scipy.stats import spearmanr
+from sklearn.metrics import roc_auc_score
 import requests
 import yaml
 
@@ -31,6 +33,51 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 L = logging.getLogger("stress_test")
 
 FAIL_REASONS = []
+
+# ========== Distribution Separation Metrics ==========
+class DistributionMetrics:
+    """Compute distribution separation, entropy, and sharpness metrics"""
+    
+    @staticmethod
+    def compute_entropy(probabilities):
+        """Shannon entropy of probability distribution (lower = sharper)"""
+        probs = np.clip(probabilities, 1e-10, 1.0)
+        entropy = -np.sum(probs * np.log(probs))
+        return entropy
+    
+    @staticmethod
+    def compute_sharpness(scores, window_size=5):
+        """Sharpness as inverse of smoothness (higher = more decisive)"""
+        if len(scores) < window_size:
+            return 0.0
+        smoothness = np.var(np.convolve(scores, np.ones(window_size)/window_size, mode='valid'))
+        return 1.0 / (1.0 + smoothness)
+    
+    @staticmethod
+    def compute_separation_auc(high_priority_scores, low_priority_scores):
+        """AUC for separating high vs low priority (1.0 = perfect, 0.5 = random)"""
+        if len(high_priority_scores) == 0 or len(low_priority_scores) == 0:
+            return 0.5
+        y_true = np.concatenate([np.ones(len(high_priority_scores)), np.zeros(len(low_priority_scores))])
+        y_scores = np.concatenate([high_priority_scores, low_priority_scores])
+        if len(np.unique(y_scores)) < 2:
+            return 0.5
+        try:
+            return roc_auc_score(y_true, y_scores)
+        except:
+            return 0.5
+    
+    @staticmethod
+    def compute_kl_divergence(dist1, dist2):
+        """KL divergence between distributions (lower = more similar)"""
+        p = np.clip(dist1 / (np.sum(dist1) + 1e-10), 1e-10, 1.0)
+        q = np.clip(dist2 / (np.sum(dist2) + 1e-10), 1e-10, 1.0)
+        return np.sum(p * np.log(p / (q + 1e-10)))
+    
+    @staticmethod
+    def compute_wasserstein_distance(scores1, scores2):
+        """Wasserstein distance between score distributions"""
+        return stats.wasserstein_distance(scores1, scores2)
 
 def GATE(condition, reason):
     if not condition:
@@ -221,6 +268,81 @@ def uncertainty_quality(model, dataset):
     corr = np.corrcoef(errs, uncs)[0, 1]
     L.info(f"corr(|error|, unc)={corr:.3f}")
     GATE(corr >= 0.15, f"Uncertainty correlation {corr:.3f} < 0.15")
+
+def distribution_separation_analysis(model, dataset):
+    """Analyze distribution separation, entropy, and sharpness metrics"""
+    L.info("\n" + "="*80 + "\n5️⃣DistSep DISTRIBUTION SEPARATION & SHARPNESS\n" + "="*80)
+    
+    # Collect predictions for high and low SNR signals
+    high_snr_preds = []
+    low_snr_preds = []
+    all_preds = []
+    
+    for i in range(min(300, len(dataset))):
+        sc = dataset[i]
+        with torch.no_grad():
+            p, _ = model(sc['detections'])
+        preds = p.cpu().numpy()
+        all_preds.extend(preds)
+        
+        # Categorize by SNR
+        for j, det in enumerate(sc['detections']):
+            snr = det.get('network_snr', 15.0)
+            if snr > 18.0:
+                high_snr_preds.append(preds[j])
+            elif snr < 10.0:
+                low_snr_preds.append(preds[j])
+    
+    all_preds = np.array(all_preds)
+    high_snr_preds = np.array(high_snr_preds)
+    low_snr_preds = np.array(low_snr_preds)
+    
+    # Compute distribution metrics
+    if len(high_snr_preds) > 0 and len(low_snr_preds) > 0:
+        # 1. AUC Separation
+        auc = DistributionMetrics.compute_separation_auc(high_snr_preds, low_snr_preds)
+        L.info(f"🎯 AUC (High vs Low SNR separation): {auc:.4f}")
+        GATE(auc > 0.65, f"AUC {auc:.4f} < 0.65 (poor SNR separation)")
+        
+        # 2. Entropy (sharpness indicator)
+        high_snr_entropy = DistributionMetrics.compute_entropy(high_snr_preds)
+        low_snr_entropy = DistributionMetrics.compute_entropy(low_snr_preds)
+        all_entropy = DistributionMetrics.compute_entropy(all_preds)
+        L.info(f"📊 Entropy (Lower = Sharper):")
+        L.info(f"   High SNR: {high_snr_entropy:.4f}")
+        L.info(f"   Low SNR:  {low_snr_entropy:.4f}")
+        L.info(f"   All:      {all_entropy:.4f}")
+        
+        # 3. Sharpness metric
+        high_snr_sharpness = DistributionMetrics.compute_sharpness(high_snr_preds)
+        low_snr_sharpness = DistributionMetrics.compute_sharpness(low_snr_preds)
+        all_sharpness = DistributionMetrics.compute_sharpness(all_preds)
+        L.info(f"⚡ Sharpness (Higher = More Decisive):")
+        L.info(f"   High SNR: {high_snr_sharpness:.4f}")
+        L.info(f"   Low SNR:  {low_snr_sharpness:.4f}")
+        L.info(f"   All:      {all_sharpness:.4f}")
+        
+        # 4. Wasserstein distance
+        wasserstein = DistributionMetrics.compute_wasserstein_distance(high_snr_preds, low_snr_preds)
+        L.info(f"📏 Wasserstein Distance (High vs Low): {wasserstein:.4f}")
+        GATE(wasserstein > 0.1, f"Wasserstein distance {wasserstein:.4f} < 0.1 (weak separation)")
+        
+        # 5. KL divergence
+        # Bin predictions into histogram for KL divergence
+        hist_high, _ = np.histogram(high_snr_preds, bins=20, range=(0, 1))
+        hist_low, _ = np.histogram(low_snr_preds, bins=20, range=(0, 1))
+        kl_div = DistributionMetrics.compute_kl_divergence(hist_high, hist_low)
+        L.info(f"🔀 KL Divergence (High vs Low): {kl_div:.4f}")
+        GATE(kl_div > 0.1, f"KL divergence {kl_div:.4f} < 0.1 (distributions too similar)")
+        
+        # 6. Statistical summary
+        L.info(f"\n📈 Statistical Summary:")
+        L.info(f"   High SNR mean={high_snr_preds.mean():.3f} std={high_snr_preds.std():.3f}")
+        L.info(f"   Low SNR  mean={low_snr_preds.mean():.3f} std={low_snr_preds.std():.3f}")
+        L.info(f"   All      mean={all_preds.mean():.3f} std={all_preds.std():.3f}")
+        L.info(f"   Range: [{all_preds.min():.3f}, {all_preds.max():.3f}]")
+    else:
+        L.warning("⚠️  Insufficient samples for distribution analysis")
 
 def edge_activation_check(model, dataset):
     L.info("\n" + "="*80 + "\n6️⃣  EDGE CONDITIONING\n" + "="*80)
@@ -496,6 +618,7 @@ def main():
     if val_dataset:
         calibration_spread(model, val_dataset)
         uncertainty_quality(model, val_dataset)
+        distribution_separation_analysis(model, val_dataset)
         edge_activation_check(model, val_dataset)
         snr_nwise_breakdown(model, val_dataset)
         

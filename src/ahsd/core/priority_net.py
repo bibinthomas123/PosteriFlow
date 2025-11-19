@@ -1263,10 +1263,14 @@ class PriorityNet(nn.Module):
             bias_clamped = torch.clamp(self.prio_bias, min=self.affine_bias_min, max=self.affine_bias_max)
             prio = prio * gain_clamped + bias_clamped
             
-            # CRITICAL (Nov 16 FIX): Hard bounds enforcement to prevent out-of-range predictions
-            # Unconstrained affine can expand predictions beyond [0, 1] with gain ∈ [1.2, 2.5]
-            # Clipping ensures all predictions stay valid without suppressing learning
-            prio = torch.clamp(prio, min=0.0, max=1.0)
+            # NOTE (Nov 19 FIX): REMOVED hard clipping here!
+            # Hard clipping at inference killed gradients during training:
+            # - When loss wanted pred_max to reach 0.95, affine gained > 2.5
+            # - Clipping to 1.0 destroyed the gradient signal
+            # - Calibration loss had no effect (clipping eliminated all variation)
+            # 
+            # New strategy: Use soft penalty in loss function (bounds_penalty)
+            # instead of hard clipping. Loss handles bounds; forward pass allows unclamped output.
             
             sigma = self.uncertainty_head(fused).squeeze(-1)  # [N], positive
 
@@ -1687,6 +1691,11 @@ class PriorityNetTrainer:
             )
             self.optimizer.step()
 
+        # Log affine parameters (Nov 19: track range expansion capability)
+        with torch.no_grad():
+            gain_val = float(self.model.prio_gain.detach().cpu())
+            bias_val = float(self.model.prio_bias.detach().cpu())
+
         return {
             "loss": total_losses["total"] / max(1, valid_batches),
             "mse": total_losses["mse"] / max(1, valid_batches),
@@ -1695,6 +1704,8 @@ class PriorityNetTrainer:
             "uncertainty": 0.0,
             "grad_norm": grad_norm,
             "valid_batches": valid_batches,
+            "affine_gain": gain_val,  # NEW: Track affine gain training
+            "affine_bias": bias_val,  # NEW: Track affine bias training
         }
 
 

@@ -45,7 +45,7 @@ FIGURES (RESEARCH-LEVEL):
   15. Data splitting & balance metrics
 
 Usage:
-  python experiments/analyze_dataset_enhanced.py \
+  python experiments/analyze.py \
     --data_dir data/ahsd_dataset \
     --output_dir analysis \
     --export_violations \
@@ -276,32 +276,97 @@ class PhysicsValidator:
 
 
 # ============================================================================
-# DATASET LOADING (EXISTING - KEPT)
+# DATASET LOADING (STREAMING - MEMORY EFFICIENT)
 # ============================================================================
 
 
-def load_dataset(data_dir):
-    """Load all samples from train/validation/test splits"""
+def iter_samples_from_split(split_dir, max_samples=None):
+    """
+    Stream samples from chunks in a split directory (memory efficient).
+    
+    Args:
+        split_dir: Path to split directory (train/validation/test)
+        max_samples: Max samples to yield (None = all)
+    
+    Yields:
+        dict: Individual sample from chunks
+    """
+    chunk_files = sorted(split_dir.glob("chunk_*.pkl"))
+    total_yielded = 0
+    
+    for chunk_id, chunk_file in enumerate(chunk_files):
+        if not chunk_file.exists():
+            WARN(f"Chunk file not found: {chunk_file}")
+            continue
+
+        try:
+            with open(chunk_file, "rb") as f:
+                chunk_data = pickle.load(f)
+
+            for sample in chunk_data:
+                yield sample
+                total_yielded += 1
+
+                if max_samples and total_yielded >= max_samples:
+                    INFO(f"Reached max samples limit: {max_samples}")
+                    return
+
+            # Explicitly free chunk memory
+            del chunk_data
+
+        except Exception as e:
+            WARN(f"Failed to load chunk {chunk_file.name}: {e}")
+            continue
+
+
+def load_dataset(data_dir, max_samples=None):
+    """
+    Load all samples from train/validation/test splits using streaming.
+    
+    Streams chunks one at a time (memory efficient) instead of loading all at once.
+    
+    Args:
+        data_dir: Path to dataset directory
+        max_samples: Maximum samples to load (None = all)
+    
+    Returns:
+        list: All samples from all splits
+    """
     all_samples = []
     data_path = Path(data_dir)
+    total_loaded = 0
 
     for split in ["train", "validation", "test"]:
         split_dir = data_path / split
         if not split_dir.exists():
+            INFO(f"Split {split}/ not found, skipping")
             continue
 
         chunk_files = sorted(split_dir.glob("chunk_*.pkl"))
-        INFO(f"Found {len(chunk_files)} chunk(s) in {split}/")
+        if not chunk_files:
+            INFO(f"No chunks found in {split}/")
+            continue
+        
+        INFO(f"Loading {len(chunk_files)} chunk(s) from {split}/ (streaming)...")
 
-        for chunk_file in chunk_files:
-            try:
-                with open(chunk_file, "rb") as f:
-                    samples = pickle.load(f)
-                    all_samples.extend(samples)
-                    INFO(f"Loaded {len(samples)} samples from {chunk_file.name}")
-            except Exception as e:
-                WARN(f"Error loading {chunk_file.name}: {e}")
+        split_count = 0
+        for sample in iter_samples_from_split(split_dir, max_samples=max_samples):
+            if sample is not None:
+                all_samples.append(sample)
+                split_count += 1
+                total_loaded += 1
 
+                # Log progress every 1000 samples
+                if total_loaded % 1000 == 0:
+                    INFO(f"Loaded {total_loaded} samples total")
+
+                if max_samples and total_loaded >= max_samples:
+                    INFO(f"Reached global max samples: {max_samples}")
+                    return all_samples
+
+        INFO(f"Streamed {split_count} samples from {split}/")
+
+    INFO(f"Total: {len(all_samples)} samples loaded (streaming)")
     return all_samples
 
 
@@ -369,7 +434,7 @@ def extract_parameters(samples):
             "tilt2": params.get("tilt2") or params.get("tilt_2"),
             "phi_12": params.get("phi_12"),
             "phi_jl": params.get("phi_jl"),
-            "chi_eff": params.get("chi_eff"),
+            "chi_eff": params.get("chi_eff") or params.get("effective_spin"),
             "chi_p": params.get("chi_p"),
             "network_snr": params.get("network_snr"),
             "target_snr": params.get("target_snr"),
@@ -380,25 +445,39 @@ def extract_parameters(samples):
     df = pd.DataFrame(data)
     INFO(f"Extracted parameters from {len(df)} samples")
 
-    # ✅ ADD SNR REGIME COLUMN
+    # ✅ ADD SNR REGIME COLUMN - USE CONFIG VALUES, NOT HARDCODED
     if "network_snr" in df.columns:
-
+        # Use SNR_RANGES from config for consistency with dataset generation
+        try:
+            from ahsd.data.config import SNR_RANGES
+        except ImportError:
+            # Fallback if config not available
+            SNR_RANGES = {
+                "weak": (10.0, 15.0),
+                "low": (15.0, 25.0),
+                "medium": (25.0, 40.0),
+                "high": (40.0, 60.0),
+                "loud": (60.0, np.inf),
+            }
+    
         def classify_snr(snr):
+            """Classify SNR using configured ranges (matches dataset_generator.py)"""
             if pd.isna(snr):
                 return "unknown"
-            elif snr < 8:
+            
+            # Check each regime's bounds
+            for regime, (min_snr, max_snr) in SNR_RANGES.items():
+                if min_snr <= snr < max_snr:
+                    return regime
+            
+            # Handle out-of-range values
+            if snr < 10.0:  # Below weak minimum
                 return "weak"
-            elif snr < 15:
-                return "low"
-            elif snr < 50:
-                return "medium"
-            elif snr < 100:
-                return "high"
-            else:
+            else:  # Above loud maximum
                 return "loud"
-
+    
         df["snr_regime"] = df["network_snr"].apply(classify_snr)
-        INFO(f"Added SNR regime classification")
+        INFO(f"Added SNR regime classification using configured SNR_RANGES")
 
     INFO(f"Event types found: {sorted(all_event_types)}")
 
@@ -965,21 +1044,33 @@ def plot_research_figure_5_distance_snr(df, output_dir):
     # Make sure snr_regime column exists
     if "snr_regime" not in df.columns:
         INFO("⚠️  snr_regime column missing, creating it...")
-
+    
+        # Use SNR_RANGES from config
+        try:
+            from ahsd.data.config import SNR_RANGES
+        except ImportError:
+            SNR_RANGES = {
+                "weak": (10.0, 15.0),
+                "low": (15.0, 25.0),
+                "medium": (25.0, 40.0),
+                "high": (40.0, 60.0),
+                "loud": (60.0, np.inf),
+            }
+    
         def classify_snr(snr):
+            """Classify SNR using configured ranges"""
             if pd.isna(snr):
                 return "unknown"
-            elif snr < 8:
+            
+            for regime, (min_snr, max_snr) in SNR_RANGES.items():
+                if min_snr <= snr < max_snr:
+                    return regime
+            
+            if snr < 10.0:
                 return "weak"
-            elif snr < 15:
-                return "low"
-            elif snr < 50:
-                return "medium"
-            elif snr < 100:
-                return "high"
             else:
                 return "loud"
-
+    
         df["snr_regime"] = df["network_snr"].apply(classify_snr)
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -1960,6 +2051,8 @@ def plot_research_figure_17_spin_tilt_physics(df, output_dir):
             ax.set_ylabel("Tilt Angle tilt₁ (rad)", fontsize=11, fontweight="bold")
             ax.set_title("A) Primary Spin-Tilt Correlation", fontsize=12, fontweight="bold")
             ax.grid(True, alpha=0.3)
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label("Network SNR", fontsize=10, fontweight="bold")
         else:
             axes[0, 0].text(
                 0.5,
@@ -2007,6 +2100,8 @@ def plot_research_figure_17_spin_tilt_physics(df, output_dir):
             ax.set_ylabel("Tilt Angle tilt₂ (rad)", fontsize=11, fontweight="bold")
             ax.set_title("B) Secondary Spin-Tilt Correlation", fontsize=12, fontweight="bold")
             ax.grid(True, alpha=0.3)
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label("Network SNR", fontsize=10, fontweight="bold")
         else:
             axes[0, 1].text(
                 0.5,
@@ -2053,6 +2148,8 @@ def plot_research_figure_17_spin_tilt_physics(df, output_dir):
             ax.set_ylabel("Inclination θ_jn (rad)", fontsize=11, fontweight="bold")
             ax.set_title("C) Effective Spin-Inclination Physics", fontsize=12, fontweight="bold")
             ax.grid(True, alpha=0.3)
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label("Network SNR", fontsize=10, fontweight="bold")
 
     # cos(θ_jn) vs χ_eff
     if inclination_col:

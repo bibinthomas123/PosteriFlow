@@ -82,7 +82,7 @@ class NoiseGenerator:
         # Final validation: if still NaN, generate fallback Gaussian
         if np.any(~np.isfinite(noise)):
             self.logger.warning("Generated noise contains NaN/Inf, using Gaussian fallback")
-            noise = np.random.randn(self.n_samples).astype(np.float32) * 1e-21
+            noise = np.random.randn(self.n_samples).astype(np.float32) * 1e-20
         
         return noise
 
@@ -146,8 +146,8 @@ class NoiseGenerator:
         
         if np.any(~np.isfinite(colored_noise)):
             self.logger.warning("Generated colored noise contains NaN/Inf values")
-            # Replace with simple Gaussian
-            colored_noise = np.random.randn(self.n_samples).astype(np.float32) * 1e-21
+            # Replace with simple Gaussian at realistic amplitude (not 1e-21!)
+            colored_noise = np.random.randn(self.n_samples).astype(np.float32) * 1e-20
 
         return colored_noise
 

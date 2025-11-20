@@ -1243,8 +1243,8 @@ def main():
                 # Train bias corrector with config settings
                 bias_training_config = {
                     "epochs": bias_corrector_config.get("epochs", 30),
-                    "learning_rate": bias_corrector_config.get("learning_rate", 1e-4),
-                    "batch_size": bias_corrector_config.get("batch_size", 16),
+                    "learning_rate": bias_corrector_config.get("learning_rate", 2.0e-4),
+                    "batch_size": bias_corrector_config.get("batch_size", 32),
                     "patience": bias_corrector_config.get("patience", 10),
                 }
 

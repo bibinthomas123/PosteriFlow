@@ -54,7 +54,7 @@ class AdaptiveComplexityController(nn.Module):
         complexity_levels: List[str] = ["low", "medium", "high"],
         learning_rate: float = 1e-3,
         epsilon: float = 0.1,
-        epsilon_decay: float = 0.995,
+        epsilon_decay: float = 0.9995,
         memory_size: int = 10000,
         batch_size: int = 32):
     super().__init__()
@@ -147,7 +147,13 @@ class AdaptiveComplexityController(nn.Module):
   def compute_reward(self,
            pipeline_metrics: Dict,
            complexity_level: str) -> float:
-    """Compute reward based on pipeline performance."""
+    """Compute reward based on pipeline performance.
+    
+    Rewards are normalized to [-1, 1] range:
+    - Accuracy: max(0, 1.0 - bias) ∈ [0, 1]  (lower loss is better)
+    - Speed: max(0, 1.0 - time_ms/500) ∈ [0, 1]  (faster is better, 500ms reference)
+    - Complexity: -[0.0, 0.15, 0.3] for [low, medium, high]
+    """
     
     # Base reward components
     accuracy_reward = 0.0
@@ -155,20 +161,27 @@ class AdaptiveComplexityController(nn.Module):
     complexity_penalty = 0.0
     
     # Accuracy component (higher is better)
+    # Lower loss (bias) → higher accuracy_reward
     if "parameter_bias" in pipeline_metrics:
       bias = pipeline_metrics["parameter_bias"]
-      accuracy_reward = max(0, 1.0 - bias) # Reward for low bias
+      # Clamp loss to [0, 1] range for realistic accuracy signal
+      # NLL loss typically 0.5-2.0, map to [0, 1]
+      clamped_bias = min(1.0, max(0.0, bias))
+      accuracy_reward = 1.0 - clamped_bias  # [0, 1] for loss [1, 0]
     
     # Speed component (faster is better)
+    # extraction_time in seconds, normalize to 500ms reference
     if "extraction_time" in pipeline_metrics:
-      time_taken = pipeline_metrics["extraction_time"]
-      speed_reward = max(0, 1.0 - time_taken / 60.0) # Normalize by 1 minute
+      time_taken_ms = pipeline_metrics["extraction_time"] * 1000  # Convert to ms
+      # Typical batch time: 200-300ms; reward baseline at 500ms
+      speed_reward = max(0.0, 1.0 - time_taken_ms / 500.0)
     
     # Complexity penalty (lower complexity is better for similar performance)
-    complexity_costs = {"low": 0.0, "medium": 0.1, "high": 0.2}
+    # Penalize high complexity, encourage low when possible
+    complexity_costs = {"low": 0.0, "medium": 0.15, "high": 0.30}
     complexity_penalty = complexity_costs.get(complexity_level, 0.0)
     
-    # Combined reward
+    # Combined reward: ∈ [-0.30, 1.50] with typical range [0.2, 1.0]
     total_reward = accuracy_reward + speed_reward - complexity_penalty
     
     return float(total_reward)
@@ -257,9 +270,12 @@ class AdaptiveComplexityController(nn.Module):
      return metrics
   
   def state_dict(self, destination=None, prefix='', keep_vars=False):
-    """Override state_dict to include non-tensor attributes."""
+    """Override state_dict to include non-tensor attributes and memory buffer."""
     # Get module state dict
     module_state = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+    
+    # Serialize memory buffer (convert deque to list)
+    serializable_memory = list(self.memory)
     
     # Add non-tensor attributes as metadata
     state = {
@@ -268,11 +284,15 @@ class AdaptiveComplexityController(nn.Module):
       'epsilon_decay': self.epsilon_decay,
       'state_features': self.state_features,
       'complexity_levels': self.complexity_levels,
+      'memory': serializable_memory,  # ✅ Save experience replay buffer
+      'action_history': list(self.action_history),  # ✅ Save action metrics
+      'reward_history': list(self.reward_history),  # ✅ Save reward metrics
+      'action_counts': dict(self.action_counts),  # ✅ Save action frequencies
     }
     return state
   
   def load_state_dict(self, state_dict, strict=True):
-    """Override load_state_dict to restore non-tensor attributes."""
+    """Override load_state_dict to restore non-tensor attributes and memory buffer."""
     if isinstance(state_dict, dict) and 'module_state' in state_dict:
       # New format with metadata
       module_state = state_dict['module_state']
@@ -280,6 +300,28 @@ class AdaptiveComplexityController(nn.Module):
       
       self.epsilon = state_dict.get('epsilon', self.epsilon)
       self.epsilon_decay = state_dict.get('epsilon_decay', self.epsilon_decay)
+      
+      # ✅ Restore memory buffer
+      if 'memory' in state_dict:
+        restored_memory = state_dict['memory']
+        self.memory.clear()
+        for experience in restored_memory:
+          self.memory.append(experience)
+      
+      # ✅ Restore action/reward history
+      if 'action_history' in state_dict:
+        self.action_history.clear()
+        for action in state_dict['action_history']:
+          self.action_history.append(action)
+      
+      if 'reward_history' in state_dict:
+        self.reward_history.clear()
+        for reward in state_dict['reward_history']:
+          self.reward_history.append(reward)
+      
+      # ✅ Restore action counts
+      if 'action_counts' in state_dict:
+        self.action_counts = state_dict['action_counts']
     else:
       # Fallback: assume it's pure module state
       super().load_state_dict(state_dict, strict=strict)

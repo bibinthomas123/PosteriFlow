@@ -141,6 +141,10 @@ class TestDataset(torch.utils.data.Dataset):
         else:
             signal_params = parameters[0] if isinstance(parameters, list) and len(parameters) > 0 else {}
         
+        # Ensure signal_params is a dict, not None
+        if signal_params is None:
+            signal_params = {}
+        
         true_params = np.array([
             signal_params.get('mass_1', 30.0),
             signal_params.get('mass_2', 25.0),

@@ -365,6 +365,20 @@ class OverlapNeuralPETrainer:
         self.history = checkpoint.get("history", self.history)
         self.global_step = checkpoint.get("global_step", self.global_step)
 
+        # ✅ Restore RL controller state (including memory buffer)
+        if (
+            hasattr(self.model, "rl_controller")
+            and self.model.rl_controller is not None
+            and "rl_controller_state_dict" in checkpoint
+        ):
+            try:
+                self.model.rl_controller.load_state_dict(
+                    checkpoint["rl_controller_state_dict"]
+                )
+                self.logger.info("RL controller state restored (including memory buffer)")
+            except Exception as e:
+                self.logger.warning(f"Failed to load RL controller state: {e}")
+
         # If epoch present, return next epoch to start from
         start_epoch = checkpoint.get("epoch", None)
         if start_epoch is not None:
@@ -1220,7 +1234,8 @@ def main():
 
                 # Get bias corrector config from YAML
                 bias_corrector_config = config.get("bias_corrector", {})
-                context_dim = config.get("neural_posterior", {}).get("context_dim", 512)
+                # Use bias_corrector.context_dim from config, matching the context encoder output
+                context_dim = bias_corrector_config.get("context_dim", 768)
 
                 bias_corrector = BiasCorrector(param_names=param_names, context_dim=context_dim)
                 logger.info(f"✅ BiasCorrector initialized (context_dim={context_dim})")

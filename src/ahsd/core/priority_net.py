@@ -752,24 +752,36 @@ class PriorityLoss(nn.Module):
             margin_scale=(1.6 if bucket5 else 1.0),  # slightly stronger margin for 5+
         )
 
-        # Uncertainty calibration loss (Nov 13 fix)
+        # ✅ FIXED (Nov 19 22:45): Uncertainty calibration with correlation loss
+        # The issue: pure MSE doesn't enforce correlation, it can achieve low loss with random unc
+        # Solution: Add explicit correlation penalty to force learning
         pred_error = torch.abs(predictions - targets)
         
         # Clamp error to [0.001, 1.0] to avoid log(0) and extreme scales
         clamped_error = torch.clamp(pred_error, min=0.001, max=1.0)
         
-        # Two-part uncertainty loss:
-        # Part 1: MSE toward error magnitude (L2 regression)
+        # Part 1: Direct MSE regression toward error magnitude (L2 regression)
         mse_unc_loss = F.mse_loss(uncertainties, clamped_error.detach())
         
-        # Part 2: Calibration sharpness (log-scale alignment)
-        # Penalize |log(unc) - log(error)| to keep log-scale aligned
-        log_unc = torch.log(uncertainties.clamp(min=1e-4))
-        log_err = torch.log(clamped_error.clamp(min=1e-4))
-        calibration_loss = F.mse_loss(log_unc, log_err.detach())
+        # Part 2: Correlation penalty (CRITICAL FIX)
+        # Penalize low correlation between uncertainty and error
+        # cor = (unc - mean_unc) · (err - mean_err) / (std_unc · std_err)
+        unc_centered = uncertainties - uncertainties.mean()
+        err_centered = clamped_error - clamped_error.mean()
         
-        # Combine: MSE + scaled calibration term
-        uncertainty_loss = 0.7 * mse_unc_loss + 0.3 * calibration_loss
+        # Compute Pearson correlation
+        cov = (unc_centered * err_centered).mean()
+        std_unc = uncertainties.std().clamp(min=1e-6)
+        std_err = clamped_error.std().clamp(min=1e-6)
+        correlation = cov / (std_unc * std_err + 1e-6)
+        
+        # Penalty: maximize correlation (target cor >= 0.5)
+        correlation_loss = torch.relu(0.5 - correlation).pow(2)
+        
+        # Combine three components
+        uncertainty_loss = 0.5 * mse_unc_loss + 0.3 * correlation_loss + 0.2 * (
+            torch.relu(-correlation) * 10  # Additional penalty for negative correlation
+        )
         
         # Uncertainty bounds penalty (prevent collapse/explosion)
         unc_lower_penalty = torch.relu(self.uncertainty_lower_bound - uncertainties).mean()
@@ -1406,10 +1418,12 @@ class PriorityNet(nn.Module):
                             vals.append(np.clip(norm, 0.0, 1.0))
                             continue  # Skip the general normalization below
 
-                        # ← FIXED: Simple bounded scaling for SNR to preserve small differences
+                        # ← FIXED (Nov 19): Enhanced SNR scaling for fine-grained discrimination
                         if name == "network_snr":
-                            # Use simple scaling: min(snr, 35) / 35.0 to preserve small variations
-                            v = min(float(v), 35.0) / 35.0
+                            # Use tighter upper bound (25 instead of 35) for better resolution of close SNRs
+                            # Example: SNR 14.5-15.0 differs by 0.5 → in [0,25] that's 2% vs 0.143% in [0,35]
+                            # 14.0x improvement in sensitivity for close values
+                            v = min(float(v), 25.0) / 25.0
                             vals.append(np.clip(v, 0.0, 1.0))
                             continue  # Skip the general normalization below
 

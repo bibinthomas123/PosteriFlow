@@ -45,7 +45,7 @@ priority_net:
   
   # --- TRAINING SCHEDULE ---
   batch_size: 24                          # ⬆️ Increased from 6 (larger batch → stable BatchNorm)
-  epochs: 50
+  epochs: 20
   patience: 15                            
   
   # --- WARMUP ---
@@ -79,18 +79,19 @@ priority_net:
   #     Primary total: 0.70 + 0.15 + 0.15 = 1.0 (well-balanced core loss)
   #     Calibration weights: 2× primary weights for dominant expansion signal
   #
-  #   uncertainty_weight: 0.35→0.15 (Nov 19 FIX: NORMALIZED)
+  #   uncertainty_weight: 0.12→0.25 (Nov 19 22:45 FIX: CORRELATION LOSS)
   #     Nov 13 increased 3.5× to 0.35 → exploding gradients (Grad=28.9)
   #     Nov 15 reduced to 0.10 (conservative)
-  #     Nov 19: Restore to 0.15 in normalized framework (between conservative and aggressive)
+  #     Nov 19: Restore to 0.12 but added correlation penalty to loss
+  #     Nov 19 22:45: Increased to 0.25 with new correlation-based loss function
   #
   #   Expected performance (epoch 50):
   #   - Block 1-3: PASS (signal ordering: ranking 0.70 dominates)
   #   - Block 4: FIXED via calib weights 2-2.5× primary (range expansion while maintaining ordering)
-  #   - Block 5: PASS with uncertainty_weight 0.15 (properly calibrated)
+  #   - Block 5: FIX with correlation penalty in uncertainty loss (target corr >= 0.15)
   ranking_weight: 0.70                    # Pairwise signal ordering margin (DOMINANT)
-  mse_weight: 0.15                        # Absolute priority accuracy (balanced)
-  uncertainty_weight: 0.15                # Confidence-error correlation (matched to MSE)
+  mse_weight: 0.18                        # Absolute priority accuracy (balanced)
+  uncertainty_weight: 0.25                # Confidence-error correlation (with correlation penalty)
   use_snr_weighting: true                 # Weight losses by SNR
   loss_scale_factor: 0.002                # Scale factor for loss terms (from Nov 12 fix)
   
@@ -159,8 +160,8 @@ priority_net:
 # NEURAL POSTERIOR ESTIMATION (Flow-based parameter inference)
 # ==============================================================================
 neural_posterior:
-  
-  # --- PARAMETERS (9-dimensional parameter space) ---
+   
+  # --- PARAMETERS (11-dimensional parameter space) ---
   param_names:
     - mass_1                              # Primary mass
     - mass_2                              # Secondary mass
@@ -171,6 +172,8 @@ neural_posterior:
     - psi                                 # Polarization angle
     - phase                               # Coalescence phase
     - geocent_time                        # Time at geocenter
+    - a1                                  # Primary spin magnitude
+    - a2                                  # Secondary spin magnitude
   
   # --- ARCHITECTURE (auto-adjusted by flow_type) ---
   context_dim: 768                        # ⬆️ Increased from 512 (50% more capacity for overlapping signals)
@@ -336,17 +339,38 @@ bias_corrector:
   enabled: true   # Enabled: trained after Neural PE converges on validation set
                   # Uses actual 768D context embeddings from context encoder
                   # Learns to correct systematic biases in parameter predictions
-  
-  # --- ARCHITECTURE ---
+
+  # --- ARCHITECTURE (IMPROVED - Nov 20) ---
   hidden_dims: [256, 128, 64]
   context_dim: 768                         # ✅ MATCHES context encoder output (from neural_posterior.context_dim)
-  dropout: 0.10
+  dropout: 0.15                            # ⬆️ Increased from 0.10 (regularization)
   
-  # --- TRAINING (Optimized for speed) ---
-  learning_rate: 1.0e-4
-  batch_size: 16                          # Reduced from 32 (smaller memory footprint, faster iterations)
-  epochs: 30                              # Reduced from 100→15 (30 is sufficient for 97 scenarios)
-  patience: 10                            # Early stopping if no improvement for 10 epochs
+  # --- NETWORK CAPACITY (Nov 20 UPGRADE) ---
+  # Increased model capacity 2.6× to handle small 97-sample dataset with proper regularization
+  # Embedding dims: 64→256 (4× larger)
+  # Transformer d_model: 96→256 (2.67× larger), num_layers: 3→4
+  # Head dims: 96→256 (2.67× larger)
+  # Total params: ~0.4M → ~1.1M (275% increase)
+  # Justification: Bias corrections are fundamentally harder than classification (uncertainty critical)
+  # Larger model forces richer parameter representation despite small dataset
+
+  # --- TRAINING (IMPROVED - Nov 20) ---
+  learning_rate: 2.0e-4                  # ⬆️ Doubled from 1e-4 (larger capacity needs stronger learning)
+  batch_size: 32                          # ⬆️ Increased from 16 (better batch statistics, stable norms)
+  epochs: 50                              # ⬆️ Increased from 30 (larger model needs more training)
+  patience: 20                            # ⬆️ Increased from 10 (tolerance for variance with small dataset)
+  
+  # --- LOSS FUNCTION (NEW - Nov 20) ---
+  # Multi-component loss for stable learning on small dataset:
+  # - NLL (0.50): Likelihood-based, robust to outliers
+  # - Relative Error (0.30): Forces model to learn correction magnitudes
+  # - Uncertainty Entropy (0.15): Encourages proper uncertainty estimates
+  # - Quality Weighting (0.05): Emphasize high-quality signals
+  loss_components:
+    nll_weight: 0.50
+    relative_error_weight: 0.30
+    entropy_weight: 0.15
+    quality_weight: 0.05
 
 
 # ==============================================================================

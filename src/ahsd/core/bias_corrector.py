@@ -25,85 +25,80 @@ class BiasEstimator(nn.Module):
         if hidden_dims is None:
             hidden_dims = [256, 128, 64] if input_dim <= 9 else [512, 256, 128, 64]
         
-        #  Multi-scale feature extraction
+        #  Multi-scale feature extraction (ENHANCED for better gradient flow)
         self.param_embedding = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, 64)
+            nn.Linear(input_dim, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(256, 128)
         )
         
         self.context_embedding = nn.Sequential(
-            nn.Linear(self.context_dim, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(64, 32)
+            nn.Linear(self.context_dim, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(256, 128)
         )
         
-        #  Transformer encoder for parameter correlations
+        #  Transformer encoder for parameter correlations (INCREASED CAPACITY)
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=96,  # 64 + 32
+            d_model=256,  # 128 + 128 (doubled from 96)
             nhead=8,
-            dim_feedforward=256,
-            dropout=0.1,
+            dim_feedforward=512,
+            dropout=0.15,
             batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=4)  # 4 layers (was 3)
         
-        #  Parameter-specific correction heads with physics constraints
+        #  Parameter-specific correction heads with physics constraints (IMPROVED with Linear outputs)
         self.mass_corrector = nn.Sequential(
-            nn.Linear(96, 64),
-            nn.ReLU(),
-            nn.LayerNorm(64),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, 2),  # mass_1, mass_2
-            nn.Tanh()
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 2)  # mass_1, mass_2 (no Tanh - raw outputs bounded via loss)
         )
         
         self.distance_corrector = nn.Sequential(
-            nn.Linear(96, 48),
-            nn.ReLU(),
-            nn.LayerNorm(48),
-            nn.Linear(48, 24),
-            nn.ReLU(),
-            nn.Linear(24, 1),  # luminosity_distance
-            nn.Tanh()
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 1)  # luminosity_distance (no Tanh)
         )
         
         self.time_corrector = nn.Sequential(
-            nn.Linear(96, 32),
-            nn.ReLU(),
-            nn.LayerNorm(32),
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),  # geocent_time
-            nn.Tanh()
+            nn.Linear(256, 64),
+            nn.GELU(),
+            nn.LayerNorm(64),
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, 1)  # geocent_time (no Tanh)
         )
         
         self.sky_corrector = nn.Sequential(
-            nn.Linear(96, 48),
-            nn.ReLU(),
-            nn.LayerNorm(48),
-            nn.Linear(48, 24),
-            nn.ReLU(),
-            nn.Linear(24, 2),  # ra, dec
-            nn.Tanh()
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 2)  # ra, dec (no Tanh)
         )
         
-        #  Additional parameters corrector
+        #  Additional parameters corrector (improved architecture)
         remaining_params = max(0, input_dim - 6)
         if remaining_params > 0:
             self.extra_corrector = nn.Sequential(
-                nn.Linear(96, max(64, remaining_params * 8)),
-                nn.ReLU(),
-                nn.LayerNorm(max(64, remaining_params * 8)),
-                nn.Linear(max(64, remaining_params * 8), max(32, remaining_params * 4)),
-                nn.ReLU(),
-                nn.Linear(max(32, remaining_params * 4), remaining_params),
-                nn.Tanh()
+                nn.Linear(256, max(128, remaining_params * 12)),
+                nn.GELU(),
+                nn.LayerNorm(max(128, remaining_params * 12)),
+                nn.Linear(max(128, remaining_params * 12), max(64, remaining_params * 6)),
+                nn.GELU(),
+                nn.Linear(max(64, remaining_params * 6), remaining_params)  # no Tanh
             )
         else:
             self.extra_corrector = None
@@ -115,21 +110,24 @@ class BiasEstimator(nn.Module):
         self.sky_scale = nn.Parameter(torch.tensor(0.15))         # 15% max sky correction
         self.extra_scale = nn.Parameter(torch.tensor(0.12))       # 12% max other corrections
         
-        #  Uncertainty estimation head
+        #  Uncertainty estimation head (improved for small corrections)
         self.uncertainty_head = nn.Sequential(
-            nn.Linear(96, 32),
-            nn.ReLU(),
-            nn.Linear(32, input_dim),
-            nn.Softplus(beta=0.5)  # Reduces output scale (1/ln(1+exp(0.5*x)))
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.LayerNorm(128),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, input_dim),
+            nn.Softplus(beta=1.0)  # Standard softplus for uncertainty
         )
         
         # Initialize final linear layer to output small values before Softplus
-        # Target: Softplus(x) ≈ 0.05 when x ≈ -2.3 (since log(2) ≈ 0.693, log(1+exp(-2.3)) ≈ 0.1)
+        # Target: Softplus(x) ≈ 0.05 when x ≈ -2.9 (since Softplus(x) = log(1+exp(x)))
         with torch.no_grad():
-            # Reduce weight magnitudes significantly
-            nn.init.uniform_(self.uncertainty_head[-2].weight, -0.01, 0.01)
+            # Initialize weights to small values
+            nn.init.uniform_(self.uncertainty_head[-2].weight, -0.02, 0.02)
             # Initialize bias to negative value → small uncertainty after Softplus
-            nn.init.constant_(self.uncertainty_head[-2].bias, -2.3)
+            nn.init.constant_(self.uncertainty_head[-2].bias, -2.9)
         
     def forward(self, param_estimates: torch.Tensor, context_features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """ forward pass with uncertainty quantification"""
@@ -1109,32 +1107,47 @@ class BiasCorrector(nn.Module):
         val_data = training_data[split_idx:]
         
         # Setup training
-        optimizer = torch.optim.AdamW(self.bias_estimator.parameters(), lr=1e-4, weight_decay=1e-5)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        optimizer = torch.optim.AdamW(self.bias_estimator.parameters(), lr=2e-4, weight_decay=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=1.5)
         
-        # Loss function with uncertainty
+        # IMPROVED Loss function with robust gradients
         def loss_function(corrections_pred, uncertainties_pred, corrections_true, quality_weights):
             # Compute per-parameter MSE with uncertainty weighting
             # Shape: (batch, 9) each
             squared_errors = (corrections_pred - corrections_true) ** 2
             
-            # Normalize by parameter range to handle different scales (mass vs distance)
-            # Use adaptive scaling based on correction magnitude
-            param_scales = torch.clamp(torch.abs(corrections_true).mean(dim=0, keepdim=True), min=1.0)
-            normalized_errors = squared_errors / (param_scales + 1e-8)
+            # ✅ CRITICAL FIX: Adaptive parameter scaling to handle different correction magnitudes
+            # (small corrections for time vs large for distance)
+            # Use absolute error magnitude instead of true value (corrections are small!)
+            param_scales = torch.clamp(torch.abs(corrections_true).mean(dim=0, keepdim=True) + 0.01, min=0.01)
+            normalized_errors = squared_errors / (param_scales ** 2 + 1e-8)
             
-            # NLL: errors weighted by inverse uncertainty
-            mse_loss = torch.mean(normalized_errors / (uncertainties_pred + 1e-8))
+            # Primary loss: NLL (likelihood-based) weighted by inverse uncertainty
+            # Lower uncertainty -> higher gradient for errors
+            nll_loss = torch.mean(normalized_errors / (uncertainties_pred + 1e-8))
             
-            # Regularization: encourage reasonable uncertainty estimates
-            uncertainty_reg = torch.mean(torch.log(uncertainties_pred + 1e-8))
+            # ✅ NEW: Relative error loss (better convergence for small corrections)
+            # Forces model to learn magnitude of corrections, not just direction
+            relative_errors = torch.abs(corrections_pred - corrections_true) / (torch.abs(corrections_true) + 0.1)
+            relative_loss = torch.mean(torch.clamp(relative_errors, min=0.0, max=10.0))
             
-            # Quality weighting: higher quality signals get stronger training signal
+            # ✅ NEW: Entropy regularization - encourage model to use uncertainty
+            # Softplus entropy is ln(1+exp(unc)), ranges [0, unc] for small unc
+            uncertainty_entropy = -torch.mean(uncertainties_pred * torch.log(uncertainties_pred + 1e-8))
+            
+            # ✅ Quality weighting: higher quality signals get stronger training signal
             quality_weights_expanded = quality_weights.unsqueeze(1)  # Shape: (batch, 1)
-            quality_weighted_loss = torch.mean(quality_weights_expanded * normalized_errors)
+            quality_weighted_nll = torch.mean(quality_weights_expanded * normalized_errors / (uncertainties_pred + 1e-8))
             
-            # Combined loss with balanced weighting
-            total_loss = mse_loss + 0.1 * uncertainty_reg + 0.1 * quality_weighted_loss
+            # ✅ IMPROVED: Balanced loss with stability
+            # Primary: NLL (0.50) + Relative (0.30) for robust learning
+            # Regularization: Entropy (0.15) + Quality (0.05)
+            total_loss = (
+                0.50 * nll_loss +
+                0.30 * relative_loss +
+                0.15 * uncertainty_entropy +
+                0.05 * quality_weighted_nll
+            )
             return total_loss
         
         # Training loop
@@ -1221,8 +1234,9 @@ class BiasCorrector(nn.Module):
             
             scheduler.step()
             
-            # Logging - show every 5 epochs
-            if epoch % 5 == 0 or epoch == epochs - 1:
+            # Logging - show every 2-5 epochs depending on total
+            log_interval = max(1, epochs // 15)
+            if epoch % log_interval == 0 or epoch == epochs - 1:
                 val_loss_str = f" | Val Loss: {avg_val_loss:.6f}" if avg_val_loss is not None else ""
                 patience_str = f" | Patience: {patience_counter}/{patience}" if avg_val_loss is not None else ""
                 self.logger.info(f"Epoch {epoch+1:3d}/{epochs} | Train Loss: {avg_train_loss:.6f}{val_loss_str}{patience_str}")

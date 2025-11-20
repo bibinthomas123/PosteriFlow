@@ -43,7 +43,34 @@ Do not create a new Document every time just read the old doc and update it so t
 - `ahsd-train` - Train models
 - `ahsd-test` - Run inference and evaluation
 
+**Testing Neural PE & BiasCorrector (✅ UPDATED - Nov 20, 2025 with spins):**
+- `python experiments/test_neural_pe.py --model_path <path> --data_path <path>` - Comprehensive testing suite
+- **Tests 8 critical components**: Sanity, NLL, Calibration, Width, Recovery, BiasCorrector, Scaling, ROC-AUC
+- **Key metrics**: NLL (< 7.0), Calibration Error (< 0.10), Mean AUC (> 0.80), Inference (< 1.0s/sample), BiasCorrector gain (> 5%)
+- **Quick run**: `python experiments/test_neural_pe.py --model_path models/neural_pe/best_model.pth --data_path data/output --max_samples 50`
+- **Parameter space**: Now 11D (9 orbital + 2 spin magnitudes: a1, a2)
+- **Spin bounds**: [0.0, 0.99] for each spin magnitude
+- **Full validation**: `python experiments/test_neural_pe.py --model_path models/neural_pe/best_model.pth --data_path data/output --max_samples 200 --n_posterior_samples 500`
+- **Documentation**: See `TESTING_QUICK_START.md` (overview) and `docs/TEST_NEURAL_PE_GUIDE.md` (detailed guide)
+- **Output**: JSON file with all metrics (NLL, calibration, AUC, inference time, bias correction improvement)
+- **Status**: ✅ Production ready, integrated with OverlapNeuralPE, BiasCorrector, all scoring metrics
+
 **New Tools (Nov 2025):**
+- **RL Controller Checkpoint Persistence (✅ FIXED - Nov 19, 15:30):**
+   - **Issue**: RL controller state was saved to checkpoint but never loaded on resume. Experience replay buffer (10,000 experiences) and metrics lost.
+   - **Root causes**: (1) `load_checkpoint()` in phase3a_neural_pe.py lines 321-374 missing RL controller restoration, (2) `AdaptiveComplexityController.state_dict()` not serializing memory buffer and metrics
+   - **Fixes applied**:
+      1. **Memory buffer serialization** in `src/ahsd/models/rl_controller.py` lines 259-312
+         - `state_dict()`: Convert deque memory to list, save action/reward history, save action counts
+         - `load_state_dict()`: Restore memory buffer by appending experiences back to deque, restore metrics
+      2. **RL state loading** in `experiments/phase3a_neural_pe.py` lines 361-379
+         - Added RL controller restoration in `load_checkpoint()` method
+         - Calls `model.rl_controller.load_state_dict(checkpoint["rl_controller_state_dict"])`
+         - Logs "RL controller state restored (including memory buffer)"
+   - **Verified**: test_rl_checkpoint.py passes all 7 tests - memory, metrics, and epsilon restored correctly
+   - **Impact**: Training can now resume with full RL learning history; no loss of experience replay data
+   - **Usage**: No code changes needed; checkpoint save/load now handles RL state automatically
+
 - **PriorityNet Output Compression Fix (✅ FIXED - Nov 19, 09:55):**
    - **Issue**: Predictions compressed to 82% of target range (0.075-0.767 vs 0.110-0.950)
    - **Root causes**: (1) Hard clipping killed gradients, (2) MSE loss dominated calibration loss

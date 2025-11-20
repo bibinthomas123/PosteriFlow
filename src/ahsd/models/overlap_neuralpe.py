@@ -123,8 +123,8 @@ class OverlapNeuralPE(nn.Module):
              "theta_jn": (0.0, np.pi),
              "psi": (0.0, np.pi),
              "phase": (0.0, 2 * np.pi),
-             "a1": (0.0, 0.99),  # Spin magnitude
-             "a2": (0.0, 0.99),  # Spin magnitude
+             "a1": (0.0, 0.99),  # Primary BH spin magnitude
+             "a2": (0.0, 0.99),  # Secondary BH spin magnitude
              "tilt1": (0.0, np.pi),  # Spin tilt angle
              "tilt2": (0.0, np.pi),  # Spin tilt angle
          }
@@ -173,6 +173,11 @@ class OverlapNeuralPE(nn.Module):
                 # Volume prior for distance (number density proportional to r^2)
                 # Pareto(1.0, 2.0) ~ 1/r^2 after exponential transformation
                 priors[param] = torch.distributions.Pareto(1.0, 2.0)
+
+            elif param in ["a1", "a2"]:
+                # Spin magnitude priors: Beta distribution favors lower spins
+                # Beta(2, 5) matches astrophysical spin distributions (most BHs have a < 0.5)
+                priors[param] = torch.distributions.Beta(2.0, 5.0)
 
             else:
                 # Default uniform prior for other parameters
@@ -288,7 +293,7 @@ class OverlapNeuralPE(nn.Module):
         # 3. Normalizing Flow (using NSF by default as per config)
         # ✅ FIX: Read flow_type from top-level config, not flow_config section
         flow_type = self.config.get(
-            "flow_type", "nsf"
+            "flow_type", "flowmatching"
         )  # 'flowmatching', 'realnvp', 'maf', or 'nsf'
 
         if flow_type.lower() == "flowmatching":

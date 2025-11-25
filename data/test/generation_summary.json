@@ -1,11 +1,11 @@
 {
-  "n_samples": 1000,
-  "n_batches": 11,
-  "generation_time": 1407.0869421958923,
-  "samples_per_second": 0.7106881387438685,
+  "n_samples": 10000,
+  "n_batches": 101,
+  "generation_time": 11580.114500522614,
+  "samples_per_second": 0.8635493197885649,
   "output_dir": "data/test",
   "output_format": "pkl",
-  "elapsed_time": 1407.0869421958923,
+  "elapsed_time": 11580.114500522614,
   "resumed": false,
   "configuration": {
     "sample_rate": 4096,
@@ -19,56 +19,58 @@
     "edge_case_fraction": 0.08,
     "premerger_fraction": 0.15,
     "edge_cases": {
-      "high_mass_ratio": 5,
-      "extreme_spins": 4,
-      "eccentric_mergers": 3,
-      "precessing_systems": 5,
-      "short_duration_high_mass": 3,
-      "strong_glitches": 8,
-      "psd_drift": 5,
-      "detector_dropout": 4,
-      "sky_position_extremes": 3,
-      "multimodal_posteriors": 6,
-      "heavy_tailed_regions": 5,
-      "uninformative_priors": 4
+      "high_mass_ratio": 50,
+      "extreme_spins": 40,
+      "eccentric_mergers": 30,
+      "precessing_systems": 50,
+      "short_duration_high_mass": 30,
+      "strong_glitches": 80,
+      "psd_drift": 50,
+      "detector_dropout": 40,
+      "sky_position_extremes": 30,
+      "multimodal_posteriors": 64,
+      "heavy_tailed_regions": 56,
+      "uninformative_priors": 40
     }
   },
   "statistics": {
     "event_types": {
-      "BBH": 275,
-      "noise": 18,
-      "BNS": 166,
-      "NSBH": 88,
-      "overlap": 453
+      "BBH": 2682,
+      "noise": 177,
+      "BNS": 1687,
+      "NSBH": 894,
+      "overlap": 4560
     },
     "snr_regimes": {
-      "medium": 461,
-      "high": 103,
-      "low": 332,
-      "weak": 57,
-      "loud": 30
+      "medium": 4519,
+      "high": 1094,
+      "low": 3345,
+      "loud": 307,
+      "weak": 560
     },
     "edge_cases": {
-      "extreme_mass_ratio": 4,
-      "high_spin_aligned": 1,
-      "high_mass_ratio": 5,
-      "extreme_spins": 4,
-      "eccentric": 3,
-      "precessing": 5,
-      "short_duration_high_mass": 3,
-      "strong_glitches": 8,
-      "psd_drift": 5,
-      "detector_dropout": 4,
-      "sky_position_extremes": 3,
-      "multimodal_posteriors": 6,
-      "heavy_tailed": 5,
-      "uninformative_prior": 4
+      "high_spin_aligned": 20,
+      "extreme_mass_ratio": 13,
+      "high_mass_ratio": 50,
+      "extreme_spins": 40,
+      "eccentric": 30,
+      "precessing": 50,
+      "short_duration_high_mass": 30,
+      "strong_glitches": 80,
+      "psd_drift": 50,
+      "detector_dropout": 40,
+      "sky_position_extremes": 30,
+      "multimodal_posteriors": 64,
+      "heavy_tailed": 56,
+      "uninformative_prior": 40
     },
     "extreme_cases": {
-      "long_duration_bns_overlaps": 1,
-      "extreme_mass_ratio": 4,
-      "noise_confused_overlaps": 2,
-      "high_spin_aligned": 1
+      "weak_strong_overlaps": 18,
+      "near_simultaneous_mergers": 21,
+      "high_spin_aligned": 20,
+      "noise_confused_overlaps": 18,
+      "extreme_mass_ratio": 13,
+      "long_duration_bns_overlaps": 3
     },
     "joint_quotas": {
       "weak": {
@@ -103,9 +105,9 @@
       }
     },
     "noise_sources": {
-      "cached": 308,
+      "cached": 2977,
       "real": 0,
-      "synthetic": 2707
+      "synthetic": 27173
     }
   }
 }

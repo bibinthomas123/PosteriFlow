@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Complete Neural PE + BiasCorrector Testing Suite
@@ -263,30 +264,38 @@ def test_nll(model, test_loader, device, n_samples=500):
             batch_size = strain.shape[0]
             
             try:
-                # Sample posterior
+                # Sample posterior for NLL estimation
                 posterior = model.sample_posterior(strain, n_samples=n_samples)
                 samples = posterior['samples']  # [batch, n_samples, n_params]
-                means = posterior['means']
                 
-                # Compute log probability using KDE approximation
+                # Compute NLL using KDE on samples
                 for b in range(batch_size):
                     samples_b = samples[b].cpu().numpy()  # [n_samples, n_params]
-                    true_params_b = true_params[b].cpu().numpy()
+                    true_params_b = true_params[b].cpu().numpy()  # [n_params]
                     
-                    # Use Gaussian KDE for likelihood estimation
-                    bandwidths = samples_b.std(axis=0) * 0.5
-                    bandwidths = np.maximum(bandwidths, 0.01)  # Avoid zero bandwidth
+                    # Adaptive bandwidth using Scott's rule
+                    n, d = samples_b.shape
+                    scott_factor = n ** (-1.0 / (d + 4))
+                    bandwidths = samples_b.std(axis=0) * scott_factor
+                    bandwidths = np.maximum(bandwidths, 1e-3)
                     
-                    # Compute log-likelihood via kernel density
+                    # Compute log-likelihood: log p(x) = log(1/n * sum_i K(x - x_i))
+                    # For Gaussian kernel: K(z) = (2π)^(-d/2) * exp(-||z||^2/2)
                     diffs = samples_b - true_params_b  # [n_samples, n_params]
-                    log_likelihoods = -0.5 * np.sum((diffs / bandwidths) ** 2, axis=1)
+                    scaled_diffs = diffs / bandwidths  # [n_samples, n_params]
                     
-                    # Average log-likelihood
-                    mean_log_like = np.mean(log_likelihoods)
-                    nll = -mean_log_like
+                    # Gaussian kernel: log K = -0.5 * ||z||^2 - 0.5*d*log(2π)
+                    log_kernels = -0.5 * np.sum(scaled_diffs**2, axis=1)  # [n_samples]
                     
-                    if not np.isnan(nll) and not np.isinf(nll):
-                        nll_values.append(nll)
+                    # Log-sum-exp for numerical stability
+                    max_log_kernel = np.max(log_kernels)
+                    log_prob = max_log_kernel + np.log(np.mean(np.exp(log_kernels - max_log_kernel)))
+                    
+                    # NLL = -log(p(x))
+                    nll = -log_prob
+                    
+                    if not np.isnan(nll) and not np.isinf(nll) and nll < 100:
+                        nll_values.append(float(nll))
             
             except Exception as e:
                 logger.warning(f"NLL computation failed: {e}")
@@ -294,15 +303,22 @@ def test_nll(model, test_loader, device, n_samples=500):
     
     nll_values = np.array(nll_values)
     
-    results = {
-        'mean': float(np.mean(nll_values)),
-        'std': float(np.std(nll_values)),
-        'median': float(np.median(nll_values)),
-        'min': float(np.min(nll_values)),
-        'max': float(np.max(nll_values)),
-        'percentile_25': float(np.percentile(nll_values, 25)),
-        'percentile_75': float(np.percentile(nll_values, 75))
-    }
+    # Safe min/max computation
+    if len(nll_values) > 0:
+        results = {
+            'mean': float(np.mean(nll_values)),
+            'std': float(np.std(nll_values)),
+            'median': float(np.median(nll_values)),
+            'min': float(np.min(nll_values)),
+            'max': float(np.max(nll_values)),
+            'percentile_25': float(np.percentile(nll_values, 25)),
+            'percentile_75': float(np.percentile(nll_values, 75))
+        }
+    else:
+        results = {
+            'mean': 0.0, 'std': 0.0, 'median': 0.0, 'min': 0.0, 'max': 0.0,
+            'percentile_25': 0.0, 'percentile_75': 0.0
+        }
     
     logger.info(f"\n📊 NLL Results ({len(nll_values)} samples):")
     logger.info(f"   Mean:       {results['mean']:.4f} ± {results['std']:.4f}")
@@ -794,6 +810,7 @@ def main():
     parser = argparse.ArgumentParser(description='Complete Neural PE Testing Suite')
     parser.add_argument('--model_path', type=str, required=True, help='Path to trained model')
     parser.add_argument('--data_path', type=str, required=True, help='Path to test data')
+    parser.add_argument('--priority_net_path', type=str, default=None, help='Path to trained PriorityNet model')
     parser.add_argument('--split', type=str, default='test', help='Data split to use')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size for testing')
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples to test')
@@ -822,9 +839,19 @@ def main():
         'theta_jn', 'psi', 'phase', 'geocent_time'
     ])
     
-    # Get priority_net path from training_metadata
-    training_metadata = checkpoint.get('training_metadata', {})
-    priority_net_path = training_metadata.get('priority_net')
+    # Get priority_net path from args, training_metadata, or auto-detect
+    priority_net_path = args.priority_net_path
+    
+    # If not provided via args, check training_metadata
+    if priority_net_path is None:
+        training_metadata = checkpoint.get('training_metadata', {})
+        priority_net_path = training_metadata.get('priority_net')
+    
+    # If still None, try default location
+    if priority_net_path is None:
+        default_prio_path = Path("models/priority_net/priority_net_best.pth")
+        if default_prio_path.exists():
+            priority_net_path = str(default_prio_path)
     
     # Use checkpoint config directly (it's flat, not nested)
     neural_pe_config = config

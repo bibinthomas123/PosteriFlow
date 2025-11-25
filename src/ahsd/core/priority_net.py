@@ -582,12 +582,13 @@ class AdaptiveRankingLoss(nn.Module):
     per pair to emphasize de-noising (e.g., weak SNR cases) during ranking.
     """
 
-    def __init__(self, base_margin: float = 0.05):
+    def __init__(self, base_margin: float = 0.08):
         """
         Initialize the adaptive ranking loss.
 
         Args:
             base_margin: Base margin factor multiplied by clamped |Δtarget| to form pairwise margins.
+                         Increased from 0.05 to 0.08 (Nov 24, 2025) for stronger ranking separation.
         """
         super().__init__()
         self.base_margin = base_margin
@@ -749,7 +750,7 @@ class PriorityLoss(nn.Module):
             targets,
             uncertainties,
             snr_weights=snr_w if bucket5 else None,
-            margin_scale=(1.6 if bucket5 else 1.0),  # slightly stronger margin for 5+
+            margin_scale=(2.0 if bucket5 else 1.2),  # INCREASED (Nov 24): 1.6→2.0 for 5+, 1.0→1.2 for <5 (target pairwise acc 0.85+)
         )
 
         # ✅ FIXED (Nov 19 22:45): Uncertainty calibration with correlation loss
@@ -771,8 +772,8 @@ class PriorityLoss(nn.Module):
         
         # Compute Pearson correlation
         cov = (unc_centered * err_centered).mean()
-        std_unc = uncertainties.std().clamp(min=1e-6)
-        std_err = clamped_error.std().clamp(min=1e-6)
+        std_unc = uncertainties.std(unbiased=False).clamp(min=1e-6)
+        std_err = clamped_error.std(unbiased=False).clamp(min=1e-6)
         correlation = cov / (std_unc * std_err + 1e-6)
         
         # Penalty: maximize correlation (target cor >= 0.5)
@@ -827,8 +828,8 @@ class PriorityLoss(nn.Module):
         # If predictions have very low variance, penalize heavily regardless of other metrics
         # This prevents the "all predictions near 0.5" collapse
         min_variance_penalty = 0.0
-        pred_std = predictions.std()
-        target_std = targets.std()
+        pred_std = predictions.std(unbiased=False)
+        target_std = targets.std(unbiased=False)
         
         # Penalize if prediction std < 50% of target std
         if pred_std < 0.5 * target_std and target_std > 1e-4:
@@ -896,7 +897,8 @@ class PriorityNet(nn.Module):
         """
         super().__init__()
 
-        if config is not None and hasattr(config, "__dict__"):
+        # ✅ FIXED: Accept both dict and object-style configs
+        if config is not None and (isinstance(config, dict) or hasattr(config, "__dict__")):
             print("🔧 Using provided configuration for PriorityNet.")
             self.config = config
         else:
@@ -971,7 +973,7 @@ class PriorityNet(nn.Module):
         # Cross-signal overlap analyzer with configurable attention
         overlap_use_attention = cfg_get("overlap_use_attention", True)
         print("Overlap use attention:", overlap_use_attention)
-        overlap_importance_hidden = cfg_get("overlap_importance_hidden", 16)
+        overlap_importance_hidden = cfg_get("overlap_importance_hidden", 32)
         self.cross_signal_analyzer = CrossSignalAnalyzer(
             use_attention=overlap_use_attention, importance_hidden_dim=overlap_importance_hidden
         )
@@ -1099,7 +1101,7 @@ class PriorityNet(nn.Module):
                 "use_strain": True,
                 "use_edge_conditioning": True,
                 "n_edge_types": 19,
-                "use_transformer_encoder": True,
+                "use_transformer_encoder": False,  # ✅ FIXED: Default to False (CNN+BiLSTM), not Transformer
                 # Optimizer
                 "optimizer": "AdamW",
                 "learning_rate": 8.0e-5,
@@ -1503,9 +1505,9 @@ class PriorityNetTrainer:
         min_lr = get_config("min_lr", 1e-6)
 
         # Loss weights and smoothing
-        self.ranking_weight = get_config("ranking_weight", 0.7)
-        self.mse_weight = get_config("mse_weight", 0.2)
-        self.uncertainty_weight = get_config("uncertainty_weight", 0.35)  # ⬆️ Nov 13 default
+        self.ranking_weight = get_config("ranking_weight", 0.80)  # Updated Nov 24: 0.7 → 0.80
+        self.mse_weight = get_config("mse_weight", 0.05)  # Updated Nov 24: 0.2 → 0.05
+        self.uncertainty_weight = get_config("uncertainty_weight", 0.15)  # Updated Nov 24: 0.35 → 0.15
         self.use_snr_weighting = get_config("use_snr_weighting", True)
         self.label_smoothing = get_config("label_smoothing", 0.0)
         lambda_calib = get_config("lambda_calib", 1e-4)

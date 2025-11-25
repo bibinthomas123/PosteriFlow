@@ -269,10 +269,13 @@ class OverlapNeuralPE(nn.Module):
         if priority_net_path is not None:
             checkpoint = torch.load(priority_net_path, map_location=self.device)
             model_arch = checkpoint.get("model_architecture", {})
+            # ✅ FIXED: Pass config to PriorityNet so it respects use_transformer_encoder flag
+            priority_net_config = self.config.get("priority_net", {})
             self.priority_net = PriorityNet(
                 use_strain=model_arch.get("use_strain", True),
                 use_edge_conditioning=model_arch.get("use_edge_conditioning", True),
                 n_edge_types=model_arch.get("n_edge_types", 19),
+                config=priority_net_config,
             )
             self._load_checkpoint_with_mismatch_handling(
                 self.priority_net, checkpoint["model_state_dict"]

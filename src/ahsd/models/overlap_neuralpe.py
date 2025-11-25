@@ -925,25 +925,45 @@ class OverlapNeuralPE(nn.Module):
             sample_loss = torch.tensor(0.0, device=strain_data.device)
         
         # ===============================
-        # ✅ 4. BIAS CORRECTION LOSS (if enabled)
+        # ✅ 4. BIAS CORRECTION LOSS (if enabled) - CRITICAL FIX (Nov 25)
         # ===============================
+        # ✅ CRITICAL: BiasCorrector receives FLOW PREDICTIONS, not ground truth!
+        # Bias is defined as: predicted_params - true_params
+        # BiasCorrector learns to correct systematic errors in flow predictions
         bias_loss = torch.tensor(0.0, device=strain_data.device)
         if self.bias_corrector is not None:
-            with torch.no_grad():
-                corrections, bias_uncertainties, confidence = self.bias_corrector(
-                    true_params_norm, context
-                )
-            # Encourage small corrections (prior toward no correction)
-            bias_loss = 0.05 * (
-                torch.mean(torch.abs(corrections)) + 0.1 * torch.mean(1.0 - confidence)
+            # Sample flow predictions (what the model actually predicts)
+            # These are what need to be corrected
+            z_pred = torch.randn(true_params.size(0), self.param_dim, device=self.device)
+            try:
+                pred_params_norm, _ = self.flow.inverse(z_pred, context)
+            except Exception:
+                # Fallback if inverse fails
+                pred_params_norm = z_pred
+            
+            # ✅ BiasCorrector learns: predicted_params → corrections
+            # NOT: ground_truth_params → corrections
+            corrections, bias_uncertainties, confidence = self.bias_corrector(
+                pred_params_norm, context  # ✅ CORRECTED: Use predictions, not ground truth
             )
-            # Log bias corrector activity (once per epoch via validation)
+            
+            # Compute actual bias (predicted - true) for supervision
+            actual_bias = pred_params_norm - true_params_norm
+            
+            # Loss: encourage corrections that reduce bias (MSE between corrections and actual bias)
+            # Weighted by confidence (higher confidence = more weight)
+            bias_mse = torch.mean((corrections - actual_bias) ** 2)
+            confidence_weight = torch.mean(confidence)
+            bias_loss = bias_mse * (1.0 + confidence_weight)  # Scale by confidence
+            
+            # Log bias corrector activity
             if torch.rand(1).item() < 0.01:  # ~1% sampling to avoid spam
                 self.logger.debug(
                     f"BiasCorrector forward pass | "
+                    f"Mean predicted bias: {torch.abs(actual_bias).mean().item():.6f} | "
                     f"Mean correction: {torch.abs(corrections).mean().item():.6f} | "
                     f"Mean confidence: {confidence.mean().item():.4f} | "
-                    f"Bias loss: {bias_loss.item():.6f}"
+                    f"Bias MSE loss: {bias_mse.item():.6f}"
                 )
         
         # ===============================

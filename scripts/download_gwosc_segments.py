@@ -16,7 +16,7 @@ sample_rate = 4096  # 4096 Hz
 duration = 10       # each segment is 10 seconds
 
 # -------------------------
-# ✅ Verified GPS Lists (All windows fully valid)
+# ✅ Verified GPS Lists
 # -------------------------
 
 gps_times_o3a = [
@@ -50,7 +50,7 @@ detectors = {
 # -------------------------
 # Output folder
 # -------------------------
-out_dir = "gw_segments_cleaned"
+out_dir = "gw_segments"
 os.makedirs(out_dir, exist_ok=True)
 
 # -------------------------

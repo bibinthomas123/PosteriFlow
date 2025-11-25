@@ -282,7 +282,7 @@ class GWDatasetGenerator:
         self.cached_noise_segments = {}  # {detector: [array, array, ...]}
         self.noise_source_stats = {"cached": 0, "real": 0, "synthetic": 0}  # Track usage
         
-        # Try to load pre-downloaded segments from gw_segments_cleaned/
+        # Try to load pre-downloaded segments from gw_segments
         self._load_cached_noise_segments()
         
         # Fall back to RealNoiseGenerator if segments not found
@@ -321,12 +321,12 @@ class GWDatasetGenerator:
 
     def _load_cached_noise_segments(self) -> None:
         """
-        Load pre-downloaded noise segments from gw_segments_cleaned/ folder.
+        Load pre-downloaded noise segments from gw_segments/ folder.
         
         Expected file format: {detector}_{timestamp}.npy
         e.g., H1_1238166018.npy, L1_1238166018.npy, V1_1238166018.npy
         """
-        cache_dir = Path("gw_segments_cleaned")
+        cache_dir = Path("gw_segments")
         
         if not cache_dir.exists():
             self.logger.info(f"Cache directory {cache_dir} not found. Will use on-demand fetching.")

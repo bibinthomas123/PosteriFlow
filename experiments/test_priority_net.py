@@ -138,7 +138,7 @@ def load_prioritynet(checkpoint_path, device="cpu"):
             'use_transformer_encoder': priority_cfg.get('use_transformer_encoder', True),
             'hidden_dims': priority_cfg.get('hidden_dims', [640, 512, 384, 256]),
             'dropout': priority_cfg.get('dropout', 0.2),
-            'overlap_importance_hidden': priority_cfg.get('importance_hidden_dim', 16),
+            'overlap_importance_hidden': priority_cfg.get('importance_hidden_dim', 32),
             'use_strain': True,
             'use_edge_conditioning': True,
             'n_edge_types': 19

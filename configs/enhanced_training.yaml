@@ -9,18 +9,18 @@ device: "auto"
 # ==============================================================================
 # TRAINING STAGE & COMPONENT CONFIGURATION (Nov 14, 2025)
 # ==============================================================================
-stage: "1A"                                  # Stage 1A: Neural PE training (PriorityNet disabled)
+stage: "1B"                                 # Stage 1B: RL controller training (PriorityNet frozen)
                                              # Stage 1B: RL controller training (PriorityNet frozen)
                                              # Stage 1C: Joint fine-tuning (all components trained)
 
 components:
-  priority_net: false                        # ⊘ DISABLED in Stage 1A (enables in 1B+)
+  priority_net: true                        # ⊘ DISABLED in Stage 1A (enables in 1B+)
   context_encoder: true                      # ✅ TRAINING: Context encoding for flow
   normalizing_flow: true                     # ✅ TRAINING: Flow-based posterior estimation
   bias_corrector: true                       # ✅ TRAINING: Systematic error correction
   uncertainty_estimator: true                # ✅ TRAINING: Confidence calibration
-  rl_controller: false                       # ⊘ INACTIVE in Stage 1A (activates in 1B)
-  adaptive_subtractor: false                 # ⊘ UNUSED: Signal subtraction (future)
+  rl_controller: true                       # ⊘ INACTIVE in Stage 1A (activates in 1B)
+  adaptive_subtractor: true                 # ⊘ UNUSED: Signal subtraction (future)
 
 # ==============================================================================
 # PRIORITY NET CONFIGURATION (Core model parameters)
@@ -36,7 +36,7 @@ priority_net:
   use_strain: true                       # Enable temporal strain encoder
   use_edge_conditioning: true            # Enable edge-type embedding
   n_edge_types: 19                        # Number of edge case types
-  use_transformer_encoder: true          # ✅ Use Transformer encoder (Whisper+adapter, 1.5x faster, better accuracy)
+  use_transformer_encoder: false          # ✅ Use Transformer encoder (Whisper+adapter, 1.5x faster, better accuracy)
   
   # --- OPTIMIZER ---
   optimizer: "AdamW"
@@ -44,8 +44,8 @@ priority_net:
   weight_decay: 1.5e-5
   
   # --- TRAINING SCHEDULE ---
-  batch_size: 24                          # ⬆️ Increased from 6 (larger batch → stable BatchNorm)
-  epochs: 20
+  batch_size: 32                          # ⬆️ Increased from 6 (larger batch → stable BatchNorm)
+  epochs: 40
   patience: 15                            
   
   # --- WARMUP ---
@@ -89,9 +89,9 @@ priority_net:
   #   - Block 1-3: PASS (signal ordering: ranking 0.70 dominates)
   #   - Block 4: FIXED via calib weights 2-2.5× primary (range expansion while maintaining ordering)
   #   - Block 5: FIX with correlation penalty in uncertainty loss (target corr >= 0.15)
-  ranking_weight: 0.70                    # Pairwise signal ordering margin (DOMINANT)
-  mse_weight: 0.18                        # Absolute priority accuracy (balanced)
-  uncertainty_weight: 0.25                # Confidence-error correlation (with correlation penalty)
+  ranking_weight: 0.80                    # Pairwise signal ordering margin (INCREASED - target 0.85+ accuracy)
+  mse_weight: 0.05                        # Absolute priority accuracy (reduced to prioritize ranking)
+  uncertainty_weight: 0.15               # Confidence-error correlation (reduced for ranking focus)
   use_snr_weighting: true                 # Weight losses by SNR
   loss_scale_factor: 0.002                # Scale factor for loss terms (from Nov 12 fix)
   
@@ -212,7 +212,7 @@ neural_posterior:
     # RealNVP: coupling blocks, many layers for expressiveness
     
     # ✅ NSF CONFIG (OPTIMAL FOR 9D POSTERIOR)
-    num_layers: 12                         # Fewer layers than FlowMatching (splines are more expressive)
+    num_layers: 12                        # Fewer layers than FlowMatching (splines are more expressive)
     hidden_features: 512                  # Moderate hidden dim (splines naturally model monotonic transforms)
     num_bins: 16                          # Spline resolution - controls piecewise continuity
     tail_bound: 3.0                       # Auto-handles extreme tails (handles [-∞, ∞])

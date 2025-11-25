@@ -498,6 +498,18 @@ class OverlapNeuralPETrainer:
                 epoch_metrics["uncertainty_loss"].append(loss_dict["uncertainty_loss"].item())
             if "jacobian_reg" in loss_dict:
                 epoch_metrics["jacobian_reg"].append(loss_dict["jacobian_reg"].item())
+            
+            # ✅ DEBUG (Nov 25): Log bias corrector gradient flow first batch only
+            if batch_idx == 0 and hasattr(self.model, "bias_corrector") and self.model.bias_corrector is not None:
+                bias_grads = []
+                for name, param in self.model.bias_corrector.named_parameters():
+                    if param.grad is not None:
+                        bias_grads.append(param.grad.norm().item())
+                if bias_grads:
+                    self.logger.debug(
+                        f"[Epoch {epoch+1}, Batch 0] BiasCorrector Gradient Norms: "
+                        f"avg={np.mean(bias_grads):.6f}, max={np.max(bias_grads):.6f}, min={np.min(bias_grads):.6f}"
+                    )
 
             # ✅ Nov 14: RL EXPERIENCE COLLECTION AND TRAINING
             if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:

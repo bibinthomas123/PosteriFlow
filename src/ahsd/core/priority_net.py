@@ -1174,8 +1174,13 @@ class PriorityNet(nn.Module):
             priorities: Tensor [N] of predicted priorities (pre-calibrated by affine).
             uncertainties: Tensor [N] of positive uncertainties via Softplus.
         """
-        if not detections:
-            return torch.empty(0), torch.empty(0)
+        # Check if detections is empty (supports Tensor, list, or other sequences)
+        if isinstance(detections, torch.Tensor):
+            if detections.numel() == 0:
+                return torch.empty(0), torch.empty(0)
+        else:
+            if len(detections) == 0:
+                return torch.empty(0), torch.empty(0)
 
         device = next(self.parameters()).device
         try:

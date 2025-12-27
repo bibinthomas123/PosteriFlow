@@ -10,10 +10,10 @@
 # ==============================================================================
 
 # Number of samples to generate (start with 50k for full training)
-n_samples: 10000
+n_samples: 20000
 
 # Output configuration
-output_dir: "data/test"
+output_dir: "data/dataset"
 output_format: "pkl"  # Efficient binary format
 
 # Batch size for saving samples to disk

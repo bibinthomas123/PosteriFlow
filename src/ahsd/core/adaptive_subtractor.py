@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Adaptive signal subtraction with uncertainty quantification - REAL LOGIC COMPLETE
+Adaptive signal subtraction with uncertainty quantification
 """
-
 import torch
 import torch.nn as nn
 import numpy as np
@@ -20,685 +19,9 @@ except ImportError:
         return data
 
 
-class NeuralPE:
-    """
-    NeuralPE
-    A physics-inspired neural parameter estimation (PE) class for gravitational-wave data analysis. 
-    This class provides rapid, physically-motivated estimates of source parameters from detector strain data, 
-    using a combination of signal processing, post-Newtonian relations, and empirical uncertainty modeling.
-    Attributes:
-        param_names (List[str]): List of parameter names to estimate (e.g., masses, distance, sky position).
-        complexity_level (str): Level of model complexity ('low', 'medium', 'high').
-        logger (logging.Logger): Logger for diagnostic output.
-        param_bounds (Dict[str, Tuple[float, float]]): Physics-based bounds for each parameter.
-        context_features_dim (int): Dimensionality of extracted context features.
-    Methods:
-        __init__(param_names=None):
-            Initialize NeuralPE with optional custom parameter names.
-        quick_estimate(data: Dict[str, np.ndarray], detection_idx: int = 0) -> Dict:
-            Perform rapid, physics-based parameter estimation from input strain data.
-            Returns a dictionary with posterior summaries, signal quality, and method metadata.
-        set_complexity(complexity: str):
-            Set the complexity level of the estimator ('low', 'medium', 'high').
-        _get_parameter_bounds() -> Dict[str, Tuple[float, float]]:
-            Return physics-based bounds for all supported parameters.
-        _extract_context_features(data: Dict[str, np.ndarray]) -> Dict:
-            Extract signal features (SNR, frequency, correlations, etc.) from detector data.
-        _estimate_mass_from_frequency(context: Dict, mass_param: str) -> float:
-            Estimate primary or secondary mass from frequency-domain features.
-        _estimate_distance_from_amplitude(context: Dict) -> float:
-            Estimate luminosity distance from signal amplitude and SNR.
-        _estimate_time_from_correlation(context: Dict) -> float:
-            Estimate geocentric time from cross-correlation and time delays.
-        _estimate_sky_position(context: Dict, param: str) -> float:
-            Estimate right ascension or declination from detector network timing.
-        _estimate_orientation(context: Dict, param: str) -> float:
-            Estimate orientation parameters (inclination, polarization, phase).
-        _estimate_spin_parameter(context: Dict, param: str) -> float:
-            Estimate spin parameters from spectral evolution.
-        _estimate_tilt_angle(context: Dict, param: str) -> float:
-            Estimate spin tilt angles from spectral consistency.
-        _compute_signal_quality(context: Dict) -> float:
-            Assess overall signal quality using SNR, correlations, and detector coverage.
-        _compute_realistic_quantiles(median: float, std: float, min_val: float, max_val: float) -> List[float]:
-            Compute realistic quantiles for a parameter using a truncated normal distribution.
-        _get_fallback_estimate() -> Dict:
-            Provide robust fallback parameter estimates in case of failure.
-    """
-    """Neural PE implementation - keeping original name NeuralPE"""
-    
-    def __init__(self, param_names=None):
-        self.param_names = param_names or [
-            'mass_1', 'mass_2', 'luminosity_distance', 
-            'geocent_time', 'ra', 'dec', 'theta_jn', 'psi', 'phase'
-        ]
-        self.complexity_level = 'medium'
-        self.logger = logging.getLogger(__name__)
-        
-        #  REAL LOGIC: Parameter bounds for physics-based estimates
-        self.param_bounds = self._get_parameter_bounds()
-        self.context_features_dim = 256
-        
-    def _get_parameter_bounds(self) -> Dict[str, Tuple[float, float]]:
-        """Physics-based parameter bounds."""
-        return {
-            'mass_1': (5.0, 100.0),
-            'mass_2': (5.0, 100.0), 
-            'luminosity_distance': (50.0, 3000.0),
-            'geocent_time': (-0.1, 0.1),
-            'ra': (0.0, 2*np.pi),
-            'dec': (-np.pi/2, np.pi/2),
-            'theta_jn': (0.0, np.pi),
-            'psi': (0.0, np.pi),
-            'phase': (0.0, 2*np.pi),
-            'a_1': (0.0, 0.99),
-            'a_2': (0.0, 0.99),
-            'tilt_1': (0.0, np.pi),
-            'tilt_2': (0.0, np.pi),
-            'phi_12': (0.0, 2*np.pi),
-            'phi_jl': (0.0, 2*np.pi)
-        }
-        
-    def quick_estimate(self, data: Dict[str, np.ndarray], detection_idx: int = 0) -> Dict:
-        """REAL parameter estimation logic with physics-based analysis."""
-        try:
-            #  Extract context features from strain data
-            context_features = self._extract_context_features(data)
-            
-            #  Physics-based parameter estimation
-            param_estimates = {}
-            
-            for param_name in self.param_names:
-                # Get bounds
-                min_val, max_val = self.param_bounds.get(param_name, (0.0, 1.0))
-                
-                if param_name in ['mass_1', 'mass_2']:
-                    #  Estimate masses from frequency content
-                    median = self._estimate_mass_from_frequency(context_features, param_name)
-                    std = median * np.random.uniform(0.08, 0.15)  # Realistic mass uncertainty
-                    
-                elif param_name == 'luminosity_distance':
-                    #  Estimate distance from amplitude
-                    median = self._estimate_distance_from_amplitude(context_features)
-                    std = median * np.random.uniform(0.2, 0.4)  # Realistic distance uncertainty
-                    
-                elif param_name == 'geocent_time':
-                    #  Estimate time from cross-correlation peak
-                    median = self._estimate_time_from_correlation(context_features)
-                    std = np.random.uniform(0.001, 0.01)  # 1-10ms uncertainty
-                    
-                elif param_name in ['ra', 'dec']:
-                    #  Sky localization from detector network
-                    median = self._estimate_sky_position(context_features, param_name)
-                    std = np.random.uniform(0.1, 0.5)  # Realistic sky uncertainty
-                    
-                elif param_name in ['theta_jn', 'psi', 'phase']:
-                    #  Orientation from polarization analysis
-                    median = self._estimate_orientation(context_features, param_name)
-                    std = np.random.uniform(0.3, 0.8)  # Orientation uncertainty
-                    
-                elif param_name in ['a_1', 'a_2']:
-                    #  Spin estimation from waveform analysis
-                    median = self._estimate_spin_parameter(context_features, param_name)
-                    std = 0.2  # Spin uncertainty
-                    
-                elif param_name in ['tilt_1', 'tilt_2']:
-                    #  Tilt angles from spin-orbit coupling
-                    median = self._estimate_tilt_angle(context_features, param_name)
-                    std = 0.5  # Tilt uncertainty
-                    
-                elif param_name in ['phi_12', 'phi_jl']:
-                    #  Azimuthal angles
-                    median = np.random.uniform(0, 2*np.pi)
-                    std = 1.0
-                    
-                else:
-                    # Default estimation
-                    median = (min_val + max_val) / 2
-                    std = (max_val - min_val) / 6
-                
-                # Ensure within bounds
-                median = np.clip(median, min_val, max_val)
-                
-                param_estimates[param_name] = {
-                    'median': float(median),
-                    'mean': float(median + np.random.normal(0, std * 0.1)),
-                    'std': max(float(std), 1e-6),
-                    'quantiles': self._compute_realistic_quantiles(median, std, min_val, max_val)
-                }
-            
-            #  Compute signal quality from SNR analysis
-            signal_quality = self._compute_signal_quality(context_features)
-            
-            return {
-                'posterior_summary': param_estimates,
-                'signal_quality': signal_quality,
-                'method': 'physics_based_neural_pe',
-                'context_snr': float(context_features.get('estimated_snr', 10.0))
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Real Neural PE failed: {e}")
-            return self._get_fallback_estimate()
-    
-    def _extract_context_features(self, data: Dict[str, np.ndarray]) -> Dict:
-        """REAL context feature extraction from strain data."""
-        try:
-            features = {}
-            
-            # Network SNR estimation
-            network_power = 0.0
-            cross_correlations = []
-            peak_frequencies = []
-            spectral_features = {}
-            
-            detector_data = {}
-            for det_name in ['H1', 'L1', 'V1']:
-                if det_name in data and len(data[det_name]) > 0:
-                    strain = np.array(data[det_name])
-                    detector_data[det_name] = strain
-                    
-                    # Time domain analysis
-                    strain_power = np.var(strain)
-                    network_power += strain_power
-                    
-                    # Advanced frequency domain analysis
-                    try:
-                        fft_data = np.fft.fft(strain)
-                        freqs = np.fft.fftfreq(len(strain), 1/4096)
-                        power_spectrum = np.abs(fft_data)**2
-                        
-                        # Find peak frequency in GW band
-                        gw_mask = (freqs >= 20) & (freqs <= 500)
-                        if np.any(gw_mask):
-                            gw_freqs = freqs[gw_mask]
-                            gw_power = power_spectrum[gw_mask]
-                            
-                            # Multiple frequency features
-                            peak_idx = np.argmax(gw_power)
-                            peak_freq = gw_freqs[peak_idx]
-                            peak_frequencies.append(float(peak_freq))
-                            
-                            # Spectral moments for mass estimation
-                            total_power = np.sum(gw_power)
-                            if total_power > 0:
-                                # First moment (mean frequency)
-                                mean_freq = np.sum(gw_freqs * gw_power) / total_power
-                                # Second moment (frequency spread)
-                                freq_spread = np.sqrt(np.sum((gw_freqs - mean_freq)**2 * gw_power) / total_power)
-                                
-                                spectral_features[det_name] = {
-                                    'mean_freq': float(mean_freq),
-                                    'freq_spread': float(freq_spread),
-                                    'peak_freq': float(peak_freq)
-                                }
-                    except Exception as e:
-                        self.logger.debug(f"Frequency analysis failed for {det_name}: {e}")
-                        peak_frequencies.append(100.0)  # Default
-            
-            # Cross-detector correlations and time delays
-            detector_names = list(detector_data.keys())
-            for i, det1 in enumerate(detector_names):
-                for det2 in detector_names[i+1:]:
-                    try:
-                        strain1 = detector_data[det1]
-                        strain2 = detector_data[det2]
-                        
-                        if len(strain1) == len(strain2) and len(strain1) > 100:
-                            # Cross-correlation
-                            corr = np.corrcoef(strain1, strain2)[0, 1]
-                            if np.isfinite(corr):
-                                cross_correlations.append(abs(corr))
-                            
-                            # Time delay estimation
-                            cross_corr_func = np.correlate(strain1, strain2, mode='full')
-                            delay_idx = np.argmax(np.abs(cross_corr_func)) - len(strain2) + 1
-                            time_delay = delay_idx / 4096  # Convert to seconds
-                            
-                            features[f'time_delay_{det1}_{det2}'] = float(time_delay)
-                    except Exception as e:
-                        self.logger.debug(f"Cross-correlation failed for {det1}-{det2}: {e}")
-            
-            # Compile enhanced features
-            features['network_power'] = network_power
-            # Estimate SNR from signal and noise power with physical motivation
-            try:
-                # Robust noise estimation: use multiple segments and take minimum variance
-                # (assumes signal is localized and noise is stationary)
-                # This handles: pre-triggered data, centered data, early-arrival signals
-                noise_samples = min(4096, min(len(s) for s in detector_data.values()) // 8) if detector_data else 0
-                
-                if noise_samples > 0 and len(detector_data) > 0:
-                    # Estimate baseline noise power from multiple quiet segments
-                    noise_powers = []
-                    for strain in detector_data.values():
-                        strain_array = np.array(strain)
-                        if len(strain_array) >= noise_samples:
-                            # Try three regions: start, end, and middle
-                            # Take minimum variance as most likely to be signal-free
-                            variances = []
-                            variances.append(np.var(strain_array[:noise_samples]))  # Start
-                            variances.append(np.var(strain_array[-noise_samples:]))  # End
-                            # Middle segment (if long enough)
-                            if len(strain_array) >= 3 * noise_samples:
-                                mid_start = len(strain_array) // 2 - noise_samples // 2
-                                variances.append(np.var(strain_array[mid_start:mid_start + noise_samples]))
-                            # Use minimum variance as noise baseline (assumes signal is localized)
-                            noise_powers.append(min(variances))
-                    
-                    avg_noise_power = np.mean(noise_powers) if noise_powers else 1e-46
-                else:
-                    avg_noise_power = 1e-46
-                
-                # Signal power = network power minus noise baseline (per detector)
-                n_detectors = len(detector_data)
-                if n_detectors > 0:
-                    signal_power = max(network_power / n_detectors - avg_noise_power, 0)
-                else:
-                    signal_power = 0.0
-                
-                # Compute SNR as sqrt(signal_power / noise_power)
-                if avg_noise_power > 1e-50:
-                    raw_snr = np.sqrt(signal_power / avg_noise_power)
-                    estimated_snr = float(np.clip(raw_snr, 0, 100.0))
-                else:
-                    estimated_snr = 10.0
-                
-                # Ensure finite result
-                if not np.isfinite(estimated_snr):
-                    estimated_snr = 10.0
-                
-                features['estimated_snr'] = estimated_snr
-            except Exception as e:
-                self.logger.debug(f"SNR estimation failed: {e}")
-                features['estimated_snr'] = 10.0
-            features['peak_frequency'] = np.median(peak_frequencies) if peak_frequencies else 100.0
-            features['cross_correlation'] = np.mean(cross_correlations) if cross_correlations else 0.1
-            features['n_detectors'] = len(detector_data)
-            
-            # Spectral consistency across detectors
-            if len(spectral_features) > 1:
-                mean_freqs = [sf['mean_freq'] for sf in spectral_features.values()]
-                features['spectral_consistency'] = 1.0 / (1.0 + np.std(mean_freqs))
-            else:
-                features['spectral_consistency'] = 0.5
-            
-            return features
-            
-        except Exception as e:
-            self.logger.debug(f"Context extraction failed: {e}")
-            return {
-                'network_power': 1e-46,
-                'estimated_snr': 10.0,
-                'peak_frequency': 100.0,
-                'cross_correlation': 0.1,
-                'n_detectors': 2,
-                'spectral_consistency': 0.5
-            }
-    
-    def _estimate_mass_from_frequency(self, context: Dict, mass_param: str) -> float:
-        """REAL mass estimation from peak frequency using PN relations."""
-        try:
-            peak_freq = context.get('peak_frequency', 100.0)
-            snr = context.get('estimated_snr', 10.0)
-            
-            # Post-Newtonian relation: f_peak ~ (G*M_chirp)^(-5/8)
-            # Higher frequency â†’ lower total mass
-            if peak_freq > 200:
-                base_total_mass = np.random.uniform(20, 40)
-            elif peak_freq > 120:
-                base_total_mass = np.random.uniform(35, 65)  
-            elif peak_freq > 80:
-                base_total_mass = np.random.uniform(50, 90)
-            else:
-                base_total_mass = np.random.uniform(70, 120)
-            
-            # SNR-dependent uncertainty
-            snr_factor = min(snr / 15.0, 1.0)  
-            uncertainty = (1.0 - snr_factor) * 10.0
-            
-            # Mass ratio estimation from spectral shape
-            spectral_consistency = context.get('spectral_consistency', 0.5)
-            if spectral_consistency > 0.7:  # Good spectral matching
-                mass_ratio = np.random.uniform(0.7, 1.0)  # More equal masses
-            else:
-                mass_ratio = np.random.uniform(0.3, 0.9)  # Broader range
-            
-            if mass_param == 'mass_1':
-                # Primary mass (larger)
-                mass = base_total_mass / (1 + mass_ratio) + np.random.normal(0, uncertainty)
-            else:  # mass_2
-                # Secondary mass (smaller)
-                mass = base_total_mass * mass_ratio / (1 + mass_ratio) + np.random.normal(0, uncertainty)
-                
-            return max(float(mass), 5.0)  # Minimum mass
-            
-        except:
-            return 35.0 if mass_param == 'mass_1' else 30.0
-    
-    def _estimate_distance_from_amplitude(self, context: Dict) -> float:
-        """REAL distance estimation from signal amplitude using optimal SNR scaling."""
-        try:
-            snr = context.get('estimated_snr', 10.0)
-            
-            # Distance scaling: SNR âˆ 1/distance (for fixed intrinsic parameters)
-            # Use empirical relation for LIGO sensitivity
-            optimal_snr = 8.0  # Reference SNR
-            reference_distance = 400.0  # Mpc
-            
-            if snr > 0:
-                estimated_distance = reference_distance * (optimal_snr / snr)
-            else:
-                estimated_distance = 1000.0  # Default for very weak signals
-            
-            # Add realistic log-normal scatter (distance uncertainties are asymmetric)
-            log_distance = np.log(estimated_distance)
-            log_scatter = 0.3 * (1.0 + 1.0/max(snr, 8.0))  # More scatter for low SNR
-            scattered_log_distance = log_distance + np.random.normal(0, log_scatter)
-            
-            distance = np.exp(scattered_log_distance)
-            
-            # Physical bounds
-            distance = np.clip(distance, 50.0, 3000.0)
-            
-            return float(distance)
-            
-        except:
-            return 500.0
-    
-    def _estimate_time_from_correlation(self, context: Dict) -> float:
-        """REAL time estimation from cross-correlation analysis."""
-        try:
-            # Time offset based on cross-correlation quality and time delays
-            corr_quality = context.get('cross_correlation', 0.1)
-            
-            # Extract time delays between detectors if available
-            time_delays = []
-            for key, value in context.items():
-                if key.startswith('time_delay_') and isinstance(value, (int, float)):
-                    time_delays.append(value)
-            
-            if time_delays:
-                # Use median time delay as base estimate
-                base_time = np.median(time_delays)
-            else:
-                base_time = 0.0
-            
-            # Time uncertainty based on correlation quality
-            # Better correlation â†’ more precise time estimate
-            time_uncertainty = 0.01 * (1.0 - corr_quality)**0.5  # 0-10ms uncertainty
-            time_offset = base_time + np.random.normal(0, time_uncertainty)
-            
-            return float(np.clip(time_offset, -0.1, 0.1))
-            
-        except:
-            return 0.0
-    
-    def _estimate_sky_position(self, context: Dict, param: str) -> float:
-        """REAL sky position from detector network response and time delays."""
-        try:
-            n_detectors = context.get('n_detectors', 2)
-            snr = context.get('estimated_snr', 10.0)
-            
-            # Sky localization precision improves with more detectors and higher SNR
-            sky_uncertainty = (2.0 / max(n_detectors, 2)) * (10.0 / max(snr, 8.0))
-            
-            # Use time delays for rough sky localization
-            time_delays = []
-            for key, value in context.items():
-                if key.startswith('time_delay_') and isinstance(value, (int, float)):
-                    time_delays.append(value)
-            
-            if param == 'ra':
-                # RA estimation from time delays (simplified triangulation)
-                if time_delays:
-                    # Convert time delays to rough RA estimate
-                    base_ra = np.arctan2(np.sum(np.sin(time_delays)), np.sum(np.cos(time_delays)))
-                    if base_ra < 0:
-                        base_ra += 2*np.pi
-                else:
-                    base_ra = np.random.uniform(0, 2*np.pi)
-                
-                ra = base_ra + np.random.normal(0, sky_uncertainty)
-                ra = ra % (2*np.pi)  # Wrap around
-                return float(ra)
-                
-            else:  # dec
-                # Dec estimation (more challenging, use broader prior)
-                if time_delays:
-                    # Rough declination from timing triangulation
-                    base_dec = np.arcsin(np.clip(np.mean(time_delays) * 10, -1, 1))
-                else:
-                    base_dec = np.arcsin(np.random.uniform(-1, 1))
-                
-                dec = base_dec + np.random.normal(0, sky_uncertainty)
-                dec = np.clip(dec, -np.pi/2, np.pi/2)
-                return float(dec)
-                
-        except:
-            if param == 'ra':
-                return np.random.uniform(0, 2*np.pi)
-            else:
-                return np.random.uniform(-np.pi/2, np.pi/2)
-    
-    def _estimate_orientation(self, context: Dict, param: str) -> float:
-        """REAL orientation parameter estimation from polarization analysis."""
-        try:
-            snr = context.get('estimated_snr', 10.0)
-            n_detectors = context.get('n_detectors', 2)
-            
-            # Orientation uncertainty scales with SNR and number of detectors
-            orientation_uncertainty = (1.0 / max(snr/12.0, 0.5)) * (3.0 / max(n_detectors, 2))
-            
-            if param == 'theta_jn':
-                # Inclination angle - use detection bias toward face-on systems
-                # More detectable signals tend to be closer to face-on
-                face_on_bias = max(snr / 20.0, 0.3)  # Stronger bias for higher SNR
-                
-                if np.random.random() < face_on_bias:
-                    # Bias toward face-on (theta_jn ~ 0) or face-off (theta_jn ~ pi)
-                    if np.random.random() < 0.5:
-                        base_value = np.random.uniform(0, np.pi/3)  # Face-on
-                    else:
-                        base_value = np.random.uniform(2*np.pi/3, np.pi)  # Face-off
-                else:
-                    # Uniform over inclination
-                    base_value = np.arccos(np.random.uniform(-1, 1))
-                
-                value = base_value + np.random.normal(0, orientation_uncertainty)
-                return float(np.clip(value, 0, np.pi))
-                
-            elif param == 'psi':
-                # Polarization angle - roughly uniform but can be informed by detector network
-                base_value = np.random.uniform(0, np.pi)
-                value = base_value + np.random.normal(0, orientation_uncertainty)
-                return float(value % np.pi)
-                
-            else:  # phase
-                # Coalescence phase - uniform
-                value = np.random.uniform(0, 2*np.pi)
-                return float(value)
-                
-        except:
-            if param == 'theta_jn':
-                return np.pi/2
-            elif param == 'psi':
-                return np.random.uniform(0, np.pi)
-            else:
-                return np.random.uniform(0, 2*np.pi)
-    
-    def _estimate_spin_parameter(self, context: Dict, param: str) -> float:
-        """REAL spin parameter estimation from waveform evolution."""
-        try:
-            peak_freq = context.get('peak_frequency', 100.0)
-            snr = context.get('estimated_snr', 10.0)
-            spectral_consistency = context.get('spectral_consistency', 0.5)
-            
-            # Higher frequency evolution can indicate spin effects
-            if peak_freq > 150:
-                # Rapid frequency evolution â†’ possible high spin
-                base_spin = np.random.uniform(0.2, 0.8)
-            elif spectral_consistency > 0.8:
-                # Very consistent spectrum â†’ low spin (less precession)
-                base_spin = np.random.uniform(0.0, 0.3)
-            else:
-                # Moderate spin
-                base_spin = np.random.uniform(0.0, 0.6)
-            
-            # SNR-dependent uncertainty
-            spin_uncertainty = 0.2 * (12.0 / max(snr, 8.0))
-            spin = base_spin + np.random.normal(0, spin_uncertainty)
-            
-            return float(np.clip(spin, 0.0, 0.99))
-            
-        except:
-            return np.random.uniform(0.0, 0.5)
-    
-    def _estimate_tilt_angle(self, context: Dict, param: str) -> float:
-        """REAL tilt angle estimation from spin-orbit coupling effects."""
-        try:
-            spectral_consistency = context.get('spectral_consistency', 0.5)
-            
-            # Lower spectral consistency can indicate precession â†’ non-aligned spins
-            if spectral_consistency < 0.4:
-                # Significant precession â†’ large tilt angles
-                base_tilt = np.random.uniform(np.pi/4, 3*np.pi/4)
-            elif spectral_consistency > 0.8:
-                # Low precession â†’ aligned spins
-                base_tilt = np.random.uniform(0, np.pi/6)
-            else:
-                # Moderate precession
-                base_tilt = np.random.uniform(0, np.pi/2)
-            
-            tilt_uncertainty = 0.5
-            tilt = base_tilt + np.random.normal(0, tilt_uncertainty)
-            
-            return float(np.clip(tilt, 0, np.pi))
-            
-        except:
-            return np.random.uniform(0, np.pi/2)
-    
-    def _compute_signal_quality(self, context: Dict) -> float:
-        """REAL signal quality assessment from multiple indicators."""
-        try:
-            snr = context.get('estimated_snr', 10.0)
-            corr_quality = context.get('cross_correlation', 0.1)
-            n_detectors = context.get('n_detectors', 2)
-            spectral_consistency = context.get('spectral_consistency', 0.5)
-            
-            # Weighted combination of quality indicators
-            snr_quality = min(snr / 20.0, 1.0)  # Normalize to [0,1]
-            detector_quality = min(n_detectors / 3.0, 1.0)  # 3 detectors optimal
-            
-            # Overall quality with proper weighting
-            overall_quality = (0.4 * snr_quality + 
-                             0.25 * corr_quality + 
-                             0.15 * detector_quality + 
-                             0.2 * spectral_consistency)
-            
-            return float(np.clip(overall_quality, 0.1, 0.95))
-            
-        except:
-            return 0.5
-    
-    def _compute_realistic_quantiles(self, median: float, std: float, 
-                                   min_val: float, max_val: float) -> List[float]:
-        """Compute realistic quantiles using truncated normal distribution."""
-        try:
-            # Generate samples from truncated normal
-            samples = []
-            max_attempts = 2000
-            
-            for _ in range(max_attempts):
-                sample = np.random.normal(median, std)
-                if min_val <= sample <= max_val:
-                    samples.append(sample)
-                if len(samples) >= 1000:  # Sufficient samples
-                    break
-            
-            if len(samples) < 50:  # Fallback if truncation is too restrictive
-                samples = np.linspace(min_val, max_val, 1000)
-                samples += np.random.normal(0, std * 0.1, 1000)  # Add small noise
-                samples = np.clip(samples, min_val, max_val)
-            
-            quantiles = np.percentile(samples, [5, 25, 50, 75, 95])
-            return [float(q) for q in quantiles]
-            
-        except:
-            # Robust fallback
-            q05 = max(median - 1.64*std, min_val)
-            q25 = max(median - 0.67*std, min_val)
-            q50 = median
-            q75 = min(median + 0.67*std, max_val)
-            q95 = min(median + 1.64*std, max_val)
-            
-            return [q05, q25, q50, q75, q95]
-    
-    def _get_fallback_estimate(self) -> Dict:
-        """Robust fallback estimates with physics-based defaults."""
-        fallback_params = {}
-        
-        for param_name in self.param_names:
-            min_val, max_val = self.param_bounds.get(param_name, (0.0, 1.0))
-            
-            # Physics-based fallback values
-            if param_name == 'mass_1':
-                median = 35.0
-                std = 8.0
-            elif param_name == 'mass_2':
-                median = 30.0
-                std = 7.0
-            elif param_name == 'luminosity_distance':
-                median = 500.0
-                std = 200.0
-            elif param_name == 'geocent_time':
-                median = 0.0
-                std = 0.005
-            elif param_name in ['ra', 'phase', 'phi_12', 'phi_jl']:
-                median = np.pi
-                std = 1.0
-            elif param_name in ['dec']:
-                median = 0.0
-                std = 0.5
-            elif param_name in ['theta_jn', 'psi', 'tilt_1', 'tilt_2']:
-                median = np.pi/2
-                std = 0.5
-            elif param_name in ['a_1', 'a_2']:
-                median = 0.2
-                std = 0.2
-            else:
-                median = (min_val + max_val) / 2
-                std = (max_val - min_val) / 6
-            
-            # Ensure within bounds
-            median = np.clip(median, min_val, max_val)
-            
-            fallback_params[param_name] = {
-                'median': float(median),
-                'mean': float(median + np.random.normal(0, std * 0.05)),
-                'std': float(std),
-                'quantiles': self._compute_realistic_quantiles(median, std, min_val, max_val)
-            }
-        
-        return {
-            'posterior_summary': fallback_params,
-            'signal_quality': 0.5,
-            'method': 'fallback_physics_based'
-        }
-    
-    def set_complexity(self, complexity: str):
-        """Set model complexity level."""
-        complexity_map = {
-            'low': 'simple_estimation',
-            'medium': 'physics_based',
-            'high': 'advanced_physics'
-        }
-        self.complexity_level = complexity
-        self.logger.debug(f"Neural PE complexity set to {complexity} ({complexity_map.get(complexity, 'unknown')})")
-
 
 class UncertaintyAwareSubtractor:
-    """REAL physics-based subtractor - keeping original name"""
+    """ physics-based subtractor"""
     
     def __init__(self, waveform_generator=None):
         self.waveform_generator = waveform_generator
@@ -715,7 +38,7 @@ class UncertaintyAwareSubtractor:
     def subtract_signal(self, data: Dict[str, Any], 
                        parameters: Dict[str, float],
                        uncertainty: Dict[str, float] = None) -> Tuple[Dict[str, np.ndarray], Dict]:
-        """REAL physics-based signal subtraction with uncertainty propagation."""
+        """ physics-based signal subtraction with uncertainty propagation."""
         
         residual_data = {}
         subtraction_info = {}
@@ -797,14 +120,14 @@ class UncertaintyAwareSubtractor:
                     }
                     
             except Exception as e:
-                self.logger.debug(f"Subtraction failed for {detector}: {e}")
+                self.logger.warning(f"Subtraction failed for {detector}: {e}")
                 residual_data[detector] = strain
                 subtraction_info[detector] = {'error': str(e)}
         
         return residual_data, subtraction_info
     
     def _generate_physics_template(self, parameters: Dict[str, float], detector: str, n_samples: int) -> Optional[np.ndarray]:
-        """REAL physics-based gravitational waveform generation using Post-Newtonian theory."""
+        """ physics-based gravitational waveform generation using Post-Newtonian theory."""
         try:
             # Time array
             t = np.linspace(0, self.duration, n_samples)
@@ -852,22 +175,26 @@ class UncertaintyAwareSubtractor:
             frequency = np.clip(frequency, f_min, f_max)
             
             #  3.5PN phase evolution
-            # More accurate phase evolution including spin effects
+            # More accurate phase evolution including spin effects (trapezoidal integration)
             phase = np.zeros_like(t)
             for i in range(1, len(t)):
-                df_dt = (frequency[i] - frequency[i-1]) / dt
                 if frequency[i] > 0:
-                    phase[i] = phase[i-1] + 2*np.pi * frequency[i] * dt
+                    # Trapezoidal integration for better accuracy
+                    avg_freq = (frequency[i] + frequency[i-1]) / 2.0
+                    phase[i] = phase[i-1] + 2*np.pi * avg_freq * dt
             
             # Add coalescence phase
             phase += parameters.get('phase', 0.0)
             
-            #  Spin-orbit coupling effects
+            #  Spin-orbit coupling effects (2PN spin-orbit coupling)
             if a1 > 0.01 or a2 > 0.01:  # Include spin effects if significant
-                # Simplified spin-orbit precession
-                precession_freq = 0.1 * (a1 + a2) * frequency / 100.0  # Rough approximation
-                spin_phase = 2*np.pi * np.cumsum(precession_freq) * dt
-                phase += 0.1 * spin_phase  # Small spin correction
+                # Effective spin parameter
+                chi_eff = (a1 * m1 + a2 * m2) / total_mass
+                
+                # 2PN spin-orbit phase correction
+                v = (np.pi * frequency * M_total_s)**(1/3)  # PN velocity parameter
+                spin_phase_correction = (113.0/12.0 + 25.0*eta/4.0) * chi_eff * v**2
+                phase += spin_phase_correction
             
             #  Amplitude evolution with Post-Newtonian corrections
             # Convert distance to meters
@@ -884,8 +211,9 @@ class UncertaintyAwareSubtractor:
             # Apply amplitude evolution
             amplitude = h0 * amp_1pn
             
-            # Apply coalescence amplitude scaling
-            amplitude *= (time_to_merger / M_total_s)**(-1/4)
+            # Apply coalescence amplitude scaling with regularization near merger
+            time_scale = np.maximum(time_to_merger, 0.1 * M_total_s)  # Avoid singularity at merger
+            amplitude *= (time_scale / M_total_s)**(-1/4)
             
             #  Generate polarizations with proper orientation
             inclination = parameters.get('theta_jn', np.pi/2)
@@ -895,18 +223,18 @@ class UncertaintyAwareSubtractor:
             h_plus = amplitude * (1 + cos_iota**2) * np.cos(phase)
             h_cross = amplitude * 2 * cos_iota * np.sin(phase)
             
-            #  Apply realistic detector response
+            #  Apply istic detector response
             psi = parameters.get('psi', 0.0)  # Polarization angle
             ra = parameters.get('ra', 0.0)
             dec = parameters.get('dec', 0.0)
             
-            # Compute antenna patterns (simplified - real implementation uses LAL)
+            # Compute antenna patterns (simplified -  implementation uses LAL)
             F_plus, F_cross = self._compute_antenna_patterns(detector, ra, dec, psi)
             
             # Detector strain
             strain = F_plus * h_plus + F_cross * h_cross
             
-            #  Apply realistic time-domain windowing
+            #  Apply istic time-domain windowing
             window = self._compute_tukey_window(len(strain), alpha=0.2)
             strain *= window
             
@@ -917,36 +245,41 @@ class UncertaintyAwareSubtractor:
             return strain.astype(np.float32)
             
         except Exception as e:
-            self.logger.debug(f"Physics template generation failed: {e}")
+            self.logger.warning(f"Physics template generation failed: {e}")
             return self._generate_fallback_template(parameters, n_samples)
     
     def _compute_antenna_patterns(self, detector: str, ra: float, dec: float, psi: float) -> Tuple[float, float]:
-        """REAL antenna pattern computation for detectors."""
+        """ antenna pattern computation for detectors."""
         try:
-            # Simplified antenna patterns (real implementation would use LAL)
-            # These are rough approximations of the actual detector responses
+            # Simplified antenna patterns (proper formulation requires LAL)
+            # For overhead sources, antenna patterns reduce to detector-dependent functions of polarization angle only
             
             if detector == 'H1':
-                # Hanford detector orientation
-                F_plus = 0.8 * np.cos(2*psi + ra) * (1 + np.sin(dec)**2)
-                F_cross = 0.8 * np.sin(2*psi + ra) * np.cos(dec)
+                # Hanford detector (arms along N-E and N-W)
+                F_plus = np.cos(2*psi)
+                F_cross = np.sin(2*psi)
                 
             elif detector == 'L1':
-                # Livingston detector orientation (90Â° rotated from Hanford)
-                F_plus = 0.8 * np.cos(2*psi + ra + np.pi/2) * (1 + np.sin(dec)**2)
-                F_cross = 0.8 * np.sin(2*psi + ra + np.pi/2) * np.cos(dec)
+                # Livingston detector (arms rotated ~45° from Hanford)
+                F_plus = np.cos(2*psi + np.pi/2)  # 90° rotated arms
+                F_cross = np.sin(2*psi + np.pi/2)
                 
             elif detector == 'V1':
-                # Virgo detector orientation
-                F_plus = 0.6 * np.cos(2*psi + ra + np.pi/4) * (1 + 0.5*np.sin(dec)**2)
-                F_cross = 0.6 * np.sin(2*psi + ra + np.pi/4) * np.cos(dec)
+                # Virgo detector (different arm angle and orientation)
+                F_plus = 0.7 * np.cos(2*psi)
+                F_cross = 0.7 * np.sin(2*psi)
                 
             else:
                 # Generic detector
                 F_plus = 0.5 * np.cos(2*psi)
                 F_cross = 0.5 * np.sin(2*psi)
             
-            # Apply realistic bounds
+            # Sky position dependence (rough approximation for non-overhead sources)
+            sky_factor = (1.0 + np.cos(dec)**2) / 2.0
+            F_plus *= sky_factor
+            F_cross *= np.cos(dec)
+            
+            # Apply physical bounds
             F_plus = np.clip(F_plus, -1.0, 1.0)
             F_cross = np.clip(F_cross, -1.0, 1.0)
             
@@ -959,25 +292,30 @@ class UncertaintyAwareSubtractor:
     def _compute_tukey_window(self, length: int, alpha: float = 0.2) -> np.ndarray:
         """Compute Tukey window for smooth template edges."""
         try:
-            window = np.ones(length)
+            # Try scipy's optimized Tukey window implementation
+            try:
+                from scipy.signal import windows
+                return windows.tukey(length, alpha=alpha)
+            except (ImportError, AttributeError):
+                pass
             
-            # Taper length
+            # Fallback: manual Tukey window computation
+            window = np.ones(length)
             taper_length = int(alpha * length / 2)
             
             if taper_length > 0:
-                # Beginning taper
+                # Beginning taper (cosine ramp from 0 to 1)
                 for i in range(taper_length):
-                    window[i] = 0.5 * (1 + np.cos(np.pi * (2*i/alpha/length - 1)))
+                    window[i] = 0.5 * (1.0 - np.cos(np.pi * i / taper_length))
                 
-                # End taper
+                # End taper (cosine ramp from 1 to 0) - properly reversed
                 for i in range(taper_length):
-                    idx = length - taper_length + i
-                    window[idx] = 0.5 * (1 + np.cos(np.pi * (2*i/alpha/length - 1)))
+                    window[length - taper_length + i] = 0.5 * (1.0 - np.cos(np.pi * (taper_length - i) / taper_length))
             
             return window
             
         except:
-            # Fallback: simple linear taper
+            # Ultimate fallback: simple linear taper
             window = np.ones(length)
             edge_length = max(1, length // 20)
             
@@ -988,7 +326,7 @@ class UncertaintyAwareSubtractor:
             return window
     
     def _get_calibration_factor(self, detector: str, frequency: float) -> float:
-        """Get realistic calibration factor for detector."""
+        """Get istic calibration factor for detector."""
         try:
             # Simplified calibration model (frequency-dependent)
             base_factors = {
@@ -1043,7 +381,7 @@ class UncertaintyAwareSubtractor:
     
     def _analyze_subtraction_frequency_domain(self, strain: np.ndarray, template: np.ndarray, 
                                             residual: np.ndarray) -> Dict[str, float]:
-        """REAL frequency domain analysis of subtraction quality."""
+        """ frequency domain analysis of subtraction quality."""
         try:
             # FFT analysis
             strain_fft = np.fft.fft(strain)
@@ -1088,7 +426,7 @@ class UncertaintyAwareSubtractor:
     
     def _compute_uncertainty_weight(self, parameters: Dict[str, float], 
                                   uncertainty: Dict[str, float]) -> float:
-        """REAL uncertainty-based template weighting."""
+        """ uncertainty-based template weighting."""
         try:
             # Weight based on parameter uncertainties (most important for waveform accuracy)
             important_params = ['mass_1', 'mass_2', 'luminosity_distance', 'geocent_time']
@@ -1130,92 +468,82 @@ class UncertaintyAwareSubtractor:
             return float(final_weight)
             
         except Exception as e:
-            self.logger.debug(f"Uncertainty weight computation failed: {e}")
+            self.logger.warning(f"Uncertainty weight computation failed: {e}")
             return 0.8  # Conservative default
 
 
 class AdaptiveSubtractor:
-    """adaptive subtractor with physics-based logic"""
+    """Adaptive subtractor with physics-based logic.
     
-    def __init__(self, neural_pe=None, uncertainty_subtractor=None):
-        # Use implementations with original names
-        param_names = [
-            'mass_1', 'mass_2', 'luminosity_distance', 
-            'geocent_time', 'ra', 'dec', 'theta_jn', 'psi', 'phase',
-            'a_1', 'a_2', 'tilt_1', 'tilt_2', 'phi_12', 'phi_jl'  # Extended parameter set
-        ]
-        
-        self.neural_pe = neural_pe or NeuralPE(param_names)
-        self.uncertainty_subtractor = uncertainty_subtractor or UncertaintyAwareSubtractor()
+    ✅ NOTE (Dec 14, 2025): Neural PE is now handled by OverlapNeuralPE from
+    src/ahsd/models/overlap_neuralpe.py. This class focuses on physics-based
+    signal subtraction only.
+    """
+    
+    def __init__(self):
+        self.uncertainty_subtractor = UncertaintyAwareSubtractor()
         self.logger = logging.getLogger(__name__)
         
         # Advanced configuration
         self.max_iterations = 3  # Maximum iterative refinement
         self.convergence_threshold = 0.01  # Convergence criterion
         
-        self.logger.info(" AdaptiveSubtractor initialized with REAL physics-based logic")
+        self.logger.info("✅ AdaptiveSubtractor initialized with physics-based logic")
     
     def extract_and_subtract(self, data: Dict[str, Any], 
-                           detection_idx: int) -> Tuple[Dict[str, np.ndarray], Dict, Dict]:
-        """extraction and subtraction with iterative refinement."""
+                           best_params: Dict[str, float],
+                           uncertainties: Dict[str, float] = None) -> Tuple[Dict[str, np.ndarray], Dict]:
+        """Physics-based signal subtraction with iterative refinement.
+        
+        Args:
+            data: Input strain data (H1, L1, V1 detectors)
+            best_params: Best-fit parameters from OverlapNeuralPE
+            uncertainties: Parameter uncertainties (optional)
+        
+        Returns:
+            (residual_data, subtraction_info) tuple
+        """
         
         try:
             # Standardize data format
             standardized_data = standardize_strain_data(data)
             
-            # Initial parameter estimation using neural PE
-            extraction_result = self.neural_pe.quick_estimate(standardized_data, detection_idx)
-            
-            # Get initial parameter estimates
-            posterior_summary = extraction_result.get('posterior_summary', {})
-            best_params = {}
-            uncertainties = {}
-            
-            for param_name, summary in posterior_summary.items():
-                if isinstance(summary, dict):
-                    best_params[param_name] = summary.get('median', 0.0)
-                    uncertainties[param_name] = summary.get('std', 0.1)
-                else:
-                    best_params[param_name] = float(summary)
-                    uncertainties[param_name] = 0.1
+            if uncertainties is None:
+                uncertainties = {}
             
             # Iterative refinement (if signal quality is sufficient)
-            signal_quality = extraction_result.get('signal_quality', 0.5)
-            
-            if signal_quality > 0.6:  # High quality signals get iterative refinement
-                best_params, uncertainties, refinement_info = self._iterative_refinement(
-                    standardized_data, best_params, uncertainties
-                )
-                extraction_result['refinement_info'] = refinement_info
+            refined_params, refined_uncertainties, refinement_info = self._iterative_refinement(
+                standardized_data, best_params, uncertainties
+            )
             
             # Perform physics-based subtraction
             residual_data, subtraction_info = self.uncertainty_subtractor.subtract_signal(
-                standardized_data, best_params, uncertainties
+                standardized_data, refined_params, refined_uncertainties
             )
 
             # Post-subtraction analysis and validation
             validation_results = self._validate_subtraction(
-                standardized_data, residual_data, best_params, subtraction_info
+                standardized_data, residual_data, refined_params, subtraction_info
             )
             
             # Compile comprehensive results
-            extraction_result.update({
+            result = {
                 'subtraction_info': subtraction_info,
-                'best_parameters': best_params,
-                'parameter_uncertainties': uncertainties,
+                'best_parameters': refined_params,
+                'parameter_uncertainties': refined_uncertainties,
                 'validation_results': validation_results,
+                'refinement_info': refinement_info,
                 'processing_metadata': {
-                    'detection_idx': detection_idx,
-                    'iterative_refinement': signal_quality > 0.6,
+                    'iterative_refinement': True,
                     'n_detectors': len(standardized_data),
                     'data_quality': self._assess_data_quality(standardized_data)
                 }
-            })
+            }
             
-            return residual_data, extraction_result, uncertainties
+            return residual_data, result
             
         except Exception as e:
-            self.logger.error(f"Real extract and subtract failed: {e}")
+            self.logger.error(f"Extract and subtract failed: {e}")
             
             # Robust fallback
             try:
@@ -1229,12 +557,12 @@ class AdaptiveSubtractor:
             
             fallback_result = {
                 'error': str(e),
-                'posterior_summary': {},
-                'signal_quality': 0.0,
+                'subtraction_info': {},
+                'validation_results': {},
                 'method': 'extraction_failed'
             }
             
-            return original_data, fallback_result, {}
+            return original_data, fallback_result
     
     def _iterative_refinement(self, data: Dict[str, np.ndarray], 
                             initial_params: Dict[str, float],
@@ -1301,7 +629,7 @@ class AdaptiveSubtractor:
             refinement_info['final_match_quality'] = current_match_quality
             
         except Exception as e:
-            self.logger.debug(f"Iterative refinement failed: {e}")
+            self.logger.warning(f"Iterative refinement failed: {e}")
             # Return original parameters if refinement fails
             
         return refined_params, refined_uncertainties, refinement_info
@@ -1343,7 +671,7 @@ class AdaptiveSubtractor:
                 parameter_updates[param_name] = gradient * step_size * 0.5  # Conservative factor
         
         except Exception as e:
-            self.logger.debug(f"Parameter update computation failed: {e}")
+            self.logger.warning(f"Parameter update computation failed: {e}")
         
         return parameter_updates
     
@@ -1454,7 +782,7 @@ class AdaptiveSubtractor:
             validation_results['parameter_consistency'] = self._check_parameter_consistency(parameters)
             
         except Exception as e:
-            self.logger.debug(f"Subtraction validation failed: {e}")
+            self.logger.warning(f"Subtraction validation failed: {e}")
             validation_results['error'] = str(e)
         
         return validation_results
@@ -1542,11 +870,11 @@ class AdaptiveSubtractor:
             
             if a1 < 0.0 or a1 >= 1.0:
                 consistency_results['spin_consistency'] = False
-                consistency_results['issues'].append(f'a1 = {a1:.2f} outside physical range [0, 1)')
+                consistency_results['issues'].append(f'a_1 = {a1:.2f} outside physical range [0, 1)')
             
             if a2 < 0.0 or a2 >= 1.0:
                 consistency_results['spin_consistency'] = False
-                consistency_results['issues'].append(f'a2 = {a2:.2f} outside physical range [0, 1)')
+                consistency_results['issues'].append(f'a_2 = {a2:.2f} outside physical range [0, 1)')
             
         except Exception as e:
             consistency_results['issues'].append(f'Consistency check failed: {e}')

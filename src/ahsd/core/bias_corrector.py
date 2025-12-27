@@ -121,13 +121,15 @@ class BiasEstimator(nn.Module):
             nn.Softplus(beta=1.0)  # Standard softplus for uncertainty
         )
         
-        # Initialize final linear layer to output small values before Softplus
-        # Target: Softplus(x) ≈ 0.05 when x ≈ -2.9 (since Softplus(x) = log(1+exp(x)))
+        # Initialize final linear layer to output realistic uncertainties
+        # Target: Softplus(x) ≈ 2.01 when x ≈ 1.3 (matching error magnitude ~1-3)
+        # This is critical: errors are ~1-3 magnitude, so uncertainties must match
         with torch.no_grad():
             # Initialize weights to small values
-            nn.init.uniform_(self.uncertainty_head[-2].weight, -0.02, 0.02)
-            # Initialize bias to negative value → small uncertainty after Softplus
-            nn.init.constant_(self.uncertainty_head[-2].bias, -2.9)
+            nn.init.uniform_(self.uncertainty_head[-2].weight, -0.05, 0.05)
+            # Initialize bias to positive value → realistic uncertainty after Softplus
+            # Softplus(1.3) ≈ 2.01, which matches typical error magnitude
+            nn.init.constant_(self.uncertainty_head[-2].bias, 1.3)
         
     def forward(self, param_estimates: torch.Tensor, context_features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """ forward pass with uncertainty quantification"""
@@ -501,7 +503,7 @@ class BiasCorrector(nn.Module):
                     'prior_width': 0.4,
                     'coupling_strength': 0.5
                 }
-            elif param_name in ['a_1', 'a_2']:
+            elif param_name in ['a1', 'a2', 'a_1', 'a_2']:  # Support both naming conventions
                 bounds[param_name] = {
                     'min_value': 0.0,
                     'max_value': 0.99,
@@ -536,7 +538,7 @@ class BiasCorrector(nn.Module):
             (['mass_2', 'luminosity_distance'], -0.6),
             (['ra', 'dec'], 0.1),                  # Sky position correlation
             (['theta_jn', 'luminosity_distance'], 0.4),  # Inclination-distance
-            (['a_1', 'a_2'], 0.2),                 # Spin correlation
+            (['a1', 'a2'], 0.2),                   # Spin correlation (dataset uses 'a1', 'a2')
             (['psi', 'phase'], -0.3),              # Orientation correlation
         ]
         

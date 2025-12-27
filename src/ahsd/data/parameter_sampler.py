@@ -129,8 +129,8 @@ class ParameterSampler:
         else:
             # Balanced mass distribution: wider than before to enable mass-distance correlation,
             # but narrower than original to maintain strong SNR-distance correlation
-            m1_raw = np.clip(rng.lognormal(mean=np.log(28.0), sigma=0.30), 8.0, 60.0)
-            m2_raw = np.clip(rng.lognormal(mean=np.log(22.0), sigma=0.32), 8.0, 60.0)
+            m1_raw = np.clip(rng.lognormal(mean=np.log(35.0), sigma=0.30), 8.0, 60.0)
+            m2_raw = np.clip(rng.lognormal(mean=np.log(28.0), sigma=0.32), 8.0, 60.0)
             q_min = 0.1
             m2_raw = max(m2_raw, q_min * m1_raw)
             mass_1, mass_2 = (m1_raw, m2_raw) if m1_raw >= m2_raw else (m2_raw, m1_raw)
@@ -400,6 +400,17 @@ class ParameterSampler:
             snr_min_adj = snr_min_orig
             snr_max_adj = snr_max_orig
         
+        # ✅ ISSUE 3 FIX: Add bounds checking to avoid invalid SNR values
+        # Don't go below physical minimum or exceed maximum after boost
+        snr_min_adj = max(5.0, snr_min_adj)  # Physical minimum SNR
+        snr_max_adj = min(100.0 / boost_mult, snr_max_adj)  # Don't exceed physical max after boost
+        
+        # Ensure bounds are valid
+        if snr_min_adj >= snr_max_adj:
+            # If adjustment inverted bounds, use original regime directly
+            snr_min_adj = snr_min_orig
+            snr_max_adj = snr_max_orig
+        
         # Sample from adjusted regime bounds, then apply boost
         self._sampling_event_type = 'NSBH'
         try:
@@ -562,8 +573,8 @@ class ParameterSampler:
             for i in range(n_samples):
                 # Sample masses according to lightweight priors used in sampling
                 if et == 'BBH':
-                    m1 = np.clip(np.random.lognormal(mean=np.log(25.0), sigma=0.35), 5.0, 100.0)
-                    m2 = np.clip(np.random.lognormal(mean=np.log(20.0), sigma=0.40), 5.0, 100.0)
+                    m1 = np.clip(np.random.lognormal(mean=np.log(35.0), sigma=0.35), 5.0, 100.0)
+                    m2 = np.clip(np.random.lognormal(mean=np.log(28.0), sigma=0.40), 5.0, 100.0)
                     if m2 > m1:
                         m1, m2 = m2, m1
                     # enforce min q

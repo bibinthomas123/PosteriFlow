@@ -1537,35 +1537,58 @@ def assemble_detector_strains(
     if detectors is None:
         detectors = ["H1", "L1", "V1"]
     
+    if not detector_data:
+        logging.debug("Empty detector_data provided to assemble_detector_strains")
+        return None
+    
     strain_list = []
     reference_shape = None
+    available_detectors = []
     
     # FIRST PASS: Find reference shape from first valid strain data
     for detector in detectors:
-        if detector in detector_data and isinstance(detector_data[detector], dict):
-            strain_data = detector_data[detector].get("strain", None)
+        if detector in detector_data:
+            det_entry = detector_data[detector]
+            
+            # Handle both dict and direct array formats
+            strain_data = None
+            if isinstance(det_entry, dict):
+                strain_data = det_entry.get("strain", None)
+            elif isinstance(det_entry, (np.ndarray, torch.Tensor)):
+                strain_data = det_entry
+            
             if strain_data is not None:
                 try:
                     if isinstance(strain_data, np.ndarray):
                         reference_shape = strain_data.shape
+                        available_detectors.append(detector)
                         break
                     elif isinstance(strain_data, torch.Tensor):
                         reference_shape = strain_data.shape
+                        available_detectors.append(detector)
                         break
-                except Exception:
+                except Exception as e:
+                    logging.debug(f"Error getting reference shape from {detector}: {e}")
                     pass
     
     # If still no reference shape, use default
     if reference_shape is None:
         reference_shape = (default_length,)
+        logging.debug(f"No valid strain data found in detector_data. Using default shape: {reference_shape}")
     
     # SECOND PASS: Extract and backfill in detector order
     for detector in detectors:
         strain_data = None
         
         # Extract strain data from detector_data
-        if detector in detector_data and isinstance(detector_data[detector], dict):
-            strain_data = detector_data[detector].get("strain", None)
+        if detector in detector_data:
+            det_entry = detector_data[detector]
+            
+            # Handle both dict and direct array formats
+            if isinstance(det_entry, dict):
+                strain_data = det_entry.get("strain", None)
+            elif isinstance(det_entry, (np.ndarray, torch.Tensor)):
+                strain_data = det_entry
             
             if strain_data is not None:
                 # Convert to torch tensor if needed
@@ -1579,7 +1602,7 @@ def assemble_detector_strains(
                 # Check shape consistency
                 if strain_data is not None:
                     if strain_data.shape != reference_shape:
-                        logging.warning(
+                        logging.debug(
                             f"Detector {detector} shape mismatch: "
                             f"{strain_data.shape} != {reference_shape}, using zeros"
                         )
@@ -1592,9 +1615,12 @@ def assemble_detector_strains(
         strain_list.append(strain_data)
     
     if len(strain_list) == len(detectors):
-        return torch.stack(strain_list)
+        result = torch.stack(strain_list)
+        if result.shape[0] != 3:
+            logging.error(f"CRITICAL: Expected 3 detectors, got {result.shape[0]}. Shape: {result.shape}")
+        return result
     else:
-        logging.debug(f"Incomplete strain data: {len(strain_list)}/{len(detectors)} detectors")
+        logging.error(f"Incomplete strain data: {len(strain_list)}/{len(detectors)} detectors")
         return None
 
 
@@ -1651,6 +1677,11 @@ def collate_priority_batch(batch):
             # ✅ EXTRACT STRAIN SEGMENTS from detector_data
             detector_data = item.get("detector_data", {})
             strain_tensor = assemble_detector_strains(detector_data) if detector_data else None
+            
+            # DEBUG: Log strain shape for first few batches
+            if strain_tensor is not None and not hasattr(collate_priority_batch, '_logged_first'):
+                logging.info(f"[COLLATE DEBUG] Strain shape: {strain_tensor.shape}, detector_data keys: {list(detector_data.keys())}")
+                collate_priority_batch._logged_first = True
 
             detections_batch.append(dets)
             priorities_batch.append(prios)

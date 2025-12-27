@@ -4,8 +4,8 @@ Machine learning models for parameter estimation and control.
 
 from .neural_pe import NeuralPosteriorEstimator
 from .transformer_encoder import TransformerStrainEncoder
+from .parameter_scalers import ParameterScaler, TorchParameterScaler
 
-# Lazy import to avoid circular dependencies and syntax errors in flows.py
 try:
     from .overlap_neuralpe import OverlapNeuralPE, ContextEncoder
 except Exception as e:
@@ -20,5 +20,6 @@ __all__ = [
     "TransformerStrainEncoder",
     "OverlapNeuralPE",
     "ContextEncoder",
-    
+    "ParameterScaler",
+    "TorchParameterScaler",
 ]

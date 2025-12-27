@@ -190,6 +190,9 @@ class SignalInjector:
         # Calculate optimal SNR
         sig = sigma(signal_ts, psd=psd, low_frequency_cutoff=20.0)
         
+        # Convert sig to scalar - sigma() can return array in some PyCBC versions
+        sig = float(np.atleast_1d(sig)[0]) if hasattr(sig, '__len__') else float(sig)
+        
         if sig > 0 and np.isfinite(sig):
             scale_factor = target_snr / sig
             # Clamp to prevent overflow

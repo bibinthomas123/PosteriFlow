@@ -71,10 +71,13 @@ class PSDManager:
                     scaling = 1e-46 / psd_arr[idx_100]
                     psd_arr = psd_arr * scaling
                 
+                # Clamp ASD to realistic values (1e-23 to 1e-22 strain per sqrt Hz)
+                asd = np.sqrt(np.maximum(psd_arr, 1e-46))
+                asd = np.maximum(asd, 1e-22)  # Ensure minimum realistic noise floor
                 return {
-                    'psd': psd_arr,
+                    'psd': asd ** 2,  # Recompute PSD from clamped ASD
                     'frequencies': freqs,
-                    'asd': np.sqrt(np.maximum(psd_arr, 1e-50)),
+                    'asd': asd,
                     'name': psd_name,
                     'source': 'pycbc'
                 }
@@ -90,10 +93,13 @@ class PSDManager:
             scaling = 1e-46 / psd_arr[idx_100]
             psd_arr = psd_arr * scaling
         
+        # Clamp ASD to realistic values (1e-23 to 1e-22 strain per sqrt Hz)
+        asd = np.sqrt(np.maximum(psd_arr, 1e-46))
+        asd = np.maximum(asd, 1e-22)  # Ensure minimum realistic noise floor
         return {
-            'psd': psd_arr,
+            'psd': asd ** 2,  # Recompute PSD from clamped ASD
             'frequencies': freqs,
-            'asd': np.sqrt(np.maximum(psd_arr, 1e-50)),
+            'asd': asd,
             'name': 'aLIGOZeroDetHighPower',
             'source': 'pycbc_fallback'
         }
@@ -115,10 +121,13 @@ class PSDManager:
         # Add spectral lines for realism
         psd = self._add_spectral_lines(frequencies, psd, detector_name)
         
+        # Clamp ASD to realistic values (1e-23 to 1e-22 strain per sqrt Hz)
+        asd = np.sqrt(np.maximum(psd, 1e-46))
+        asd = np.maximum(asd, 1e-22)  # Ensure minimum realistic noise floor
         return {
-            'psd': psd,
+            'psd': asd ** 2,  # Recompute PSD from clamped ASD
             'frequencies': frequencies,
-            'asd': np.sqrt(np.maximum(psd, 1e-50)),
+            'asd': asd,
             'name': f'analytical_{detector_name}',
             'source': 'analytical'
         }

@@ -144,14 +144,22 @@ class WaveformGenerator:
             # No detector projection - use plus polarization
             signal = hp
         
-        # Resize to match duration
-        if len(signal) < self.n_samples:
-            signal.resize(self.n_samples)
-        else:
-            signal = signal[:self.n_samples]
+        # Convert to numpy array first (handles both TimeSeries and numpy)
+        signal_data = np.array(signal.data if hasattr(signal, 'data') else signal, dtype=np.float32)
         
-        # Convert to numpy array
-        return np.array(signal.data, dtype=np.float32)
+        # Resize to match duration
+        if len(signal_data) < self.n_samples:
+            # Pad with zeros at the beginning
+            signal_data = np.pad(signal_data, (self.n_samples - len(signal_data), 0), mode='constant')
+        else:
+            # PyCBC generates long waveforms with the signal concentrated around the peak
+            # Extract a centered window to capture the signal
+            # This is better than taking first or last samples which are mostly padding
+            start_idx = (len(signal_data) - self.n_samples) // 2
+            end_idx = start_idx + self.n_samples
+            signal_data = signal_data[start_idx:end_idx]
+        
+        return signal_data
     
     def generate_analytical_waveform(self, params: Dict, detector_name: str = None) -> np.ndarray:
         """Generate waveform using analytical post-Newtonian methods"""

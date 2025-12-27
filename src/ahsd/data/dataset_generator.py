@@ -352,20 +352,21 @@ class GWDatasetGenerator:
             else:
                 self.logger.info(f"No cached segments found for {detector} in {cache_dir}")
 
-    def _normalize_noise_power(self, noise: np.ndarray, target_std: float = 0.5) -> np.ndarray:
+    def _normalize_noise_power(self, noise: np.ndarray, target_std: float = 1e-21) -> np.ndarray:
         """
         Normalize noise to consistent power level across all samples.
         Prevents non-stationarity issues when mixing real and synthetic noise.
         
         Args:
             noise: Noise array
-            target_std: Target standard deviation (default 0.5)
+            target_std: Target standard deviation (default 1e-21 for detector sensitivity)
         
         Returns:
             Normalized noise array
         """
         current_std = np.std(noise)
-        if current_std > 0:
+        # Only normalize if significantly different (avoid unnecessary rescaling)
+        if current_std > 0 and np.abs(current_std - target_std) / target_std > 0.5:
             noise = noise * (target_std / current_std)
         return noise
 
@@ -1161,6 +1162,27 @@ class GWDatasetGenerator:
         self.logger.info("")
 
         start_time = time.time()
+
+        # ========================================================================
+        # ✅ CRITICAL: EMPIRICAL SNR CALIBRATION 
+        # ========================================================================
+        # Before any sampling, calibrate conditional SNR distributions by event type
+        # This ensures _sample_target_snr() uses correct event-type-specific regime probabilities
+        self.logger.info("🎯 Performing empirical SNR calibration by event type...")
+        self.logger.info("   (This ensures proper regime distribution for each event type)")
+        
+        conditional_snr = self.parameter_sampler.empirical_calibrate(
+            n_samples=5000,
+            random_seed=42
+        )
+        
+        self.logger.info("✅ Conditional SNR distribution calibrated:")
+        for event_type in ['BBH', 'BNS', 'NSBH']:
+            if event_type in conditional_snr:
+                self.logger.info(f"   {event_type}:")
+                for regime, fraction in sorted(conditional_snr[event_type].items()):
+                    self.logger.info(f"      {regime:>8}: {fraction:>6.1%}")
+        self.logger.info("")
 
         # ========================================================================
         # CALCULATE SAMPLE DISTRIBUTION
@@ -2174,7 +2196,7 @@ class GWDatasetGenerator:
                     type_groups[event_type] = []
                 type_groups[event_type].append(i)
 
-            # Split each group proportionally
+            # Split each group proportionally (with exact fraction enforcement)
             train_indices = []
             val_indices = []
             test_indices = []
@@ -2183,8 +2205,11 @@ class GWDatasetGenerator:
                 random.shuffle(indices)
                 n_type = len(indices)
 
-                n_train = int(n_type * train_frac)
-                n_val = int(n_type * val_frac)
+                # Use round() instead of int() to minimize rounding errors
+                # Then adjust the last bin to ensure exact totals
+                n_train = round(n_type * train_frac)
+                n_val = round(n_type * val_frac)
+                n_test = n_type - n_train - n_val  # Remaining goes to test (no rounding loss)
 
                 train_indices.extend(indices[:n_train])
                 val_indices.extend(indices[n_train : n_train + n_val])
@@ -2196,12 +2221,14 @@ class GWDatasetGenerator:
             random.shuffle(test_indices)
 
         else:
-            # Simple random split
+            # Simple random split (with exact fraction enforcement)
             indices = list(range(n_total))
             random.shuffle(indices)
 
-            n_train = int(n_total * train_frac)
-            n_val = int(n_total * val_frac)
+            # Use round() to minimize rounding errors, test gets remainder
+            n_train = round(n_total * train_frac)
+            n_val = round(n_total * val_frac)
+            n_test = n_total - n_train - n_val  # Remaining goes to test (no rounding loss)
 
             train_indices = indices[:n_train]
             val_indices = indices[n_train : n_train + n_val]
@@ -2656,6 +2683,7 @@ class GWDatasetGenerator:
             "metadata": {
                 "sample_id": f"pre_merger_{sample_id:06d}",
                 "event_type": event_type,
+                "signal_parameters": [params],  # ✅ ADD: Match new format for consistency
                 "time_to_merger": time_to_merger,
                 "merger_in_window": False,
                 "phase": "inspiral_only",

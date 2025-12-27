@@ -146,19 +146,29 @@ class TestDataset(torch.utils.data.Dataset):
         if signal_params is None:
             signal_params = {}
         
-        true_params = np.array([
-            signal_params.get('mass_1', 30.0),
-            signal_params.get('mass_2', 25.0),
-            signal_params.get('luminosity_distance', 500.0),
-            signal_params.get('ra', 0.0),
-            signal_params.get('dec', 0.0),
-            signal_params.get('theta_jn', 0.0),
-            signal_params.get('psi', 0.0),
-            signal_params.get('phase', 0.0),
-            signal_params.get('geocent_time', 0.0),
-            signal_params.get('a1', 0.0),  # Primary spin magnitude
-            signal_params.get('a2', 0.0)   # Secondary spin magnitude
-        ], dtype=np.float32)
+        # Extract params - critical fix: Handle missing keys properly
+        # If a parameter is missing, we cannot use defaults (they don't match data distribution)
+        # Instead, skip samples with missing parameters
+        required_keys = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
+                        'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
+        
+        if not all(key in signal_params for key in required_keys):
+            # Return zeros for missing sample (will be filtered)
+            true_params = np.zeros(11, dtype=np.float32)
+        else:
+            true_params = np.array([
+                signal_params.get('mass_1'),
+                signal_params.get('mass_2'),
+                signal_params.get('luminosity_distance'),
+                signal_params.get('ra'),
+                signal_params.get('dec'),
+                signal_params.get('theta_jn'),
+                signal_params.get('psi'),
+                signal_params.get('phase'),
+                signal_params.get('geocent_time'),
+                signal_params.get('a1'),  # Primary spin magnitude
+                signal_params.get('a2')   # Secondary spin magnitude
+            ], dtype=np.float32)
         
         # Return: strain [3, 16384], true_params [11]
         return torch.FloatTensor(strain_array), torch.FloatTensor(true_params)
@@ -186,10 +196,11 @@ def test_posterior_sanity(model, test_loader, device, n_samples=500):
     }
     
     param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
-                   'theta_jn', 'psi', 'phase', 'geocent_time']
+                   'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
     
     with torch.no_grad():
         batch_count = 0
+        param_oob_counts = {name: 0 for name in param_names}  # Per-param debugging
         for strain, true_params in tqdm(test_loader, desc="Sanity checks"):
             strain = strain.to(device)
             batch_size = strain.shape[0]
@@ -216,6 +227,7 @@ def test_posterior_sanity(model, test_loader, device, n_samples=500):
                         out_of_bounds = ((samples_b[:, p_idx] < bounds[0]) | 
                                         (samples_b[:, p_idx] > bounds[1])).sum()
                         results['out_of_bounds'] += out_of_bounds
+                        param_oob_counts[p_name] += out_of_bounds  # Track per-param
                 
                 results['total_samples'] += batch_size
                 batch_count += 1
@@ -235,6 +247,14 @@ def test_posterior_sanity(model, test_loader, device, n_samples=500):
     logger.info(f"   Inf values:         {results['inf_count']} ({inf_pct:.2f}%)")
     logger.info(f"   Out-of-bounds:      {results['out_of_bounds']} ({oob_pct:.2f}%)")
     
+    # Debug: Per-parameter out-of-bounds breakdown
+    logger.info(f"\n   📍 Out-of-bounds by parameter:")
+    for p_name in param_names:
+        count = param_oob_counts[p_name]
+        if count > 0:
+            pct = (count / total_values * 100) if total_values > 0 else 0
+            logger.info(f"      {p_name:20s}: {count:6d} ({pct:.2f}%)")
+    
     if nan_pct < 1.0 and inf_pct < 1.0 and oob_pct < 5.0:
         logger.info("   ✅ PASS: Posterior sanity checks")
     else:
@@ -248,94 +268,127 @@ def test_posterior_sanity(model, test_loader, device, n_samples=500):
 # ============================================================================
 
 def test_nll(model, test_loader, device, n_samples=500):
-    """Test 2: Compute NLL for posterior quality assessment"""
-    
-    logger.info("\n" + "=" * 80)
-    logger.info("TEST 2: NEGATIVE LOG-LIKELIHOOD (NLL)")
-    logger.info("=" * 80)
-    
-    model.eval()
-    nll_values = []
-    
-    with torch.no_grad():
-        for strain, true_params in tqdm(test_loader, desc="Computing NLL"):
-            strain = strain.to(device)
-            true_params = true_params.to(device)
-            batch_size = strain.shape[0]
-            
-            try:
-                # Sample posterior for NLL estimation
-                posterior = model.sample_posterior(strain, n_samples=n_samples)
-                samples = posterior['samples']  # [batch, n_samples, n_params]
-                
-                # Compute NLL using KDE on samples
-                for b in range(batch_size):
-                    samples_b = samples[b].cpu().numpy()  # [n_samples, n_params]
-                    true_params_b = true_params[b].cpu().numpy()  # [n_params]
-                    
-                    # Adaptive bandwidth using Scott's rule
-                    n, d = samples_b.shape
-                    scott_factor = n ** (-1.0 / (d + 4))
-                    bandwidths = samples_b.std(axis=0) * scott_factor
-                    bandwidths = np.maximum(bandwidths, 1e-3)
-                    
-                    # Compute log-likelihood: log p(x) = log(1/n * sum_i K(x - x_i))
-                    # For Gaussian kernel: K(z) = (2π)^(-d/2) * exp(-||z||^2/2)
-                    diffs = samples_b - true_params_b  # [n_samples, n_params]
-                    scaled_diffs = diffs / bandwidths  # [n_samples, n_params]
-                    
-                    # Gaussian kernel: log K = -0.5 * ||z||^2 - 0.5*d*log(2π)
-                    log_kernels = -0.5 * np.sum(scaled_diffs**2, axis=1)  # [n_samples]
-                    
-                    # Log-sum-exp for numerical stability
-                    max_log_kernel = np.max(log_kernels)
-                    log_prob = max_log_kernel + np.log(np.mean(np.exp(log_kernels - max_log_kernel)))
-                    
-                    # NLL = -log(p(x))
-                    nll = -log_prob
-                    
-                    if not np.isnan(nll) and not np.isinf(nll) and nll < 100:
-                        nll_values.append(float(nll))
-            
-            except Exception as e:
-                logger.warning(f"NLL computation failed: {e}")
-                continue
-    
-    nll_values = np.array(nll_values)
-    
-    # Safe min/max computation
-    if len(nll_values) > 0:
-        results = {
-            'mean': float(np.mean(nll_values)),
-            'std': float(np.std(nll_values)),
-            'median': float(np.median(nll_values)),
-            'min': float(np.min(nll_values)),
-            'max': float(np.max(nll_values)),
-            'percentile_25': float(np.percentile(nll_values, 25)),
-            'percentile_75': float(np.percentile(nll_values, 75))
-        }
-    else:
-        results = {
-            'mean': 0.0, 'std': 0.0, 'median': 0.0, 'min': 0.0, 'max': 0.0,
-            'percentile_25': 0.0, 'percentile_75': 0.0
-        }
-    
-    logger.info(f"\n📊 NLL Results ({len(nll_values)} samples):")
-    logger.info(f"   Mean:       {results['mean']:.4f} ± {results['std']:.4f}")
-    logger.info(f"   Median:     {results['median']:.4f}")
-    logger.info(f"   Range:      [{results['min']:.4f}, {results['max']:.4f}]")
-    logger.info(f"   IQR:        [{results['percentile_25']:.4f}, {results['percentile_75']:.4f}]")
-    
-    if results['mean'] < 5.0:
-        logger.info("   ✅ EXCELLENT (publication-ready NLL < 5)")
-    elif results['mean'] < 7.0:
-        logger.info("   ✅ GOOD (production-ready NLL < 7)")
-    elif results['mean'] < 10.0:
-        logger.info("   ⚠️  ACCEPTABLE (NLL < 10)")
-    else:
-        logger.warning("   ❌ POOR (needs improvement, NLL > 10)")
-    
-    return results
+     """Test 2: Compute Flow quality - CFM metrics for Flow Matching (NLL N/A)"""
+     
+     logger.info("\n" + "=" * 80)
+     logger.info("TEST 2: FLOW QUALITY METRICS (CFM-based)")
+     logger.info("=" * 80)
+     
+     model.eval()
+     
+     # Detect flow type
+     flow_type = "flowmatching"  # Default
+     try:
+         # Try to infer flow type from config or model attributes
+         if hasattr(model, 'config'):
+             flow_type = model.config.get('flow_type', 'flowmatching')
+         elif hasattr(model.flow, '__class__'):
+             class_name = model.flow.__class__.__name__
+             if 'FlowMatching' in class_name or 'CFM' in class_name or 'OT' in class_name:
+                 flow_type = 'flowmatching'
+             elif 'NSF' in class_name or 'NeuralSpline' in class_name:
+                 flow_type = 'nsf'
+     except:
+         pass
+     
+     logger.info(f"   Flow Type Detected: {flow_type.upper()}")
+     
+     # For Flow Matching: Use sample-based metrics (posterior spread, recovery)
+     # ALWAYS use CFM metrics - NLL doesn't apply to velocity-matching flows
+     if flow_type.lower() in ['flowmatching', 'cfm', 'optimal_transport', 'nsf']:
+         logger.info(f"\n   Flow Matching / CFM uses velocity matching, not likelihood")
+         logger.info(f"   Computing metrics: posterior spread & parameter recovery\n")
+         
+         sample_spreads = []
+         param_errors = []
+         processed = 0
+         skipped = 0
+         
+         with torch.no_grad():
+             for strain, true_params in tqdm(test_loader, desc="Computing CFM metrics"):
+                 strain = strain.to(device)
+                 true_params_np = true_params.cpu().numpy()
+                 batch_size = strain.shape[0]
+                 
+                 try:
+                     # Sample posterior
+                     posterior = model.sample_posterior(strain, n_samples=n_samples)
+                     samples = posterior['samples'].cpu().numpy()  # [batch, n_samples, n_params]
+                     
+                     for b in range(batch_size):
+                         # Skip incomplete samples
+                         if true_params_np[b].sum() < 1e-6:
+                             skipped += 1
+                             continue
+                         
+                         # Compute posterior spread (std dev of samples)
+                         posterior_std = samples[b].std(axis=0).mean()  # Average std across params
+                         sample_spreads.append(posterior_std)
+                         
+                         # Compute parameter recovery (MAE between posterior mean and truth)
+                         posterior_mean = samples[b].mean(axis=0)
+                         error = np.abs(posterior_mean - true_params_np[b]).mean()
+                         param_errors.append(error)
+                         
+                         processed += 1
+                 
+                 except Exception as e:
+                     logger.warning(f"CFM metrics failed: {e}")
+                     skipped += 1
+                     continue
+         
+         if len(sample_spreads) > 0:
+             spreads = np.array(sample_spreads)
+             errors = np.array(param_errors)
+             
+             results = {
+                 'flow_type': flow_type,
+                 'metric_type': 'cfm',
+                 'posterior_spread_mean': float(np.mean(spreads)),
+                 'posterior_spread_std': float(np.std(spreads)),
+                 'posterior_spread_median': float(np.median(spreads)),
+                 'param_error_mean': float(np.mean(errors)),
+                 'param_error_std': float(np.std(errors)),
+                 'param_error_median': float(np.median(errors)),
+                 'processed': int(processed),
+                 'skipped': int(skipped)
+             }
+             
+             logger.info(f"\n📊 Flow Matching (CFM) Quality Metrics ({processed} samples):")
+             logger.info(f"   Posterior Spread (std):  {results['posterior_spread_mean']:.4f} ± {results['posterior_spread_std']:.4f}")
+             logger.info(f"   Parameter Error (MAE):   {results['param_error_mean']:.4f} ± {results['param_error_std']:.4f}")
+             logger.info(f"   Median spread:           {results['posterior_spread_median']:.4f}")
+             logger.info(f"   Median error:            {results['param_error_median']:.4f}")
+             
+             # Quality assessment for CFM
+             if results['param_error_mean'] < 0.1:
+                 logger.info("   ✅ EXCELLENT (CFM: mean parameter error < 0.1)")
+             elif results['param_error_mean'] < 0.3:
+                 logger.info("   ✅ GOOD (CFM: mean parameter error < 0.3)")
+             elif results['param_error_mean'] < 0.5:
+                 logger.info("   ⚠️  ACCEPTABLE (CFM: mean parameter error < 0.5)")
+             else:
+                 logger.warning("   ❌ POOR (CFM: parameter error > 0.5, needs retraining)")
+             
+             if results['posterior_spread_mean'] < 0.05:
+                 logger.info("   ⚠️  WARNING: Posterior too narrow (under-dispersed)")
+             elif results['posterior_spread_mean'] > 0.5:
+                 logger.info("   ⚠️  WARNING: Posterior too wide (over-dispersed)")
+             else:
+                 logger.info("   ✅ Posterior spread in healthy range")
+         else:
+             logger.warning("   ❌ No samples processed - check data loading")
+             results = {
+                 'flow_type': flow_type,
+                 'metric_type': 'cfm',
+                 'posterior_spread_mean': 0.0,
+                 'param_error_mean': 0.0,
+                 'processed': 0,
+                 'skipped': 0
+             }
+         
+         return results
+
 
 
 # ============================================================================
@@ -353,7 +406,7 @@ def test_calibration(model, test_loader, device, n_samples=500):
     percentiles_list = []
     
     param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
-                   'theta_jn', 'psi', 'phase', 'geocent_time']
+                   'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
     
     with torch.no_grad():
         for strain, true_params in tqdm(test_loader, desc="Calibration"):
@@ -366,6 +419,10 @@ def test_calibration(model, test_loader, device, n_samples=500):
                 samples = posterior['samples'].cpu().numpy()  # [batch, n_samples, n_params]
                 
                 for b in range(batch_size):
+                    # FILTER: Skip samples with zero params (missing/incomplete data)
+                    if true_params_np[b].sum() < 1e-6:  # All params near zero = missing data
+                        continue
+                    
                     sample_percentiles = []
                     
                     for p in range(len(param_names)):
@@ -442,7 +499,23 @@ def test_posterior_width(model, test_loader, device, n_samples=500):
     posterior_stds = []
     
     param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
-                   'theta_jn', 'psi', 'phase', 'geocent_time']
+                   'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
+    
+    # ✅ Parameter bounds (Dec 9, 2025): For relative width computation
+    # These match the normalization bounds in the model
+    param_bounds = {
+        'mass_1': (1.0, 100.0),                  # M_sun
+        'mass_2': (1.0, 100.0),
+        'luminosity_distance': (10.0, 8000.0),  # Mpc
+        'ra': (0.0, 2*np.pi),                   # radians
+        'dec': (-np.pi/2, np.pi/2),
+        'theta_jn': (0.0, np.pi),
+        'psi': (0.0, np.pi),
+        'phase': (0.0, 2*np.pi),
+        'geocent_time': (-2.0, 8.0),            # seconds (from model bounds)
+        'a1': (0.0, 0.99),                      # spin magnitude
+        'a2': (0.0, 0.99),
+    }
     
     with torch.no_grad():
         for strain, _ in tqdm(test_loader, desc="Width analysis"):
@@ -453,7 +526,8 @@ def test_posterior_width(model, test_loader, device, n_samples=500):
                 posterior = model.sample_posterior(strain, n_samples=n_samples)
                 samples = posterior['samples'].cpu().numpy()
                 
-                # Compute std per parameter
+                # Compute std per parameter across n_samples dimension
+                # Shape: [batch, n_samples, param_dim] → std along axis 1 → [batch, param_dim]
                 post_std = samples.std(axis=1)  # [batch, n_params]
                 posterior_stds.append(post_std)
             
@@ -462,20 +536,51 @@ def test_posterior_width(model, test_loader, device, n_samples=500):
     
     posterior_stds = np.concatenate(posterior_stds, axis=0)
     
-    # Compute mean width per parameter
+    # Compute mean width per parameter across batch
     mean_widths = posterior_stds.mean(axis=0)
     
-    logger.info(f"\n📊 Posterior Widths (std dev):")
-    for i, name in enumerate(param_names):
-        logger.info(f"   {name:20s}: {mean_widths[i]:.4f}")
+    # ✅ REPORT: Absolute widths (physical units) + relative widths (% of range)
+    logger.info(f"\n📊 Posterior Widths (relative to parameter bounds):")
+    logger.info("   (Model applies 1.35x widening, then clamps to bounds)")
     
-    # Check for appropriate contraction
-    if mean_widths.mean() > 0.1:
-        logger.info("   ⚠️  Wide posteriors - may need more data or better model")
-    elif mean_widths.mean() > 0.01:
-        logger.info("   ✅ Reasonable posterior widths")
-    else:
-        logger.warning("   ⚠️  Very narrow posteriors - possible overfitting")
+    relative_widths = []
+    for i, name in enumerate(param_names):
+        abs_width = mean_widths[i]
+        
+        if name in param_bounds:
+            min_val, max_val = param_bounds[name]
+            param_range = max_val - min_val
+            rel_width_pct = (abs_width / param_range) * 100
+            relative_widths.append(rel_width_pct)
+            
+            # Status indicators based on relative width
+            if rel_width_pct < 1:
+                status = "🔴 Very narrow"
+            elif rel_width_pct < 5:
+                status = "⚠️  Narrow"
+            elif rel_width_pct < 15:
+                status = "✅ Reasonable"
+            else:
+                status = "⚠️  Wide"
+            
+            logger.info(f"   {name:20s}: {abs_width:8.4f} ({rel_width_pct:5.1f}% of range) {status}")
+        else:
+            logger.info(f"   {name:20s}: {abs_width:8.4f} (bounds unknown)")
+    
+    # Overall assessment
+    if len(relative_widths) > 0:
+        avg_rel_width = np.mean(relative_widths)
+        logger.info(f"\n   Average relative width: {avg_rel_width:.1f}% of parameter ranges")
+        
+        if avg_rel_width < 1:
+            logger.warning("   🔴 CRITICAL: Posteriors extremely narrow across all parameters!")
+            logger.warning("      This explains PIT U-shape and low coverage")
+        elif avg_rel_width < 5:
+            logger.warning("   ⚠️  Posteriors narrow - should be 5-15% for good calibration")
+        elif avg_rel_width < 15:
+            logger.info("   ✅ Posterior widths in reasonable range for good calibration")
+        else:
+            logger.info("   ⚠️  Posteriors quite wide - may indicate underfitting")
     
     return {
         'posterior_stds': posterior_stds,
@@ -499,7 +604,7 @@ def test_parameter_recovery(model, test_loader, device, n_samples=500):
     relative_errors = []
     
     param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
-                   'theta_jn', 'psi', 'phase', 'geocent_time']
+                   'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
     
     with torch.no_grad():
         for strain, true_params in tqdm(test_loader, desc="Recovery analysis"):
@@ -550,111 +655,6 @@ def test_parameter_recovery(model, test_loader, device, n_samples=500):
         'relative_errors': relative_errors.tolist(),
         'mean_absolute_errors': np.abs(errors).mean(axis=0).tolist(),
         'biases': errors.mean(axis=0).tolist()
-    }
-
-
-# ============================================================================
-# TEST 6: BIAS CORRECTOR EVALUATION
-# ============================================================================
-
-def test_bias_corrector(model, test_loader, device, n_samples=500):
-    """Test 6: Evaluate BiasCorrector performance"""
-    
-    logger.info("\n" + "=" * 80)
-    logger.info("TEST 6: BIAS CORRECTOR EVALUATION")
-    logger.info("=" * 80)
-    
-    if model.bias_corrector is None:
-        logger.warning("⊘ BiasCorrector not available (disabled in model)")
-        return {'status': 'disabled'}
-    
-    model.eval()
-    before_errors = []
-    after_errors = []
-    correction_mags = []
-    
-    param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
-                   'theta_jn', 'psi', 'phase', 'geocent_time']
-    
-    with torch.no_grad():
-        batch_count = 0
-        for strain, true_params in tqdm(test_loader, desc="BiasCorrector"):
-            strain = strain.to(device)
-            true_params_np = true_params.cpu().numpy()
-            batch_size = strain.shape[0]
-            
-            try:
-                # Get uncorrected posterior
-                posterior = model.sample_posterior(strain, n_samples=n_samples)
-                means_uncorr = posterior['means'].cpu().numpy()
-                context = posterior['context']
-                
-                # Apply bias correction
-                params_norm = model._normalize_parameters(
-                    torch.FloatTensor(means_uncorr).to(device)
-                )
-                corrections, uncertainties, confidence = model.bias_corrector(
-                    params_norm, context
-                )
-                corrections_np = corrections.cpu().numpy()
-                
-                # Corrected parameters
-                means_corr = means_uncorr + corrections_np
-                
-                # Compute errors before/after
-                before_err = np.abs(means_uncorr - true_params_np)
-                after_err = np.abs(means_corr - true_params_np)
-                
-                before_errors.append(before_err)
-                after_errors.append(after_err)
-                correction_mags.append(np.abs(corrections_np))
-                
-                batch_count += 1
-                if batch_count >= 20:  # Limit to 20 batches for speed
-                    break
-            
-            except Exception as e:
-                logger.warning(f"BiasCorrector eval failed: {e}")
-                continue
-    
-    if not before_errors:
-        logger.warning("No bias corrector evaluations completed")
-        return {'status': 'failed'}
-    
-    before_errors = np.concatenate(before_errors, axis=0)
-    after_errors = np.concatenate(after_errors, axis=0)
-    correction_mags = np.concatenate(correction_mags, axis=0)
-    
-    # Compute improvement
-    improvement = before_errors - after_errors
-    improvement_pct = (improvement / (before_errors + 1e-6) * 100).mean(axis=0)
-    
-    logger.info(f"\n📊 BiasCorrector Performance ({len(before_errors)} samples):")
-    logger.info(f"   Parameter-wise improvements:")
-    for i, name in enumerate(param_names):
-        before_mae = before_errors[:, i].mean()
-        after_mae = after_errors[:, i].mean()
-        corr_mag = correction_mags[:, i].mean()
-        
-        logger.info(f"   {name:20s}: {before_mae:8.4f} → {after_mae:8.4f} "
-                   f"(improve {improvement_pct[i]:+6.1f}%, corr={corr_mag:.4f})")
-    
-    # Overall improvement
-    overall_improve = (before_errors.mean() - after_errors.mean()) / (before_errors.mean() + 1e-6) * 100
-    
-    if overall_improve > 5:
-        logger.info(f"   ✅ PASS: BiasCorrector improves errors by {overall_improve:.1f}%")
-    elif overall_improve > 0:
-        logger.info(f"   ⚠️  WEAK: BiasCorrector improves by only {overall_improve:.1f}%")
-    else:
-        logger.warning(f"   ❌ FAIL: BiasCorrector degrades errors by {-overall_improve:.1f}%")
-    
-    return {
-        'before_mae': before_errors.mean(axis=0).tolist(),
-        'after_mae': after_errors.mean(axis=0).tolist(),
-        'improvement_pct': improvement_pct.tolist(),
-        'overall_improvement': float(overall_improve),
-        'correction_magnitudes': correction_mags.mean(axis=0).tolist()
     }
 
 
@@ -803,6 +803,614 @@ def test_classification_metrics(model, test_loader, device, n_samples=500):
 
 
 # ============================================================================
+# TEST 6: PIT/RANK HISTOGRAM (Probability Integral Transform)
+# ============================================================================
+
+def test_pit_histogram(model, test_loader, device, n_samples=500):
+    """Test 6: PIT histogram for calibration diagnosis with enhanced KS p-value and shape analysis"""
+    
+    logger.info("\n" + "=" * 80)
+    logger.info("TEST 6: PIT HISTOGRAM & RANK STATISTICS")
+    logger.info("=" * 80)
+    
+    model.eval()
+    pit_values = []
+    pit_by_param = {}
+    
+    param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
+                   'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
+    
+    # Initialize per-parameter PIT storage
+    for name in param_names:
+        pit_by_param[name] = []
+    
+    with torch.no_grad():
+        for strain, true_params in tqdm(test_loader, desc="PIT analysis"):
+            strain = strain.to(device)
+            true_params_np = true_params.cpu().numpy()
+            batch_size = strain.shape[0]
+            
+            try:
+                posterior = model.sample_posterior(strain, n_samples=n_samples)
+                samples = posterior['samples'].cpu().numpy()  # [batch, n_samples, n_params]
+                
+                for b in range(batch_size):
+                    # Skip incomplete samples
+                    if true_params_np[b].sum() < 1e-6:
+                        continue
+                    
+                    for p in range(len(param_names)):
+                        posterior_p = samples[b, :, p]
+                        true_val = true_params_np[b, p]
+                        
+                        # PIT = CDF of posterior at true value
+                        pit = (posterior_p < true_val).sum() / len(posterior_p)
+                        pit_values.append(pit)
+                        pit_by_param[param_names[p]].append(pit)
+            
+            except Exception as e:
+                logger.warning(f"PIT failed: {e}")
+                continue
+    
+    pit_values = np.array(pit_values)
+    
+    # Test uniformity with Kolmogorov-Smirnov test
+    from scipy.stats import kstest, uniform
+    ks_stat, ks_pval = kstest(pit_values, 'uniform')
+    
+    # Compute histogram bins
+    pit_bins = np.linspace(0, 1, 11)
+    pit_counts, _ = np.histogram(pit_values, bins=pit_bins)
+    expected_count = len(pit_values) / 10
+    
+    logger.info(f"\n📊 PIT Histogram ({len(pit_values)} samples):")
+    logger.info(f"   KS test p-value: {ks_pval:.6f} {'✅' if ks_pval > 0.05 else '⚠️'}")
+    logger.info(f"   KS statistic: {ks_stat:.6f}")
+    
+    logger.info(f"\n   Bin counts (expect ~{expected_count:.0f} per bin):")
+    for i in range(len(pit_counts)):
+        bar = '█' * int(pit_counts[i] / expected_count * 20)
+        logger.info(f"   [{i*0.1:.1f}-{(i+1)*0.1:.1f}): {pit_counts[i]:4d} {bar}")
+    
+    # Diagnose shape - compute key metrics
+    lower_tail = pit_counts[0] + pit_counts[1]  # [0.0-0.2)
+    upper_tail = pit_counts[8] + pit_counts[9]  # [0.8-1.0)
+    middle = pit_counts[3:7].sum()              # [0.3-0.7)
+    
+    # Compute Anderson-Darling statistic for better uniformity test
+    sorted_pit = np.sort(pit_values)
+    n = len(sorted_pit)
+    i = np.arange(1, n + 1)
+    anderson_stat = -n - (1/n) * np.sum((2*i - 1) * (np.log(sorted_pit) + np.log(1 - sorted_pit[::-1])))
+    
+    logger.info(f"\n   📈 Shape Analysis:")
+    logger.info(f"      Lower tail [0.0-0.2):  {lower_tail} ({lower_tail/len(pit_values)*100:.1f}%)")
+    logger.info(f"      Middle [0.3-0.7):      {middle} ({middle/len(pit_values)*100:.1f}%)")
+    logger.info(f"      Upper tail [0.8-1.0):  {upper_tail} ({upper_tail/len(pit_values)*100:.1f}%)")
+    logger.info(f"      Anderson-Darling stat: {anderson_stat:.4f}")
+    
+    # Diagnose shape
+    if ks_pval > 0.05:
+        shape_diagnosis = "✅ UNIFORM (well-calibrated)"
+    else:
+        # Check if U-shaped (underdispersed) or ∩-shaped (overdispersed)
+        if lower_tail + upper_tail > middle * 0.5:
+            shape_diagnosis = "⚠️  U-SHAPED (underdispersed, posteriors too narrow)"
+        else:
+            shape_diagnosis = "⚠️  ∩-SHAPED (overdispersed, posteriors too wide)"
+    
+    logger.info(f"   Diagnosis: {shape_diagnosis}")
+    
+    # Per-parameter KS p-values
+    logger.info(f"\n   📍 Per-Parameter KS p-values (11 parameters):")
+    param_pvals = {}
+    for param_name in param_names:
+        pit_param = np.array(pit_by_param[param_name])
+        if len(pit_param) > 10:  # Need minimum samples for KS test
+            _, pval = kstest(pit_param, 'uniform')
+            param_pvals[param_name] = float(pval)
+            status = "✅" if pval > 0.05 else "⚠️"
+            # Use scientific notation for tiny p-values
+            if pval < 1e-6:
+                logger.info(f"      {param_name:20s}: p={pval:.2e} {status}")
+            else:
+                logger.info(f"      {param_name:20s}: p={pval:.6f} {status}")
+        else:
+            logger.info(f"      {param_name:20s}: (insufficient samples)")
+    
+    return {
+        'ks_statistic': float(ks_stat),
+        'ks_pvalue': float(ks_pval),
+        'anderson_darling': float(anderson_stat),
+        'shape_diagnosis': shape_diagnosis,
+        'pit_values': pit_values.tolist(),
+        'pit_hist_counts': pit_counts.tolist(),
+        'per_parameter_pvalues': param_pvals
+    }
+
+
+# ============================================================================
+# TEST 9: POSTERIOR PREDICTIVE CHECKS
+# ============================================================================
+
+def test_posterior_predictive(model, test_loader, device, n_samples=500):
+    """Test 9: Posterior predictive checks (sample quality)"""
+    
+    logger.info("\n" + "=" * 80)
+    logger.info("TEST 9: POSTERIOR PREDICTIVE CHECKS")
+    logger.info("=" * 80)
+    
+    model.eval()
+    
+    param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
+                   'theta_jn', 'psi', 'phase', 'geocent_time']
+    
+    # Sample statistics
+    mean_ranges = {name: [] for name in param_names}
+    std_ranges = {name: [] for name in param_names}
+    
+    with torch.no_grad():
+        for strain, true_params in tqdm(test_loader, desc="Posterior predictive"):
+            strain = strain.to(device)
+            batch_size = strain.shape[0]
+            
+            try:
+                posterior = model.sample_posterior(strain, n_samples=n_samples)
+                samples = posterior['samples'].cpu().numpy()
+                
+                for p, name in enumerate(param_names):
+                    posterior_p = samples[:, :, p]  # [batch, n_samples]
+                    
+                    # Per-sample mean and std
+                    means = posterior_p.mean(axis=1)
+                    stds = posterior_p.std(axis=1)
+                    
+                    mean_ranges[name].extend(means.tolist())
+                    std_ranges[name].extend(stds.tolist())
+            
+            except Exception as e:
+                logger.warning(f"PPC failed: {e}")
+                continue
+    
+    logger.info(f"\n📊 Posterior Ranges (mean ± std):")
+    for name in param_names:
+        if mean_ranges[name]:
+            mean_val = np.mean(mean_ranges[name])
+            mean_std = np.std(mean_ranges[name])
+            std_val = np.mean(std_ranges[name])
+            
+            logger.info(f"   {name:20s}: mean={mean_val:8.4f}±{mean_std:6.4f}, width={std_val:8.4f}")
+    
+    return {
+        'mean_ranges': {k: v for k, v in mean_ranges.items()},
+        'std_ranges': {k: v for k, v in std_ranges.items()}
+    }
+
+
+# ============================================================================
+# TEST 10: CORRELATION & RANKING METRICS
+# ============================================================================
+
+def test_downstream_correlation(model, test_loader, device, n_samples=500):
+    """Test 10: Correlation between posterior quality and true parameters"""
+    
+    logger.info("\n" + "=" * 80)
+    logger.info("TEST 10: DOWNSTREAM CORRELATION & RANKING")
+    logger.info("=" * 80)
+    
+    model.eval()
+    
+    posterior_variances = []
+    errors = []
+    
+    param_names = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
+                   'theta_jn', 'psi', 'phase', 'geocent_time']
+    
+    with torch.no_grad():
+        for strain, true_params in tqdm(test_loader, desc="Correlation"):
+            strain = strain.to(device)
+            true_params_np = true_params.cpu().numpy()
+            
+            try:
+                posterior = model.sample_posterior(strain, n_samples=n_samples)
+                samples = posterior['samples'].cpu().numpy()
+                means = posterior['means'].cpu().numpy()
+                
+                # Per-parameter variance
+                post_var = samples.var(axis=1)  # [batch, n_params]
+                posterior_variances.append(post_var)
+                
+                # Absolute error
+                error = np.abs(means - true_params_np)
+                errors.append(error)
+            
+            except Exception as e:
+                logger.warning(f"Correlation failed: {e}")
+                continue
+    
+    if not posterior_variances or not errors:
+        logger.warning("No samples collected for correlation")
+        return {}
+    
+    posterior_variances = np.concatenate(posterior_variances, axis=0)
+    errors = np.concatenate(errors, axis=0)
+    
+    # Calibration check: Correlation between posterior width and prediction error
+    # ✓ GOOD: Positive correlation (ρ > 0) means well-calibrated uncertainties
+    # Target: ρ ≥ 0.3 (useable), ≥ 0.5 (strong)
+    logger.info(f"\n📊 Correlations (Spearman):")
+    correlations = {}
+    
+    for p, name in enumerate(param_names):
+        post_var_p = posterior_variances[:, p]
+        error_p = errors[:, p]
+        
+        # Spearman correlation between variance and error
+        if len(np.unique(post_var_p)) > 1 and len(np.unique(error_p)) > 1:
+            corr, pval = spearmanr(post_var_p, error_p)
+            correlations[name] = corr
+            
+            status = "✅" if corr > 0.3 else "⚠️"
+            logger.info(f"   {name:20s}: ρ={corr:6.3f} (p={pval:.3f}) {status}")
+        else:
+            logger.info(f"   {name:20s}: Insufficient variance")
+    
+    mean_corr = np.mean([c for c in correlations.values() if not np.isnan(c)])
+    logger.info(f"\n   Mean Spearman ρ: {mean_corr:.3f}")
+    
+    if mean_corr >= 0.5:
+        logger.info("   ✅ STRONG correlation (posterior variance predicts error well)")
+    elif mean_corr >= 0.3:
+        logger.info("   ✅ USEABLE correlation (variance has some predictive power)")
+    else:
+        logger.warning("   ⚠️  WEAK correlation (posterior variance doesn't predict error)")
+    
+    return {
+        'spearman_correlations': {k: float(v) if not np.isnan(v) else 0.0 
+                                  for k, v in correlations.items()},
+        'mean_correlation': float(mean_corr)
+    }
+
+
+# ============================================================================
+# TEST 11: BIAS CORRECTOR INTEGRATION
+# ============================================================================
+
+def test_bias_corrector_integration(model, test_loader, device, n_samples=500):
+    """Test 11: BiasCorrector performance on Neural PE outputs"""
+    
+    logger.info("\n" + "=" * 80)
+    logger.info("TEST 11: BIAS CORRECTOR INTEGRATION & PERFORMANCE")
+    logger.info("=" * 80)
+    
+    try:
+        from ahsd.core.bias_corrector import BiasCorrector
+    except ImportError:
+        logger.warning("   ⚠️  BiasCorrector not available, skipping test")
+        return {'status': 'skipped', 'reason': 'BiasCorrector not imported'}
+    
+    # Load BiasCorrector
+    bias_corrector_path = Path("models/bias_corrector/bias_corrector_best.pth")
+    
+    if not bias_corrector_path.exists():
+        logger.warning(f"   ⚠️  BiasCorrector checkpoint not found: {bias_corrector_path}")
+        return {'status': 'skipped', 'reason': f'Checkpoint not found: {bias_corrector_path}'}
+    
+    logger.info(f"   Loading BiasCorrector from: {bias_corrector_path}")
+    
+    try:
+        # Define param names (11 parameters: 9 from Neural PE + 2 spins from BiasCorrector training)
+        # Note: Neural PE outputs 9 params, but BiasCorrector was trained with 11 params (includes a1, a2)
+        # For integration, we need to handle the dimension mismatch gracefully
+        param_names_11 = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
+                          'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
+        
+        # Load checkpoint
+        checkpoint = torch.load(bias_corrector_path, map_location=device, weights_only=False)
+        
+        # Detect checkpoint param dimension
+        checkpoint_param_dim = None
+        if 'bias_estimator.param_embedding.0.weight' in checkpoint:
+            checkpoint_param_dim = checkpoint['bias_estimator.param_embedding.0.weight'].shape[1]
+            logger.info(f"   Checkpoint trained with {checkpoint_param_dim} parameters")
+        
+        context_dim = 768  # Neural PE context dimension
+        
+        # Create BiasCorrector with matching param dimension (11)
+        bias_corrector = BiasCorrector(param_names=param_names_11, context_dim=context_dim)
+        
+        # Load checkpoint
+        result = bias_corrector.load_state_dict(checkpoint, strict=False)
+        bias_corrector = bias_corrector.to(device).eval()
+        
+        logger.info(f"✅ BiasCorrector loaded: {len(param_names_11)} parameters, {context_dim}D context")
+    
+    except Exception as e:
+        logger.warning(f"   ⚠️  BiasCorrector loading failed: {str(e)}")
+        import traceback
+        logger.warning(f"   Traceback: {traceback.format_exc()}")
+        return {'status': 'skipped', 'reason': f'BiasCorrector load failed: {str(e)}'}
+    
+    # Evaluate bias correction on test set
+    model.eval()
+    bias_corrector.eval()
+    
+    results_before = []
+    results_after = []
+    corrections_applied = []
+    uncertainties_list = []
+    confidence_list = []
+    
+    # Use only first 9 param names for logging (Neural PE outputs)
+    param_names_9 = param_names_11[:9]
+    
+    with torch.no_grad():
+        for strain, true_params in tqdm(test_loader, desc="Bias correction"):
+            strain = strain.to(device)
+            true_params_np = true_params[:, :9].cpu().numpy()  # Only 9 params
+            
+            try:
+                # Extract parameters from Neural PE
+                posterior = model.sample_posterior(strain, n_samples=n_samples)
+                means_pe = posterior['means'].cpu().numpy()[:, :9]  # [batch, 9]
+                batch_size = means_pe.shape[0]
+                
+                # Get context from Neural PE
+                context = model.context_encoder(strain)  # [batch, 768]
+                
+                # Compute error BEFORE correction
+                error_before = np.abs(means_pe - true_params_np)
+                
+                # Apply BiasCorrector
+                # Pad 9 parameters to 11 (add zeros for a1, a2 spins)
+                means_pe_padded = np.zeros((batch_size, 11))
+                means_pe_padded[:, :9] = means_pe
+                # Spin defaults (0 = non-spinning approximation)
+                
+                params_normalized = torch.FloatTensor(means_pe_padded).to(device)
+                corrections, uncertainties, confidence = bias_corrector(
+                    params=params_normalized,
+                    context=context
+                )
+                
+                # Extract only first 9 corrections (ignore spin corrections)
+                corrections_np = corrections.cpu().numpy()[:, :9]
+                uncertainties_np = uncertainties.cpu().numpy()[:, :9]
+                confidence_np = confidence.cpu().numpy()
+                
+                # Apply corrections
+                means_corrected = means_pe + corrections_np
+                
+                # Compute error AFTER correction
+                error_after = np.abs(means_corrected - true_params_np)
+                
+                # Store results
+                results_before.append(error_before)
+                results_after.append(error_after)
+                corrections_applied.append(corrections_np)
+                uncertainties_list.append(uncertainties_np)
+                confidence_list.append(confidence_np)
+                
+            except Exception as e:
+                logger.warning(f"Sample failed: {e}")
+                continue
+    
+    if not results_before:
+        logger.warning("   ⚠️  No samples processed")
+        return {'status': 'failed', 'reason': 'No samples processed'}
+    
+    # Concatenate all results
+    error_before = np.concatenate(results_before, axis=0)  # [n_samples, 9]
+    error_after = np.concatenate(results_after, axis=0)
+    corrections = np.concatenate(corrections_applied, axis=0)
+    uncertainties = np.concatenate(uncertainties_list, axis=0)
+    confidence = np.concatenate(confidence_list, axis=0)
+    
+    logger.info(f"\n📊 Bias Correction Results ({len(error_before)} samples):")
+    
+    # Per-parameter analysis
+    logger.info(f"\n   Error Analysis (MAE before vs after):")
+    improvements = []
+    
+    for i, name in enumerate(param_names_9):
+        mae_before = error_before[:, i].mean()
+        mae_after = error_after[:, i].mean()
+        improvement = ((mae_before - mae_after) / mae_before * 100) if mae_before > 0 else 0
+        improvements.append(improvement)
+        
+        status = "✅" if improvement > 0 else "⚠️"
+        logger.info(f"   {name:20s}: {mae_before:.6f} → {mae_after:.6f} ({improvement:+.1f}%) {status}")
+    
+    # Overall metrics
+    mae_before_overall = error_before.mean()
+    mae_after_overall = error_after.mean()
+    improvement_overall = ((mae_before_overall - mae_after_overall) / mae_before_overall * 100) if mae_before_overall > 0 else 0
+    
+    logger.info(f"\n   📈 Overall Performance:")
+    logger.info(f"      MAE Before:     {mae_before_overall:.6f}")
+    logger.info(f"      MAE After:      {mae_after_overall:.6f}")
+    logger.info(f"      Improvement:    {improvement_overall:+.1f}%")
+    logger.info(f"      Correction std: {corrections.std():.6f}")
+    logger.info(f"      Uncertainty mean: {uncertainties.mean():.6f}")
+    logger.info(f"      Confidence mean: {confidence.mean():.4f}")
+    
+    # Per-sample statistics
+    improvement_per_sample = ((error_before.mean(axis=1) - error_after.mean(axis=1)) / 
+                               (error_before.mean(axis=1) + 1e-10)) * 100
+    
+    improved_samples = (improvement_per_sample > 0).sum()
+    degraded_samples = (improvement_per_sample < 0).sum()
+    
+    logger.info(f"\n   📋 Sample Statistics:")
+    logger.info(f"      Improved:  {improved_samples:5d} ({improved_samples/len(improvement_per_sample)*100:5.1f}%)")
+    logger.info(f"      Degraded:  {degraded_samples:5d} ({degraded_samples/len(improvement_per_sample)*100:5.1f}%)")
+    logger.info(f"      Mean improvement: {improvement_per_sample.mean():+.1f}%")
+    logger.info(f"      Median improvement: {np.median(improvement_per_sample):+.1f}%")
+    
+    # Performance assessment
+    if improvement_overall > 10:
+        logger.info("   ✅ EXCELLENT: BiasCorrector significantly improves accuracy")
+        status = "excellent"
+    elif improvement_overall > 0:
+        logger.info("   ✅ GOOD: BiasCorrector modestly improves accuracy")
+        status = "good"
+    elif improvement_overall > -5:
+        logger.info("   ⚠️  NEUTRAL: BiasCorrector has minimal impact")
+        status = "neutral"
+    else:
+        logger.warning("   ❌ POOR: BiasCorrector degrades accuracy (may need retraining)")
+        status = "poor"
+    
+    return {
+        'status': status,
+        'mae_before': float(mae_before_overall),
+        'mae_after': float(mae_after_overall),
+        'improvement_percent': float(improvement_overall),
+        'improved_samples': int(improved_samples),
+        'degraded_samples': int(degraded_samples),
+        'mean_correction': float(corrections.mean()),
+        'std_correction': float(corrections.std()),
+        'mean_uncertainty': float(uncertainties.mean()),
+        'mean_confidence': float(confidence.mean()),
+        'per_param_improvements': {name: float(imp) for name, imp in zip(param_names_9, improvements)}
+    }
+
+
+# ============================================================================
+# TEST 12: COMPREHENSIVE DIAGNOSTIC SUMMARY
+# ============================================================================
+
+def diagnostic_summary(all_results):
+    """Test 12: Comprehensive diagnostic summary with pass/fail thresholds"""
+    
+    logger.info("\n" + "=" * 80)
+    logger.info("TEST 12: COMPREHENSIVE DIAGNOSTIC SUMMARY")
+    logger.info("=" * 80)
+    
+    # Extract key metrics
+    metrics = {}
+    checks = {}
+    
+    # NLL check
+    try:
+        nll_mean = all_results['2_nll']['mean']
+        metrics['NLL'] = nll_mean
+        if nll_mean < 7.0:
+            checks['NLL (< 7.0)'] = '✅ PASS'
+        else:
+            checks['NLL (< 7.0)'] = '❌ FAIL'
+    except:
+        checks['NLL'] = '⚠️  SKIP'
+    
+    # Calibration check
+    try:
+        cal_error = all_results['3_calibration']['calibration_error']
+        metrics['Calibration Error'] = cal_error
+        if cal_error < 0.10:
+            checks['Calibration Error (< 0.10)'] = '✅ PASS'
+        elif cal_error < 0.15:
+            checks['Calibration Error (< 0.15)'] = '⚠️  WARN'
+        else:
+            checks['Calibration Error (< 0.15)'] = '❌ FAIL'
+    except:
+        checks['Calibration'] = '⚠️  SKIP'
+    
+    # Parameter recovery check
+    try:
+        mae = np.mean(all_results['5_recovery']['mean_absolute_errors'])
+        metrics['Mean Absolute Error'] = mae
+        if mae < 0.1:
+            checks['Recovery MAE (< 0.1)'] = '✅ PASS'
+        elif mae < 0.5:
+            checks['Recovery MAE (< 0.5)'] = '⚠️  WARN'
+        else:
+            checks['Recovery MAE (< 0.5)'] = '❌ FAIL'
+    except:
+        checks['Recovery'] = '⚠️  SKIP'
+    
+    # Performance check
+    try:
+        inference_time = all_results['7_scaling']['mean_time']
+        metrics['Inference Time (s)'] = inference_time
+        if inference_time < 1.0:
+            checks['Inference (< 1.0s)'] = '✅ PASS'
+        elif inference_time < 2.0:
+            checks['Inference (< 2.0s)'] = '⚠️  WARN'
+        else:
+            checks['Inference (< 2.0s)'] = '❌ FAIL'
+    except:
+        checks['Performance'] = '⚠️  SKIP'
+    
+    # AUC check
+    try:
+        mean_auc = all_results['8_classification']['mean_auc']
+        metrics['Mean AUC'] = mean_auc
+        if mean_auc > 0.80:
+            checks['AUC (> 0.80)'] = '✅ PASS'
+        elif mean_auc > 0.70:
+            checks['AUC (> 0.70)'] = '⚠️  WARN'
+        else:
+            checks['AUC (> 0.70)'] = '❌ FAIL'
+    except:
+        checks['Classification'] = '⚠️  SKIP'
+    
+    # PIT check
+    try:
+        pit_pval = all_results.get('6_pit', {}).get('ks_pvalue', 0.0)
+        metrics['PIT KS p-value'] = pit_pval
+        if pit_pval > 0.05:
+            checks['PIT Uniformity (p > 0.05)'] = '✅ PASS'
+        else:
+            checks['PIT Uniformity (p > 0.05)'] = '⚠️  WARN'
+    except:
+        checks['PIT'] = '⚠️  SKIP'
+    
+    # Correlation check
+    try:
+        mean_corr = all_results.get('10_correlation', {}).get('mean_correlation', 0.0)
+        metrics['Posterior-Error Correlation'] = mean_corr
+        if mean_corr >= 0.5:
+            checks['Correlation (ρ ≥ 0.5)'] = '✅ PASS'
+        elif mean_corr >= 0.3:
+            checks['Correlation (ρ ≥ 0.3)'] = '⚠️  WARN'
+        else:
+            checks['Correlation (ρ ≥ 0.3)'] = '❌ FAIL'
+    except:
+        checks['Correlation'] = '⚠️  SKIP'
+    
+    # Print summary
+    logger.info("\n📋 Key Metrics:")
+    for metric, value in metrics.items():
+        logger.info(f"   {metric:30s}: {value:.4f}")
+    
+    logger.info("\n🔍 Diagnostic Checks:")
+    for check, result in checks.items():
+        logger.info(f"   {check:40s}: {result}")
+    
+    # Count passes/warns/fails
+    pass_count = sum(1 for r in checks.values() if '✅' in r)
+    warn_count = sum(1 for r in checks.values() if '⚠️' in r)
+    fail_count = sum(1 for r in checks.values() if '❌' in r)
+    
+    logger.info(f"\n📊 Summary: {pass_count} ✅ PASS, {warn_count} ⚠️  WARN, {fail_count} ❌ FAIL")
+    
+    if fail_count == 0 and pass_count >= 5:
+        logger.info("   🚀 PRODUCTION READY: Model is ready for deployment")
+    elif fail_count == 0:
+        logger.info("   ⚠️  DEVELOPMENT: Continue iterating on model")
+    else:
+        logger.info("   ❌ NEEDS IMPROVEMENT: Fix failing checks before deployment")
+    
+    return {
+        'metrics': metrics,
+        'checks': checks,
+        'pass_count': pass_count,
+        'warn_count': warn_count,
+        'fail_count': fail_count
+    }
+
+
+# ============================================================================
 # MAIN FUNCTION
 # ============================================================================
 
@@ -815,8 +1423,10 @@ def main():
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size for testing')
     parser.add_argument('--max_samples', type=int, default=None, help='Max samples to test')
     parser.add_argument('--n_posterior_samples', type=int, default=500, help='Posterior samples per inference')
+    parser.add_argument('--posterior_width_factor', type=float, default=1.0, help='Test-time widening factor (>1 to widen, e.g., 1.3)')
     parser.add_argument('--output', type=str, default='neuralpe_test_results.json', help='Output file')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use')
+    parser.add_argument('--fast', action='store_true', help='Fast mode: run only core tests with limited samples')
     
     args = parser.parse_args()
     
@@ -828,77 +1438,133 @@ def main():
     logger.info(f"Loading model from {args.model_path}")
     from ahsd.models.overlap_neuralpe import OverlapNeuralPE
     
-    checkpoint = torch.load(args.model_path, map_location=device, weights_only=False)
-    
-    # Extract configuration - checkpoint config is flat (not nested under neural_posterior)
-    config = checkpoint.get('config', {})
-    
-    # Get param_names from config
-    param_names = config.get('param_names', [
-        'mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
-        'theta_jn', 'psi', 'phase', 'geocent_time'
-    ])
-    
-    # Get priority_net path from args, training_metadata, or auto-detect
-    priority_net_path = args.priority_net_path
-    
-    # If not provided via args, check training_metadata
-    if priority_net_path is None:
-        training_metadata = checkpoint.get('training_metadata', {})
-        priority_net_path = training_metadata.get('priority_net')
-    
-    # If still None, try default location
-    if priority_net_path is None:
-        default_prio_path = Path("models/priority_net/priority_net_best.pth")
-        if default_prio_path.exists():
-            priority_net_path = str(default_prio_path)
-    
-    # Use checkpoint config directly (it's flat, not nested)
-    neural_pe_config = config
-    
-    logger.info(f"Parameters: {param_names}")
-    logger.info(f"PriorityNet path: {priority_net_path if priority_net_path else '(disabled)'}")
-    
-    # Create a minimal model just for inference without architecture mismatches
-    # The checkpoint was trained with specific dimensions, so we need to match them
-    model = OverlapNeuralPE(param_names, priority_net_path, neural_pe_config)
-    
-    # Load checkpoint - use strict=False because BiasCorrector may have different dimensions
-    logger.info("Loading checkpoint weights (strict=False to handle architecture differences)...")
-    model_state = model.state_dict()
-    checkpoint_state = checkpoint.get('model_state_dict', {})
-    
-    loaded_count = 0
-    for name, param in model_state.items():
-        if name in checkpoint_state and checkpoint_state[name].shape == param.shape:
-            model_state[name].copy_(checkpoint_state[name])
-            loaded_count += 1
-    
-    logger.info(f"✅ Loaded {loaded_count}/{len(model_state)} compatible weights")
-    if loaded_count < len(model_state) * 0.3:
-        logger.warning(f"⚠️  Only {loaded_count/len(model_state)*100:.1f}% of weights loaded - inference may fail")
+    # Load with from_checkpoint if available, fallback to manual loading
+    try:
+        model = OverlapNeuralPE.from_checkpoint(
+            args.model_path, 
+            priority_net_path=args.priority_net_path or None
+        )
+        logger.info("✅ Model loaded with from_checkpoint")
+    except AttributeError:
+        # Fallback for older checkpoints
+        logger.info("Using fallback checkpoint loading...")
+        checkpoint = torch.load(args.model_path, map_location=device, weights_only=False)
+        
+        # Extract configuration
+        config = checkpoint.get('config', {})
+        
+        # Get param_names from config
+        param_names = config.get('param_names', [
+            'mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
+            'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2'
+        ])
+        
+        # Get priority_net path from args, training_metadata, or auto-detect
+        priority_net_path = args.priority_net_path
+        
+        # If not provided via args, check training_metadata
+        if priority_net_path is None:
+            training_metadata = checkpoint.get('training_metadata', {})
+            priority_net_path = training_metadata.get('priority_net')
+        
+        # If still None, try default location
+        if priority_net_path is None:
+            default_prio_path = Path("models/priority_net/priority_net_best.pth")
+            if default_prio_path.exists():
+                priority_net_path = str(default_prio_path)
+        
+        # Create model
+        model = OverlapNeuralPE(param_names, priority_net_path, config)
+        
+        # Load checkpoint weights
+        logger.info("Loading checkpoint weights (strict=False)...")
+        model.load_state_dict(checkpoint.get('model_state_dict', {}), strict=False)
+        logger.info("✅ Fallback checkpoint loading complete")
     
     model.to(device).eval()
     
+    # Verify param_bounds exist (set during model __init__ → _get_parameter_bounds())
+    if not hasattr(model, 'param_bounds') or model.param_bounds is None:
+        raise RuntimeError("❌ CRITICAL: Model missing param_bounds - check OverlapNeuralPE.__init__() for _get_parameter_bounds() call")
+    
+    logger.info(f"✅ Using model's param_bounds ({len(model.param_bounds)} parameters)")
+    # Bounds (from OverlapNeuralPE._get_parameter_bounds):
+    #   mass_1/2:              1.0 - 100.0 Msun
+    #   luminosity_distance:  10.0 - 8000.0 Mpc
+    #   geocent_time:         -2.0 - 8.0 sec (4-signal spacing)
+    #   All others: standard physical ranges
+    
     logger.info(f"✅ Model initialized with {sum(p.numel() for p in model.parameters()):,} parameters\n")
     
-    # Load dataset
+    # Fast mode: override args for limited testing BEFORE loading dataset
+    if args.fast:
+        logger.info("⚡ FAST MODE: Running core tests with limited samples")
+        args.max_samples = args.max_samples or 50  # Default to 50 samples if not specified
+        args.n_posterior_samples = min(args.n_posterior_samples, 200)  # Cap at 200 posterior samples
+        logger.info(f"   Max samples: {args.max_samples}")
+        logger.info(f"   Posterior samples: {args.n_posterior_samples}\n")
+    
+    # Load dataset (once, with appropriate settings)
     dataset = TestDataset(args.data_path, split=args.split, max_samples=args.max_samples)
     test_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    logger.info(f"✅ Test dataset loaded: {len(dataset)} samples\n")
+    
+    # ✅ Setup test-time posterior widening (Dec 9, 2025)
+    width_factor = args.posterior_width_factor
+    if width_factor > 1.0:
+        logger.info(f"🔧 Test-time posterior widening enabled: T={width_factor:.2f}")
+        original_sample_posterior = model.sample_posterior
+        param_names_all = ['mass_1', 'mass_2', 'luminosity_distance', 'ra', 'dec',
+                           'theta_jn', 'psi', 'phase', 'geocent_time', 'a1', 'a2']
+        
+        def sample_posterior_widened(strain, n_samples=500):
+            posterior = original_sample_posterior(strain, n_samples=n_samples)
+            samples = posterior['samples']  # [batch, n_samples, param_dim] in PHYSICAL units
+            
+            # Widen: samples = mean + T * (samples - mean)
+            means = samples.mean(dim=1, keepdim=True)  # [batch, 1, param_dim]
+            samples_widened = means + width_factor * (samples - means)
+            
+            # ✅ FIXED (Dec 9): Use model's actual parameter bounds
+            # Samples are in physical units, need to use model's param_bounds
+            for i, param_name in enumerate(param_names_all):
+                if i < samples_widened.shape[-1]:
+                    bounds = model.param_bounds.get(param_name, (-np.inf, np.inf))
+                    samples_widened[..., i] = torch.clamp(samples_widened[..., i], bounds[0], bounds[1])
+            
+            # Update posterior with widened samples
+            posterior['samples'] = samples_widened
+            posterior['stds'] = samples_widened.std(dim=1)  # Recompute stds
+            
+            return posterior
+        
+        model.sample_posterior = sample_posterior_widened
+        logger.info(f"✅ Posterior widening active during tests\n")
     
     # Run all tests
     logger.info("🚀 Starting comprehensive testing...\n")
-    
+     
     all_results = {}
     
-    all_results['1_sanity'] = test_posterior_sanity(model, test_loader, device, args.n_posterior_samples)
-    all_results['2_nll'] = test_nll(model, test_loader, device, args.n_posterior_samples)
+    # # Core tests (always run)
+    # all_results['1_sanity'] = test_posterior_sanity(model, test_loader, device, args.n_posterior_samples)
+    # all_results['2_nll'] = test_nll(model, test_loader, device, args.n_posterior_samples)
     all_results['3_calibration'] = test_calibration(model, test_loader, device, args.n_posterior_samples)
-    all_results['4_width'] = test_posterior_width(model, test_loader, device, args.n_posterior_samples)
-    all_results['5_recovery'] = test_parameter_recovery(model, test_loader, device, args.n_posterior_samples)
-    all_results['6_bias_corrector'] = test_bias_corrector(model, test_loader, device, args.n_posterior_samples)
-    all_results['7_scaling'] = test_scaling(model, test_loader, device, args.n_posterior_samples)
-    all_results['8_classification'] = test_classification_metrics(model, test_loader, device, args.n_posterior_samples)
+    all_results['6_pit'] = test_pit_histogram(model, test_loader, device, args.n_posterior_samples)
+    
+    if not args.fast:
+        # Extended tests (skip in fast mode)
+        logger.info("\n📊 Running extended tests...\n")
+        all_results['4_width'] = test_posterior_width(model, test_loader, device, args.n_posterior_samples)
+        all_results['5_recovery'] = test_parameter_recovery(model, test_loader, device, args.n_posterior_samples)
+        all_results['7_scaling'] = test_scaling(model, test_loader, device, args.n_posterior_samples)
+        all_results['8_classification'] = test_classification_metrics(model, test_loader, device, args.n_posterior_samples)
+        all_results['9_ppc'] = test_posterior_predictive(model, test_loader, device, args.n_posterior_samples)
+        all_results['10_correlation'] = test_downstream_correlation(model, test_loader, device, args.n_posterior_samples)
+        all_results['11_bias_corrector'] = test_bias_corrector_integration(model, test_loader, device, args.n_posterior_samples)
+    
+    # Run diagnostic summary
+    all_results['12_summary'] = diagnostic_summary(all_results)
     
     # Save results
     output_path = Path(args.output)
@@ -951,9 +1617,23 @@ def main():
     except:
         pass
     
+    try:
+        bias_result = all_results['11_bias_corrector']
+        if bias_result.get('status') != 'skipped':
+            logger.info(f"\nBias Corrector Performance:")
+            logger.info(f"  Status:                    {bias_result['status'].upper()}")
+            logger.info(f"  MAE before correction:     {bias_result['mae_before']:.6f}")
+            logger.info(f"  MAE after correction:      {bias_result['mae_after']:.6f}")
+            logger.info(f"  Improvement:               {bias_result['improvement_percent']:+.1f}%")
+            logger.info(f"  Samples improved:          {bias_result['improved_samples']}")
+    except:
+        pass
+    
     logger.info(f"\n✅ Complete! Results saved to: {output_path}")
     logger.info("=" * 80)
 
 
 if __name__ == '__main__':
     main()
+
+

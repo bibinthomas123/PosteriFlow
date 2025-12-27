@@ -41,6 +41,18 @@ class DQNController(nn.Module):
     
     self.network = nn.Sequential(*layers)
     
+    # ✅ FIX: Proper weight initialization for RL stability
+    self._initialize_weights()
+    
+  def _initialize_weights(self):
+    """Initialize network weights with proper RL-friendly scaling."""
+    for module in self.network.modules():
+      if isinstance(module, nn.Linear):
+        # Xavier uniform initialization for better gradient flow
+        nn.init.xavier_uniform_(module.weight)
+        # Small constant bias to avoid dead neurons
+        nn.init.constant_(module.bias, 0.01)
+  
   def forward(self, state: torch.Tensor) -> torch.Tensor:
     """Forward pass."""
     return self.network(state)
@@ -69,6 +81,7 @@ class AdaptiveComplexityController(nn.Module):
     self.epsilon_decay = epsilon_decay
     self.batch_size = batch_size
     self.gamma = 0.95 # Discount factor
+    self.epsilon_min = 0.05  # ✅ ADDED: Minimum exploration floor (was max 0.01)
     
     # Networks
     self.q_network = DQNController(self.state_dim, self.action_dim)
@@ -119,6 +132,10 @@ class AdaptiveComplexityController(nn.Module):
     else:
       # Greedy action
       with torch.no_grad():
+        # ✅ FIX: Ensure state is on same device as network
+        # Get device from first parameter of q_network
+        device = next(self.q_network.parameters()).device
+        state = state.to(device)
         q_values = self.q_network(state.unsqueeze(0))
         return q_values.argmax().item()
   
@@ -149,40 +166,54 @@ class AdaptiveComplexityController(nn.Module):
            complexity_level: str) -> float:
     """Compute reward based on pipeline performance.
     
+    ✅ FIXED: Balanced reward structure to prevent collapse to low complexity.
+    
     Rewards are normalized to [-1, 1] range:
-    - Accuracy: max(0, 1.0 - bias) ∈ [0, 1]  (lower loss is better)
-    - Speed: max(0, 1.0 - time_ms/500) ∈ [0, 1]  (faster is better, 500ms reference)
-    - Complexity: -[0.0, 0.15, 0.3] for [low, medium, high]
+    - Accuracy: (1.0 - normalized_bias) ∈ [0, 1]  (lower loss is better)
+    - Speed: (1.0 - time_ms/500) ∈ [0, 1]  (faster is better, 500ms reference)
+    - Accuracy-Complexity Tradeoff: rewards improvement over baseline given complexity cost
     """
     
     # Base reward components
     accuracy_reward = 0.0
     speed_reward = 0.0
-    complexity_penalty = 0.0
+    tradeoff_bonus = 0.0
     
     # Accuracy component (higher is better)
-    # Lower loss (bias) → higher accuracy_reward
+    # ✅ NORMALIZED: NLL loss typically 0.5-3.0; normalize to [-1, 1] with baseline 1.0
+    # Ensures bounded reward regardless of loss magnitude
     if "parameter_bias" in pipeline_metrics:
       bias = pipeline_metrics["parameter_bias"]
-      # Clamp loss to [0, 1] range for realistic accuracy signal
-      # NLL loss typically 0.5-2.0, map to [0, 1]
-      clamped_bias = min(1.0, max(0.0, bias))
-      accuracy_reward = 1.0 - clamped_bias  # [0, 1] for loss [1, 0]
+      # Normalize: loss 1.0 → reward 0.0, loss 0.5 → reward 0.5, loss 2.0 → reward -1.0
+      # Clamped to [-1.0, 1.0] to prevent unbounded reward scaling
+      accuracy_reward = max(-1.0, 1.0 - bias)  # Result: ∈ [-1, 1] (BOUNDED)
     
     # Speed component (faster is better)
     # extraction_time in seconds, normalize to 500ms reference
     if "extraction_time" in pipeline_metrics:
       time_taken_ms = pipeline_metrics["extraction_time"] * 1000  # Convert to ms
-      # Typical batch time: 200-300ms; reward baseline at 500ms
-      speed_reward = max(0.0, 1.0 - time_taken_ms / 500.0)
+      # Typical batch time: 200-300ms; baseline at 500ms
+      speed_reward = max(-0.5, 1.0 - time_taken_ms / 500.0)  # Cap at -0.5 for very slow runs
     
-    # Complexity penalty (lower complexity is better for similar performance)
-    # Penalize high complexity, encourage low when possible
-    complexity_costs = {"low": 0.0, "medium": 0.15, "high": 0.30}
-    complexity_penalty = complexity_costs.get(complexity_level, 0.0)
+    # ✅ CRITICAL FIX: Accuracy-Complexity Tradeoff Bonus
+    # Reward actions that improve accuracy relative to their complexity cost.
+    # This prevents collapse to low complexity by tying reward to actual improvement.
+    # Complexity baseline costs: low=0, medium=0.3, high=0.6 (relative to max potential reward ~2.0)
+    complexity_costs = {"low": 0.0, "medium": 0.3, "high": 0.6}
+    complexity_cost = complexity_costs.get(complexity_level, 0.0)
     
-    # Combined reward: ∈ [-0.30, 1.50] with typical range [0.2, 1.0]
-    total_reward = accuracy_reward + speed_reward - complexity_penalty
+    # ✅ Tradeoff bonus: reward if accuracy_reward exceeds complexity cost
+    # E.g., high complexity with +0.8 accuracy reward → tradeoff_bonus = 0.2
+    # E.g., low complexity with +0.5 accuracy reward → tradeoff_bonus = 0.5
+    if accuracy_reward > complexity_cost:
+      tradeoff_bonus = (accuracy_reward - complexity_cost) * 0.5  # Scale down to prevent dominance
+    else:
+      # Penalize poor accuracy relative to complexity cost (but less harshly)
+      tradeoff_bonus = (accuracy_reward - complexity_cost) * 0.25
+    
+    # Combined reward: Accuracy primary driver (0.5), Speed secondary (0.25), Tradeoff (0.25)
+    # Typical range: [-1.5, 2.0] with target >0.5 for good performance
+    total_reward = 0.5 * accuracy_reward + 0.25 * speed_reward + 0.25 * tradeoff_bonus
     
     return float(total_reward)
   
@@ -196,12 +227,15 @@ class AdaptiveComplexityController(nn.Module):
     batch = random.sample(self.memory, self.batch_size)
     states, actions, rewards, next_states, dones = zip(*batch)
     
-    # Convert to tensors
-    states = torch.stack(states)
-    actions = torch.tensor(actions, dtype=torch.long)
-    rewards = torch.tensor(rewards, dtype=torch.float32)
-    next_states = torch.stack(next_states)
-    dones = torch.tensor(dones, dtype=torch.bool)
+    # ✅ FIX: Ensure all tensors are on same device
+    device = next(self.q_network.parameters()).device
+    
+    # Convert to tensors and move to device
+    states = torch.stack(states).to(device)
+    actions = torch.tensor(actions, dtype=torch.long).to(device)
+    rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
+    next_states = torch.stack(next_states).to(device)
+    dones = torch.tensor(dones, dtype=torch.bool).to(device)
     
     # Current Q values
     current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1))
@@ -220,8 +254,8 @@ class AdaptiveComplexityController(nn.Module):
     torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
     self.optimizer.step()
     
-    # Decay epsilon
-    self.epsilon = max(0.01, self.epsilon * self.epsilon_decay)
+    # ✅ IMPROVED: Decay epsilon with proper floor to maintain exploration
+    self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
     
     return loss.item()
   

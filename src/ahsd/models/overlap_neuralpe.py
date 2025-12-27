@@ -1667,10 +1667,11 @@ class OverlapNeuralPE(nn.Module):
         # New: weight=5.0, squared penalty → 10-15% of total loss
         context_variance_penalty = torch.tensor(0.0, device=strain_data.device)
         diversity_loss = torch.tensor(0.0, device=strain_data.device)
+        diversity_weight = 1.0  # Default, will be overridden in training
         context_std_value = 0.0
         context_noise_scale = 0.0
-        
-        if self.training:
+         
+         if self.training:
             try:
                 context_std = context.std()
                 context_mean_abs = context.abs().mean()
@@ -1702,23 +1703,23 @@ class OverlapNeuralPE(nn.Module):
                     )
                 
                 # ✅ NUCLEAR OPTION: ALWAYS Force context diversity via orthogonality
-                 # When collapsed, dimensions become correlated (low effective dimensionality)
-                 # Penalize off-diagonal to enforce uncorrelated features
-                 # Apply STRONGER when std is low (0.52 stuck case!)
-                 batch_size = context.size(0)
-                 context_centered = context - context.mean(dim=0, keepdim=True)
-                 context_cov = torch.mm(context_centered.T, context_centered) / max(batch_size, 1)
+                # When collapsed, dimensions become correlated (low effective dimensionality)
+                # Penalize off-diagonal to enforce uncorrelated features
+                # Apply STRONGER when std is low (0.52 stuck case!)
+                batch_size = context.size(0)
+                context_centered = context - context.mean(dim=0, keepdim=True)
+                context_cov = torch.mm(context_centered.T, context_centered) / max(batch_size, 1)
+                
+                # Target: diagonal matrix with variance on diagonal
+                identity = torch.eye(context.size(1), device=context.device)
+                target_cov = identity * (target_std ** 2)
                  
-                 # Target: diagonal matrix with variance on diagonal
-                 identity = torch.eye(context.size(1), device=context.device)
-                 target_cov = identity * (target_std ** 2)
+                # Frobenius norm of difference
+                diversity_loss = torch.norm(context_cov - target_cov, p='fro') / context.size(1)
                  
-                 # Frobenius norm of difference
-                 diversity_loss = torch.norm(context_cov - target_cov, p='fro') / context.size(1)
-                 
-                 # ✅ WEIGHT BASED ON CONTEXT HEALTH: Stronger when std low
-                 # This is KEY FIX: diversity loss now ALWAYS active, weighted by need
-                 diversity_weight = 2.0 if context_std < 0.55 else 1.0  # 2× when std stuck
+                # ✅ WEIGHT BASED ON CONTEXT HEALTH: Stronger when std low
+                # This is KEY FIX: diversity loss now ALWAYS active, weighted by need
+                diversity_weight = 2.0 if context_std < 0.55 else 1.0  # 2× when std stuck
                 
                 # ✅ LOG EVERY 50 STEPS (warning level for visibility)
                 if self.training_step % 50 == 0:

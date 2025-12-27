@@ -651,13 +651,17 @@ class OverlapNeuralPETrainer:
 
          # ✅ FINAL: Compute and log diagnostics after entire validation epoch
          try:
-             # Use only first 16 samples to avoid massive compute (64 * 50 = 3200 forward passes)
-             subset_strain = all_strain_data[:16]
-             subset_params = all_parameters[:16]
-             flow_metrics = self.model.compute_flow_matching_metrics(subset_strain, subset_params)
-             self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
+             # Only run diagnostics if we collected data
+             if len(all_strain_data) > 0 and len(all_parameters) > 0:
+                 # Use only first 16 samples to avoid massive compute (64 * 50 = 3200 forward passes)
+                 subset_strain = all_strain_data[:16] if isinstance(all_strain_data, torch.Tensor) else all_strain_data
+                 subset_params = all_parameters[:16] if isinstance(all_parameters, torch.Tensor) else all_parameters
+                 flow_metrics = self.model.compute_flow_matching_metrics(subset_strain, subset_params)
+                 self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
+             else:
+                 self.logger.debug("No validation data collected for diagnostics")
          except Exception as e:
-             self.logger.debug(f"Flow diagnostics failed: {e}")
+             self.logger.error(f"Flow diagnostics failed: {type(e).__name__}: {e}")
 
          val_metrics = {"avg_loss": np.mean(epoch_losses), "avg_flow_loss": np.mean(epoch_nlls)}
          if epoch_physics_losses:

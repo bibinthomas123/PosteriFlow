@@ -1390,6 +1390,36 @@ class OverlapNeuralPE(nn.Module):
                 flow_loss_per_signal.append(signal_loss.item())
                 flow_loss_total += signal_weight * signal_loss
                 
+                # ✅ FIX 3 (Dec 27): DISTANCE-SPECIFIC BIAS CORRECTION
+                # Problem: Distance bias growing +50 → +63 Mpc due to context compression
+                # Solution: Penalize positive distance bias specifically
+                # This targets the distance parameter (index 2) in normalized space
+                if self.training and signal_idx == 0:  # Only apply to primary signal
+                    try:
+                        # Get mean of normalized distance predictions
+                        # params_norm shape: [batch, param_dim]
+                        # Index 2 = luminosity_distance
+                        distance_idx = 2  # luminosity_distance is param index 2
+                        if params_norm.shape[1] > distance_idx:
+                            samples_distance_mean = params_norm[:, distance_idx].mean()
+                            
+                            # If samples skew positive (> 0.1 in normalized space [-1, 1])
+                            # This indicates overestimation of distance
+                            positive_bias_penalty = torch.relu(samples_distance_mean - 0.1) ** 2
+                            distance_bias_loss = 5.0 * positive_bias_penalty
+                            flow_loss_total += distance_bias_loss
+                            
+                            # Log every 100 training steps
+                            if self.training_step % 100 == 0 and hasattr(self, 'logger'):
+                                self.logger.warning(
+                                    f"🔧 DISTANCE BIAS: mean={samples_distance_mean.item():.4f}, "
+                                    f"penalty={positive_bias_penalty.item():.4f}, "
+                                    f"loss_contrib={distance_bias_loss.item():.4f}"
+                                )
+                    except Exception as e:
+                        if hasattr(self, 'logger'):
+                            self.logger.debug(f"Distance bias correction failed: {e}")
+                
             except (NotImplementedError, AttributeError, RuntimeError, Exception) as e:
                 import traceback
                 self.logger.warning(f"⚠️ Flow loss failed for signal {signal_idx}: {type(e).__name__}: {str(e)}")
@@ -1671,20 +1701,24 @@ class OverlapNeuralPE(nn.Module):
                         f"injecting strong noise (0.3)"
                     )
                 
-                # ✅ NUCLEAR OPTION: Force context diversity via orthogonality
-                # When collapsed, dimensions become correlated (low effective dimensionality)
-                # Penalize off-diagonal to enforce uncorrelated features
-                if context_std < 0.4:
-                    batch_size = context.size(0)
-                    context_centered = context - context.mean(dim=0, keepdim=True)
-                    context_cov = torch.mm(context_centered.T, context_centered) / max(batch_size, 1)
-                    
-                    # Target: diagonal matrix with variance on diagonal
-                    identity = torch.eye(context.size(1), device=context.device)
-                    target_cov = identity * (target_std ** 2)
-                    
-                    # Frobenius norm of difference
-                    diversity_loss = torch.norm(context_cov - target_cov, p='fro') / context.size(1)
+                # ✅ NUCLEAR OPTION: ALWAYS Force context diversity via orthogonality
+                 # When collapsed, dimensions become correlated (low effective dimensionality)
+                 # Penalize off-diagonal to enforce uncorrelated features
+                 # Apply STRONGER when std is low (0.52 stuck case!)
+                 batch_size = context.size(0)
+                 context_centered = context - context.mean(dim=0, keepdim=True)
+                 context_cov = torch.mm(context_centered.T, context_centered) / max(batch_size, 1)
+                 
+                 # Target: diagonal matrix with variance on diagonal
+                 identity = torch.eye(context.size(1), device=context.device)
+                 target_cov = identity * (target_std ** 2)
+                 
+                 # Frobenius norm of difference
+                 diversity_loss = torch.norm(context_cov - target_cov, p='fro') / context.size(1)
+                 
+                 # ✅ WEIGHT BASED ON CONTEXT HEALTH: Stronger when std low
+                 # This is KEY FIX: diversity loss now ALWAYS active, weighted by need
+                 diversity_weight = 2.0 if context_std < 0.55 else 1.0  # 2× when std stuck
                 
                 # ✅ LOG EVERY 50 STEPS (warning level for visibility)
                 if self.training_step % 50 == 0:
@@ -1698,12 +1732,17 @@ class OverlapNeuralPE(nn.Module):
                 self.logger.warning(f"⚠️ Context collapse check failed: {e}")
         
         # ✅ Q3: Simple 2-term loss (Flow + Bounds) + NUCLEAR Context Variance + Diversity
+        # Initialize diversity_weight in case context variance penalty wasn't computed
+        if not hasattr(self, '_diversity_weight'):
+            diversity_weight = 1.0
+        
         total_loss = (
             flow_loss_weight * flow_loss_total +                  # Primary: NLL from NSF
             bounds_penalty_weight * bounds_loss +                 # Secondary: soft parameter bounds
-            context_variance_penalty +                             # ✅ NUCLEAR: 5.0 weight, squared
-            (1.0 * diversity_loss if self.training else 0.0)      # ✅ NUCLEAR: force orthogonal features
+            context_variance_penalty +                             # ✅ NUCLEAR: 10.0 weight, squared
+            (diversity_weight * diversity_loss if self.training else 0.0)      # ✅ NUCLEAR: 2× when std stuck
         )
+        self._diversity_weight = diversity_weight
         
         return {
             "total_loss": total_loss,

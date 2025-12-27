@@ -260,17 +260,6 @@ class OverlapNeuralPETrainer:
         self.logger.info(f"  Scheduler Factor: {self.scheduler_factor}")
         self.logger.info(f"  Min LR: {self.scheduler_min_lr}")
 
-        # ✅ Log loss weights (Nov 13 fix verification)
-        np_cfg = config.get("neural_posterior", {})
-        physics_weight = np_cfg.get("physics_loss_weight", 0.05)
-        bounds_weight = np_cfg.get("bounds_penalty_weight", 0.5)
-        sample_weight = np_cfg.get("sample_loss_weight", 0.5)
-        self.logger.info(f"\n⚖️  NEURAL PE LOSS WEIGHTS (Nov 13 09:55 fix):")
-        self.logger.info(f"  Physics Loss Weight: {physics_weight} (soft constraint)")
-        self.logger.info(f"  Bounds Penalty Weight: {bounds_weight} (ground truth protection)")
-        self.logger.info(f"  Sample Loss Weight: {sample_weight} (flow bounds constraint)")
-        self.logger.info(f"  Jacobian Reg Weight: {np_cfg.get('jacobian_reg_weight', 0.001)}")
-
     def load_model(self, filepath: str):
         self.model.load_model(filepath)
         self.logger.info(f"Trainer loaded model state from {filepath}")
@@ -444,143 +433,150 @@ class OverlapNeuralPETrainer:
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
 
         for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(progress_bar):
-            batch_start = time.time()
-            self.optimizer.zero_grad()
-            strain_data = strain_data.to(self.device)
-            parameters = parameters.to(self.device)
+            try:
+                batch_start = time.time()
+                self.optimizer.zero_grad()
+                strain_data = strain_data.to(self.device)
+                parameters = parameters.to(self.device)
 
-            target_params = parameters[:, 0, :]
+                target_params = parameters[:, 0, :]
 
-            # ✅ Nov 14: GET RL STATE AND COMPLEXITY RECOMMENDATION
-            complexity = "medium"
-            complexity_id = 1
-            if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
-                # Extract pipeline state
-                avg_n_signals = float(n_signals.float().mean().item())
-                pipeline_state = {
-                    "remaining_signals": avg_n_signals,
-                    "residual_power": prev_loss if prev_loss != float("inf") else 0.5,
-                    "processing_time": time.time() - batch_time_start,
-                    "current_snr": 20.0,
-                    "extraction_success_rate": 0.8,
-                }
+                # ✅ Nov 14: GET RL STATE AND COMPLEXITY RECOMMENDATION
+                complexity = "medium"
+                complexity_id = 1
+                if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
+                    # Extract pipeline state
+                    avg_n_signals = float(n_signals.float().mean().item())
+                    pipeline_state = {
+                        "remaining_signals": avg_n_signals,
+                        "residual_power": prev_loss if prev_loss != float("inf") else 0.5,
+                        "processing_time": time.time() - batch_time_start,
+                        "current_snr": 20.0,
+                        "extraction_success_rate": 0.8,
+                    }
 
-                # Get complexity (training=True for exploration)
-                complexity = self.model.rl_controller.get_complexity_level(
-                    pipeline_state, training=True
-                )
-                complexity_id = self.model.rl_controller.complexity_levels.index(complexity)
-                epoch_metrics["rl_complexity"].append(complexity_id)
+                    # Get complexity (training=True for exploration)
+                    complexity = self.model.rl_controller.get_complexity_level(
+                        pipeline_state, training=True
+                    )
+                    complexity_id = self.model.rl_controller.complexity_levels.index(complexity)
+                    epoch_metrics["rl_complexity"].append(complexity_id)
 
-            # Compute loss
-            loss_dict = self.model.compute_loss(strain_data, target_params)
+                # Compute loss
+                loss_dict = self.model.compute_loss(strain_data, target_params)
 
-            # Backward pass
-            loss = loss_dict["total_loss"]
-            loss.backward()
+                # Backward pass
+                loss = loss_dict["total_loss"]
+                loss.backward()
 
-            # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+                # Gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
 
-            self.optimizer.step()
+                self.optimizer.step()
 
-            # Store metrics
-            epoch_losses.append(loss_dict["total_loss"].item())
-            epoch_metrics["flow_loss"].append(loss_dict["flow_loss"].item())
-            epoch_metrics["gradient_norm"].append(grad_norm.item())
+                # Store metrics
+                epoch_losses.append(loss_dict["total_loss"].item())
+                epoch_metrics["flow_loss"].append(loss_dict["flow_loss"].item())
+                epoch_metrics["gradient_norm"].append(grad_norm.item())
 
-            # Store component losses
-            if "physics_loss" in loss_dict:
-                epoch_metrics["physics_loss"].append(loss_dict["physics_loss"].item())
-            if "bias_loss" in loss_dict:
-                epoch_metrics["bias_loss"].append(loss_dict["bias_loss"].item())
-            if "uncertainty_loss" in loss_dict:
-                epoch_metrics["uncertainty_loss"].append(loss_dict["uncertainty_loss"].item())
-            if "jacobian_reg" in loss_dict:
-                epoch_metrics["jacobian_reg"].append(loss_dict["jacobian_reg"].item())
-            
-            # ✅ DEBUG (Nov 25): Log bias corrector gradient flow first batch only
-            if batch_idx == 0 and hasattr(self.model, "bias_corrector") and self.model.bias_corrector is not None:
-                bias_grads = []
-                for name, param in self.model.bias_corrector.named_parameters():
-                    if param.grad is not None:
-                        bias_grads.append(param.grad.norm().item())
-                if bias_grads:
-                    self.logger.debug(
-                        f"[Epoch {epoch+1}, Batch 0] BiasCorrector Gradient Norms: "
-                        f"avg={np.mean(bias_grads):.6f}, max={np.max(bias_grads):.6f}, min={np.min(bias_grads):.6f}"
+                # Store component losses
+                if "physics_loss" in loss_dict:
+                    epoch_metrics["physics_loss"].append(loss_dict["physics_loss"].item())
+                if "bias_loss" in loss_dict:
+                    epoch_metrics["bias_loss"].append(loss_dict["bias_loss"].item())
+                if "uncertainty_loss" in loss_dict:
+                    epoch_metrics["uncertainty_loss"].append(loss_dict["uncertainty_loss"].item())
+                if "jacobian_reg" in loss_dict:
+                    epoch_metrics["jacobian_reg"].append(loss_dict["jacobian_reg"].item())
+                
+                # ✅ DEBUG (Nov 25): Log bias corrector gradient flow first batch only
+                if batch_idx == 0 and hasattr(self.model, "bias_corrector") and self.model.bias_corrector is not None:
+                    bias_grads = []
+                    for name, param in self.model.bias_corrector.named_parameters():
+                        if param.grad is not None:
+                            bias_grads.append(param.grad.norm().item())
+                    if bias_grads:
+                        self.logger.debug(
+                            f"[Epoch {epoch+1}, Batch 0] BiasCorrector Gradient Norms: "
+                            f"avg={np.mean(bias_grads):.6f}, max={np.max(bias_grads):.6f}, min={np.min(bias_grads):.6f}"
+                        )
+
+                # ✅ Nov 14: RL EXPERIENCE COLLECTION AND TRAINING
+                if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
+                    batch_time = time.time() - batch_start
+                    current_loss = loss_dict["total_loss"].item()
+
+                    # Compute reward
+                    reward = self.model.rl_controller.compute_reward(
+                        {"parameter_bias": current_loss, "extraction_time": batch_time}, complexity
                     )
 
-            # ✅ Nov 14: RL EXPERIENCE COLLECTION AND TRAINING
-            if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
-                batch_time = time.time() - batch_start
-                current_loss = loss_dict["total_loss"].item()
+                    # Build next state
+                    next_pipeline_state = {
+                        "remaining_signals": avg_n_signals,
+                        "residual_power": current_loss,
+                        "processing_time": batch_time,
+                        "current_snr": 20.0,
+                        "extraction_success_rate": 0.8,
+                    }
 
-                # Compute reward
-                reward = self.model.rl_controller.compute_reward(
-                    {"parameter_bias": current_loss, "extraction_time": batch_time}, complexity
+                    state_vector = self.model.rl_controller.get_state_vector(pipeline_state)
+                    next_state_vector = self.model.rl_controller.get_state_vector(next_pipeline_state)
+
+                    # Store experience
+                    self.model.rl_controller.store_experience(
+                        state_vector, complexity_id, reward, next_state_vector, done=False
+                    )
+
+                    # Train when buffer filled
+                    rl_memory = self.model.rl_controller.memory
+                    if len(rl_memory) >= self.model.rl_controller.batch_size:
+                        rl_loss = self.model.rl_controller.train_step()
+                        if rl_loss is not None:
+                            epoch_metrics["rl_loss"].append(rl_loss)
+
+                    prev_loss = current_loss
+
+                # ✅ WANDB: Log batch metrics
+                if self.use_wandb and batch_idx % 10 == 0:
+                    batch_log = {
+                        "batch/train_loss": loss_dict["total_loss"].item(),
+                        "batch/flow_loss": loss_dict["flow_loss"].item(),
+                        "batch/gradient_norm": grad_norm.item(),
+                        "batch/learning_rate": self.optimizer.param_groups[0]["lr"],
+                        "global_step": self.global_step,
+                    }
+                    # Log component losses if available
+                    if "physics_loss" in loss_dict:
+                        batch_log["batch/physics_loss"] = loss_dict["physics_loss"].item()
+                    if "bias_loss" in loss_dict:
+                        batch_log["batch/bias_loss"] = loss_dict["bias_loss"].item()
+                    if "uncertainty_loss" in loss_dict:
+                        batch_log["batch/uncertainty_loss"] = loss_dict["uncertainty_loss"].item()
+                    if "jacobian_reg" in loss_dict:
+                        batch_log["batch/jacobian_reg"] = loss_dict["jacobian_reg"].item()
+
+                    # Log RL metrics if available
+                    if epoch_metrics["rl_loss"]:
+                        batch_log["batch/rl_loss"] = epoch_metrics["rl_loss"][-1]
+
+                    wandb.log(batch_log)
+
+                self.global_step += 1
+
+                progress_bar.set_postfix(
+                    {
+                        "Loss": f"{loss_dict['total_loss'].item():.4f}",
+                        "FlowLoss": f"{loss_dict['flow_loss'].item():.4f}",
+                        "GradNorm": f"{grad_norm.item():.3f}",
+                    }
                 )
 
-                # Build next state
-                next_pipeline_state = {
-                    "remaining_signals": avg_n_signals,
-                    "residual_power": current_loss,
-                    "processing_time": batch_time,
-                    "current_snr": 20.0,
-                    "extraction_success_rate": 0.8,
-                }
-
-                state_vector = self.model.rl_controller.get_state_vector(pipeline_state)
-                next_state_vector = self.model.rl_controller.get_state_vector(next_pipeline_state)
-
-                # Store experience
-                self.model.rl_controller.store_experience(
-                    state_vector, complexity_id, reward, next_state_vector, done=False
-                )
-
-                # Train when buffer filled
-                rl_memory = self.model.rl_controller.memory
-                if len(rl_memory) >= self.model.rl_controller.batch_size:
-                    rl_loss = self.model.rl_controller.train_step()
-                    if rl_loss is not None:
-                        epoch_metrics["rl_loss"].append(rl_loss)
-
-                prev_loss = current_loss
-
-            # ✅ WANDB: Log batch metrics
-            if self.use_wandb and batch_idx % 10 == 0:
-                batch_log = {
-                    "batch/train_loss": loss_dict["total_loss"].item(),
-                    "batch/flow_loss": loss_dict["flow_loss"].item(),
-                    "batch/gradient_norm": grad_norm.item(),
-                    "batch/learning_rate": self.optimizer.param_groups[0]["lr"],
-                    "global_step": self.global_step,
-                }
-                # Log component losses if available
-                if "physics_loss" in loss_dict:
-                    batch_log["batch/physics_loss"] = loss_dict["physics_loss"].item()
-                if "bias_loss" in loss_dict:
-                    batch_log["batch/bias_loss"] = loss_dict["bias_loss"].item()
-                if "uncertainty_loss" in loss_dict:
-                    batch_log["batch/uncertainty_loss"] = loss_dict["uncertainty_loss"].item()
-                if "jacobian_reg" in loss_dict:
-                    batch_log["batch/jacobian_reg"] = loss_dict["jacobian_reg"].item()
-
-                # Log RL metrics if available
-                if epoch_metrics["rl_loss"]:
-                    batch_log["batch/rl_loss"] = epoch_metrics["rl_loss"][-1]
-
-                wandb.log(batch_log)
-
-            self.global_step += 1
-
-            progress_bar.set_postfix(
-                {
-                    "Loss": f"{loss_dict['total_loss'].item():.4f}",
-                    "FlowLoss": f"{loss_dict['flow_loss'].item():.4f}",
-                    "GradNorm": f"{grad_norm.item():.3f}",
-                }
-            )
+            except Exception as e:
+                self.logger.error(f"🔴 Error in batch {batch_idx}: {str(e)}", exc_info=True)
+                self.logger.error(f"Strain shape: {strain_data.shape if 'strain_data' in locals() else 'N/A'}")
+                self.logger.error(f"Parameters shape: {parameters.shape if 'parameters' in locals() else 'N/A'}")
+                raise
 
         # ✅ Nov 14: PERIODIC TARGET NETWORK UPDATE (every 5 epochs)
         if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
@@ -622,41 +618,52 @@ class OverlapNeuralPETrainer:
         return avg_metrics
 
     def validate_epoch(self, val_loader: DataLoader, epoch: int) -> Dict[str, float]:
-        """Validate one epoch."""
-        self.model.eval()
+         """Validate one epoch."""
+         self.model.eval()
 
-        epoch_losses = []
-        epoch_nlls = []
-        epoch_physics_losses = []
+         epoch_losses = []
+         epoch_nlls = []
+         epoch_physics_losses = []
+         
+         # Collect data for final diagnostics
+         all_strain_data = []
+         all_parameters = []
 
-        with torch.no_grad():
-            for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(
-                tqdm(val_loader, desc="Validating")
-            ):
-                strain_data = strain_data.to(self.device)
-                parameters = parameters.to(self.device)
+         with torch.no_grad():
+             for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(
+                 tqdm(val_loader, desc="Validating")
+             ):
+                 strain_data = strain_data.to(self.device)
+                 parameters = parameters.to(self.device)
 
-                target_params = parameters[:, 0, :]
-                loss_dict = self.model.compute_loss(strain_data, target_params)
+                 target_params = parameters[:, 0, :]
+                 loss_dict = self.model.compute_loss(strain_data, target_params)
 
-                # ✅ DEBUG: Log first validation batch for comparison
-                # if batch_idx == 0:
-                #     self.logger.info(f"\n[VAL BATCH 0 LOSS BREAKDOWN - Epoch {epoch+1}]")
-                #     self.logger.info(f"  Total Loss: {loss_dict['total_loss'].item():.4f}")
-                #     self.logger.info(f"  Flow Loss: {loss_dict.get('flow_loss', 0):.4f}")
-                #     self.logger.info(f"  Physics Loss: {loss_dict.get('physics_loss', 0):.4f}")
-                #     self.logger.info(f"  (Val physics loss should be SIMILAR to train)")
+                 epoch_losses.append(loss_dict["total_loss"].item())
+                 epoch_nlls.append(loss_dict["flow_loss"].item())
+                 if "physics_loss" in loss_dict:
+                     epoch_physics_losses.append(loss_dict["physics_loss"].item())
+                 
+                 # Collect first batch worth of data for diagnostics
+                 if len(all_strain_data) == 0:
+                     all_strain_data = strain_data
+                     all_parameters = parameters
 
-                epoch_losses.append(loss_dict["total_loss"].item())
-                epoch_nlls.append(loss_dict["flow_loss"].item())
-                if "physics_loss" in loss_dict:
-                    epoch_physics_losses.append(loss_dict["physics_loss"].item())
+         # ✅ FINAL: Compute and log diagnostics after entire validation epoch
+         try:
+             # Use only first 16 samples to avoid massive compute (64 * 50 = 3200 forward passes)
+             subset_strain = all_strain_data[:16]
+             subset_params = all_parameters[:16]
+             flow_metrics = self.model.compute_flow_matching_metrics(subset_strain, subset_params)
+             self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
+         except Exception as e:
+             self.logger.debug(f"Flow diagnostics failed: {e}")
 
-        val_metrics = {"avg_loss": np.mean(epoch_losses), "avg_flow_loss": np.mean(epoch_nlls)}
-        if epoch_physics_losses:
-            val_metrics["avg_physics_loss"] = np.mean(epoch_physics_losses)
+         val_metrics = {"avg_loss": np.mean(epoch_losses), "avg_flow_loss": np.mean(epoch_nlls)}
+         if epoch_physics_losses:
+             val_metrics["avg_physics_loss"] = np.mean(epoch_physics_losses)
 
-        return val_metrics
+         return val_metrics
 
     def train(
         self,
@@ -779,98 +786,6 @@ class OverlapNeuralPETrainer:
                 self.logger.info(
                     f"      Low: {train_metrics.get('complexity_low_count', 0)}, Medium: {train_metrics.get('complexity_medium_count', 0)}, High: {train_metrics.get('complexity_high_count', 0)}"
                 )
-
-            # RL metrics logging
-            if rl_metrics:
-                self.logger.info(f"  RL Controller:")
-                for key, value in rl_metrics.items():
-                    if isinstance(value, (int, float)):
-                        self.logger.info(f"    {key}: {value:.4f}")
-                    else:
-                        self.logger.info(f"    {key}: {value}")
-            else:
-                self.logger.info(f"  RL Controller:")
-                self.logger.info(f"    (metrics not available)")
-
-            # Bias Corrector metrics logging
-            if bias_metrics:
-                self.logger.info(f"  Bias Corrector:")
-                # Correction statistics
-                if "avg_correction" in bias_metrics:
-                    self.logger.info(f"    ✓ Avg Correction: {bias_metrics['avg_correction']:.6f}")
-                if "max_correction" in bias_metrics:
-                    self.logger.info(f"    ✓ Max Correction: {bias_metrics['max_correction']:.6f}")
-                if "correction_std" in bias_metrics:
-                    self.logger.info(f"    ✓ Correction Std: {bias_metrics['correction_std']:.6f}")
-                # Confidence metrics
-                if "avg_confidence" in bias_metrics:
-                    self.logger.info(f"    ⚡ Avg Confidence: {bias_metrics['avg_confidence']:.4f}")
-                if "min_confidence" in bias_metrics:
-                    self.logger.info(f"    ⚡ Min Confidence: {bias_metrics['min_confidence']:.4f}")
-                # Acceptance rates
-                if "correction_acceptance_rate" in bias_metrics:
-                    acceptance = bias_metrics["correction_acceptance_rate"]
-                    self.logger.info(f"    📊 Acceptance Rate: {acceptance:.2%}")
-                # Physics violations
-                if "physics_violations" in bias_metrics:
-                    violations = bias_metrics["physics_violations"]
-                    self.logger.info(f"    ⚠️  Physics Violations: {violations}")
-                # Additional metrics
-                for key, value in bias_metrics.items():
-                    if key not in [
-                        "avg_correction",
-                        "max_correction",
-                        "correction_std",
-                        "avg_confidence",
-                        "min_confidence",
-                        "correction_acceptance_rate",
-                        "physics_violations",
-                    ]:
-                        if isinstance(value, (int, float)):
-                            self.logger.info(f"    {key}: {value:.4f}")
-                        else:
-                            self.logger.info(f"    {key}: {value}")
-            else:
-                self.logger.info(f"  Bias Corrector:")
-                self.logger.info(f"    (disabled or metrics not available)")
-
-            # Priority Net logging
-            if priority_net_metrics:
-                self.logger.info(f"  Priority Net:")
-                if "enabled" in priority_net_metrics and priority_net_metrics["enabled"]:
-                    if "avg_importance" in priority_net_metrics:
-                        self.logger.info(
-                            f"    ✓ Avg Importance: {priority_net_metrics['avg_importance']:.4f}"
-                        )
-                    if "max_importance" in priority_net_metrics:
-                        self.logger.info(
-                            f"    ✓ Max Importance: {priority_net_metrics['max_importance']:.4f}"
-                        )
-                    if "min_importance" in priority_net_metrics:
-                        self.logger.info(
-                            f"    ✓ Min Importance: {priority_net_metrics['min_importance']:.4f}"
-                        )
-                    if "avg_uncertainty" in priority_net_metrics:
-                        self.logger.info(
-                            f"    ⚡ Avg Uncertainty: {priority_net_metrics['avg_uncertainty']:.4f}"
-                        )
-                    if "max_uncertainty" in priority_net_metrics:
-                        self.logger.info(
-                            f"    ⚡ Max Uncertainty: {priority_net_metrics['max_uncertainty']:.4f}"
-                        )
-                    if "edge_type_accuracy" in priority_net_metrics:
-                        self.logger.info(
-                            f"    📊 Edge Type Accuracy: {priority_net_metrics['edge_type_accuracy']:.2%}"
-                        )
-                    if "n_parameters" in priority_net_metrics:
-                        self.logger.info(
-                            f"    🔧 Parameters: {priority_net_metrics['n_parameters']:,}"
-                        )
-                else:
-                    self.logger.info(f"    (disabled or frozen)")
-            else:
-                self.logger.info(f"  Priority Net:")
-                self.logger.info(f"    (disabled or metrics not available)")
 
             # Integration summary logging
             if hasattr(self.model, "get_integration_summary"):

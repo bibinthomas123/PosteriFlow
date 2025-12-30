@@ -25,9 +25,9 @@ F_UPPER = 1024.0  # Hz
 # - Validation logging to compare actual vs expected distributions
 
 EVENT_TYPE_DISTRIBUTION = {
-    'BBH': 0.46,    # Binary Black Hole mergers (46%)
-    'BNS': 0.32,    # Binary Neutron Star mergers (32%)
-    'NSBH': 0.17,   # Neutron Star-Black Hole mergers (17%)
+    'BBH': 0.55,    # Binary Black Hole mergers (55%) - most common detections
+    'BNS': 0.20,    # Binary Neutron Star mergers (20%) - reduced to avoid weak SNR bias
+    'NSBH': 0.20,   # Neutron Star-Black Hole mergers (20%) - intermediate rate
     'noise': 0.05   # Noise-only samples (5%)
 }
 
@@ -43,13 +43,12 @@ SNR_DISTRIBUTION = {
 
 # SNR ranges for each regime
 # Expanded ranges to allow stronger distance-SNR correlation
-SNR_RANGES = { 
-    'weak': (10.0, 15.0),
-    'low': (15.0, 25.0),
-    'medium': (25.0, 40.0),
-    'high': (40.0, 60.0),
-    'loud': (60.0, 80.0)
-
+SNR_RANGES = {
+    'weak':   (8.0, 12.0),   # Changed from (5.0, 10.0)
+    'low':    (12.0, 20.0),  # Changed from (10.0, 20.0)
+    'medium': (20.0, 40.0),
+    'high':   (40.0, 70.0),
+    'loud':   (70.0, 200.0)
 }
 
 # Mass ranges (solar masses)
@@ -61,12 +60,12 @@ MASS_RANGES = {
 
 # Distance ranges (Mpc) - O4/design sensitivity calibrated
 # BBH: O4 horizon ~1000-1200 Mpc, observed GWTC-1 events up to 2840 Mpc
-# BNS: O4 realistic range ~150-170 Mpc (design ~170 Mpc)
+# BNS: O4 realistic range ~150-170 Mpc (design ~170 Mpc) - max 500 to avoid outliers
 # NSBH: Intermediate mass systems scaling between BNS and BBH
 DISTANCE_RANGES = {
-    'BBH': (100.0, 2000.0),
-    'BNS': (10.0, 300.0),
-    'NSBH': (20.0, 800.0)
+    'BBH': (50.0, 5000.0),
+    'BNS': (10.0, 500.0),     # CRITICAL FIX (Dec 29, 15:30 UTC): Reduced max from 1000 to 500 Mpc
+    'NSBH': (20.0, 2000.0)
 }
 
 

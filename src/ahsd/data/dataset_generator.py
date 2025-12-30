@@ -2461,6 +2461,17 @@ class GWDatasetGenerator:
             params["luminosity_distance"] = 10 ** np.random.uniform(
                 np.log10(100), np.log10(5000)  # 100 Mpc  # 5 Gpc
             )
+            
+            # CRITICAL FIX (Dec 29, 18:45 UTC): Apply physics-realistic distance caps
+            # Log-uniform can create undetectable outliers (10,000+ Mpc)
+            event_type = params.get('type', 'BBH')
+            if event_type == 'BNS':
+                params["luminosity_distance"] = min(params["luminosity_distance"], 400.0)
+            elif event_type == 'BBH':
+                params["luminosity_distance"] = min(params["luminosity_distance"], 8000.0)
+            elif event_type == 'NSBH':
+                params["luminosity_distance"] = min(params["luminosity_distance"], 2500.0)
+            
             # Recompute target_snr to remain consistent with overridden distance
             try:
                 self.parameter_sampler.recompute_target_snr_from_params(params)
@@ -2510,6 +2521,17 @@ class GWDatasetGenerator:
         # Scale the distance range by broad_multiplier
         max_distance = 5000 * broad_multiplier
         params["luminosity_distance"] = np.random.uniform(10, max_distance)  # Very broad
+        
+        # CRITICAL FIX (Dec 29, 18:45 UTC): Apply physics-realistic distance caps
+        # Broad uniform sampling can exceed detection horizon
+        event_type = params.get('type', 'BBH')
+        if event_type == 'BNS':
+            params["luminosity_distance"] = min(params["luminosity_distance"], 400.0)
+        elif event_type == 'BBH':
+            params["luminosity_distance"] = min(params["luminosity_distance"], 8000.0)
+        elif event_type == 'NSBH':
+            params["luminosity_distance"] = min(params["luminosity_distance"], 2500.0)
+        
         # Recompute target_snr to be consistent with the new distance (if masses present)
         try:
             self.parameter_sampler.recompute_target_snr_from_params(params)
@@ -2756,9 +2778,9 @@ class GWDatasetGenerator:
 
         params = self.parameter_sampler.sample_bbh_parameters("medium", False)
 
-        # Near-maximal spins
-        params["a1"] = float(np.random.uniform(0.9, 0.998))
-        params["a2"] = float(np.random.uniform(0.9, 0.998))
+        # Near-maximal spins (clipped to 0.99 physical limit)
+        params["a1"] = float(np.clip(np.random.uniform(0.9, 0.99), 0.0, 0.99))
+        params["a2"] = float(np.clip(np.random.uniform(0.9, 0.99), 0.0, 0.99))
 
         # Random alignment
         if np.random.random() < spin_config["aligned_fraction"]:
@@ -3253,6 +3275,17 @@ class GWDatasetGenerator:
             degenerate_params["luminosity_distance"] = (
                 params["luminosity_distance"] * amplitude_ratio
             )
+            
+            # CRITICAL FIX (Dec 29, 18:45 UTC): Apply physics-realistic distance caps
+            # Amplitude ratio scaling can exceed detection horizon
+            event_type = degenerate_params.get('type', params.get('type', 'BBH'))
+            if event_type == 'BNS':
+                degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 400.0)
+            elif event_type == 'BBH':
+                degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 8000.0)
+            elif event_type == 'NSBH':
+                degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 2500.0)
+            
             # Keep degenerate params' target_snr consistent with the adjusted distance
             try:
                 self.parameter_sampler.recompute_target_snr_from_params(degenerate_params)
@@ -3298,6 +3331,17 @@ class GWDatasetGenerator:
             degenerate_params["luminosity_distance"] = params["luminosity_distance"] * (
                 new_Mc / original_Mc
             ) ** (5 / 6)
+            
+            # CRITICAL FIX (Dec 29, 18:45 UTC): Apply physics-realistic distance caps
+            # Chirp mass scaling can exceed detection horizon
+            event_type = degenerate_params.get('type', params.get('type', 'BBH'))
+            if event_type == 'BNS':
+                degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 400.0)
+            elif event_type == 'BBH':
+                degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 8000.0)
+            elif event_type == 'NSBH':
+                degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 2500.0)
+            
             # Keep the degenerate parameter's target_snr consistent with its new distance
             try:
                 self.parameter_sampler.recompute_target_snr_from_params(degenerate_params)
@@ -3558,11 +3602,13 @@ class GWDatasetGenerator:
             M_chirp = (m1 * m2) ** (3 / 5) / M_total ** (1 / 5)
 
             #  SNR scaling formula
-            # Reference: M_chirp=30 Msun at D=400 Mpc → SNR ≈ 85
+            # Reference: M_chirp=30 Msun at D=1500 Mpc (BBH), SNR=20
             # SNR ∝ M_chirp^(5/6) / D_L
-            reference_snr = 15
-            reference_mass = 30.0  # Solar masses
-            reference_distance = 400.0  # Mpc
+            # Dec 29, 17:00 UTC CRITICAL FIX: Updated to match ParameterSampler scatter fix
+            # reference_snr: 70.0 → 20.0, reference_distance: 400.0 → 1500.0
+            reference_snr = 20.0        # Match ParameterSampler.reference_snr
+            reference_mass = 30.0        # Solar masses
+            reference_distance = 1500.0  # Mpc (updated from 1400.0, Dec 29, 17:00 UTC)
 
             snr_estimate = (
                 reference_snr
@@ -4278,7 +4324,7 @@ class GWDatasetGenerator:
             High χ_eff (>0.7) suggests isolated evolution or hierarchical formation.
 
         Parameter Ranges:
-            - Dimensionless spins: |a₁|, |a₂| ∈ [0.8, 0.998]
+            - Dimensionless spins: |a₁|, |a₂| ∈ [0.8, 0.99] (physical limit)
             - Tilt angles: θ₁, θ₂ ∈ [0, 0.2] rad (nearly aligned)
             - Effective spin: χ_eff ∈ [0.8, 0.95]
 
@@ -4287,7 +4333,7 @@ class GWDatasetGenerator:
         """
 
         config = self.extreme_types_config.get("high_spin_aligned", {})
-        spin_range = config.get("spin_range", [0.8, 0.998])
+        spin_range = config.get("spin_range", [0.8, 0.99])  # Physical limit at 0.99
         tilt_max = config.get("tilt_max", 0.2)  # radians
 
         # Sample parameters
@@ -4395,10 +4441,10 @@ class GWDatasetGenerator:
 
         # Ensure chi_p in desired range
         if params["chi_p"] < chi_p_range[0]:
-            # Boost spin magnitudes
+            # Boost spin magnitudes (clipped to 0.99 physical limit)
             scale = chi_p_range[0] / params["chi_p"]
-            params["a1"] = min(params["a1"] * scale, 0.998)
-            params["a2"] = min(params["a2"] * scale, 0.998)
+            params["a1"] = min(params["a1"] * scale, 0.99)
+            params["a2"] = min(params["a2"] * scale, 0.99)
             params["chi_p"] = chi_p_range[0]
 
         # Generate sample

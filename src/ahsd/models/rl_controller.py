@@ -195,7 +195,7 @@ class AdaptiveComplexityController(nn.Module):
       # Typical batch time: 200-300ms; baseline at 500ms
       speed_reward = max(-0.5, 1.0 - time_taken_ms / 500.0)  # Cap at -0.5 for very slow runs
     
-    # ✅ CRITICAL FIX: Accuracy-Complexity Tradeoff Bonus
+    #  Accuracy-Complexity Tradeoff Bonus
     # Reward actions that improve accuracy relative to their complexity cost.
     # This prevents collapse to low complexity by tying reward to actual improvement.
     # Complexity baseline costs: low=0, medium=0.3, high=0.6 (relative to max potential reward ~2.0)

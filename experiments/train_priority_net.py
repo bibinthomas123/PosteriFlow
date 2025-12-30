@@ -1050,7 +1050,7 @@ class PriorityNetDataset(Dataset):
         all_priorities = np.array(all_priorities)
 
         if len(all_priorities) > 0:
-            # ✅ CRITICAL FIX: Use RAW priorities, not log!
+            #  Use RAW priorities, not log!
             self.priority_min = float(all_priorities.min())
             self.priority_max = float(all_priorities.max())
 
@@ -1074,7 +1074,7 @@ class PriorityNetDataset(Dataset):
         priorities = np.asarray(priorities, dtype=np.float32)
         priorities = np.maximum(priorities, 1e-6)
 
-        # ✅ CRITICAL FIX: Detect if already normalized
+        #  Detect if already normalized
         # If ALL values are in [0, 1], they're already normalized
         if np.all((priorities >= 0.0) & (priorities <= 1.0)):
             # Already normalized! Just ensure safe bounds

@@ -76,14 +76,20 @@ class ParameterScaler:
                 }
             
             # ============================================================
-            # DISTANCE: Log-minmax (CRITICAL FIX for -285 Mpc bias!)
+            # DISTANCE: Log-minmax (FIXED Dec 31: Match actual data ranges)
             # ============================================================
             elif param == 'luminosity_distance':
+                # ✅ FIXED Dec 31: Use actual data ranges from config.py
+                # Data generation uses:
+                #   BBH: 50-5000 Mpc
+                #   BNS: 10-500 Mpc
+                #   NSBH: 20-2000 Mpc
+                # Conservative bounds covering all types: 10-5000 Mpc
                 scalers[param] = {
                     'type': 'log_minmax',
-                    'log_min': 2.345,      # log(10.4 Mpc)
-                    'log_max': 8.987,      # log(8000 Mpc) 
-                    'scaleto': (-1, 1),
+                    'log_min': np.log(10.0),     # log(10 Mpc) = 2.303
+                    'log_max': np.log(5000.0),   # log(5000 Mpc) = 8.517
+                    'scale_to': (-1, 1),         # ✅ FIX TYPO: 'scaleto' → 'scale_to'
                 }
 
             elif param == "redshift":

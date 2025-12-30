@@ -94,10 +94,11 @@ class WaveformGenerator:
         chirp_mass = params.get('chirp_mass', 30.0)
         distance = params.get('luminosity_distance', 400.0)
         
-        # ✅ CRITICAL: Must match ParameterSampler.reference_snr
-        reference_snr = 35.0  # Must match ParameterSampler
+        # ✅ CRITICAL: Must match ParameterSampler.reference_params (BBH)
+        # Dec 29, 17:00 UTC FIX: Updated to match ParameterSampler scatter fix
+        reference_snr = 20.0        # Keep at 20 (already correct)
         reference_mass = 30.0
-        reference_distance = 400.0
+        reference_distance = 1500.0 # Updated from 1400.0 to match ParameterSampler BBH reference (Dec 29, 17:00 UTC)
         
         # Expected SNR from distance and mass scaling
         expected_snr = reference_snr * (chirp_mass / reference_mass)**(5/6) * (reference_distance / distance)

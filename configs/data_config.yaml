@@ -10,7 +10,7 @@
 # ==============================================================================
 
 # Number of samples to generate (start with 50k for full training)
-n_samples: 20000
+n_samples: 25000
 
 # Output configuration
 output_dir: "data/dataset"
@@ -98,11 +98,11 @@ f_upper: 1024.0
 # ==============================================================================
 
 snr_ranges:
-  weak: [10.0, 15.0]     # Near detection threshold (ρth ~ 11-12)
-  low: [15.0, 25.0]      # Low but confident detections
-  medium: [25.0, 40.0]   # Typical detections (most events)
-  high: [40.0, 60.0]     # Loud events
-  loud: [60.0, 80.0]     # Very loud events
+  weak: [8.0, 12.0]     # Near detection threshold (ρth ~ 11-12)
+  low: [12.0, 20.0]      # Low but confident detections
+  medium: [20.0, 40.0]   # Typical detections (most events)
+  high: [40.0, 70.0]     # Loud events
+  loud: [70.0, 200.0]     # Very loud events
 
 
 # Target SNR distribution (realistic O4 rates)
@@ -126,23 +126,24 @@ mass_ranges:
 # SECTION 10: REALISTIC DISTANCE RANGES (O4/DESIGN SENSITIVITY)
 # ==============================================================================
 
-# CRITICAL FIX: Realistic detection horizons (O4/design sensitivity)
-# BBH: O4 horizon ~1000-1200 Mpc, observed events up to 2840 Mpc in GWTC-1
-# BNS: O4 range ~150-170 Mpc (design ~170 Mpc)
-# NSBH: Intermediate mass systems, scales between BNS and BBH
+# CRITICAL FIX: Wide distance ranges to prevent clipping (Dec 28, 17:35 UTC)
+# With reference_distance=1300 Mpc, formulas need room to sample full range
+# BBH: Allow 50-2000 Mpc (O4 horizon ~1000 Mpc, events up to 2840 Mpc)
+# BNS: Allow 10-1000 Mpc (though most nearby ~100 Mpc, allow far samples for balance)
+# NSBH: Allow 20-1500 Mpc (scales between BNS and BBH)
 distance_ranges:
-  BBH: [50.0, 2000.0]    # BBH: O4 horizon ~1000-1200 Mpc, allow up to 2000 Mpc
-  BNS: [10.0, 180.0]     # BNS: O4 realistic ~150-170 Mpc, cap at design sensitivity
-  NSBH: [20.0, 600.0]    # NSBH: Intermediate, scales between BNS and BBH
+  BBH: [50.0, 5000.0]    # BBH: Wide range prevents clipping
+  BNS: [10.0, 1000.0]    # BNS: Widened from [10, 180] to allow far samples
+  NSBH: [20.0, 2000.0]   # NSBH: Widened from [20, 600] to allow far samples
 
 # ==============================================================================
 # SECTION 11: EVENT TYPE DISTRIBUTION (REALISTIC O4 RATES)
 # ==============================================================================
 
 event_type_distribution:
-  BBH: 0.46   # 46% - most common detections
-  BNS: 0.32   # 32% - rare but important
-  NSBH: 0.17 # 17% - intermediate rate
+  BBH: 0.55   # 46% - most common detections
+  BNS: 0.20   # 32% - rare but important
+  NSBH: 0.20 # 17% - intermediate rate
   noise: 0.05 # 5% - noise-only samples
 
 # ==============================================================================

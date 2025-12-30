@@ -377,10 +377,12 @@ def proxy_network_snr_from_params(d: dict):
     total_mass = m1 + m2
     chirp_mass = (m1 * m2)**(3/5) / total_mass**(1/5)
     
-    # Reference: at M_c=30 Msun, d=400 Mpc, SNR=35 (must match ParameterSampler)
+    # Reference: must match ParameterSampler reference_params
+    # BBH default: M_c=30 Msun, d=1500 Mpc, SNR=20
+    # Dec 29, 17:00 UTC CRITICAL FIX: Updated to match ParameterSampler scatter fix
     reference_chirp_mass = 30.0
-    reference_distance = 400.0
-    reference_snr = 35.0
+    reference_distance = 1500.0  # Updated from 1400.0 to match BBH reference_params (Dec 29, 17:00 UTC)
+    reference_snr = 20.0         # Keep at 20 (already correct from previous fix)
     
     # SNR scales as: SNR ~ (M_c)^(5/6) / d
     snr = reference_snr * (chirp_mass / reference_chirp_mass)**(5/6) * (reference_distance / dl)

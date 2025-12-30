@@ -1118,7 +1118,7 @@ class BiasCorrector(nn.Module):
             # Shape: (batch, 9) each
             squared_errors = (corrections_pred - corrections_true) ** 2
             
-            # ✅ CRITICAL FIX: Adaptive parameter scaling to handle different correction magnitudes
+            #  Adaptive parameter scaling to handle different correction magnitudes
             # (small corrections for time vs large for distance)
             # Use absolute error magnitude instead of true value (corrections are small!)
             param_scales = torch.clamp(torch.abs(corrections_true).mean(dim=0, keepdim=True) + 0.01, min=0.01)

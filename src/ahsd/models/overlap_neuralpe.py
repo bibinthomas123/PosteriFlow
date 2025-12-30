@@ -1671,7 +1671,7 @@ class OverlapNeuralPE(nn.Module):
         context_std_value = 0.0
         context_noise_scale = 0.0
          
-         if self.training:
+        if self.training:
             try:
                 context_std = context.std()
                 context_mean_abs = context.abs().mean()

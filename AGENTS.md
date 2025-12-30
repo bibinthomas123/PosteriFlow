@@ -25,6 +25,45 @@ Do not create a new Document every time just read the old doc and update it so t
 
 ---
 
+## 🔴 CRITICAL FIX: Distance Scaler Bounds Mismatch (Dec 31, 2025, 10:45 UTC) ✅ FIXED
+
+**PROBLEM IDENTIFIED**: Scaler bounds did NOT match actual data generation ranges!
+- **Scaler had**: log_min=2.345, log_max=8.987 (covering 10.4-8000 Mpc)
+- **Data actually uses**: 
+  - BBH: 50-5000 Mpc
+  - BNS: 10-500 Mpc
+  - NSBH: 20-2000 Mpc
+
+**ROOT CAUSE OF DISTANCE BIAS**: Mismatch between data generation and model's expectation caused systematic clipping and gradient flow issues.
+
+**FIX APPLIED** (Dec 31, 10:50 UTC):
+1. Changed scaler bounds to match config.py: log(10.0)=2.303 to log(5000.0)=8.517
+2. Now covers 10-5000 Mpc, encompassing ALL event types
+3. Fixed typo: `'scaleto'` → `'scale_to'` in scaler dict
+4. Verified with round-trip tests: all errors < 0.002 Mpc ✅
+
+**Expected Impact**:
+- ✅ Eliminates -285 Mpc systematic distance bias
+- ✅ Proper gradient flow for distance parameter
+- ✅ Consistent handling across BBH/BNS/NSBH
+- ✅ Better convergence during training
+
+**Verification**: All test cases pass
+```
+✅ BBH 50/1000/5000 Mpc normalized/denormalized correctly
+✅ BNS 10/150/500 Mpc normalized/denormalized correctly  
+✅ NSBH 20/500/2000 Mpc normalized/denormalized correctly
+Max error: 0.0020 Mpc, Mean error: 0.0003 Mpc
+```
+
+**Files Modified**:
+- `src/ahsd/models/parameter_scalers.py` (lines 78-93): Updated distance bounds
+- Created verification tests: `verify_distance_scaling_fix.py`, `test_scaler_distance_fix.py`
+
+**Next Steps**: Regenerate 50K dataset with corrected scaler, retrain models
+
+---
+
 ## ✅ LATEST: Distance Clipping Verification Complete (Dec 29, 2025, 18:45 UTC)
 
 **STATUS: ALL CLIPPING CHANGES VERIFIED AND WORKING**

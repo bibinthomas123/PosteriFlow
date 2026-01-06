@@ -70,7 +70,8 @@ class BiasDataset(Dataset):
     """Streaming dataset for bias correction training - loads pre-computed posterior statistics from disk"""
     
     def __init__(self, data_dir: str, param_names: List[str], 
-                 context_dim: int = 256, split: str = 'train', seed: int = 42):
+                 context_dim: int = 256, split: str = 'train', seed: int = 42,
+                 physics_bounds: Dict = None):
         """
         Args:
             data_dir: Path to data directory with train/validation/test splits
@@ -78,12 +79,14 @@ class BiasDataset(Dataset):
             context_dim: Context feature dimension
             split: 'train', 'validation', or 'test'
             seed: Random seed for reproducible bias generation (used in preprocessing)
+            physics_bounds: Physics bounds dict for parameter normalization
         """
         self.data_dir = Path(data_dir)  # ✅ Root data dir (not split subdir)
         self.split_dir = self.data_dir / split
         self.param_names = param_names
         self.context_dim = context_dim
         self.seed = seed
+        self.physics_bounds = physics_bounds or {}  # ✅ FIX #1: Store bounds for normalization
         self.logger = logging.getLogger(__name__)
         
         # Collect all chunk files from split subdirectory
@@ -117,11 +120,10 @@ class BiasDataset(Dataset):
                 
                 for sample_idx in range(len(samples)):
                     sample = samples[sample_idx]
-                    # ✅ Skip edge cases - they have intentionally corrupted parameters
-                    if not sample.get("is_edge_case", False):
-                        self.sample_index.append((batch_idx, sample_idx))
-                    else:
+                    if sample.get("is_edge_case"):
                         edge_case_count += 1
+                        continue
+                    self.sample_index.append((batch_idx, sample_idx))
                     
             except Exception as e:
                 self.logger.warning(f"Failed to index batch {batch_file}: {e}")
@@ -196,22 +198,12 @@ class BiasDataset(Dataset):
             # Load precomputed posterior statistics or generate on-the-fly
             # Posterior stats provide realistic biased estimates using Neural PE samples
             sample_key = idx  # Use linear index (matches precompute_posterior_stats.py)
-            
-            # ✅ DEBUG: Log first sample and posterior stats lookup
-            if idx == 0:
-                self.logger.info(f"[DATASET DEBUG] Sample 0 true_params: {true_params[:5]}")
-                self.logger.info(f"[DATASET DEBUG] Posterior stats available: {len(self.posterior_stats)} total")
-                self.logger.info(f"[DATASET DEBUG] Looking for key: {sample_key} (type: {type(sample_key).__name__})")
-                self.logger.info(f"[DATASET DEBUG] Key found: {sample_key in self.posterior_stats}")
+
             
             if sample_key in self.posterior_stats:
                 # ✅ Use precomputed posterior stats to inform bias magnitude
                 # Posterior stats contain aggregate mean/std from Neural PE posterior samples
                 stats = self.posterior_stats[sample_key]
-                
-                # ✅ DEBUG: Log fallback usage
-                if idx < 3:
-                    self.logger.info(f"[DATASET] Sample {idx}: Using posterior_stats (key={sample_key})")
                 
                 # Extract posterior statistics for magnitude guidance
                 post_mean_scalar = stats.get('mean', 0.0)  # Scalar mean across all params
@@ -226,14 +218,15 @@ class BiasDataset(Dataset):
                 post_mean_scalar = float(post_mean_scalar)
                 post_std_scalar = float(post_std_scalar)
                 
-                # ✅ CRITICAL FIX (Nov 30): Generate realistic biases using posterior std as scale
+                #  (Jan 2): Use posterior std DIRECTLY as uncertainty scale
                 # posterior_std tells us how much Neural PE's posterior spread
                 # Larger spread = larger hierarchical bias → need bigger corrections
-                # Scale bias magnitudes by posterior uncertainty
-                uncertainty_scale = post_std_scalar / 5.0 if post_std_scalar > 0 else 1.0
-                uncertainty_scale = np.clip(uncertainty_scale, 0.5, 5.0)  # Reasonable bounds
+                # DO NOT clamp - preserve full distribution information
+                # With large posterior_std (e.g., 300+), we need proportionally large biases
+                uncertainty_scale = max(post_std_scalar, 0.5) if post_std_scalar > 0 else 1.0
+                # Remove upper clamp - let it scale with actual posterior uncertainty
                 
-                self.logger.debug(f"[DATASET] Sample {idx}: post_std_scalar={post_std_scalar:.4f}, uncertainty_scale={uncertainty_scale:.4f}")
+                # self.logger.debug(f"[DATASET] Sample {idx}: post_std_scalar={post_std_scalar:.4f}, uncertainty_scale={uncertainty_scale:.4f}")
                 
                 estimated_params = true_params.copy()
                 bias_magnitudes = []  # DEBUG: Track bias magnitudes
@@ -267,10 +260,18 @@ class BiasDataset(Dataset):
                             bias = np.random.normal(0, 0.10 * uncertainty_scale)
                             estimated_params[j] = true_params[j] + bias
                 
-                true_correction = true_params - estimated_params
-                # ✅ IMPORTANT: Do NOT clip corrections - let model learn full range
-                # Posterior std-scaled biases produce meaningful corrections
-                # Model will learn to map these through its ±2.0 output range
+                # ✅ FIX #1: Normalize corrections to [-1, 1] space matching network predictions
+                true_correction = np.zeros_like(estimated_params)
+                for j, param_name in enumerate(self.param_names):
+                    # Use safe bounds retrieval with sensible defaults
+                    if self.physics_bounds and param_name in self.physics_bounds:
+                        bounds = self.physics_bounds[param_name]
+                        rng = bounds.get('max_value', 1.0) - bounds.get('min_value', -1.0)
+                    else:
+                        # Default bounds if not available
+                        rng = 2.0  # Assume [-1, 1] range by default
+                    # Normalize: physical_correction / parameter_range
+                    true_correction[j] = (true_params[j] - estimated_params[j]) / max(rng, 1e-6)
             else:
                 # ✅ Fallback when posterior stats not available
                 # Generate realistic biased estimates with LARGER magnitudes (10-20% error)
@@ -308,13 +309,24 @@ class BiasDataset(Dataset):
                             bias = np.random.normal(0, 0.10)
                             estimated_params[j] = true_params[j] + bias
                 
-                true_correction = true_params - estimated_params
-            
-            # ✅ DEBUG: Log correction magnitude
-            if idx == 0:
-                tc_mean = np.mean(np.abs(true_correction))
-                tc_max = np.max(np.abs(true_correction))
-                self.logger.info(f"[DATASET DEBUG] Sample 0 true_correction: mean={tc_mean:.9f}, max={tc_max:.9f}, fallback={'posterior_stats' not in self.posterior_stats}")
+                # ✅ FIX #1: Normalize corrections to [-1, 1] space matching network predictions
+                true_correction = np.zeros_like(estimated_params)
+                for j, param_name in enumerate(self.param_names):
+                    # Use safe bounds retrieval with sensible defaults
+                    if self.physics_bounds and param_name in self.physics_bounds:
+                        bounds = self.physics_bounds[param_name]
+                        rng = bounds.get('max_value', 1.0) - bounds.get('min_value', -1.0)
+                    else:
+                        # Default bounds if not available
+                        rng = 2.0  # Assume [-1, 1] range by default
+                    # Normalize: physical_correction / parameter_range
+                    true_correction[j] = (true_params[j] - estimated_params[j]) / max(rng, 1e-6)
+                
+                # ✅ DEBUG: Log correction magnitude
+                if idx == 0:
+                    tc_mean = np.mean(np.abs(true_correction))
+                    tc_max = np.max(np.abs(true_correction))
+                    self.logger.info(f"[DATASET DEBUG] Sample 0 true_correction: mean={tc_mean:.9f}, max={tc_max:.9f}, fallback={'posterior_stats' not in self.posterior_stats}")
             
             # ✅ Normalize parameters (estimated params used for context only, not direct correction target)
             # Normalization is for context tensor encoding
@@ -501,16 +513,16 @@ class BiasCorrectorTrainer:
                 saved_context_dim = neural_posterior_config.get('context_dim', 768)
                 
                 # Build config for NeuralPE initialization to match checkpoint
-                # Flow config may be nested in flow_config or at top level
-                flow_config = saved_config.get('flow_config', {})
+                # Flow config is nested under neural_posterior section
+                flow_config = neural_posterior_config.get('flow_config', {})
                 neural_pe_config = {
                     'context_dim': saved_context_dim,
-                    'flow_type': saved_config.get('flow_type', 'nsf'),
-                    'num_layers': saved_config.get('n_flow_layers', flow_config.get('num_layers', 6)),
-                    'hidden_features': flow_config.get('hidden_features', saved_config.get('hidden_features', 256)),
-                    'num_bins': flow_config.get('num_bins', saved_config.get('num_bins', 8)),
-                    'tail_bound': flow_config.get('tail_bound', saved_config.get('tail_bound', 3.0)),
-                    'dropout': flow_config.get('dropout', saved_config.get('dropout', 0.1))
+                    'flow_type': neural_posterior_config.get('flow_type', 'nsf'),
+                    'num_layers': flow_config.get('num_layers', 12),
+                    'hidden_features': flow_config.get('hidden_features', 256),
+                    'num_bins': flow_config.get('num_bins', 16),
+                    'tail_bound': flow_config.get('tail_bound', 3.0),
+                    'dropout': flow_config.get('dropout', 0.15)
                 }
                 
                 # Use None for priority_net_path if not available
@@ -613,6 +625,23 @@ class BiasCorrectorTrainer:
             'val_correction_bias': [],
             'train_correction_correlation': [],
             'val_correction_correlation': [],
+            # ✅ BIAS FIXING METRICS
+            'train_bias_before': [],
+            'train_bias_after': [],
+            'train_bias_improvement_pct': [],
+            'train_bias_reduction_ratio': [],
+            'val_bias_before': [],
+            'val_bias_after': [],
+            'val_bias_improvement_pct': [],
+            'val_bias_reduction_ratio': [],
+            # ✅ NEW VALIDATION-ONLY DISTANCE METRICS
+            'val_distance_mae_before': [],
+            'val_distance_mae_after': [],
+            'val_distance_improvement': [],
+            'val_distance_bias_signed': [],
+            'val_ci_coverage_68': [],
+            'val_rejection_rate': [],
+            'val_high_unc_fraction': [],
             'gradient_norms': [],
             'train_val_gap': []
         }
@@ -680,7 +709,7 @@ class BiasCorrectorTrainer:
                      quality_weights: torch.Tensor,
                      ) -> Tuple[torch.Tensor, Dict]:
         """
-        ✅ CRITICAL FIX (Dec 9, 2025): Removed variance penalty explosion
+         (Dec 9, 2025): Removed variance penalty explosion
         
         Problem: magnitude_loss = (pred_std - true_std)^2 was EXPLODING
         - pred_std ≈ 0.02 (tiny predictions)
@@ -772,8 +801,15 @@ class BiasCorrectorTrainer:
         # ✅ FIXED (Nov 30): Acceptance metrics based on CALIBRATION, not quantile
         # Acceptance = fraction of predictions where |error| < predicted_uncertainty (68% target)
         # This is the proper Gaussian calibration metric
+        # Initialize debug metrics
+        err_mean = 0.0
+        err_max = 0.0
+        unc_mean = 0.0
+        unc_min = 0.0
+        unc_max = 0.0
+         
         if pred_uncertainties.numel() > 0:
-            # Compute errors
+             # Compute errors
             errors = torch.abs(residuals)
             
             # ✅ DEBUG: Check if uncertainties are too large
@@ -862,11 +898,11 @@ class BiasCorrectorTrainer:
             'correction_bias': correction_bias,
             'correction_correlation': correction_correlation,
             # ✅ DEBUG: Error vs Uncertainty comparison
-            'debug_err_mean': err_mean if 'err_mean' in locals() else 0.0,
-            'debug_err_max': err_max if 'err_max' in locals() else 0.0,
-            'debug_unc_mean': unc_mean if 'unc_mean' in locals() else 0.0,
-            'debug_unc_min': unc_min if 'unc_min' in locals() else 0.0,
-            'debug_unc_max': unc_max if 'unc_max' in locals() else 0.0,
+             'debug_err_mean': err_mean,
+             'debug_err_max': err_max,
+             'debug_unc_mean': unc_mean,
+             'debug_unc_min': unc_min,
+             'debug_unc_max': unc_max,
             # Magnitude tracking (for debugging output capping)
             'true_mag': true_mag.item(),
             'pred_mag': pred_mag.item(),
@@ -924,8 +960,8 @@ class BiasCorrectorTrainer:
                 tc_std = torch.abs(true_corrections).std().item()
                 self.logger.info(f"[BATCH 0 DEBUG] true_corrections: mean={tc_mean:.9f}, max={tc_max:.9f}, std={tc_std:.9f}")
             
-            # Forward pass
-            pred_corrections, pred_uncertainties = self.bias_corrector.bias_estimator(
+            # Forward pass - now returns 3 values (corrections, uncertainties, variance_scales)
+            pred_corrections, pred_uncertainties, pred_variance_scales = self.bias_corrector.bias_estimator(
                 param_tensors, context_tensors
             )
             
@@ -935,8 +971,12 @@ class BiasCorrectorTrainer:
                 pc_max = torch.abs(pred_corrections).max().item()
                 unc_mean = pred_uncertainties.mean().item()
                 unc_max = pred_uncertainties.max().item()
+                vs_mean = pred_variance_scales.mean().item()
+                vs_min = pred_variance_scales.min().item()
+                vs_max = pred_variance_scales.max().item()
                 self.logger.info(f"[BATCH 0 DEBUG] pred_corrections: mean={pc_mean:.9f}, max={pc_max:.9f}")
                 self.logger.info(f"[BATCH 0 DEBUG] pred_uncertainties: mean={unc_mean:.9f}, max={unc_max:.9f}")
+                self.logger.info(f"[BATCH 0 DEBUG] variance_scales: mean={vs_mean:.4f}, range=[{vs_min:.4f}, {vs_max:.4f}]")
             
             # Compute loss
             loss, metrics = self.loss_function(
@@ -976,6 +1016,12 @@ class BiasCorrectorTrainer:
         avg_metrics = {key: np.mean(values) for key, values in metrics_sum.items()}
         avg_metrics['avg_gradient_norm'] = np.mean(gradient_norms)
         
+        # ✅ BIAS FIXING METRICS (DISABLED)
+        # Note: Training data only contains corrections (true_params - estimated_params)
+        # Does not contain estimated_params or true_params separately
+        # Would need changes to data loader to track before/after bias
+        # For now, loss components provide sufficient monitoring
+        
         return avg_loss, avg_metrics
     
     def validate(self, val_loader: DataLoader) -> Tuple[float, Dict]:
@@ -986,7 +1032,7 @@ class BiasCorrectorTrainer:
             
         Returns:
             avg_loss: Average validation loss
-            metrics: Dict of metrics including acceptance metrics
+            metrics: Dict of metrics including acceptance metrics + new validation-only metrics
         """
         self.bias_corrector.bias_estimator.eval()
         val_losses = []
@@ -1008,6 +1054,14 @@ class BiasCorrectorTrainer:
             'correction_correlation': []
         }
         
+        # ✅ NEW VALIDATION-ONLY METRICS (no gradients)
+        distance_mae_before = []  # MAE before correction
+        distance_mae_after = []   # MAE after correction
+        distance_bias_signed = []  # Mean signed distance bias (Mpc)
+        ci_coverage_68 = []        # 68% credible interval coverage
+        rejection_count = 0        # Count of low-confidence predictions
+        high_unc_count = 0         # Count of high-uncertainty predictions
+        
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validating", leave=False):
                 param_tensors = batch['param_tensor'].to(self.device)
@@ -1015,7 +1069,8 @@ class BiasCorrectorTrainer:
                 true_corrections = batch['true_correction'].to(self.device)
                 quality_weights = batch['signal_quality'].to(self.device)
                 
-                pred_corrections, pred_uncertainties = self.bias_corrector.bias_estimator(
+                # Now returns 3 values (corrections, uncertainties, variance_scales)
+                pred_corrections, pred_uncertainties, pred_variance_scales = self.bias_corrector.bias_estimator(
                     param_tensors, context_tensors
                 )
                 
@@ -1027,9 +1082,51 @@ class BiasCorrectorTrainer:
                 val_losses.append(loss.item())
                 for key in metrics_sum:
                     metrics_sum[key].append(metrics[key])
+                
+                # ✅ NEW VALIDATION-ONLY METRICS (no backward pass)
+                # These use parameter_names[2] = 'luminosity_distance' (index 2)
+                distance_idx = 2  # luminosity_distance is at index 2
+                
+                # Extract distance corrections (in normalized space)
+                true_dist_corr = true_corrections[:, distance_idx].cpu().numpy()
+                pred_dist_corr = pred_corrections[:, distance_idx].cpu().numpy()
+                uncertainties = pred_uncertainties.cpu().numpy()
+                
+                # MAE before correction (true error magnitude)
+                distance_mae_before.append(np.mean(np.abs(true_dist_corr)))
+                
+                # MAE after correction (residual error after applying prediction)
+                # Residual = true_correction - pred_correction
+                residual_dist = true_dist_corr - pred_dist_corr
+                distance_mae_after.append(np.mean(np.abs(residual_dist)))
+                
+                # Mean signed distance bias (positive = overestimate distance)
+                distance_bias_signed.append(np.mean(residual_dist))
+                
+                # 68% CI coverage: proportion of samples where |true_error| < 1.0 × uncertainty
+                # (1σ covers ~68% of normal distribution)
+                covered = np.sum(np.abs(true_dist_corr) < (1.0 * uncertainties[:, 0]))
+                coverage = covered / len(true_dist_corr)
+                ci_coverage_68.append(coverage)
+                
+                # Rejection rate: confidence < 0.5 (inverse of uncertainty)
+                confidence = 1.0 / (uncertainties[:, 0] + 1e-6)
+                rejection_count += np.sum(confidence < 0.5)
+                
+                # High-uncertainty fraction: uncertainty > 75th percentile
+                high_unc_count += np.sum(uncertainties[:, 0] > np.percentile(uncertainties[:, 0], 75))
         
         avg_loss = np.mean(val_losses)
         avg_metrics = {key: np.mean(values) for key, values in metrics_sum.items()}
+        
+        # ✅ ADD NEW VALIDATION-ONLY METRICS
+        avg_metrics['distance_mae_before'] = np.mean(distance_mae_before)
+        avg_metrics['distance_mae_after'] = np.mean(distance_mae_after)
+        avg_metrics['distance_improvement'] = avg_metrics['distance_mae_before'] - avg_metrics['distance_mae_after']
+        avg_metrics['distance_bias_signed'] = np.mean(distance_bias_signed)
+        avg_metrics['ci_coverage_68'] = np.mean(ci_coverage_68)
+        avg_metrics['rejection_rate'] = rejection_count / (len(val_loader.dataset) + 1e-6)
+        avg_metrics['high_unc_fraction'] = high_unc_count / (len(val_loader.dataset) + 1e-6)
         
         return avg_loss, avg_metrics
     
@@ -1073,9 +1170,18 @@ class BiasCorrectorTrainer:
             self.training_history['train_correction_std'].append(train_metrics.get('correction_std', 0))
             self.training_history['train_correction_bias'].append(train_metrics.get('correction_bias', 0))
             self.training_history['train_correction_correlation'].append(train_metrics.get('correction_correlation', 0))
+            # ✅ BIAS FIXING METRICS
+            self.training_history['train_bias_before'].append(train_metrics.get('bias_before_mean', 0))
+            self.training_history['train_bias_after'].append(train_metrics.get('bias_after_mean', 0))
+            self.training_history['train_bias_improvement_pct'].append(train_metrics.get('bias_improvement_pct', 0))
+            self.training_history['train_bias_reduction_ratio'].append(train_metrics.get('bias_reduction_ratio', 1.0))
              
              # Validation phase
             val_loss = None
+            val_metrics = {}
+            val_acceptance = 0.0
+            val_correlation = 0.0
+            
             if val_loader is not None:
                 val_loss, val_metrics = self.validate(val_loader)
                 self.training_history['val_losses'].append(val_loss)
@@ -1089,15 +1195,30 @@ class BiasCorrectorTrainer:
                 self.training_history['val_correction_std'].append(val_metrics.get('correction_std', 0))
                 self.training_history['val_correction_bias'].append(val_metrics.get('correction_bias', 0))
                 self.training_history['val_correction_correlation'].append(val_metrics.get('correction_correlation', 0))
-            
+                # ✅ BIAS FIXING METRICS
+                self.training_history['val_bias_before'].append(val_metrics.get('bias_before_mean', 0))
+                self.training_history['val_bias_after'].append(val_metrics.get('bias_after_mean', 0))
+                self.training_history['val_bias_improvement_pct'].append(val_metrics.get('bias_improvement_pct', 0))
+                self.training_history['val_bias_reduction_ratio'].append(val_metrics.get('bias_reduction_ratio', 1.0))
+                
+                # ✅ NEW VALIDATION-ONLY METRICS (distance calibration)
+                self.training_history['val_distance_mae_before'].append(val_metrics.get('distance_mae_before', 0))
+                self.training_history['val_distance_mae_after'].append(val_metrics.get('distance_mae_after', 0))
+                self.training_history['val_distance_improvement'].append(val_metrics.get('distance_improvement', 0))
+                self.training_history['val_distance_bias_signed'].append(val_metrics.get('distance_bias_signed', 0))
+                self.training_history['val_ci_coverage_68'].append(val_metrics.get('ci_coverage_68', 0))
+                self.training_history['val_rejection_rate'].append(val_metrics.get('rejection_rate', 0))
+                self.training_history['val_high_unc_fraction'].append(val_metrics.get('high_unc_fraction', 0))
+                
+                # ✅ CORRECTED EARLY STOPPING (Dec 2, 2025, Epoch-Level)
+                # Only use reliable metrics: Loss and Acceptance
+                # Correlation is monitored but not used for early stopping (batch-level noise)
+                val_acceptance = val_metrics.get('acceptance_rate', 0)
+                val_correlation = val_metrics.get('correction_correlation', 0)
+             
             # Train-Val gap
-            train_val_gap = train_loss - val_loss
+            train_val_gap = train_loss - val_loss if val_loss is not None else 0.0
             self.training_history['train_val_gap'].append(train_val_gap)
-                         # ✅ CORRECTED EARLY STOPPING (Dec 2, 2025, Epoch-Level)
-            # Only use reliable metrics: Loss and Acceptance
-            # Correlation is monitored but not used for early stopping (batch-level noise)
-            val_acceptance = val_metrics.get('acceptance_rate', 0)
-            val_correlation = val_metrics.get('correction_correlation', 0)
             
             improved = False
             reason = ""
@@ -1124,91 +1245,130 @@ class BiasCorrectorTrainer:
             if improved:
                 patience_counter = 0
                 best_model_state = {k: v.cpu() for k, v in self.bias_corrector.state_dict().items()}
+                
+                # ✅ SAVE BEST MODEL WITH EPOCH NUMBER
+                if checkpoint_dir:
+                    best_model_path = checkpoint_dir / f'best_model.pth'
+                    self._save_checkpoint(str(best_model_path), epoch)
+                    self.logger.info(f"[Epoch {epoch+1:3d}] 🎯 NEW BEST MODEL saved: {best_model_path} | Metric: {reason}")
             else:
                 patience_counter += 1
-             
-             # ✅ ADDED: Step scheduler based on type
+            
+            # ✅ ADDED: Step scheduler based on type
             if self.scheduler_type == 'plateau' and val_loss is not None:
                 self.scheduler.step(val_loss)
             elif self.scheduler_type == 'cosine':
                 self.scheduler.step()
-             
-            # ✅ ADDED: Save periodic checkpoints
+            
+            # ✅ ADDED: Save periodic checkpoints (every 10 epochs)
             if checkpoint_dir and (epoch + 1) % 10 == 0:
                 checkpoint_path = checkpoint_dir / f'checkpoint_epoch_{epoch+1:03d}.pth'
                 self._save_checkpoint(str(checkpoint_path), epoch)
-                self.logger.debug(f"Saved checkpoint: {checkpoint_path}")
-             
-             # Logging
+                self.logger.debug(f"[Epoch {epoch+1:3d}] Saved periodic checkpoint: {checkpoint_path}")
+            
+            # Logging
             if (epoch + 1) % 1 == 0 or epoch == 0:
                 msg = f"Epoch {epoch+1:3d}/{self.epochs} | Train Loss: {train_loss:.6f} | MAE: {train_metrics.get('mae', 0):.6f} | RMSE: {train_metrics.get('rmse', 0):.6f}"
-            if val_loss is not None:
-                msg += f" | Val Loss: {val_loss:.6f} | Val MAE: {val_metrics.get('mae', 0):.6f} | Patience: {patience_counter}/{self.patience}"
+                if val_loss is not None:
+                    msg += f" | Val Loss: {val_loss:.6f} | Val MAE: {val_metrics.get('mae', 0):.6f} | Patience: {patience_counter}/{self.patience}"
                 self.logger.info(msg)
-             
-             # ✅ Log acceptance metrics
-            self.logger.info(f"  ✓ Acceptance Rate: Train={train_metrics.get('acceptance_rate', 0):.2%} | Val={val_metrics.get('acceptance_rate', 0):.2%}" if val_loss is not None else f"  ✓ Acceptance Rate: Train={train_metrics.get('acceptance_rate', 0):.2%}")
-            self.logger.info(f"  ⚡ Avg Confidence: Train={train_metrics.get('avg_confidence', 0):.4f} | Val={val_metrics.get('avg_confidence', 0):.4f}" if val_loss is not None else f"  ⚡ Avg Confidence: Train={train_metrics.get('avg_confidence', 0):.4f}")
-            self.logger.info(f"  📊 Correction Correlation: Train={train_metrics.get('correction_correlation', 0):.4f} | Val={val_metrics.get('correction_correlation', 0):.4f}" if val_loss is not None else f"  📊 Correction Correlation: Train={train_metrics.get('correction_correlation', 0):.4f}")
-             
-             # ✅ DEBUG: Log error vs uncertainty magnitudes
-            if epoch < 3:  # Only log first 3 epochs for brevity
-                debug_info = f"  🔍 DEBUG: Err[mean={train_metrics.get('debug_err_mean', 0):.9f}, max={train_metrics.get('debug_err_max', 0):.9f}] Unc[mean={train_metrics.get('debug_unc_mean', 0):.9f}, min={train_metrics.get('debug_unc_min', 0):.9f}]"
-                self.logger.info(debug_info)
-             
-             # 🎯 Log to Weights & Biases
-            if self.use_wandb:
-             wandb_log = {
-             'epoch': epoch + 1,
-             'train/loss': train_loss,
-             'train/mae': train_metrics.get('mae', 0),
-             'train/rmse': train_metrics.get('rmse', 0),
-             'train/max_error': train_metrics.get('max_error', 0),
-             'train/mean_uncertainty': train_metrics.get('mean_uncertainty', 0),
-             'train/acceptance_rate': train_metrics.get('acceptance_rate', 0),
-             'train/avg_confidence': train_metrics.get('avg_confidence', 0),
-             'train/correction_correlation': train_metrics.get('correction_correlation', 0),
-             'train/correction_std': train_metrics.get('correction_std', 0),
-             'train/correction_bias': train_metrics.get('correction_bias', 0),
-             'learning_rate': self.optimizer.param_groups[0]['lr'],
-             'gradient_norm': train_metrics.get('avg_gradient_norm', 0),
-             }
-             
+            
+            # ✅ Log acceptance metrics with epoch number
+            self.logger.info(f"[Epoch {epoch+1:3d}] ✓ Acceptance Rate: Train={train_metrics.get('acceptance_rate', 0):.2%} | Val={val_metrics.get('acceptance_rate', 0):.2%}" if val_loss is not None else f"[Epoch {epoch+1:3d}] ✓ Acceptance Rate: Train={train_metrics.get('acceptance_rate', 0):.2%}")
+            self.logger.info(f"[Epoch {epoch+1:3d}] ⚡ Avg Confidence: Train={train_metrics.get('avg_confidence', 0):.4f} | Val={val_metrics.get('avg_confidence', 0):.4f}" if val_loss is not None else f"[Epoch {epoch+1:3d}] ⚡ Avg Confidence: Train={train_metrics.get('avg_confidence', 0):.4f}")
+            self.logger.info(f"[Epoch {epoch+1:3d}] 📊 Correction Correlation: Train={train_metrics.get('correction_correlation', 0):.4f} | Val={val_metrics.get('correction_correlation', 0):.4f}" if val_loss is not None else f"[Epoch {epoch+1:3d}] 📊 Correction Correlation: Train={train_metrics.get('correction_correlation', 0):.4f}")
+            
+            # ✅ Log BIAS FIXING METRICS with epoch number
+            if 'bias_before_mean' in train_metrics and 'bias_after_mean' in train_metrics:
+                train_improvement = train_metrics.get('bias_improvement_pct', 0)
+                train_ratio = train_metrics.get('bias_reduction_ratio', 1.0)
+                self.logger.info(f"[Epoch {epoch+1:3d}] 🔧 BIAS FIXING (Train): Before={train_metrics.get('bias_before_mean', 0):.6f} → After={train_metrics.get('bias_after_mean', 0):.6f} | Improvement={train_improvement:.1f}% | Reduction={train_ratio:.2f}x")
+            
+            if val_loss is not None and 'bias_before_mean' in val_metrics and 'bias_after_mean' in val_metrics:
+                val_improvement = val_metrics.get('bias_improvement_pct', 0)
+                val_ratio = val_metrics.get('bias_reduction_ratio', 1.0)
+                self.logger.info(f"[Epoch {epoch+1:3d}] 🔧 BIAS FIXING (Val):   Before={val_metrics.get('bias_before_mean', 0):.6f} → After={val_metrics.get('bias_after_mean', 0):.6f} | Improvement={val_improvement:.1f}% | Reduction={val_ratio:.2f}x")
+            
+            # ✅ NEW: Log distance-specific calibration metrics (validation-only)
             if val_loss is not None:
-             wandb_log.update({
-             'val/loss': val_loss,
-             'val/mae': val_metrics.get('mae', 0),
-             'val/rmse': val_metrics.get('rmse', 0),
-             'val/max_error': val_metrics.get('max_error', 0),
-             'val/mean_uncertainty': val_metrics.get('mean_uncertainty', 0),
-             'val/acceptance_rate': val_metrics.get('acceptance_rate', 0),
-             'val/avg_confidence': val_metrics.get('avg_confidence', 0),
-             'val/correction_correlation': val_metrics.get('correction_correlation', 0),
-             'val/correction_std': val_metrics.get('correction_std', 0),
-             'val/correction_bias': val_metrics.get('correction_bias', 0),
-             'train_val_gap': train_val_gap,
-             })
-             
-             wandb.log(wandb_log)
-             
-             # Early stopping check
+                dist_before = val_metrics.get('distance_mae_before', 0)
+                dist_after = val_metrics.get('distance_mae_after', 0)
+                dist_improve = val_metrics.get('distance_improvement', 0)
+                dist_bias = val_metrics.get('distance_bias_signed', 0)
+                ci_cov = val_metrics.get('ci_coverage_68', 0)
+                rej_rate = val_metrics.get('rejection_rate', 0)
+                high_unc = val_metrics.get('high_unc_fraction', 0)
+                
+                self.logger.info(f"[Epoch {epoch+1:3d}] 📏 DISTANCE: MAE Before={dist_before:.6f} → After={dist_after:.6f} | Improvement={dist_improve:.6f} | Bias={dist_bias:.6f} Mpc")
+                self.logger.info(f"[Epoch {epoch+1:3d}] 📊 CALIBRATION: CI@68%={ci_cov:.2%} | Rejection={rej_rate:.2%} | High-Unc={high_unc:.2%}")
+            
+            # # ✅ DEBUG: Log error vs uncertainty magnitudes
+            # if epoch < 3:  # Only log first 3 epochs for brevity
+            #     debug_info = f"  🔍 DEBUG: Err[mean={train_metrics.get('debug_err_mean', 0):.9f}, max={train_metrics.get('debug_err_max', 0):.9f}] Unc[mean={train_metrics.get('debug_unc_mean', 0):.9f}, min={train_metrics.get('debug_unc_min', 0):.9f}]"
+            #     self.logger.info(debug_info)
+            
+            # 🎯 Log to Weights & Biases
+            if self.use_wandb:
+                wandb_log = {
+                    'epoch': epoch + 1,
+                    'train/loss': train_loss,
+                    'train/mae': train_metrics.get('mae', 0),
+                    'train/rmse': train_metrics.get('rmse', 0),
+                    'train/max_error': train_metrics.get('max_error', 0),
+                    'train/mean_uncertainty': train_metrics.get('mean_uncertainty', 0),
+                    'train/acceptance_rate': train_metrics.get('acceptance_rate', 0),
+                    'train/avg_confidence': train_metrics.get('avg_confidence', 0),
+                    'train/correction_correlation': train_metrics.get('correction_correlation', 0),
+                    'train/correction_std': train_metrics.get('correction_std', 0),
+                    'train/correction_bias': train_metrics.get('correction_bias', 0),
+                    'learning_rate': self.optimizer.param_groups[0]['lr'],
+                    'gradient_norm': train_metrics.get('avg_gradient_norm', 0),
+                }
+                
+                if val_loss is not None:
+                    wandb_log.update({
+                        'val/loss': val_loss,
+                        'val/mae': val_metrics.get('mae', 0),
+                        'val/rmse': val_metrics.get('rmse', 0),
+                        'val/max_error': val_metrics.get('max_error', 0),
+                        'val/mean_uncertainty': val_metrics.get('mean_uncertainty', 0),
+                        'val/acceptance_rate': val_metrics.get('acceptance_rate', 0),
+                        'val/avg_confidence': val_metrics.get('avg_confidence', 0),
+                        'val/correction_correlation': val_metrics.get('correction_correlation', 0),
+                        'val/correction_std': val_metrics.get('correction_std', 0),
+                        'val/correction_bias': val_metrics.get('correction_bias', 0),
+                        'train_val_gap': train_val_gap,
+                        # ✅ BIAS FIXING METRICS
+                        'train/bias_before': train_metrics.get('bias_before_mean', 0),
+                        'train/bias_after': train_metrics.get('bias_after_mean', 0),
+                        'train/bias_improvement_pct': train_metrics.get('bias_improvement_pct', 0),
+                        'train/bias_reduction_ratio': train_metrics.get('bias_reduction_ratio', 1.0),
+                        'val/bias_before': val_metrics.get('bias_before_mean', 0),
+                        'val/bias_after': val_metrics.get('bias_after_mean', 0),
+                        'val/bias_improvement_pct': val_metrics.get('bias_improvement_pct', 0),
+                        'val/bias_reduction_ratio': val_metrics.get('bias_reduction_ratio', 1.0),
+                    })
+                
+                wandb.log(wandb_log)
+            
+            # Early stopping check
             if patience_counter >= self.patience:
-             self.logger.info(f"Early stopping at epoch {epoch+1}")
-             self.logger.info(f"  Metrics at stop:")
-             self.logger.info(f"    - Acceptance: {val_acceptance:.2%} (target: 68%)")
-             self.logger.info(f"    - Correlation: {val_correlation:.4f} (target: >0.5)")
-             self.logger.info(f"    - Loss: {val_loss:.6f}")
-             self.logger.info(f"  Last metric: {patience_metric}")
-            if patience_counter - self.patience > 0:
-             self.logger.info(f"  (patience exceeded by {patience_counter - self.patience} epochs)")
-             break
-                    
-                    # Restore best model
-            if best_model_state is not None:
-                self.bias_corrector.load_state_dict(best_model_state)
-                self.logger.info(f"Restored best model with val_loss={best_val_loss:.6f}")
-                    
-                return self.training_history
+                self.logger.info(f"Early stopping at epoch {epoch+1}")
+                self.logger.info(f"  Metrics at stop:")
+                self.logger.info(f"    - Acceptance: {val_acceptance:.2%} (target: 68%)")
+                self.logger.info(f"    - Correlation: {val_correlation:.4f} (target: >0.5)")
+                self.logger.info(f"    - Loss: {val_loss:.6f}")
+                self.logger.info(f"  Last metric: {patience_metric}")
+                if patience_counter - self.patience > 0:
+                    self.logger.info(f"  (patience exceeded by {patience_counter - self.patience} epochs)")
+                break
+        
+        # Restore best model
+        if best_model_state is not None:
+            self.bias_corrector.load_state_dict(best_model_state)
+            self.logger.info(f"Restored best model with val_loss={best_val_loss:.6f}")
+        
+        return self.training_history
 
 
 
@@ -1229,7 +1389,7 @@ def main():
                        help='Patience for early stopping (increased to 40 for acceptance convergence)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
                        help='Device (cuda or cpu)')
-    parser.add_argument('--num_samples', type=int, default=1000,
+    parser.add_argument('--num_samples', type=int, default=20000,
                        help='Number of training samples to generate')
     parser.add_argument('--validation_split', type=float, default=0.2,
                        help='Validation split ratio')
@@ -1245,9 +1405,9 @@ def main():
                        help='Weights & Biases project name')
     parser.add_argument('--wandb_entity', type=str, default=None,
                        help='Weights & Biases entity (username/team)')
-    parser.add_argument('--data_path', type=str, default='data/output',
+    parser.add_argument('--data_path', type=str, default='data/dataset',
                        help='Path to dataset directory')
-    parser.add_argument('--model_path', type=str, default=None,
+    parser.add_argument('--model_path', type=str, default="models/neuralpe2/best_model.pth",
                         help='Path to pre-trained Neural PE model')
     parser.add_argument('--priority_net_path', type=str, default='models/prioritynet/priority_net_best.pth',
                         help='Path to frozen PriorityNet checkpoint')
@@ -1330,7 +1490,8 @@ def main():
         param_names=param_names,
         context_dim=context_dim,
         split='train',
-        seed=args.seed
+        seed=args.seed,
+        physics_bounds=bias_corrector.physics_bounds  # ✅ FIX #1: Pass bounds for normalization
     )
     
     val_dataset = BiasDataset(
@@ -1338,7 +1499,8 @@ def main():
         param_names=param_names,
         context_dim=context_dim,
         split='validation',
-        seed=args.seed
+        seed=args.seed,
+        physics_bounds=bias_corrector.physics_bounds  # ✅ FIX #1: Pass bounds for normalization
     )
     
     logger.info(f"Training set: {len(train_dataset)} samples (streamed)")

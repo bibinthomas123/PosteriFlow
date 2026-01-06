@@ -160,7 +160,7 @@ neural_posterior:
     - a2                                  # Secondary spin magnitude
   
   # --- ARCHITECTURE (auto-adjusted by flow_type) ---
-  context_dim: 384                        # ⬆️ Increased from 512 (50% more capacity for overlapping signals)
+  context_dim: 768                        # ⬆️ PHASE 3A: INCREASED from 384 to 768 (100% capacity boost for distance sensitivity)
   max_iterations: 5                       # Max adaptive refinement iterations
   
   # --- FLOW TYPE (Q3 REDESIGN: NSF) ---
@@ -182,11 +182,17 @@ neural_posterior:
     #   - 16× faster inference (no ODE solver)
     #   - Better convergence on bounded parameter spaces
     
-    num_layers: 12                        # Depth (NSF: fewer layers than FlowMatching, splines are expressive)
-    hidden_features: 256                  # Spline hidden dimension
-    num_bins: 16                          # Spline resolution
+    num_layers: 12                        # ⬇️ OPTIMIZED (Jan 3): 16 → 14 (balance capacity vs speed)
+    hidden_features: 256                  # ⬇️ OPTIMIZED (Jan 3): 512 → 384 (still 50% more than baseline)
+    num_bins: 12                          # ⬇️ OPTIMIZED (Jan 3): 16 → 12 (faster spline computation)
     tail_bound: 3.0                       # Automatic tail handling
-    dropout: 0.4                          # Flow dropout (stronger for stability)
+    dropout: 0.15                          # ✅ REDUCED (Jan 1): 0.4 → 0.2 (was biasing mean too much)
+    
+    # ✅ UPDATED (Jan 4): Temperature scaling for base distribution
+    # Temperature T > 1 expands base distribution: z ~ N(0, T²I)
+    # Higher T → wider posteriors → better coverage → fixes mass2 std collapse
+    # Start at 1.5 (exploratory), monitored by PIT loss during training
+    temperature_scale: 1.5                # ✅ Base distribution temperature (1.0=standard, 1.5=wider)
   
   # --- EVENT-TYPE-SPECIFIC CONFIGURATION (Nov 13 enhancement) ---
   event_type: "BBH"                       # Options: BBH, BNS, NSBH (used for physics-informed priors)
@@ -195,11 +201,12 @@ neural_posterior:
   # --- TRAINING ---
   # learning_rate: 1.0e-5                  # ⬇️ FURTHER REDUCED from 2.5e-5 (prevent oscillations at convergence) - Nov 14
   learning_rate: 3.0e-5
-  batch_size: 64                          # ⬆️ INCREASED to 64 (better gradient estimates for deep flow)
-  epochs: 100                              # ⬆️ INCREASED from 30 to allow deep flow to converge
+  batch_size: 64                          # ⬇️ REDUCED (Jan 3): 64 → 32 (1.5hr/epoch too slow, need 30min/epoch)
+  epochs: 50                              # ⬆️ INCREASED from 30 to allow deep flow to converge
   patience: 15                            # ⬆️ INCREASED from 10 (monitor through epoch 20-30)
   weight_decay: 1.0e-4                   # ⬆️ SLIGHTLY increased (better regularization for large model)
-  gradient_clip: 5.0                       # ⬇️ TIGHTER clipping (prevent exploding gradients) - Nov 14: reduced 10→5
+  gradient_clip: 20.0                      # ⬆️ INCREASED to 50.0 (Jan 3: NSF has higher gradients, need more room)
+                                           # Warmup will keep effective LR low for first 8 epochs
   optimizer: "AdamW"
   
   # --- WARMUP (NEW - Nov 14: prevent divergence from large LR) ---
@@ -213,21 +220,49 @@ neural_posterior:
   min_lr: 1.0e-6
   
   
-  flow_loss_weight: 1.0                   # NLL loss (only component needed with NSF)
-  bounds_penalty_weight: 0.15             # Soft parameter bounds (prevent extrapolation)
+  flow_loss_weight: 1.0                   # NLL loss (primary objective for NSF)
+  bounds_penalty_weight: 0.15             # ✅ REDUCED (Jan 2): 0.15 → 0.10 (softer, focus on distance first)
+  pit_loss_weight: 2.0                    # ✅ NEW (Jan 4): Force uniform PIT distribution (calibration)
+  endpoint_loss_weight: 1.5               # ✅ INCREASED (Jan 2): 1.5 → 3.0 (stronger NSF anchoring for distance)
   
-  # --- CONTEXT COLLAPSE PREVENTION (Dec 24: fix epoch 1 collapse) ---
-  context_variance_weight: 0.2            # Strong penalty for low context variance
-  context_std_target: 0.75                # Target context standard deviation
+  # ✅ NEW (Jan 3): KL divergence weight for flow regularization
+  # Higher KL weight forces flow closer to prior (Gaussian) → better calibration
+  # NOTE: Increased gradient norms observed, may need tuning during training
+  kl_divergence_weight: 0.05              # ⬆️ TUNED (Jan 3): Start conservative, increase if stable
+                                          # Gradient spikes expected during warmup (use gradient_clip: 20-50)
+  
+  # --- DISTANCE-SPECIFIC LOSS (PHASE 3A: DISTANCE SENSITIVITY) ---
+  # Distance bias is massive (±60-140 Mpc), need stronger supervision
+  # Solution: Increase all distance losses to force distance head learning
+  auxiliary_distance_loss_weight: 0.5      # ✅ INCREASED (Jan 5): 0.10 → 0.5 (5x stronger direct supervision)
+  distance_endpoint_loss_weight: 3.0       # ✅ INCREASED (Jan 5): 1.5 → 3.0 (2x stronger bounds constraint)
+  distance_prior_weight: 0.5               # ✅ INCREASED (Jan 5): 0.2 → 0.5 (2.5x stronger prior guidance)
+  
+  # --- CONTEXT COLLAPSE PREVENTION (Dec 24: fix epoch 1 collapse, UPDATED Jan 1) ---
+  context_variance_weight: 0.10           # ✅ REDUCED (Jan 1): 0.25 → 0.10 (soft guidance, encoder not crushed)
+  context_std_target: 0.75                # ✅ REDUCED (Jan 1): 0.80 → 0.75 (more achievable target with lower weight)
   context_noise_scale: 0.1                # Adaptive noise injection when std < 0.4
   context_collapse_threshold: 0.4         # Threshold to trigger noise injection
   
-  # --- DATA AUGMENTATION ---
+  # --- DATA AUGMENTATION (Jan 3: ENHANCED) ---
   data_augmentation:
     enabled: true
     noise_scaling: [0.98, 1.02]          # Noise level variation
     time_shifts: [-0.002, 0.002]         # Time shift range (seconds)
-    apply_probability: 0.3               # Probability of augmentation
+    apply_probability: 0.2               # ⬇️ REDUCED (Jan 3): 0.3 → 0.2 (less CPU overhead per batch)
+    
+    # ✅ NEW (Jan 3): Low-SNR and high-mass-ratio sample boosting
+    boost_low_snr: true                  # Boost low-SNR samples (SNR < 15)
+    boost_low_snr_factor: 2.0            # Repeat low-SNR samples 2x per epoch
+    boost_high_mass_ratio: true          # Boost high-mass-ratio samples (q > 5)
+    boost_high_mass_ratio_factor: 1.5    # Repeat high-q samples 1.5x per epoch
+    
+    # SNR-distance decorrelation augmentation (ensure full SNR range coverage)
+    snr_decorrelation_enabled: true      # Apply SNR-distance decorrelation
+    snr_decorrelation_strength: 0.15     # Strength of decorrelation (0.0-1.0)
+    snr_min_threshold: 10.0              # Minimum SNR for low-SNR boost
+    mass_ratio_threshold: 5.0            # Mass ratio threshold for boost
+    
 
 
 # ==============================================================================

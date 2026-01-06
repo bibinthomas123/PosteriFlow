@@ -5,10 +5,14 @@ Enhanced for 4-5 overlapping signals with adaptive conditioning
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Union, Any
+from pathlib import Path
 import numpy as np
 from nflows import distributions
 import logging
+
+# ✅ Import UniversalConfigReader for type-safe config access
+from ahsd.utils.universal_config import UniversalConfigReader, ConfigDict
 
 # ✅ NSF imports from nflows library
 from nflows.flows import Flow
@@ -464,7 +468,7 @@ class NSFPosteriorFlow(nn.Module):
     
     def __init__(self, features: int, context_features: int = 0, hidden_features: int = 256,
                  num_layers: int = 12, num_bins: int = 16, tail_bound: float = 3.0,
-                 max_overlaps: int = 6, dropout: float = 0.0, **kwargs):
+                 max_overlaps: int = 6, dropout: float = 0.0, temperature_scale: float = 1.5, **kwargs):
         super().__init__()
         
         self.features = features
@@ -473,7 +477,14 @@ class NSFPosteriorFlow(nn.Module):
         self.max_overlaps = max_overlaps
         self.logger = logging.getLogger(__name__)
         
-        # Base distribution: N(0, I)
+        # ✅ TEMPERATURE SCALING (Jan 4): Learnable base distribution temperature
+        # Higher T → wider base distribution N(0, T²I) → posterior samples more spread out
+        # Prevents posterior collapse to delta function → fixes PIT tails
+        # Start at 1.5 for exploratory sampling, can anneal to 1.0 during training
+        self.temperature = nn.Parameter(torch.tensor(temperature_scale, dtype=torch.float32))
+        self.temperature_scale_init = temperature_scale
+        
+        # Base distribution: N(0, I) - will be scaled by temperature in sample()
         self.base_dist = StandardNormal(shape=[features])
         
         # Build spline transform layers
@@ -506,6 +517,16 @@ class NSFPosteriorFlow(nn.Module):
         # Create flow
         self.flow = Flow(self.transform, self.base_dist)
         
+        # ✅ NEW: Distance-specific context residual
+        # Problem: NSF transforms z→x but context signal gets lost in spline nonlinearities
+        # Solution: Add explicit residual from context to distance parameter (index 2)
+        # This helps distance stay close to context-encoded value
+        self.distance_context_head = nn.Sequential(
+            nn.Linear(context_features if context_features > 0 else 1, hidden_features),
+            nn.ReLU(),
+            nn.Linear(hidden_features, 1)  # Output: distance residual
+        ) if context_features > 0 else None
+        
         self.logger.info(
             f"✅ NSFPosteriorFlow initialized: {features} features, "
             f"{context_features} context dims, {num_layers} layers, "
@@ -521,28 +542,55 @@ class NSFPosteriorFlow(nn.Module):
         return z, log_det
     
     def inverse(self, z: torch.Tensor, context: torch.Tensor = None,
-                n_overlaps: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                 n_overlaps: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Inverse: z (base) → x (params). ✅ DETERMINISTIC - no ODE solver!"""
         if self.context_features > 0 and context is not None:
             x, log_det = self.transform.inverse(z, context=context)
         else:
             x, log_det = self.transform.inverse(z)
         
+        # ✅ NEW: Distance anchoring via context residual
+        # Distance (param index 2) gets explicit guidance from context
+        if self.distance_context_head is not None and context is not None:
+            distance_residual = self.distance_context_head(context)  # [batch, 1]
+            # Add small residual from context (prevents drift, preserves learned structure)
+            x[:, 2] = x[:, 2] + 0.05 * torch.tanh(distance_residual.squeeze(1))
+        
         # Clamp to [-1, 1]
         x = torch.clamp(x, -1.0, 1.0)
         return x, log_det
     
-    def log_prob(self, x: torch.Tensor, context: torch.Tensor = None) -> torch.Tensor:
-        """✅ PRIMARY LOSS: Negative log-likelihood"""
+    def log_prob(self, x: torch.Tensor, context: torch.Tensor = None, temperature: Optional[float] = None) -> torch.Tensor:
+        """✅ PRIMARY LOSS: Negative log-likelihood with temperature scaling"""
+        # ✅ TEMPERATURE SCALING (Jan 4): Account for temperature in log probability
+        # If we sample z ~ N(0, T²I), then x = inverse(z) has different distribution
+        # We need to adjust log_prob to match this: log_p(x) = log_p(x/T) + d * log(T)
+        if temperature is None:
+            temperature = torch.clamp(self.temperature, min=0.5, max=3.0)
+        
+        # Compute log probability at scaled point
+        x_scaled = x / temperature
+        
         if self.context_features > 0 and context is not None:
-            log_p = self.flow.log_prob(x, context=context)
+            log_p = self.flow.log_prob(x_scaled, context=context)
         else:
-            log_p = self.flow.log_prob(x)
-        return -log_p  # Return NEGATIVE (for minimization)
+            log_p = self.flow.log_prob(x_scaled)
+        
+        # Add Jacobian correction: log p(x) = log p(x/T) + d * log(T)
+        # where d is the dimension (self.features)
+        log_prob_corrected = log_p + self.features * torch.log(temperature)
+        
+        return -log_prob_corrected  # Return NEGATIVE (for minimization)
     
-    def sample(self, num_samples: int, context: torch.Tensor = None) -> torch.Tensor:
+    def sample(self, num_samples: int, context: torch.Tensor = None, temperature: Optional[float] = None) -> torch.Tensor:
         """Sample from posterior p(x|context)"""
         with torch.no_grad():
+            # ✅ TEMPERATURE SCALING (Jan 4): Use learned temperature if not overridden
+            if temperature is None:
+                temperature = torch.clamp(self.temperature, min=0.5, max=3.0)  # Clamp to reasonable range
+            else:
+                temperature = torch.tensor(temperature, dtype=self.temperature.dtype, device=self.temperature.device)
+            
             if context is not None:
                 batch_size = context.shape[0]
                 
@@ -551,8 +599,10 @@ class NSFPosteriorFlow(nn.Module):
                     batch_size, num_samples, self.context_features
                 ).reshape(batch_size * num_samples, self.context_features)
                 
-                # Sample from base
+                # ✅ TEMPERATURE SCALING: Scale z from base distribution by temperature
+                # This widens the base distribution N(0, I) → N(0, T²I)
                 z = self.base_dist.sample(num_samples * batch_size)
+                z = z * temperature  # Apply temperature scaling
                 
                 # Transform
                 samples, _ = self.inverse(z, context_expanded)
@@ -561,6 +611,7 @@ class NSFPosteriorFlow(nn.Module):
                 samples = samples.reshape(batch_size, num_samples, self.features)
             else:
                 z = self.base_dist.sample(num_samples)
+                z = z * temperature  # ✅ Apply temperature scaling to samples without context
                 samples, _ = self.inverse(z, None)
             
             samples = torch.clamp(samples, -1.0, 1.0)
@@ -627,9 +678,10 @@ class NSFPosteriorFlow(nn.Module):
         ✅ NSF PRIMARY LOSS: Negative Log-Likelihood
         
         For NSF, this is the main training objective (not velocity matching).
-        Returns scalar loss to minimize.
+        Distance anchoring is handled separately in overlap_neuralpe.py
         """
-        return self.log_prob(params_norm, context).mean()
+        nll = self.log_prob(params_norm, context).mean()
+        return nll
     
     def compute_bounds_penalty(self, params_norm: torch.Tensor, 
                               bounds: Tuple[float, float] = (-1.0, 1.0)) -> torch.Tensor:
@@ -666,17 +718,65 @@ class NSFPosteriorFlow(nn.Module):
         return penalty.mean()
 
 
-def create_flow_model(flow_type: str, features: int, context_features: int = 0,
-                      max_overlaps: int = 6, **kwargs) -> nn.Module:
+def create_flow_model(
+    flow_type: str,
+    features: int,
+    context_features: int = 0,
+    max_overlaps: int = 6,
+    config: Optional[Union[Dict[str, Any], ConfigDict, str, Path]] = None,
+    **kwargs
+) -> nn.Module:
     """
-    ✅ Factory function with NSF (via nflows) and FlowMatching
+    Uses UniversalConfigReader for type-safe config validation and access.
     
     Args:
         flow_type: "nsf" or "flowmatching"
         features: parameter dimension
         context_features: context dimension
         max_overlaps: maximum number of overlapping signals
+        config: Optional config dict/ConfigDict/path for validation
+        **kwargs: Additional parameters (hidden_features, num_layers, etc.)
+    
+    Returns:
+        Flow model instance
     """
+    logger = logging.getLogger(__name__)
+    
+    # ✅ Initialize UniversalConfigReader for config validation
+    reader = UniversalConfigReader()
+    
+    # Parse config if provided
+    if config is not None:
+        if isinstance(config, (str, Path)):
+            config = reader.load(config)
+        elif isinstance(config, dict) and not isinstance(config, ConfigDict):
+            config = ConfigDict(config)
+    
+    # ✅ Validate and extract flow config parameters with type safety
+    if config is not None:
+        flow_config_dict = config.get("flow_config", {}) if isinstance(config, dict) else getattr(config, "flow_config", {})
+        
+        # Use reader to get values with type conversion and defaults
+        kwargs.setdefault('num_layers', reader.get(flow_config_dict, 'num_layers', default=12, dtype=int))
+        kwargs.setdefault('hidden_features', reader.get(flow_config_dict, 'hidden_features', default=256, dtype=int))
+        kwargs.setdefault('num_bins', reader.get(flow_config_dict, 'num_bins', default=16, dtype=int))
+        kwargs.setdefault('tail_bound', reader.get(flow_config_dict, 'tail_bound', default=3.0, dtype=float))
+        kwargs.setdefault('dropout', reader.get(flow_config_dict, 'dropout', default=0.15, dtype=float))
+        
+        logger.info(f"Flow config validated:")
+        logger.info(f"  num_layers: {kwargs.get('num_layers')}")
+        logger.info(f"  hidden_features: {kwargs.get('hidden_features')}")
+        logger.info(f"  num_bins: {kwargs.get('num_bins')}")
+        logger.info(f"  tail_bound: {kwargs.get('tail_bound')}")
+        logger.info(f"  dropout: {kwargs.get('dropout')}")
+    
+    # Set defaults if not in kwargs
+    kwargs.setdefault('num_layers', 12)
+    kwargs.setdefault('hidden_features', 256)
+    kwargs.setdefault('num_bins', 16)
+    kwargs.setdefault('tail_bound', 3.0)
+    kwargs.setdefault('dropout', 0.15)
+    
     flow_type_lower = flow_type.lower()
     
     if flow_type_lower == "nsf":
@@ -695,5 +795,5 @@ def create_flow_model(flow_type: str, features: int, context_features: int = 0,
         )
     else:
         raise ValueError(
-            f"Unknown flow_type: {flow_type}."
+            f"Unknown flow_type: {flow_type}. Must be 'nsf' or 'flowmatching'."
         )

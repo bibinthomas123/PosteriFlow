@@ -2,7 +2,7 @@
 """
 Corrected validation script for AHSD dataset (50K samples)
 Validates distribution metrics, physical constraints, and data quality
-Loads from data/output/ (where ahsd-generate saves files)
+Loads from data/dataset/ (where ahsd-generate saves files)
 """
 
 import pickle
@@ -12,10 +12,10 @@ from pathlib import Path
 from collections import defaultdict
 
 def load_dataset_from_output(split='train'):
-    """Load all samples from data/output/{split}/*.pkl"""
+    """Load all samples from data/dataset/{split}/*.pkl"""
     distances, snrs, masses, types, params_list = [], [], [], [], []
     
-    # Updated path: ahsd-generate saves to data/output/{train,val,test}/*.pkl
+    # Updated path: ahsd-generate saves to data/dataset/{train,val,test}/*.pkl
     pattern = f'data/dataset/{split}/*.pkl'
     files = sorted(glob.glob(pattern))
     
@@ -124,7 +124,7 @@ def main():
     distances, snrs, masses, types, params_list = load_dataset_from_output('train')
     
     if len(distances) == 0:
-        print("❌ ERROR: No data found! Check data/output/train/")
+        print("❌ ERROR: No data found! Check data/dataset/train/")
         return False
     
     print(f"\n✅ Loaded {len(distances):,} samples\n")

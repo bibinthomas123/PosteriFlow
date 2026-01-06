@@ -5,8 +5,6 @@ Training script for OverlapNeuralPE - Complete pipeline for overlapping GW signa
 Features:
 - Multi-signal extraction with PriorityNet
 - FlowMatching (OT-CFM) or RealNVP normalizing flow (controlled via config flag)
-- RL-controlled adaptive complexity
-- Bias correction and adaptive subtraction
 - Comprehensive metrics and evaluation
 - WandB integration for experiment tracking
 - Fully config-driven
@@ -36,6 +34,7 @@ from tqdm import tqdm
 import json
 from ahsd.models.overlap_neuralpe import OverlapNeuralPE
 from experiments.train_priority_net import ChunkedGWDataLoader
+from ahsd.utils.universal_config import UniversalConfigReader, load_config
 
 # ✅ WANDB
 try:
@@ -195,7 +194,7 @@ def collate_fn(batch):
 
 
 class OverlapNeuralPETrainer:
-    """Trainer for OverlapNeuralPE - Fully config-driven."""
+    """Trainer for OverlapNeuralPE - Fully config-driven with UniversalConfigReader."""
 
     def __init__(self, model: OverlapNeuralPE, config: Dict[str, Any], use_wandb: bool = True):
         self.model = model
@@ -203,16 +202,21 @@ class OverlapNeuralPETrainer:
         self.logger = logging.getLogger(__name__)
         self.use_wandb = use_wandb and WANDB_AVAILABLE
 
-        # ✅ ALL VALUES FROM CONFIG
-        self.learning_rate = config.get("learning_rate", 1e-4)
-        self.batch_size = config.get("batch_size", 16)
-        self.epochs = config.get("epochs", 100)
-        self.patience = config.get("patience", 20)
-        self.scheduler_patience = config.get("scheduler_patience", 10)
-        self.scheduler_factor = config.get("scheduler_factor", 0.5)
-        self.scheduler_min_lr = config.get("min_lr", 1e-6)
-        self.weight_decay = config.get("weight_decay", 1e-5)
-        self.gradient_clip = config.get("gradient_clip", 1.0)
+        # ✅ Initialize UniversalConfigReader for type-safe config access
+        reader = UniversalConfigReader()
+        np_config = config.neural_posterior if hasattr(config, 'neural_posterior') else config.get("neural_posterior", {})
+
+        # ✅ ALL VALUES FROM CONFIG - Read from neural_posterior section with UniversalConfigReader
+        self.learning_rate = reader.get(np_config, "learning_rate", default=3e-5, dtype=float, section="neural_posterior")
+        self.batch_size = reader.get(np_config, "batch_size", default=64, dtype=int, section="neural_posterior")
+        self.epochs = reader.get(np_config, "epochs", default=50, dtype=int, section="neural_posterior")
+        self.patience = reader.get(np_config, "patience", default=15, dtype=int, section="neural_posterior")
+        self.scheduler_patience = reader.get(np_config, "scheduler_patience", default=8, dtype=int, section="neural_posterior")
+        self.scheduler_factor = reader.get(np_config, "scheduler_factor", default=0.6, dtype=float, section="neural_posterior")
+        self.scheduler_min_lr = reader.get(np_config, "min_lr", default=1e-6, dtype=float, section="neural_posterior")
+        self.weight_decay = reader.get(np_config, "weight_decay", default=1e-4, dtype=float, section="neural_posterior")
+        self.gradient_clip = reader.get(np_config, "gradient_clip", default=20.0, dtype=float, section="neural_posterior")
+        self.endpoint_loss_weight = reader.get(np_config, "endpoint_loss_weight", default=1.5, dtype=float, section="neural_posterior")
 
         # Optimizer
         self.optimizer = optim.AdamW(
@@ -249,16 +253,28 @@ class OverlapNeuralPETrainer:
         self.log_frequency = monitoring_config.get("log_frequency", 1)
 
         # Log configuration
-        self.logger.info(f"ðŸ“‹ Trainer Configuration:")
+        self.logger.info(f"✅ Trainer Configuration:")
         self.logger.info(f"  Learning Rate: {self.learning_rate}")
         self.logger.info(f"  Weight Decay: {self.weight_decay}")
         self.logger.info(f"  Gradient Clip: {self.gradient_clip}")
+        self.logger.info(f"  Endpoint Loss Weight: {self.endpoint_loss_weight}")
         self.logger.info(f"  Batch Size: {self.batch_size}")
         self.logger.info(f"  Epochs: {self.epochs}")
         self.logger.info(f"  Early Stop Patience: {self.patience}")
         self.logger.info(f"  Scheduler Patience: {self.scheduler_patience}")
         self.logger.info(f"  Scheduler Factor: {self.scheduler_factor}")
         self.logger.info(f"  Min LR: {self.scheduler_min_lr}")
+        
+        # Log flow configuration
+        flow_config_dict = np_config.get("flow_config", {}) if isinstance(np_config, dict) else getattr(np_config, "flow_config", {})
+        self.logger.info(f"Flow Configuration:")
+        self.logger.info(f"  Flow Type: nsf (from neural_posterior.flow_type)")
+        if isinstance(flow_config_dict, dict):
+            self.logger.info(f"  Num Layers: {flow_config_dict.get('num_layers', 12)}")
+            self.logger.info(f"  Hidden Features: {flow_config_dict.get('hidden_features', 256)}")
+            self.logger.info(f"  Num Bins: {flow_config_dict.get('num_bins', 16)}")
+            self.logger.info(f"  Dropout: {flow_config_dict.get('dropout', 0.15)}")
+            self.logger.info(f"  Tail Bound: {flow_config_dict.get('tail_bound', 3.0)}")
 
     def load_model(self, filepath: str):
         self.model.load_model(filepath)
@@ -287,10 +303,6 @@ class OverlapNeuralPETrainer:
             "val_metrics": val_metrics,
             "config": self.config,
         }
-
-        # ✅ Save RL controller state (now that it's nn.Module)
-        if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
-            checkpoint["rl_controller_state_dict"] = self.model.rl_controller.state_dict()
 
         torch.save(checkpoint, filepath)
         self.logger.info(f"Checkpoint saved: {filepath}")
@@ -353,20 +365,6 @@ class OverlapNeuralPETrainer:
         self.best_epoch = checkpoint.get("best_epoch", self.best_epoch)
         self.history = checkpoint.get("history", self.history)
         self.global_step = checkpoint.get("global_step", self.global_step)
-
-        # ✅ Restore RL controller state (including memory buffer)
-        if (
-            hasattr(self.model, "rl_controller")
-            and self.model.rl_controller is not None
-            and "rl_controller_state_dict" in checkpoint
-        ):
-            try:
-                self.model.rl_controller.load_state_dict(
-                    checkpoint["rl_controller_state_dict"]
-                )
-                self.logger.info("RL controller state restored (including memory buffer)")
-            except Exception as e:
-                self.logger.warning(f"Failed to load RL controller state: {e}")
 
         # If epoch present, return next epoch to start from
         start_epoch = checkpoint.get("epoch", None)
@@ -444,23 +442,6 @@ class OverlapNeuralPETrainer:
                 # ✅ Nov 14: GET RL STATE AND COMPLEXITY RECOMMENDATION
                 complexity = "medium"
                 complexity_id = 1
-                if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
-                    # Extract pipeline state
-                    avg_n_signals = float(n_signals.float().mean().item())
-                    pipeline_state = {
-                        "remaining_signals": avg_n_signals,
-                        "residual_power": prev_loss if prev_loss != float("inf") else 0.5,
-                        "processing_time": time.time() - batch_time_start,
-                        "current_snr": 20.0,
-                        "extraction_success_rate": 0.8,
-                    }
-
-                    # Get complexity (training=True for exploration)
-                    complexity = self.model.rl_controller.get_complexity_level(
-                        pipeline_state, training=True
-                    )
-                    complexity_id = self.model.rl_controller.complexity_levels.index(complexity)
-                    epoch_metrics["rl_complexity"].append(complexity_id)
 
                 # Compute loss
                 loss_dict = self.model.compute_loss(strain_data, target_params)
@@ -488,54 +469,6 @@ class OverlapNeuralPETrainer:
                     epoch_metrics["uncertainty_loss"].append(loss_dict["uncertainty_loss"].item())
                 if "jacobian_reg" in loss_dict:
                     epoch_metrics["jacobian_reg"].append(loss_dict["jacobian_reg"].item())
-                
-                # ✅ DEBUG (Nov 25): Log bias corrector gradient flow first batch only
-                if batch_idx == 0 and hasattr(self.model, "bias_corrector") and self.model.bias_corrector is not None:
-                    bias_grads = []
-                    for name, param in self.model.bias_corrector.named_parameters():
-                        if param.grad is not None:
-                            bias_grads.append(param.grad.norm().item())
-                    if bias_grads:
-                        self.logger.debug(
-                            f"[Epoch {epoch+1}, Batch 0] BiasCorrector Gradient Norms: "
-                            f"avg={np.mean(bias_grads):.6f}, max={np.max(bias_grads):.6f}, min={np.min(bias_grads):.6f}"
-                        )
-
-                # ✅ Nov 14: RL EXPERIENCE COLLECTION AND TRAINING
-                if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
-                    batch_time = time.time() - batch_start
-                    current_loss = loss_dict["total_loss"].item()
-
-                    # Compute reward
-                    reward = self.model.rl_controller.compute_reward(
-                        {"parameter_bias": current_loss, "extraction_time": batch_time}, complexity
-                    )
-
-                    # Build next state
-                    next_pipeline_state = {
-                        "remaining_signals": avg_n_signals,
-                        "residual_power": current_loss,
-                        "processing_time": batch_time,
-                        "current_snr": 20.0,
-                        "extraction_success_rate": 0.8,
-                    }
-
-                    state_vector = self.model.rl_controller.get_state_vector(pipeline_state)
-                    next_state_vector = self.model.rl_controller.get_state_vector(next_pipeline_state)
-
-                    # Store experience
-                    self.model.rl_controller.store_experience(
-                        state_vector, complexity_id, reward, next_state_vector, done=False
-                    )
-
-                    # Train when buffer filled
-                    rl_memory = self.model.rl_controller.memory
-                    if len(rl_memory) >= self.model.rl_controller.batch_size:
-                        rl_loss = self.model.rl_controller.train_step()
-                        if rl_loss is not None:
-                            epoch_metrics["rl_loss"].append(rl_loss)
-
-                    prev_loss = current_loss
 
                 # ✅ WANDB: Log batch metrics
                 if self.use_wandb and batch_idx % 10 == 0:
@@ -577,12 +510,6 @@ class OverlapNeuralPETrainer:
                 self.logger.error(f"Strain shape: {strain_data.shape if 'strain_data' in locals() else 'N/A'}")
                 self.logger.error(f"Parameters shape: {parameters.shape if 'parameters' in locals() else 'N/A'}")
                 raise
-
-        # ✅ Nov 14: PERIODIC TARGET NETWORK UPDATE (every 5 epochs)
-        if hasattr(self.model, "rl_controller") and self.model.rl_controller is not None:
-            if (epoch + 1) % 5 == 0:
-                self.model.rl_controller.update_target_network()
-                self.logger.info(f"✅ RL target network updated at epoch {epoch+1}")
 
         # Compute epoch averages
         avg_metrics = {
@@ -886,108 +813,6 @@ class OverlapNeuralPETrainer:
         return self.history
 
 
-def _collect_bias_training_data(
-    model: OverlapNeuralPE,
-    val_loader: DataLoader,
-    param_names: List[str],
-    device: torch.device,
-    logger: logging.Logger,
-) -> List[Dict[str, Any]]:
-    """
-    Collect validation predictions for bias correction training.
-
-    Returns:
-        List of bias training scenarios: [
-            {
-                'extracted_signals': [...],  # Flow predictions
-                'true_parameters': [...]     # Ground truth params
-            },
-            ...
-        ]
-    """
-    training_scenarios = []
-
-    model.eval()
-    with torch.no_grad():
-        for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(
-            tqdm(val_loader, desc="Collecting bias data", leave=False)
-        ):
-            strain_data = strain_data.to(device)
-            parameters = parameters.to(device)
-
-            # Ground truth parameters (first signal in batch)
-            true_params_batch = parameters[:, 0, :]  # [batch, param_dim]
-
-            try:
-                # Get flow predictions (posterior means)
-                # Call the flow directly to get posterior samples
-                context = (
-                    model.context_encoder(strain_data)
-                    if hasattr(model, "context_encoder")
-                    else torch.randn(strain_data.shape[0], model.context_dim, device=device)
-                )
-
-                # Sample from flow to get posterior estimates (reduced from 100 to 20 samples for speed)
-                num_samples = 20  # Reduced for faster bias data collection
-                samples_list = []
-                for _ in range(num_samples):
-                    samples = model.flow.sample(num_samples=strain_data.shape[0], context=context)
-                    samples_list.append(samples)
-
-                posterior_samples = torch.stack(
-                    samples_list, dim=0
-                )  # [num_samples, batch, param_dim]
-                posterior_means = torch.mean(posterior_samples, dim=0)  # [batch, param_dim]
-                posterior_stds = torch.std(posterior_samples, dim=0)  # [batch, param_dim]
-
-                # Convert to numpy for bias correction format
-                for b in range(strain_data.shape[0]):
-                    extracted_summary = {}
-                    true_params_dict = {}
-
-                    for p_idx, param_name in enumerate(param_names):
-                        # Extracted signal (flow prediction)
-                        extracted_summary[param_name] = {
-                            "mean": posterior_means[b, p_idx].item(),
-                            "median": posterior_means[b, p_idx].item(),
-                            "std": posterior_stds[b, p_idx].item(),
-                            "quantiles": [
-                                (posterior_means[b, p_idx] - 2 * posterior_stds[b, p_idx]).item(),
-                                (posterior_means[b, p_idx] - posterior_stds[b, p_idx]).item(),
-                                posterior_means[b, p_idx].item(),
-                                (posterior_means[b, p_idx] + posterior_stds[b, p_idx]).item(),
-                                (posterior_means[b, p_idx] + 2 * posterior_stds[b, p_idx]).item(),
-                            ],
-                        }
-
-                        # True parameters
-                        true_params_dict[param_name] = true_params_batch[b, p_idx].item()
-
-                    # Create scenario for bias corrector training
-                    scenario = {
-                        "extracted_signals": [
-                            {
-                                "posterior_summary": extracted_summary,
-                                "signal_quality": 0.8,
-                                "network_snr": 20.0,
-                                "context_embedding": context[b]
-                                .detach()
-                                .cpu()
-                                .numpy(),  # Pass actual 768D context from encoder
-                            }
-                        ],
-                        "true_parameters": [true_params_dict],
-                    }
-                    training_scenarios.append(scenario)
-
-            except Exception as e:
-                logger.debug(f"Error processing batch {batch_idx}: {e}")
-                continue
-
-    logger.info(f"✅ Collected {len(training_scenarios)} bias training scenarios")
-    return training_scenarios
-
-
 def main():
     parser = argparse.ArgumentParser(description="Train OverlapNeuralPE")
     parser.add_argument("--config", type=str, required=True, help="Path to config file")
@@ -1013,34 +838,51 @@ def main():
     setup_logging(output_dir, args.verbose)
     logger = logging.getLogger(__name__)
 
-    # Load config
-    with open(args.config, "r") as f:
-        full_config = yaml.safe_load(f)
+    # ✅ Load config using UniversalConfigReader
+    logger.info("Loading config with UniversalConfigReader...")
+    config = load_config(args.config)  # Returns ConfigDict with dual access
+    logger.info(f"Config loaded successfully from {args.config}")
+    
+    # ✅ FIX (Jan 2): Pass FULL config, not just neural_posterior section
+    # Model will extract neural_posterior section internally with:
+    #   np_config = self.config.get("neural_posterior", {})
+    # If we pass only neural_posterior section here, the second extraction returns {}
 
-    # ✅ FIX: Extract neural_posterior section from YAML
-    config = full_config.get("neural_posterior", full_config)
-
-    # Parameter names
-    param_names = config.get(
-        "param_names",
-        [
-            "mass_1",
-            "mass_2",
-            "luminosity_distance",
-            "ra",
-            "dec",
-            "theta_jn",
-            "psi",
-            "phase",
-            "geocent_time",
-            "a1",
-            "a2",
-            "tilt1",
-            "tilt2",
-        ],
+    # Parameter names (stored in neural_posterior section)
+    np_config = config.get("neural_posterior", {})
+    param_names = np_config.get(
+       "param_names",
+       [
+           "mass_1",
+           "mass_2",
+           "luminosity_distance",
+           "ra",
+           "dec",
+           "theta_jn",
+           "psi",
+           "phase",
+           "geocent_time",
+           "a1",
+           "a2",
+           "tilt1",
+           "tilt2",
+       ],
     )
 
     logger.info(f"Parameters: {param_names}")
+    
+    # ✅ Validate critical config values using UniversalConfigReader
+    reader = UniversalConfigReader()
+    np_config = config.neural_posterior
+    learning_rate = reader.get(np_config, "learning_rate", default=4e-4, dtype=float, section="neural_posterior")
+    batch_size = reader.get(np_config, "batch_size", default=64, dtype=int, section="neural_posterior")
+    epochs = reader.get(np_config, "epochs", default=100, dtype=int, section="neural_posterior")
+    patience = reader.get(np_config, "patience", default=20, dtype=int, section="neural_posterior")
+    logger.info(f"✅ Config validation (neural_posterior section):")
+    logger.info(f"   Learning rate: {learning_rate}")
+    logger.info(f"   Batch size: {batch_size}")
+    logger.info(f"   Epochs: {epochs}")
+    logger.info(f"   Patience: {patience}")
 
     # ✅ WANDB: Initialize with full config
     use_wandb = not args.no_wandb and WANDB_AVAILABLE
@@ -1063,7 +905,7 @@ def main():
 
     try:
         # Initialize model
-        logger.info("ðŸ”§ Initializing OverlapNeuralPE")
+        logger.info("Initializing OverlapNeuralPE")
         model = OverlapNeuralPE(
             param_names=param_names,
             priority_net_path=args.priority_net,
@@ -1076,7 +918,7 @@ def main():
             wandb.watch(model, log="all", log_freq=100)
 
         # Load data
-        logger.info("ðŸ“Š Loading datasets")
+        logger.info("Loading datasets")
 
         train_data_loader = ChunkedGWDataLoader(
             dataset_path=args.data_dir, split="train", max_samples=None
@@ -1090,7 +932,7 @@ def main():
         val_dataset = OverlapGWDataset(val_data_loader, param_names, config)
 
         # Get batch size from config
-        batch_size = config.get("batch_size", 16)
+        batch_size = config.get("batch_size", 64)
 
         # Create data loaders (num_workers=0 to avoid pickling issues)
         train_loader = DataLoader(
@@ -1112,7 +954,7 @@ def main():
         )
         aug_config = config.get("data_augmentation", {})
         if aug_config.get("enabled", False):
-            logger.info(f"ðŸ“Š Data augmentation enabled:")
+            logger.info(f"Data augmentation enabled:")
             logger.info(f"  Noise scaling: {aug_config.get('noise_scaling')}")
             logger.info(f"  Time shifts: {aug_config.get('time_shifts')}")
             logger.info(f"  Apply probability: {aug_config.get('apply_probability')}")
@@ -1120,7 +962,7 @@ def main():
         # ✅ Log dropout config
         dropout = config.get("dropout", 0.1)
         flow_dropout = config.get("flow_config", {}).get("dropout", 0.15)
-        logger.info(f"ðŸ”§ Regularization:")
+        logger.info(f"Regularization:")
         logger.info(f"  Dropout: {dropout}")
         logger.info(f"  Flow dropout: {flow_dropout}")
 
@@ -1139,354 +981,6 @@ def main():
 
         summary = trainer.get_model_summary()
         print(summary)
-
-        # ✅ PHASE 2: TRAIN BIAS CORRECTOR (after Neural PE converges)
-        logger.info("\n" + "=" * 70)
-        logger.info("PHASE 2: Training BiasCorrector (after Neural PE convergence)")
-        logger.info("=" * 70)
-
-        try:
-            # Collect validation data for bias correction training
-            logger.info("Collecting validation predictions for bias correction...")
-            bias_training_scenarios = _collect_bias_training_data(
-                model=model,
-                val_loader=val_loader,
-                param_names=param_names,
-                device=model.device,
-                logger=logger,
-            )
-
-            if len(bias_training_scenarios) > 0:
-                # Train BiasCorrector
-                logger.info(
-                    f"Training BiasCorrector with {len(bias_training_scenarios)} scenarios..."
-                )
-                from ahsd.core.bias_corrector import BiasCorrector
-
-                # Get bias corrector config from YAML
-                bias_corrector_config = config.get("bias_corrector", {})
-                # Use bias_corrector.context_dim from config, matching the context encoder output
-                context_dim = bias_corrector_config.get("context_dim", 768)
-
-                bias_corrector = BiasCorrector(param_names=param_names, context_dim=context_dim)
-                logger.info(f"✅ BiasCorrector initialized (context_dim={context_dim})")
-
-                # Train bias corrector with config settings
-                bias_training_config = {
-                    "epochs": bias_corrector_config.get("epochs", 30),
-                    "learning_rate": bias_corrector_config.get("learning_rate", 2.0e-4),
-                    "batch_size": bias_corrector_config.get("batch_size", 32),
-                    "patience": bias_corrector_config.get("patience", 10),
-                }
-
-                training_result = bias_corrector.train_bias_estimator(
-                    training_scenarios=bias_training_scenarios,
-                    epochs=bias_training_config["epochs"],
-                    validation_split=0.2,
-                )
-
-                # ✅ COMPREHENSIVE BIAS METRICS FOR PHASE 2
-                logger.info(f"\n✅ BiasCorrector training completed!")
-                logger.info(f"\n{'='*70}")
-                logger.info(f"PHASE 2: BiasCorrector Training Results")
-                logger.info(f"{'='*70}")
-
-                # Loss metrics
-                logger.info(f"\n📊 Loss Metrics:")
-                logger.info(f"  Final Train Loss: {training_result.get('final_train_loss', 0):.6f}")
-                logger.info(f"  Final Val Loss: {training_result.get('final_val_loss', 0):.6f}")
-                epochs_completed = training_result.get("epochs_completed", 0)
-                logger.info(f"  Epochs: {epochs_completed}/{bias_training_config['epochs']}")
-
-                # Training history analysis
-                if "training_history" in training_result:
-                    hist = training_result["training_history"]
-                    train_losses = hist.get("train_losses", [])
-                    val_losses = hist.get("val_losses", [])
-
-                    if train_losses:
-                        logger.info(f"\n📈 Training Loss Trajectory:")
-                        logger.info(f"  Initial Train Loss: {train_losses[0]:.6f}")
-                        logger.info(f"  Final Train Loss: {train_losses[-1]:.6f}")
-                        logger.info(
-                            f"  Reduction: {(1 - train_losses[-1]/max(train_losses[0], 1e-8))*100:.1f}%"
-                        )
-                        logger.info(f"  Min Train Loss: {min(train_losses):.6f}")
-                        logger.info(f"  Max Train Loss: {max(train_losses):.6f}")
-
-                    if val_losses:
-                        logger.info(f"\n📉 Validation Loss Trajectory:")
-                        logger.info(f"  Initial Val Loss: {val_losses[0]:.6f}")
-                        logger.info(f"  Final Val Loss: {val_losses[-1]:.6f}")
-                        logger.info(
-                            f"  Reduction: {(1 - val_losses[-1]/max(val_losses[0], 1e-8))*100:.1f}%"
-                        )
-                        logger.info(f"  Min Val Loss: {min(val_losses):.6f}")
-                        logger.info(f"  Max Val Loss: {max(val_losses):.6f}")
-                        logger.info(
-                            f"  Train-Val Gap: {abs(train_losses[-1] - val_losses[-1]):.6f}"
-                        )
-
-                # Data split metrics
-                logger.info(f"\n📊 Data Split:")
-                logger.info(f"  Training Samples: {training_result.get('training_samples', 0)}")
-                logger.info(f"  Validation Samples: {training_result.get('validation_samples', 0)}")
-                total_samples = training_result.get("training_samples", 0) + training_result.get(
-                    "validation_samples", 0
-                )
-                logger.info(f"  Total Samples: {total_samples}")
-
-                # Training configuration summary
-                logger.info(f"\n⚙️  Training Configuration:")
-                logger.info(f"  Epochs: {bias_training_config['epochs']}")
-                logger.info(f"  Learning Rate: {bias_training_config['learning_rate']}")
-                logger.info(f"  Batch Size: {bias_training_config['batch_size']}")
-                logger.info(f"  Patience (Early Stopping): {bias_training_config['patience']}")
-
-                # BiasCorrector statistics
-                logger.info(f"\n🔬 BiasCorrector Statistics:")
-                if hasattr(bias_corrector, "is_trained"):
-                    logger.info(
-                        f"  Training Status: {'✅ Trained' if bias_corrector.is_trained else '❌ Not Trained'}"
-                    )
-                if hasattr(bias_corrector, "training_epochs"):
-                    logger.info(f"  Training Epochs Completed: {bias_corrector.training_epochs}")
-
-                # Get correction statistics from bias corrector
-                if hasattr(bias_corrector, "get_correction_statistics"):
-                    try:
-                        correction_stats = bias_corrector.get_correction_statistics()
-                        perf_metrics = correction_stats.get("performance_metrics", {})
-
-                        logger.info(f"\n💡 Correction Performance:")
-                        if perf_metrics:
-                            if "total_corrections" in perf_metrics:
-                                logger.info(
-                                    f"  Total Corrections Applied: {perf_metrics['total_corrections']}"
-                                )
-                            if "avg_correction_magnitude" in perf_metrics:
-                                logger.info(
-                                    f"  Avg Correction Magnitude: {perf_metrics['avg_correction_magnitude']:.6f}"
-                                )
-                            if "accepted_corrections" in perf_metrics:
-                                logger.info(
-                                    f"  Accepted Corrections: {perf_metrics['accepted_corrections']}"
-                                )
-                            if "acceptance_rate" in perf_metrics:
-                                logger.info(
-                                    f"  Acceptance Rate: {perf_metrics['acceptance_rate']:.2%}"
-                                )
-                    except Exception as e:
-                        logger.debug(f"Could not retrieve correction statistics: {e}")
-
-                # ✅ Per-parameter bias metrics
-                logger.info(f"\n📋 Per-Parameter Bias Metrics:")
-                if param_names:
-                    for i, param_name in enumerate(param_names):
-                        logger.info(f"  {param_name}:")
-                        logger.info(f"    - Status: Trained with BiasCorrector")
-                        # Additional per-param stats can be added as bias_corrector develops
-                else:
-                    logger.info(f"  (No parameter names available)")
-
-                logger.info(f"\n✅ Phase 2 Summary:")
-                logger.info(f"  BiasCorrector Training: Complete")
-                logger.info(f"  Model Integration: Enabled")
-                logger.info(f"  Checkpoint Saved: Yes")
-                logger.info(f"{'='*70}\n")
-
-                # ✅ WANDB: Log bias corrector metrics
-                if use_wandb:
-                    bias_wandb_metrics = {
-                        "bias/final_train_loss": training_result.get("final_train_loss", 0),
-                        "bias/final_val_loss": training_result.get("final_val_loss", 0),
-                        "bias/epochs_completed": epochs_completed,
-                        "bias/training_samples": training_result.get("training_samples", 0),
-                        "bias/validation_samples": training_result.get("validation_samples", 0),
-                        "bias/total_samples": total_samples,
-                    }
-
-                    # Add loss trajectory metrics
-                    if "training_history" in training_result:
-                        hist = training_result["training_history"]
-                        train_losses = hist.get("train_losses", [])
-                        val_losses = hist.get("val_losses", [])
-
-                        if train_losses:
-                            bias_wandb_metrics["bias/initial_train_loss"] = train_losses[0]
-                            bias_wandb_metrics["bias/train_loss_reduction_pct"] = (
-                                1 - train_losses[-1] / max(train_losses[0], 1e-8)
-                            ) * 100
-                            bias_wandb_metrics["bias/min_train_loss"] = min(train_losses)
-
-                        if val_losses:
-                            bias_wandb_metrics["bias/initial_val_loss"] = val_losses[0]
-                            bias_wandb_metrics["bias/val_loss_reduction_pct"] = (
-                                1 - val_losses[-1] / max(val_losses[0], 1e-8)
-                            ) * 100
-                            bias_wandb_metrics["bias/min_val_loss"] = min(val_losses)
-                            if train_losses:
-                                bias_wandb_metrics["bias/train_val_gap"] = abs(
-                                    train_losses[-1] - val_losses[-1]
-                                )
-
-                    # Add correction performance metrics
-                    if hasattr(bias_corrector, "get_correction_statistics"):
-                        try:
-                            correction_stats = bias_corrector.get_correction_statistics()
-                            perf_metrics = correction_stats.get("performance_metrics", {})
-
-                            if perf_metrics:
-                                if "total_corrections" in perf_metrics:
-                                    bias_wandb_metrics["bias/total_corrections"] = perf_metrics[
-                                        "total_corrections"
-                                    ]
-                                if "avg_correction_magnitude" in perf_metrics:
-                                    bias_wandb_metrics["bias/avg_correction_magnitude"] = (
-                                        perf_metrics["avg_correction_magnitude"]
-                                    )
-                                if "acceptance_rate" in perf_metrics:
-                                    bias_wandb_metrics["bias/acceptance_rate"] = perf_metrics[
-                                        "acceptance_rate"
-                                    ]
-                        except Exception:
-                            pass
-
-                    wandb.log(bias_wandb_metrics)
-                    wandb.run.summary["phase2_complete"] = True
-                    wandb.run.summary["bias_corrector_trained"] = True
-
-                # Save BiasCorrector checkpoint
-                bias_corrector_path = output_dir / "bias_corrector_best.pth"
-                torch.save(bias_corrector.state_dict(), bias_corrector_path)
-                logger.info(f"BiasCorrector saved: {bias_corrector_path}")
-
-                # Save BiasCorrector training history with comprehensive metrics
-                bias_history_path = output_dir / "bias_corrector_history.yaml"
-
-                # Prepare comprehensive metrics dictionary
-                bias_metrics_dict = {
-                    "phase": 2,
-                    "status": "completed",
-                    "training_result": training_result,
-                    "comprehensive_metrics": {
-                        "loss_metrics": {
-                            "final_train_loss": training_result.get("final_train_loss", 0),
-                            "final_val_loss": training_result.get("final_val_loss", 0),
-                            "epochs_completed": epochs_completed,
-                        },
-                        "data_split": {
-                            "training_samples": training_result.get("training_samples", 0),
-                            "validation_samples": training_result.get("validation_samples", 0),
-                            "total_samples": total_samples,
-                        },
-                        "training_config": bias_training_config,
-                        "parameter_names": param_names,
-                    },
-                }
-
-                # Add training history if available
-                if "training_history" in training_result:
-                    hist = training_result["training_history"]
-                    bias_metrics_dict["comprehensive_metrics"]["loss_trajectory"] = {
-                        "train_losses": hist.get("train_losses", []),
-                        "val_losses": hist.get("val_losses", []),
-                    }
-
-                with open(bias_history_path, "w") as f:
-                    yaml.dump(bias_metrics_dict, f)
-                logger.info(f"BiasCorrector history saved: {bias_history_path}")
-
-                # Also save metrics summary JSON for quick parsing
-                bias_metrics_summary = {
-                    "phase": 2,
-                    "status": "completed",
-                    "loss_metrics": {
-                        "final_train_loss": float(training_result.get("final_train_loss", 0)),
-                        "final_val_loss": float(training_result.get("final_val_loss", 0)),
-                        "epochs_completed": int(epochs_completed),
-                    },
-                    "data_metrics": {
-                        "training_samples": int(training_result.get("training_samples", 0)),
-                        "validation_samples": int(training_result.get("validation_samples", 0)),
-                        "total_samples": int(total_samples),
-                    },
-                    "timestamp": str(Path(output_dir).stat().st_mtime),
-                }
-
-                bias_metrics_json_path = output_dir / "bias_corrector_metrics.json"
-                with open(bias_metrics_json_path, "w") as f:
-                    json.dump(bias_metrics_summary, f, indent=2)
-                logger.info(f"BiasCorrector metrics saved: {bias_metrics_json_path}")
-
-                # Update model with trained BiasCorrector
-                model.bias_corrector = bias_corrector
-                logger.info("BiasCorrector integrated into model")
-
-                # Save integrated model with all trained components
-                integrated_model_path = output_dir / "model_with_bias_corrector.pth"
-                full_checkpoint = {
-                    "model_state_dict": model.state_dict(),  # Includes bias_corrector + RL controller weights
-                    "bias_corrector_state_dict": bias_corrector.state_dict(),
-                    "param_names": param_names,
-                    "config": config,
-                    "training_metadata": {
-                        "phase": "both_phases_complete",
-                        "neural_pe_trained": True,
-                        "bias_corrector_trained": True,
-                        "rl_controller_trained": hasattr(model, "rl_controller")
-                        and model.rl_controller is not None,
-                        "bias_training_epochs": training_result.get("epochs_completed", 0),
-                        "bias_final_train_loss": training_result.get("final_train_loss", 0),
-                        "bias_final_val_loss": training_result.get("final_val_loss", 0),
-                    },
-                }
-
-                # Add RL controller state if present (trained during Phase 1)
-                if hasattr(model, "rl_controller") and model.rl_controller is not None:
-                    full_checkpoint["rl_controller_state_dict"] = model.rl_controller.state_dict()
-
-                torch.save(full_checkpoint, integrated_model_path)
-                logger.info(f"Integrated model saved: {integrated_model_path}")
-                logger.info(f"  - Neural PE: ✅ (included in model_state_dict)")
-                logger.info(
-                    f"  - BiasCorrector: ✅ (included in model_state_dict + separate state dict)"
-                )
-                if hasattr(model, "rl_controller") and model.rl_controller is not None:
-                    logger.info(
-                        f"  - RL Controller: ✅ (included in model_state_dict + separate state dict)"
-                    )
-
-                # Also update the best_model checkpoint from trainer with all components
-                best_model_path = output_dir / "best_model.pth"
-                if best_model_path.exists():
-                    logger.info("Updating best_model.pth with BiasCorrector and RL Controller...")
-                    best_checkpoint = torch.load(best_model_path, map_location="cpu")
-                    best_checkpoint["model_state_dict"] = (
-                        model.state_dict()
-                    )  # Updated model with bias corrector
-                    best_checkpoint["bias_corrector_state_dict"] = bias_corrector.state_dict()
-
-                    # Update RL controller state if present
-                    if hasattr(model, "rl_controller") and model.rl_controller is not None:
-                        best_checkpoint["rl_controller_state_dict"] = (
-                            model.rl_controller.state_dict()
-                        )
-
-                    best_checkpoint["training_metadata"] = full_checkpoint["training_metadata"]
-                    torch.save(best_checkpoint, best_model_path)
-                    logger.info(f"✅ best_model.pth updated")
-                    logger.info(f"   - BiasCorrector: ✅")
-                    if hasattr(model, "rl_controller") and model.rl_controller is not None:
-                        logger.info(f"   - RL Controller: ✅")
-
-            else:
-                logger.warning("No validation data collected for bias correction training")
-
-        except Exception as e:
-            logger.error(f"BiasCorrector training failed: {e}", exc_info=True)
-            # Continue without bias correction
-            logger.warning("Proceeding without BiasCorrector")
 
         # Save training history
         history_path = output_dir / "training_history.yaml"

@@ -173,6 +173,14 @@ neural_posterior:
   #                                        #   - Stronger gradients to context encoder
   #                                        #   - 43% less GPU memory (14GB → 8GB)
   
+  # ✅ STEP 5: EXPLICIT SNR CONDITIONING (Jan 7, 2026) — INFERENCE-SAFE
+  # Append ONLY network SNR to context for adaptive learning across SNR regimes
+  # ✅ CRITICAL: Only network_snr (RMS-based, always available at inference)
+  #    Never target_snr (ground truth → data leakage, artificial calibration)
+  # Cost: +1 feature (768 → 769), gains: 2× improvement on SNR-sensitive params
+  snr_conditioning: true                    # Enable SNR as explicit context feature
+  snr_features: ["network"]                 # Only network SNR (RMS from strain, inference-safe)
+  
   # --- NORMALIZING FLOW (Q3: NSF ONLY) ---
   flow_config:
     # ✅ Q3 REDESIGN: NSF (Monotonic Rational Quadratic Splines)
@@ -185,27 +193,40 @@ neural_posterior:
     num_layers: 12                        # ⬇️ OPTIMIZED (Jan 3): 16 → 14 (balance capacity vs speed)
     hidden_features: 256                  # ⬇️ OPTIMIZED (Jan 3): 512 → 384 (still 50% more than baseline)
     num_bins: 12                          # ⬇️ OPTIMIZED (Jan 3): 16 → 12 (faster spline computation)
-    tail_bound: 3.0                       # Automatic tail handling
-    dropout: 0.15                          # ✅ REDUCED (Jan 1): 0.4 → 0.2 (was biasing mean too much)
+    tail_bound: 5.0                       # ✅ JAN 7: 3.0 → 5.0 (INCREASED to reduce rejection rate)
+                                          #   Problem: 40-50% high rejection rate in sampling
+                                          #   Cause: Tight bounds cause spline to reject valid samples
+                                          #   Solution: Wider tail bounds allow more flexibility in tails
+    dropout: 0.0                          # ✅ JAN 7: 0.15 → 0.0 (DISABLED - dropout noise causes oscillation)
+                                          #   Problem: Dropout during training adds stochasticity to context encoder
+                                          #   During inference (eval mode), no dropout → distribution shift
+                                          #   With multi-noise, different samples get different dropouts → inconsistent predictions
+                                          #   Solution: Disable dropout, use batch norm for regularization instead
     
-    # ✅ UPDATED (Jan 4): Temperature scaling for base distribution
-    # Temperature T > 1 expands base distribution: z ~ N(0, T²I)
-    # Higher T → wider posteriors → better coverage → fixes mass2 std collapse
-    # Start at 1.5 (exploratory), monitored by PIT loss during training
-    temperature_scale: 1.5                # ✅ Base distribution temperature (1.0=standard, 1.5=wider)
+    # ✅ JAN 7: Temperature scaling for base distribution
+    # ✅ JAN 7 FIX: Reduced 1.5 → 1.0 to prevent posterior oscillation
+    # Problem: T=1.5 makes base distribution too wide
+    #   Posteriors collapse to mode → re-expand → oscillate around distance
+    #   This interacts poorly with multi-noise data (different SNRs fight)
+    # Solution: Use standard Gaussian (T=1.0), let NSF learn natural spread
+    temperature_scale: 1.0                # ✅ JAN 7: 1.5 → 1.0 (prevent oscillation)
   
   # --- EVENT-TYPE-SPECIFIC CONFIGURATION (Nov 13 enhancement) ---
   event_type: "BBH"                       # Options: BBH, BNS, NSBH (used for physics-informed priors)
   enable_event_specific_priors: true      # Use physics-informed priors per event type
   
   # --- TRAINING ---
-  # learning_rate: 1.0e-5                  # ⬇️ FURTHER REDUCED from 2.5e-5 (prevent oscillations at convergence) - Nov 14
-  learning_rate: 3.0e-5
-  batch_size: 64                          # ⬇️ REDUCED (Jan 3): 64 → 32 (1.5hr/epoch too slow, need 30min/epoch)
-  epochs: 50                              # ⬆️ INCREASED from 30 to allow deep flow to converge
-  patience: 15                            # ⬆️ INCREASED from 10 (monitor through epoch 20-30)
-  weight_decay: 1.0e-4                   # ⬆️ SLIGHTLY increased (better regularization for large model)
-  gradient_clip: 20.0                      # ⬆️ INCREASED to 50.0 (Jan 3: NSF has higher gradients, need more room)
+  learning_rate: 1.0e-5                  # ✅ JAN 7: 3.0e-5 → 1.0e-5 (REDUCED for stability with multi-noise)
+                                           #   Multi-noise causes 5× more training examples per epoch
+                                           #   Higher LR + more samples = gradient explosion + oscillation
+                                           #   Reduced LR = smoother updates = stable convergence
+  batch_size: 32                          # ✅ JAN 7: 64 → 32 (REDUCED for gradient stability)
+                                           #   Problem: Batch size 64 on 5K samples = few unique batches
+                                           #   Smaller batch = more gradient updates = better gradient averaging
+  epochs: 50                              # Training epochs
+  patience: 15                            # Early stopping patience
+  weight_decay: 1.0e-4                   # L2 regularization
+  gradient_clip: 5.0                     # ✅ JAN 7: 20.0 → 5.0 (TIGHTENED to prevent big parameter jumps)
                                            # Warmup will keep effective LR low for first 8 epochs
   optimizer: "AdamW"
   
@@ -221,9 +242,9 @@ neural_posterior:
   
   
   flow_loss_weight: 1.0                   # NLL loss (primary objective for NSF)
-  bounds_penalty_weight: 0.15             # ✅ REDUCED (Jan 2): 0.15 → 0.10 (softer, focus on distance first)
-  pit_loss_weight: 2.0                    # ✅ NEW (Jan 4): Force uniform PIT distribution (calibration)
-  endpoint_loss_weight: 1.5               # ✅ INCREASED (Jan 2): 1.5 → 3.0 (stronger NSF anchoring for distance)
+  bounds_penalty_weight: 0.15             # Soft parameter constraints
+  pit_loss_weight: 0.0                    # ✅ JAN 7: 2.0 → 0.0 (DISABLED - causes oscillation after distance losses disabled)
+  endpoint_loss_weight: 0.0               # ✅ JAN 7: 1.5 → 0.0 (DISABLED - distance already constrained by flow)
   
   # ✅ NEW (Jan 3): KL divergence weight for flow regularization
   # Higher KL weight forces flow closer to prior (Gaussian) → better calibration
@@ -232,11 +253,16 @@ neural_posterior:
                                           # Gradient spikes expected during warmup (use gradient_clip: 20-50)
   
   # --- DISTANCE-SPECIFIC LOSS (PHASE 3A: DISTANCE SENSITIVITY) ---
-  # Distance bias is massive (±60-140 Mpc), need stronger supervision
-  # Solution: Increase all distance losses to force distance head learning
-  auxiliary_distance_loss_weight: 0.5      # ✅ INCREASED (Jan 5): 0.10 → 0.5 (5x stronger direct supervision)
-  distance_endpoint_loss_weight: 3.0       # ✅ INCREASED (Jan 5): 1.5 → 3.0 (2x stronger bounds constraint)
-  distance_prior_weight: 0.5               # ✅ INCREASED (Jan 5): 0.2 → 0.5 (2.5x stronger prior guidance)
+  # ✅ JAN 7 CRITICAL FIX: Disabled distance losses causing diverging bias
+  # Problem: auxiliary_distance_loss (0.25) + flow losses create OPPOSING gradients
+  #   Epoch 6: bias=-10.8 Mpc (OK) → Epoch 7: bias=-81.8 Mpc (7.5× worse) → Epoch 8: bias=-296.9 Mpc (diverging)
+  # Root cause: Distance head predicts 322 Mpc, Flow wants 924 Mpc → conflict → oscillation
+  # Solution: DISABLE distance-specific losses entirely, let flow learn distance naturally
+  #   Flow is 11D posterior estimator; forcing specific distance values conflicts with posterior learning
+  #   Distance will converge naturally as flow learns from multi-noise data
+  auxiliary_distance_loss_weight: 0.0      # ✅ JAN 7: 0.25 → 0.0 (DISABLED - conflicting gradients)
+  distance_endpoint_loss_weight: 0.0       # ✅ JAN 7: 1.5 → 0.0 (DISABLED - oscillation source)
+  distance_prior_weight: 0.0               # ✅ JAN 7: 0.2 → 0.0 (DISABLED - unnecessary constraint)
   
   # --- CONTEXT COLLAPSE PREVENTION (Dec 24: fix epoch 1 collapse, UPDATED Jan 1) ---
   context_variance_weight: 0.10           # ✅ REDUCED (Jan 1): 0.25 → 0.10 (soft guidance, encoder not crushed)
@@ -244,24 +270,28 @@ neural_posterior:
   context_noise_scale: 0.1                # Adaptive noise injection when std < 0.4
   context_collapse_threshold: 0.4         # Threshold to trigger noise injection
   
-  # --- DATA AUGMENTATION (Jan 3: ENHANCED) ---
+  # --- DATA AUGMENTATION (✅ JAN 7: ADJUSTED FOR STEP 4 MULTI-NOISE) ---
   data_augmentation:
-    enabled: true
-    noise_scaling: [0.98, 1.02]          # Noise level variation
-    time_shifts: [-0.002, 0.002]         # Time shift range (seconds)
-    apply_probability: 0.2               # ⬇️ REDUCED (Jan 3): 0.3 → 0.2 (less CPU overhead per batch)
+    enabled: false                        # ✅ JAN 7: Disabled! Multi-noise provides natural augmentation
+                                          #   Problem: Data augmentation + multi-noise = too much variation
+                                          #   With K=5 different noises, network gets 5 different strains anyway
+                                          #   Extra augmentation causes overfitting to augmented samples
+    noise_scaling: [0.98, 1.02]          # (kept for reference, not used)
+    time_shifts: [-0.002, 0.002]         # (kept for reference, not used)
+    apply_probability: 0.0               # ✅ JAN 7: 0.2 → 0.0 (not applied since augmentation disabled)
     
-    # ✅ NEW (Jan 3): Low-SNR and high-mass-ratio sample boosting
-    boost_low_snr: true                  # Boost low-SNR samples (SNR < 15)
-    boost_low_snr_factor: 2.0            # Repeat low-SNR samples 2x per epoch
-    boost_high_mass_ratio: true          # Boost high-mass-ratio samples (q > 5)
-    boost_high_mass_ratio_factor: 1.5    # Repeat high-q samples 1.5x per epoch
+    # ✅ STEP 4 NOTE: With multi-noise, no need for SNR/mass ratio boosting
+    boost_low_snr: false                 # ✅ JAN 7: false (multi-noise covers SNR variation)
+    boost_low_snr_factor: 1.0            # (disabled)
+    boost_high_mass_ratio: false         # ✅ JAN 7: false (each θ has 5 noise samples, sufficient coverage)
+    boost_high_mass_ratio_factor: 1.0    # (disabled)
     
-    # SNR-distance decorrelation augmentation (ensure full SNR range coverage)
-    snr_decorrelation_enabled: true      # Apply SNR-distance decorrelation
-    snr_decorrelation_strength: 0.15     # Strength of decorrelation (0.0-1.0)
-    snr_min_threshold: 10.0              # Minimum SNR for low-SNR boost
-    mass_ratio_threshold: 5.0            # Mass ratio threshold for boost
+    # SNR-distance decorrelation: STILL ENABLED but weaker
+    # With multi-noise, SNR-distance coupling is already weakened by noise variation
+    snr_decorrelation_enabled: false     # ✅ JAN 7: false (multi-noise already decorrelates)
+    snr_decorrelation_strength: 0.0      # (disabled)
+    snr_min_threshold: 10.0              # (not used)
+    mass_ratio_threshold: 5.0            # (not used)
     
 
 

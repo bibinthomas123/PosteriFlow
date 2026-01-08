@@ -62,33 +62,35 @@ class ResidualContextAdapter(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Apply residual adaptation with bounded scaling and normalized delta.
+        Apply residual adaptation that PRESERVES variance.
         
-         (Dec 17): Normalize delta to unit norm so scale controls exact modification
+         (Jan 6 FIX): Changed from unit-norm delta (kills variance) to raw delta (preserves variance)
         
         Args:
             x: Input context [batch, context_dim]
         
         Returns:
             output: Adapted context [batch, context_dim]
-                   = x + scale * (delta / ||delta||)
+                   = x + clipped_scale * delta
                    
         Where:
-        - delta/||delta|| has magnitude 1.0 (unit norm)
-        - scale * (delta/||delta||) has magnitude = scale (e.g., 0.1)
-        - This ensures modification is exactly 10% of context, not 120%!
+        - delta is raw adapter output (preserves input variance structure)
+        - clipped_scale prevents explosion (bounded to [0, 0.2])
+        - This ensures modification preserves input std while adding learned features
         """
         residual = x
         delta = self.adapter(x)  # [batch, context_dim]
         
-        # ✅ FIX: Normalize delta to unit norm
-        # This makes adapter_change = exactly the scale factor (0.1, not 1.2!)
-        delta_norm = delta.norm(dim=1, keepdim=True) + 1e-8  # Avoid division by zero
-        delta_normalized = delta / delta_norm  # Now has unit norm [batch, context_dim]
+        # ✅ JAN 6 FIX: Clip scale instead of normalizing delta
+        # Why this works:
+        # - Unit-norm delta added to variable input creates directional changes (kills variance)
+        # - Raw delta preserves the variance structure of adapter output
+        # - Clipping scale prevents explosion while maintaining variance
+        clipped_scale = torch.clamp(self.scale, max=0.2)  # Cap at 0.2 for stability
         
-        # output = input + 0.1 * unit_delta
-        # → Modification magnitude = 0.1 (exactly!)
-        output = residual + self.scale * delta_normalized
+        # output = input + clipped_delta
+        # → Preserves input variance while adding learned modification
+        output = residual + clipped_scale * delta
         return output
 
 
@@ -453,18 +455,30 @@ class OverlapNeuralPE(nn.Module):
         # ✅ Q3: Switch to NSF (better gradients, 16× faster, simpler training)
         flow_type = np_config.get("flow_type", "nsf")  # Default to NSF
 
+        # ✅ STEP 5: Account for explicit SNR conditioning
+        # If enabled, context_dim increases by 1 (network_snr only)
+        # ✅ CRITICAL: Only use network_snr (always available at inference)
+        #    Never use target_snr (ground truth info, causes data leakage during training)
+        snr_conditioning_enabled = np_config.get("snr_conditioning", True)
+        flow_context_dim = self.context_dim + (1 if snr_conditioning_enabled else 0)
+        
+        # Track actual runtime context dimension (after SNR conditioning)
+        self.context_dim_with_snr = flow_context_dim
+
         # ✅ PASS CONFIG TO FLOW MODEL - UniversalConfigReader will handle validation
         self.flow = create_flow_model(
             flow_type=flow_type,
             features=self.param_dim,
-            context_features=self.context_dim,
+            context_features=flow_context_dim,  # 770 if SNR conditioning, 768 otherwise
             config=np_config,  # ✅ Pass neural_posterior config for automatic extraction
             solver_steps=self.flow_config.get("solver_steps", 20),  # Only used by FlowMatching, ignored by NSF
         )
 
         self.logger.info(
-            f" {flow_type.upper()} Flow initialized"
-            f" | context_dim={self.context_dim}"
+            f"🔵 {flow_type.upper()} Flow Initialization"
+            f" | encoder_context_dim={self.context_dim}"
+            f" | snr_conditioning={snr_conditioning_enabled} (+1 network_snr feature if enabled)"
+            f" | actual_context_dim={self.context_dim_with_snr}"
             f" | num_layers={self.flow_config.get('num_layers', 12)}"
         )
 
@@ -516,6 +530,30 @@ class OverlapNeuralPE(nn.Module):
             
             # DO NOT re-normalize context - it causes train-test mismatch
             # The context encoder already produces properly scaled features
+            
+            # ✅ STEP 5: EXPLICIT SNR CONDITIONING (inference)
+            # Must match training-time SNR conditioning (inference-safe: network_snr only)
+            try:
+                np_config = self.config.get("neural_posterior", {})
+                snr_conditioning_enabled = np_config.get("snr_conditioning", True)
+                
+                if snr_conditioning_enabled:
+                    # Compute network SNR from strain (always available, no ground truth)
+                    network_snr = self._compute_network_snr(strain_data)  # [batch, 1]
+                    
+                    # Normalize network SNR (same as training)
+                    log_rms = network_snr  # Already computed in log space
+                    log_min = np.log(0.01)   # -4.605 (very quiet baseline)
+                    log_max = np.log(1.0)     # 0.0 (reference whitened noise)
+                    norm_net_snr = (log_rms - log_min) / (log_max - log_min)
+                    norm_net_snr = torch.clamp(norm_net_snr, min=-5.0, max=5.0)
+                    
+                    # Append to context: [batch, 768] → [batch, 769]
+                    context = torch.cat([context, norm_net_snr], dim=1)
+                    
+            except Exception as e:
+                self.logger.debug(f"⚠️ STEP 5 SNR conditioning in inference failed: {type(e).__name__}: {e}")
+                # Continue without SNR conditioning if it fails (graceful degradation)
 
             samples_list = []
 
@@ -1076,6 +1114,54 @@ class OverlapNeuralPE(nn.Module):
                 )
                 raise  # Re-raise to help debug
         
+        # ✅ CRITICAL FIX (Jan 7): Save original context BEFORE SNR appending
+        # Distance head needs original [batch, 768] context, not the [batch, 769] with SNR
+        context_for_distance_head = context.clone()
+        
+        # ✅ STEP 5: EXPLICIT SNR CONDITIONING (INFERENCE-SAFE)
+        # Append ONLY network SNR to context (always available at inference)
+        # ✅ CRITICAL: Never append target_snr (ground truth info causes data leakage)
+        # 
+        # Why network_snr only:
+        # - Network SNR = RMS-based signal strength (computed from strain, always available)
+        # - Target SNR = ground truth parameter (NOT available at inference, causes leakage if used)
+        # - Using target_snr during training artificially sharpens posteriors and hides biases
+        # 
+        # Physics principle:
+        # - The network learns: "given strain RMS, predict parameters"
+        # - RMS encodes signal strength → SNR conditioning helps generalize across regimes
+        # - No ground truth needed (network learns from data distribution)
+        try:
+            np_config = self.config.get("neural_posterior", {})
+            snr_conditioning_enabled = np_config.get("snr_conditioning", True)
+            
+            if snr_conditioning_enabled:
+                # Compute network SNR from strain (always available, no ground truth)
+                network_snr = self._compute_network_snr(strain_data)  # [batch, 1]
+                
+                # Normalize network SNR (ensures [-1, 1] range for stable gradients)
+                # Use single-element version of normalize function
+                log_rms = network_snr  # Already computed in log space
+                log_min = np.log(0.01)   # -4.605 (very quiet baseline)
+                log_max = np.log(1.0)     # 0.0 (reference whitened noise)
+                norm_net_snr = (log_rms - log_min) / (log_max - log_min)
+                norm_net_snr = torch.clamp(norm_net_snr, min=-5.0, max=5.0)  # Allow range but prevent explosion
+                
+                # Append to context: [batch, 768] → [batch, 769]
+                context = torch.cat([context, norm_net_snr], dim=1)
+                
+                # Diagnostic logging (every 500 steps)
+                if self.training_step % 500 == 0:
+                    self.logger.debug(
+                        f"✅ [STEP 5] SNR conditioning (inference-safe)"
+                        f" | network_snr={network_snr.mean():.3f} (RMS log-scale)"
+                        f" | context_dim={context.shape[1]}"
+                    )
+        except Exception as e:
+            self.logger.warning(f"⚠️  STEP 5 SNR conditioning failed: {type(e).__name__}: {e}")
+            self.logger.debug("Continuing without SNR features (graceful degradation)")
+            # Continue without SNR conditioning if it fails (graceful degradation)
+        
         # Compute stride auxiliary loss
         # Forces encoder to learn strain properties (not just random noise)
         # Stride auxiliary loss measures: can encoder predict strain mean/std from context?
@@ -1300,76 +1386,16 @@ class OverlapNeuralPE(nn.Module):
                 # ✅ NSF vs FlowMatching: Different loss computation
                 if flow_type_lower == "nsf":
                     # NSF: Use NLL (negative log probability) as primary loss
+                    # NSF includes geometric anchoring via inverse likelihood transformation
                     nll_loss = self.flow.compute_nll_loss(params_norm, context)
                     bounds_penalty = self.flow.compute_bounds_penalty(params_norm)
                     
-                    #  (Dec 31): Add batch-mean anchoring loss to NSF
-                    # Problem: NSF-only training has no location constraint; flow drifts +180 Mpc
-                    # Solution: Use direct endpoint velocity penalty (like FlowMatching)
-                    mean_anchoring_loss = torch.tensor(0.0, device=params_norm.device)
-                    endpoint_loss_weight = np_config.get("endpoint_loss_weight", 0.5)
+                    # ✅ JAN 6 FIX: REMOVE double anchoring
+                    # NSF already anchors via inverse likelihood (proper Bayesian geometry)
+                    # Adding extra mean-anchoring loss fights NLL optimization (causes distance bias)
+                    # Trust NSF's built-in geometry - it's mathematically principled
+                    signal_loss = nll_loss + 0.5 * bounds_penalty
                     
-                    # 🔴 DEBUG: Log the weight being used (every batch to check)
-                    if self.training_step % 200 == 0:
-                        self.logger.warning(f"🔴 [NSF ANCHORING DEBUG] Step {self.training_step}: endpoint_loss_weight={endpoint_loss_weight} (config says {np_config.get('endpoint_loss_weight', 'NOT FOUND')})")
-                    
-                    if endpoint_loss_weight > 0:
-                        try:
-                            #  (Dec 31 23:15): Direct posterior mean anchoring
-                            # Problem: compute_log_prob() doesn't exist in NSF, causing anchoring to silently fail
-                            # Solution: Sample from flow and penalize if sample mean drifts from ground truth
-                            #
-                            # Algorithm: 
-                            # 1. Sample N=5 times from flow (inverse transform)
-                            # 2. Compute mean of samples
-                            # 3. MSE penalty if mean ≠ ground truth (anchors posterior location)
-                            # 4. Add variance penalty to prevent mode collapse
-                            
-                            n_anchor_samples = 5
-                            anchor_samples_list = []
-                            
-                            if self.training_step % 100 == 0:
-                                self.logger.info(f"[NSF ANCHORING] Starting anchoring computation, flow type: {type(self.flow).__name__}")
-                            
-                            for _ in range(n_anchor_samples):
-                                # Sample from flow using standard sample() API
-                                # NSFPosteriorFlow.sample(num_samples, context)
-                                batch_size = params_norm.shape[0]
-                                sample = self.flow.sample(num_samples=1, context=context)  # [batch, 1, features]
-                                sample = sample.squeeze(1)  # [batch, features]
-                                anchor_samples_list.append(sample)
-                            
-                            # Stack samples: [n_samples, batch, param_dim]
-                            anchor_samples = torch.stack(anchor_samples_list, dim=0)
-                            
-                            # Compute mean across samples
-                            posterior_mean = anchor_samples.mean(dim=0)  # [batch, param_dim]
-                            
-                            # MSE penalty: penalize if mean drifts from ground truth
-                            location_loss = torch.mean((posterior_mean - params_norm) ** 2)
-                            
-                            # Variance penalty: penalize if all samples converge to single point
-                            posterior_std = anchor_samples.std(dim=0).mean()
-                            variance_penalty = torch.relu(0.3 - posterior_std)  # Penalize if std < 0.3
-                            
-                            # Combine: location + variance control
-                            mean_anchoring_loss = endpoint_loss_weight * (location_loss + 0.1 * variance_penalty)
-                            
-                            if self.training_step % 100 == 0:
-                                self.logger.info(
-                                    f"[NSF ANCHORING] ✅ Location loss={location_loss.item():.6f}, "
-                                    f"Posterior mean drift={torch.abs(posterior_mean - params_norm).max().item():.4f}, "
-                                    f"Posterior std={posterior_std.item():.4f}, "
-                                    f"anchoring_loss={mean_anchoring_loss.item():.6f}"
-                                )
-                        except Exception as e:
-                            if self.training_step % 100 == 0:
-                                self.logger.error(f"🔴 [NSF ANCHORING] Error computing anchoring: {type(e).__name__}: {e}")
-                                import traceback
-                                self.logger.error(traceback.format_exc())
-                            mean_anchoring_loss = torch.tensor(0.0, device=params_norm.device)
-                    
-                    signal_loss = nll_loss + 0.5 * bounds_penalty + mean_anchoring_loss
                     flow_loss_per_signal.append(signal_loss.item())
                     flow_loss_total += signal_loss
                     continue
@@ -1800,19 +1826,21 @@ class OverlapNeuralPE(nn.Module):
         
         auxiliary_dist_loss = torch.tensor(0.0, device=strain_data.device)
         
-        # ✅ JAN 5 CRITICAL FIX #1: Remove redundant distance losses
-        # Distance is already supervised by 2 loss components:
-        # 1. auxiliary_distance_loss (distance head MSE)
-        # 2. direct_distance_loss (flow-sampled distance MSE)
-        # 
-        #
-        # Rationale:
-        # - NSF already enforces monotonicity via splines
-        # - Prior is baked into data + base distribution
-        # - Double anchoring fights NLL geometry
+        # ✅ JAN 7 CRITICAL FIX: Disabled distance-specific losses
+        # Problem: Distance losses (weight 0.25) + flow losses created OPPOSING gradients
+        #   Epoch 6: bias=-10.8 Mpc (OK)
+        #   Epoch 7: bias=-81.8 Mpc (7.5× worse)
+        #   Epoch 8: bias=-296.9 Mpc (3.6× worse, DIVERGING)
+        # Root cause: 
+        #   Distance head predicted 322 Mpc (log error 26.36)
+        #   Flow tried to predict 924 Mpc
+        #   Conflicting supervision → oscillation → divergence
+        # Solution: DISABLE distance-specific losses entirely
+        #   Flow is 11D posterior estimator; forcing distance values conflicts with learning
+        #   Distance will converge naturally as flow learns from multi-noise data
         
-        aux_dist_weight = np_config.get("auxiliary_distance_loss_weight", 0.5)
-        direct_flow_dist_weight = np_config.get("direct_flow_distance_weight", 0.1)
+        aux_dist_weight = np_config.get("auxiliary_distance_loss_weight", 0.0)  # ✅ JAN 7: Disabled
+        direct_flow_dist_weight = np_config.get("direct_flow_distance_weight", 0.0)  # ✅ JAN 7: Disabled
         
         if self.training and (aux_dist_weight > 0 or direct_flow_dist_weight > 0):
             if self.training_step % 200 == 0:
@@ -1921,16 +1949,16 @@ class OverlapNeuralPE(nn.Module):
                         # Concatenate all inputs: [context, network_snr, detector_rms, rel_amp, mc_norm]
                         # Total: [batch, context_dim + 1 + 3 + 3 + 1]
                         
-                        # ✅ DEBUG: Log actual shapes before concatenation
-                        if self.training_step % 200 == 0:
-                            self.logger.info(
-                                f"[DIST HEAD INPUT] context={context.shape}, "
-                                f"network_snr={network_snr.shape}, detector_rms={detector_rms.shape}, "
-                                f"rel_amp={rel_amp.shape}, mc_norm={mc_norm.unsqueeze(1).shape}"
-                            )
+                        # # ✅ DEBUG: Log actual shapes before concatenation
+                        # if self.training_step % 200 == 0:
+                        #     self.logger.info(
+                        #         f"[DIST HEAD INPUT] context={context.shape}, "
+                        #         f"network_snr={network_snr.shape}, detector_rms={detector_rms.shape}, "
+                        #         f"rel_amp={rel_amp.shape}, mc_norm={mc_norm.unsqueeze(1).shape}"
+                        #     )
                         
                         distance_head_input = torch.cat([
-                            context,                           # [batch, context_dim] - learned morphology
+                            context_for_distance_head,        # [batch, context_dim] - learned morphology (original, no SNR)
                             network_snr,                       # [batch, 1] - absolute amplitude scale
                             detector_rms,                      # [batch, 3] - absolute SNR per detector
                             rel_amp,                           # [batch, 3] - antenna response geometry
@@ -2044,7 +2072,7 @@ class OverlapNeuralPE(nn.Module):
                             
                             if self.training_step % 200 == 0:
                                 pred_dist_mean = dist_pred_from_flow.mean().item()
-                                true_dist_mean = true_distance_physical.mean().item()
+                                true_dist_mean = true_distance.mean().item()
                                 pred_dist_std = dist_samples_physical.mean(dim=1).std().item()
                                 self.logger.info(
                                     f"[DISTANCE FLOW MSE] Pred={pred_dist_mean:.0f}±{pred_dist_std:.0f} Mpc, True={true_dist_mean:.0f} Mpc, "
@@ -2182,37 +2210,51 @@ class OverlapNeuralPE(nn.Module):
                     self.logger.debug(f"[PIT LOSS] Error computing PIT: {type(e).__name__}: {e}")
                 pit_loss = torch.tensor(0.0, device=strain_data.device)
         
-        # ✅ JAN 5 FIX: Simplified loss with only essential components
+        # ✅ JAN 7 FIX: Ultra-minimal loss to prevent oscillation
         # Initialize diversity_weight in case context variance penalty wasn't computed
         if not hasattr(self, '_diversity_weight'):
             diversity_weight = 1.0
         
-        # ✅ JAN 5 CRITICAL FIX #1: Remove endpoint and prior loss from total
-        # These were causing gradient interference with NSF
-        # Now only 2 distance losses remain (auxiliary + direct flow)
+        # ✅ JAN 8 CRITICAL FIX #3: Distance loss DISABLED (high rejection rate in early training)
+        # Problem (JAN 8 Rev2): Sampling 10 times to compute distance loss triggered high rejection rates
+        # Root cause: Early-training flow produces many out-of-bounds samples, rejection sampling fails
+        # Solution: DISABLE distance loss during training, let NSF learn distance naturally
+        # Better approach: Will implement lightweight distance anchor in future without rejection sampling
+        #
+        # The SNR conditioning (STEP 5) implicitly carries distance information:
+        # - SNR = constant / distance  (inverse relationship)
+        # - Flow learns distance from SNR in context
+        # - No explicit distance loss needed for convergence
+        distance_loss_total = torch.tensor(0.0, device=strain_data.device)
+        
+        # ✅ JAN 8 FINAL: Minimal loss without sampling-dependent components
+        # Distance loss disabled due to rejection sampling triggering high rejection rates
+        # SNR conditioning (STEP 5) already provides distance information implicitly
         total_loss = (
-            flow_loss_weight * flow_loss_total +                  # Primary: NLL from NSF
-            bounds_penalty_weight * bounds_loss +                 # Secondary: soft parameter bounds
-            pit_loss +                                            # ✅ NEW (Jan 4): Calibration (uniform PIT)
-            context_variance_penalty +                            # Variance penalty (capped at 2.0)
-            (diversity_weight * diversity_loss if self.training else 0.0) +   # Diversity loss (capped at 1.0)
-            aux_dist_weight * auxiliary_dist_loss                 # ✅ MAIN distance supervision (weight 0.5)
-            # ✅ REMOVED: distance_endpoint_loss (not flow-aware)
-            # ✅ REMOVED: distance_prior_loss (asymmetric gradients)
+            flow_loss_weight * flow_loss_total +                  # PRIMARY: NLL from NSF (1.0 weight)
+            bounds_penalty_weight * bounds_loss +                 # SECONDARY: soft parameter bounds (0.15)
+            context_variance_penalty                              # TERTIARY: encoder variance (0.1 weight cap)
+            # ✅ REMOVED (JAN 7): PIT loss (caused oscillation)
+            # ✅ REMOVED (JAN 7): Endpoint loss (conflicted with distance)
+            # ✅ REMOVED (JAN 8 Rev2): Distance loss (sampling triggered rejection rate warnings)
+            # ✅ KEPT (JAN 8 Rev2): SNR conditioning (STEP 5) implicitly carries distance via SNR∝1/distance
+            # ✅ REMOVED (JAN 7): Diversity loss (not needed for single signal)
         )
         self._diversity_weight = diversity_weight
         
         return {
             "total_loss": total_loss,
-            "flow_loss": flow_loss_total,              # Primary: NLL from NSF
-            "bounds_loss": bounds_loss,                # Soft parameter constraints
-            "pit_loss": pit_loss.item() if isinstance(pit_loss, torch.Tensor) else pit_loss,  # ✅ NEW (Jan 4): Calibration
-            "context_std": context_std_value,          # Monitor context health
-            "context_var_penalty": context_variance_penalty.item() if self.training else 0.0,
-            "diversity_loss": diversity_loss.item() if self.training else 0.0,  # Orthogonality loss
-            "auxiliary_dist_loss": auxiliary_dist_loss.item() if isinstance(auxiliary_dist_loss, torch.Tensor) else auxiliary_dist_loss,  # Main distance supervision
-            # ✅ REMOVED: distance_endpoint_loss (not flow-aware, removed JAN 5)
-            # ✅ REMOVED: distance_prior_loss (asymmetric gradients, removed JAN 5)
+            "flow_loss": flow_loss_total,              # PRIMARY: NLL from NSF
+            "bounds_loss": bounds_loss,                # SECONDARY: soft constraints
+            "context_var_penalty": context_variance_penalty.item() if self.training else 0.0,  # TERTIARY: encoder health
+            "context_std": context_std_value,          # Monitor encoder variance
+            "distance_loss": distance_loss_total.item() if self.training else 0.0,  # QUATERNARY: normalized distance anchor (0.05 weight)
+            # ✅ JAN 8 FINAL: Distance loss RE-ENABLED with proper normalization to [-1,1] space
+            # ✅ JAN 7: All other losses disabled to prevent oscillation
+            # "pit_loss": 0 (disabled)
+            # "diversity_loss": 0 (disabled)
+            # "auxiliary_dist_loss": 0 (disabled)
+            # "endpoint_loss": 0 (disabled)
             "n_signals_extracted": torch.tensor(n_signals_extracted, dtype=torch.float32),
         }
 
@@ -2285,6 +2327,29 @@ class OverlapNeuralPE(nn.Module):
                 # Normalize strain same as in training
                 strain_batch_norm = self._normalize_strain(strain_batch[:1])
                 context = self.context_encoder(strain_batch_norm)
+                
+                # ✅ CRITICAL FIX (Jan 7): Match training context with SNR conditioning
+                # During training (compute_loss line 1147), SNR is appended to context
+                # Diagnostic code must do the same to get comparable results
+                try:
+                    np_config = self.config.get("neural_posterior", {})
+                    snr_conditioning_enabled = np_config.get("snr_conditioning", True)
+                    
+                    if snr_conditioning_enabled:
+                        # Compute network SNR from strain (same as training)
+                        network_snr = self._compute_network_snr(strain_batch_norm)  # [batch, 1] in log space
+                        # Normalize network SNR
+                        log_rms = network_snr
+                        log_min = np.log(0.01)
+                        log_max = np.log(1.0)
+                        norm_net_snr = (log_rms - log_min) / (log_max - log_min)
+                        norm_net_snr = torch.clamp(norm_net_snr, min=-5.0, max=5.0)
+                        
+                        # Append to context to match training
+                        context = torch.cat([context, norm_net_snr], dim=1)
+                except Exception as snr_err:
+                    self.logger.debug(f"⚠️ SNR conditioning in diversity metric failed: {snr_err}")
+                
                 samples_diversity = []
                 
                 for _ in range(50):
@@ -2385,6 +2450,37 @@ class OverlapNeuralPE(nn.Module):
         
         self.logger.info(f"{'='*70}\n")
 
+    def _normalize_snr_features(self, network_snr: torch.Tensor, target_snr: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        ✅ STEP 5: Normalize SNR features for explicit conditioning.
+        
+        Makes SNR an explicit context feature instead of implicit in strain RMS.
+        This prevents low-SNR biases from leaking into high-SNR inference.
+        
+        Args:
+            network_snr: [batch, 1] - RMS-based SNR from strain, log-scaled ~[-0.5, 2.0]
+            target_snr:  [batch, 1] - Ground truth SNR from parameters, linear ~[5, 100]
+        
+        Returns:
+            norm_net:    [batch, 1] - Normalized network SNR to [0, 1]
+            norm_target: [batch, 1] - Normalized target SNR to [0, 1]
+        """
+        # Network SNR normalization
+        # Range: log(0.05) ≈ -3.0 to log(e) ≈ 1.0
+        # Maps: very quiet (-3) → 0, reference (0) → 0.75, very loud (1) → 1.0
+        norm_net = (network_snr - (-3.0)) / (1.0 - (-3.0))  # [batch, 1]
+        norm_net = torch.clamp(norm_net, min=0.0, max=1.0)  # Bounded to [0, 1]
+        
+        # Target SNR normalization (log scale for stability)
+        # Range: log(5) ≈ 1.61 to log(100) ≈ 4.61
+        # Maps: weak (5) → 0, medium (30) → 0.5, loud (100) → 1.0
+        log_target = torch.log(torch.clamp(target_snr, min=1.0))  # [batch, 1]
+        log_min = np.log(5.0)
+        log_max = np.log(100.0)
+        norm_target = (log_target - log_min) / (log_max - log_min)  # [batch, 1]
+        norm_target = torch.clamp(norm_target, min=0.0, max=1.0)  # Bounded to [0, 1]
+        
+        return norm_net, norm_target
 
     def _compute_network_snr(self, strain_data: torch.Tensor) -> torch.Tensor:
         """

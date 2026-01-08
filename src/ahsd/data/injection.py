@@ -64,6 +64,7 @@ import numpy as np
 import math
 import logging
 from typing import Dict, List, Tuple, Optional
+from scipy.fftpack import rfft, rfftfreq
 
 try:
     from pycbc.filter import matched_filter, sigma

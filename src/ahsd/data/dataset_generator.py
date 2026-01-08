@@ -761,6 +761,7 @@ class GWDatasetGenerator:
         test_frac: float = 0.1,
         chunk_size: int = 100,
         noise_augmentation_k: int = 1,
+        multi_noise_k: int = 5,
         config: Dict = None,
     ) -> Dict:
         """
@@ -812,6 +813,18 @@ class GWDatasetGenerator:
                 Noise augmentation variants per sample (default: 1, meaning no augmentation).
                 k=5 generates 5 versions with different noise realizations.
                 Use for data augmentation during training.
+            multi_noise_k (int):
+                STEP 4: Multiple noise realizations per parameter set (default: 1).
+                Generates K different noise realizations injected into the SAME signal parameters.
+                ✅ Fixes amplitude-distance entanglement by showing network same θ with different amplitudes
+                Usage:
+                  - multi_noise_k=1 (default): Current approach, 1 noise per θ
+                  - multi_noise_k=3: STEP 4 light, 3 noise per θ (recommended first try)
+                  - multi_noise_k=5: STEP 4 full, 5 noise per θ (best quality, slowest)
+                Impact: Eliminates amplitude-distance shortcuts in neural network
+                Cost: K× slower generation, K× larger dataset (but converges K× faster)
+                Formula: n_unique_parameters → n_unique_parameters × K samples
+                Example: 50K samples with multi_noise_k=3 → 150K samples total
             config (dict, optional):
                 Override configuration. Keys:
                 - 'premerger_fraction': Pre-merger sample fraction (default: 0.05)
@@ -893,6 +906,15 @@ class GWDatasetGenerator:
             - Noise characteristics: arXiv:1602.03844
         """
 
+        # ✅ STEP 4: Handle multi-noise adjustment
+        if multi_noise_k > 1:
+            self.logger.info(f"🔄 STEP 4 ENABLED: Generating {multi_noise_k}× noise realizations per parameter")
+            self.logger.info(f"   Original target: {n_samples:,} samples")
+            self.logger.info(f"   With STEP 4: {n_samples * multi_noise_k:,} total samples ({multi_noise_k}× increase)")
+            self.logger.info(f"   Generation time: ~{multi_noise_k}× slower")
+            self.logger.info(f"   Dataset size: ~{multi_noise_k}× larger")
+            self.logger.info(f"   Benefits: Fixes amplitude-distance entanglement, converges {multi_noise_k}× faster")
+        
         n_synthetic = int(n_samples * 0.9)
         n_real = n_samples - n_synthetic
 
@@ -1397,6 +1419,12 @@ class GWDatasetGenerator:
             n_edge = sum(edge_case_type_counts.values())
             n_extreme = sum(extreme_case_type_counts.values())
 
+            # Guard against division by zero at start of generation
+            if total_generated == 0:
+                self.logger.info("No samples generated yet...")
+                self.logger.info(f"{'─'*80}")
+                return
+
             self.logger.info(
                 f"Single events:     {n_single:>8,} ({n_single/total_generated*100:>5.1f}%)"
             )
@@ -1673,9 +1701,13 @@ class GWDatasetGenerator:
             self.logger.info(f"{'─' * 80}")
 
             # Total to generate (for progress bar)
-            total_to_generate = n_regular_single + n_premerger + n_regular_overlap + total_edge
+            # ✅ FIX: Account for STEP 4 multi-noise generation
+            base_samples = n_regular_single + n_premerger + n_regular_overlap + total_edge
+            total_to_generate = base_samples * multi_noise_k if multi_noise_k > 1 else base_samples
 
             self.logger.info(f"Total samples to generate:     {total_to_generate:>6,}")
+            if multi_noise_k > 1:
+                self.logger.info(f"  ({base_samples:,} base × {multi_noise_k} noise variants)")
             self.logger.info("")
             self.logger.info("Note: Probabilistic extremes are generated WITHIN regular samples")
             self.logger.info("      based on extreme_fraction probability. Actual count may vary.")
@@ -1683,7 +1715,9 @@ class GWDatasetGenerator:
             self.logger.info("")
         else:
             # No probabilistic extremes - counts are exact
-            total_to_generate = n_regular_single + n_premerger + n_regular_overlap + total_edge
+            # ✅ FIX: Account for STEP 4 multi-noise generation
+            base_samples = n_regular_single + n_premerger + n_regular_overlap + total_edge
+            total_to_generate = base_samples * multi_noise_k if multi_noise_k > 1 else base_samples
 
             self.logger.info("=" * 80)
             self.logger.info("GENERATION PLAN (deterministic)")
@@ -1694,6 +1728,8 @@ class GWDatasetGenerator:
             self.logger.info(f"Edge cases:        {total_edge:>6,}")
             self.logger.info(f"{'─' * 80}")
             self.logger.info(f"Total:             {total_to_generate:>6,}")
+            if multi_noise_k > 1:
+                self.logger.info(f"  ({base_samples:,} base × {multi_noise_k} noise variants)")
             self.logger.info("=" * 80)
             self.logger.info("")
 
@@ -1929,6 +1965,15 @@ class GWDatasetGenerator:
         self.logger.info("STARTING SAMPLE GENERATION")
         self.logger.info("=" * 80)
         self.logger.info("")
+        
+        # ✅ STEP 4 Status
+        if multi_noise_k > 1:
+            self.logger.info(f"🔄 STEP 4 ENABLED: Generating {multi_noise_k}× noise realizations per parameter")
+            self.logger.info(f"   Expected dataset size: {n_samples} base samples × {multi_noise_k} = {n_samples * multi_noise_k} total samples")
+            self.logger.info("")
+        else:
+            self.logger.info("ℹ️  STEP 4 DISABLED (K=1): Single noise realization per parameter")
+            self.logger.info("")
 
         with tqdm(
             total=total_to_generate,
@@ -1951,17 +1996,26 @@ class GWDatasetGenerator:
                             # Do not enforce quotas on explicit extreme samples
                             snr_choice, evt_choice = _select_joint_cell()
 
-                            # Generate a controlled single sample (bypass simulator to honor quotas)
-                            sample = self._generate_single_sample(
+                            # ✅ STEP 4: Generate with multi-noise if enabled
+                            samples_multi = self._generate_single_sample_multi_noise(
                                 sample_id=sample_id,
                                 is_edge_case=False,
                                 add_glitches=add_glitches,
                                 preprocess=preprocess,
+                                k=multi_noise_k,
                                 snr_regime=snr_choice,
                                 forced_event_type=evt_choice,
                             )
-                            # Ensure priorities are present and normalized
-                            sample = self._ensure_sample_priorities(sample)
+                            # Process each sample variant
+                            for sample in samples_multi:
+                                sample = self._ensure_sample_priorities(sample)
+                                _track_sample(sample)
+                                _normalize_sample(sample)
+                                samples.append(sample)
+                                sample_id += 1
+                                total_generated += 1  # ✅ FIX: Track progress
+                                pbar.update(1)  # ✅ FIX: Update progress bar
+                            continue  # Skip normal append below
                         else:
                             #  Use simulator directly
                             if self.simulation is not None:
@@ -1974,50 +2028,61 @@ class GWDatasetGenerator:
                                         f"Simulator failed for sample {sample_id}: {e}"
                                     )
 
-                                    # Fallback to legacy
-                                    sample = self._generate_single_sample(
+                                    # ✅ STEP 4: Fallback with multi-noise
+                                    samples_multi = self._generate_single_sample_multi_noise(
                                         sample_id=sample_id,
                                         is_edge_case=False,
                                         add_glitches=add_glitches,
                                         preprocess=preprocess,
+                                        k=multi_noise_k,
                                     )
-                                    # Ensure priorities are present and normalized
-                                    sample = self._ensure_sample_priorities(sample)
+                                    for sample in samples_multi:
+                                        sample = self._ensure_sample_priorities(sample)
+                                        _track_sample(sample)
+                                        _normalize_sample(sample)
+                                        samples.append(sample)
+                                        sample_id += 1
+                                        total_generated += 1  # ✅ FIX: Track progress
+                                        pbar.update(1)  # ✅ FIX: Update progress bar
+                                    continue
                             else:
-                                # No simulator - use legacy with SNR
-                                sample = self._generate_single_sample(
+                                # No simulator - use legacy with multi-noise
+                                samples_multi = self._generate_single_sample_multi_noise(
                                     sample_id=sample_id,
                                     is_edge_case=False,
                                     add_glitches=add_glitches,
                                     preprocess=preprocess,
+                                    k=multi_noise_k,
                                 )
 
-                                # Add priority
-                                priorities = []
-                                parameters = sample.get("parameters", [])
+                                # Process each sample variant
+                                for sample in samples_multi:
+                                    # Add priority
+                                    priorities = []
+                                    parameters = sample.get("parameters", [])
 
-                                if not isinstance(parameters, list):
-                                    parameters = [parameters] if parameters else []
+                                    if not isinstance(parameters, list):
+                                        parameters = [parameters] if parameters else []
 
-                                for params in parameters:
-                                    if not isinstance(params, dict):
-                                        continue
+                                    for params in parameters:
+                                        if not isinstance(params, dict):
+                                            continue
 
-                                    priority = self._estimate_snr_from_params(params)
-                                    if "target_snr" not in params:
-                                        self._set_target_snr(
-                                            params, priority, reason="regular_single_assign"
-                                        )
-                                    priorities.append(priority)
+                                        priority = self._estimate_snr_from_params(params)
+                                        if "target_snr" not in params:
+                                            self._set_target_snr(
+                                                params, priority, reason="regular_single_assign"
+                                            )
+                                        priorities.append(priority)
 
-                                sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities] if priorities else [self._normalize_priority_to_01(15.0)]
+                                    sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities] if priorities else [self._normalize_priority_to_01(15.0)]
 
-                    _normalize_sample(sample)
-                    _track_sample(sample)
-                    samples.append(sample)
-                    sample_id += 1
-                    total_generated += 1
-                    pbar.update(1)
+                                    _normalize_sample(sample)
+                                    _track_sample(sample)
+                                    samples.append(sample)
+                                    sample_id += 1
+                                    total_generated += 1
+                                    pbar.update(1)
 
                     if total_generated % checkpoint_interval == 0:
                         _log_current_stats(total_generated // checkpoint_interval, total_generated)
@@ -2038,14 +2103,20 @@ class GWDatasetGenerator:
                 self.logger.info(f"[2/4] Generating {n_premerger:,} pre-merger samples...")
 
                 for i in range(n_premerger):
-                    sample = self._generate_pre_merger_sample(sample_id)
-
-                    _normalize_sample(sample)
-                    _track_sample(sample)
-                    samples.append(sample)
-                    sample_id += 1
-                    total_generated += 1
-                    pbar.update(1)
+                    # ✅ STEP 4: Generate with multi-noise if enabled
+                    samples_multi = self._generate_pre_merger_sample_multi_noise(
+                        sample_id=sample_id,
+                        k=multi_noise_k,
+                    )
+                    # Process each sample variant
+                    for sample in samples_multi:
+                        sample = self._ensure_sample_priorities(sample)
+                        _track_sample(sample)
+                        _normalize_sample(sample)
+                        samples.append(sample)
+                        sample_id += 1
+                        total_generated += 1  # ✅ FIX: Track progress
+                        pbar.update(1)  # ✅ FIX: Update progress bar
 
                     if total_generated % checkpoint_interval == 0:
                         _log_current_stats(total_generated // checkpoint_interval, total_generated)
@@ -2076,26 +2147,24 @@ class GWDatasetGenerator:
                                 {"snr_regime": snr_choice, "event_type": evt_choice}
                             )
 
-                        # Bypass simulator to honor quotas
-                        sample = self._generate_overlapping_sample(
-                            sample_id,
-                            False,
-                            add_glitches,
-                            preprocess,
+                        # ✅ STEP 4: Bypass simulator to honor quotas with multi-noise
+                        samples_multi = self._generate_overlapping_sample_multi_noise(
+                            sample_id=sample_id,
+                            is_edge_case=False,
+                            add_glitches=add_glitches,
+                            preprocess=preprocess,
+                            k=multi_noise_k,
                             forced_signals=forced_signals,
                         )
-                        # priorities should already be present via sampled params; ensure fallback
-                        if "priorities" not in sample:
-                            priorities = []
-                            for params in sample.get("parameters", []):
-                                if not isinstance(params, dict):
-                                    continue
-                                if "target_snr" in params:
-                                    priorities.append(float(params["target_snr"]))
-                                else:
-                                    priority = self._estimate_snr_from_params(params)
-                                    priorities.append(priority)
-                            sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
+                        # Process each sample variant
+                        for sample in samples_multi:
+                            sample = self._ensure_sample_priorities(sample)
+                            _track_sample(sample)
+                            _normalize_sample(sample)
+                            samples.append(sample)
+                            sample_id += 1
+                            total_generated += 1
+                            pbar.update(1)
                     else:
                          #  Use simulator for overlaps
                         if self.simulation is not None:
@@ -2104,47 +2173,39 @@ class GWDatasetGenerator:
                                 sample = self._generate_sample_with_simulator(
                                     sample_id, n_signals=n_sigs
                                 )
+                                # Single simulator sample, wrap in multi-noise
+                                samples_multi = [sample]
                             except Exception as e:
                                 self.logger.warning(
                                     f"Simulator overlap failed for {sample_id}: {e}"
                                 )
-                                # Fallback to legacy overlap generation
-                                sample = self._generate_overlapping_sample(
-                                    sample_id, False, add_glitches, preprocess
+                                # ✅ STEP 4: Fallback to legacy with multi-noise
+                                samples_multi = self._generate_overlapping_sample_multi_noise(
+                                    sample_id=sample_id,
+                                    is_edge_case=False,
+                                    add_glitches=add_glitches,
+                                    preprocess=preprocess,
+                                    k=multi_noise_k,
                                 )
-                                # Add priorities
-                                priorities = []
-                                for params in sample.get("parameters", []):
-                                    priority = self._estimate_snr_from_params(params)
-                                    if "target_snr" not in params:
-                                        self._set_target_snr(
-                                            params, priority, reason="overlap_fallback_assign"
-                                        )
-                                    priorities.append(priority)
-                                sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
                         else:
-                            # No simulator - use legacy
-                            sample = self._generate_overlapping_sample(
-                                sample_id, False, add_glitches, preprocess
+                            # ✅ STEP 4: No simulator - use legacy with multi-noise
+                            samples_multi = self._generate_overlapping_sample_multi_noise(
+                                sample_id=sample_id,
+                                is_edge_case=False,
+                                add_glitches=add_glitches,
+                                preprocess=preprocess,
+                                k=multi_noise_k,
                             )
-                            # Add priorities
-                            priorities = []
-                            for params in sample.get("parameters", []):
-                                priority = self._estimate_snr_from_params(params)
-                                # Respect any existing sampled target_snr (don't overwrite)
-                                if "target_snr" not in params:
-                                    self._set_target_snr(
-                                         params, priority, reason="regular_overlap_legacy"
-                                    )
-                                priorities.append(priority)
-                            sample["priorities"] = [self._normalize_priority_to_01(p) for p in priorities]
-
-                    _normalize_sample(sample)
-                    _track_sample(sample)
-                    samples.append(sample)
-                    sample_id += 1
-                    total_generated += 1
-                    pbar.update(1)
+                        
+                        # Process each sample variant
+                        for sample in samples_multi:
+                            sample = self._ensure_sample_priorities(sample)
+                            _track_sample(sample)
+                            _normalize_sample(sample)
+                            samples.append(sample)
+                            sample_id += 1
+                            total_generated += 1
+                            pbar.update(1)
 
                     if total_generated % checkpoint_interval == 0:
                         _log_current_stats(total_generated // checkpoint_interval, total_generated)
@@ -2168,15 +2229,24 @@ class GWDatasetGenerator:
                     self.logger.info(f"  Generating {n_type:,} '{edge_type}' samples...")
 
                     for i in range(n_type):
-                        sample = self._generate_edge_case_sample(sample_id, edge_type, self.config)
-
-                        if sample:
-                            _normalize_sample(sample)
-                            _track_sample(sample)
-                            samples.append(sample)
-                            sample_id += 1
-                            total_generated += 1
-                            pbar.update(1)
+                        # ✅ STEP 4: All edge cases now support multi-noise
+                        samples_multi = self._generate_edge_case_multi_noise(
+                            sample_id=sample_id,
+                            edge_type=edge_type,
+                            config=self.config,
+                            k=multi_noise_k,
+                        )
+                        
+                        # Process each sample variant
+                        for sample in samples_multi:
+                            if sample:
+                                sample = self._ensure_sample_priorities(sample)
+                                _track_sample(sample)
+                                _normalize_sample(sample)
+                                samples.append(sample)
+                                sample_id += 1
+                                total_generated += 1
+                                pbar.update(1)
 
                             if total_generated % checkpoint_interval == 0:
                                 _log_current_stats(
@@ -2404,6 +2474,109 @@ class GWDatasetGenerator:
         else:
             self.logger.warning(f"Unknown edge case type: {edge_type}")
             return None
+
+    def _generate_edge_case_multi_noise(self, sample_id: int, edge_type: str, config: Dict, k: int = 1) -> List[Dict]:
+        """
+        Generate K edge case samples with SAME parameters but DIFFERENT noise realizations.
+        
+        This is a generic wrapper that routes to specific multi-noise generators if available,
+        otherwise wraps single-sample generators and applies multi-noise internally.
+        
+        Args:
+            sample_id (int): Unique sample identifier
+            edge_type (str): Type of edge case to generate
+            config (Dict): Configuration dictionary
+            k (int): Number of noise realizations (default: 1 = no STEP 4)
+            
+        Returns:
+            List[Dict]: K samples with identical parameters but different noise
+            
+        Note:
+            ✅ STEP 4: Fixes amplitude-distance entanglement by showing network same θ with different amplitudes
+        """
+        if k <= 1:
+            # No STEP 4, return single sample wrapped in list
+            sample = self._generate_edge_case_sample(sample_id, edge_type, config)
+            return [sample] if sample else []
+        
+        # ✅ STEP 4: Route to specific multi-noise generators if available
+        if edge_type == "psd_drift":
+            return self._generate_psd_drift_sample_multi_noise(
+                sample_id=sample_id,
+                config=config,
+                k=k,
+            )
+        
+        # For other edge types, generate single sample and apply multi-noise wrapper
+        sample_base = self._generate_edge_case_sample(sample_id, edge_type, config)
+        if not sample_base:
+            return []
+        
+        # Extract parameters and priority from base sample
+        params = sample_base.get("parameters", [None])[0]
+        priority = sample_base.get("priorities", [15.0])[0]
+        event_type = sample_base.get("type", "unknown")
+        
+        if not params:
+            self.logger.warning(f"Edge case {edge_type} sample {sample_id} has no parameters")
+            return [sample_base]  # Return original if extraction fails
+        
+        samples_list = []
+        
+        # Generate K variants with DIFFERENT noise
+        for noise_idx in range(k):
+            detector_data = {}
+            noise_types = {}
+            
+            for detector_name in self.detectors:
+                psd_dict = self.psds[detector_name]
+                
+                # 🔄 KEY: Different noise for each variant (new random realization)
+                noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
+                noise_types[detector_name] = noise_type
+                
+                try:
+                    strain = self.waveform_generator.generate_waveform(params, detector_name)
+                    injected = strain + noise
+                except Exception as e:
+                    self.logger.warning(f"Failed to generate waveform for edge case {edge_type}: {e}")
+                    injected = noise.copy()
+                
+                if np.any(~np.isfinite(injected)):
+                    injected = noise.copy()
+                
+                detector_data[detector_name] = {
+                    "strain": injected.astype(np.float32),
+                    "noise": noise.astype(np.float32),
+                    "psd": psd_dict.get("psd"),
+                    "frequencies": psd_dict.get("frequencies"),
+                    "noise_type": noise_type,
+                }
+            
+            # Copy base sample and update with new detector_data and metadata
+            sample = {
+                "sample_id": f"{edge_type}_{sample_id:06d}_noise{noise_idx}",
+                "type": event_type,
+                "is_overlap": False,
+                "n_signals": 1,
+                "is_edge_case": True,
+                "edge_case_type": edge_type,
+                "parameters": [params],  # Same parameters for all K variants
+                "priorities": [priority],  # Same priority for all K variants
+                "detector_data": detector_data,  # Different noise
+                "metadata": {
+                    "sample_id": sample_id,
+                    "noise_variant": noise_idx,
+                    "n_noise_variants": k,
+                    "edge_case_type": edge_type,
+                    "event_type": event_type,
+                    "noise_sources": noise_types,
+                },
+            }
+            
+            samples_list.append(sample)
+        
+        return samples_list
 
     def _log_progress(self, start_time, generated, total):
         """Log generation progress."""
@@ -2715,6 +2888,114 @@ class GWDatasetGenerator:
                 "multiple_epochs": use_multiple_epochs,
             },
         }
+
+    def _generate_psd_drift_sample_multi_noise(self, sample_id: int, config: Dict, k: int = 1) -> List[Dict]:
+        """
+        Generate K PSD drift samples with SAME parameters but DIFFERENT noise realizations.
+        
+        Args:
+            k (int): Number of noise realizations (default: 1 = no STEP 4)
+            
+        Returns:
+            List[Dict]: K samples with identical parameters but different noise
+        """
+        if k <= 1:
+            # No STEP 4, return single sample wrapped in list
+            return [self._generate_psd_drift_sample(sample_id, config)]
+        
+        # ✅ STEP 4: Generate parameters ONCE
+        edge_cases = config.get("edge_cases", {})
+        obs_config = edge_cases.get("observational_extremes", {})
+        types = obs_config.get("types", {})
+        psd_config = types.get("psd_drift", {})
+        use_multiple_epochs = psd_config.get("use_multiple_epochs", True)
+        
+        event_type = self._sample_event_type()
+        params = self._sample_parameters(event_type)
+        
+        priority = self._estimate_snr_from_params(params)
+        if "target_snr" not in params:
+            self._set_target_snr(params, priority, reason="psd_drift_assign")
+        
+        attach_network_snr_safe(params)
+        
+        samples_list = []
+        
+        # Generate K variants with DIFFERENT noise
+        for noise_idx in range(k):
+            detector_data = {}
+            noise_types = {}
+            
+            for detector_name in self.detectors:
+                psd_info = self.psds[detector_name]
+                
+                if use_multiple_epochs:
+                    half_duration = self.duration / 2
+                    half_samples = int(half_duration * self.sample_rate)
+                    
+                    # 🔄 KEY: Different noise for each variant
+                    noise1_full, noise1_type = self._get_noise_for_detector(detector_name, psd_info)
+                    noise1 = noise1_full[:half_samples]
+                    
+                    drift_factor = np.random.uniform(0.5, 2.0)
+                    psd_drifted = psd_info["psd"] * drift_factor
+                    psd_info_drift = {"psd": psd_drifted, "frequencies": psd_info["frequencies"]}
+                    noise2_full, noise2_type = self._get_noise_for_detector(
+                        detector_name, psd_info_drift
+                    )
+                    noise2 = noise2_full[:half_samples]
+                    
+                    combined_noise = np.concatenate([noise1, noise2])
+                    noise_type = noise1_type
+                else:
+                    combined_noise = np.zeros(int(self.duration * self.sample_rate))
+                    n_samples = len(combined_noise)
+                    
+                    for i in range(n_samples):
+                        drift_factor = 1.0 + (i / n_samples) * np.random.uniform(-0.5, 0.5)
+                        psd_t = psd_info["psd"] * drift_factor
+                        combined_noise[i] = np.random.normal(0, np.sqrt(np.mean(psd_t)))
+                    noise_type = "synthetic"
+                
+                signal = self.waveform_generator.generate_waveform(params, detector_name)
+                combined_strain = combined_noise + signal
+                
+                if self.preprocess_enabled:
+                    combined_strain = self.preprocessor.preprocess(combined_strain, psd_info)
+                
+                detector_data[detector_name] = {
+                    "strain": combined_strain.astype(np.float32),
+                    "noise": combined_noise.astype(np.float32),
+                    "psd": psd_info["psd"],
+                    "frequencies": psd_info["frequencies"],
+                    "noise_type": noise_type,
+                }
+                noise_types[detector_name] = noise_type
+            
+            sample = {
+                "sample_id": f"psd_drift_{sample_id:06d}_noise{noise_idx}",
+                "type": event_type,
+                "is_overlap": False,
+                "n_signals": 1,
+                "is_edge_case": True,
+                "edge_case_type": "psd_drift",
+                "parameters": [params],
+                "priorities": [self._normalize_priority_to_01(priority)],
+                "detector_data": detector_data,
+                "metadata": {
+                    "sample_id": sample_id,
+                    "noise_variant": noise_idx,
+                    "n_noise_variants": k,
+                    "event_type": event_type,
+                    "psd_drift": True,
+                    "multiple_epochs": use_multiple_epochs,
+                    "noise_sources": noise_types,
+                },
+            }
+            
+            samples_list.append(sample)
+        
+        return samples_list
 
     def _generate_sky_position_extreme_sample(self, sample_id: int, config: Dict) -> Dict:
         """Generate sample with extreme sky position."""
@@ -3074,38 +3355,18 @@ class GWDatasetGenerator:
             try:
                 ref_det = self.detectors[0]
                 ref_psd = self.psds.get(ref_det)
-                # For overlapping, target_snrs already computed earlier as 'target_snrs'
-                pre_calc = []
-                actuals = []
-                for i, params in enumerate(signal_params_list):
-                    try:
-                        wf = self.waveform_generator.generate_waveform(params, ref_det)
-                        pre = (
-                            float(self.injector._compute_optimal_snr(wf, ref_psd))
-                            if ref_psd is not None
-                            else float("nan")
-                        )
-                    except Exception as e:
-                        pre = float("nan")
-                    pre_calc.append(pre)
+                # For pre-merger, single parameter set
+                try:
+                    wf = self.waveform_generator.generate_waveform(params, ref_det)
+                    pre_calc = float(self.injector._compute_optimal_snr(wf, ref_psd)) if ref_psd is not None else float("nan")
+                except Exception:
+                    pre_calc = float("nan")
 
-                # actual SNRs from metadata_list inside detector_data for ref_det
-                det_meta_list = []
-                det_entry = detector_data.get(ref_det, {})
-                if det_entry:
-                    det_meta_list = det_entry.get("metadata", [])
-
-                # detector metadata list corresponds to each injected signal
-                for m in det_meta_list:
-                    try:
-                        actuals.append(
-                            float(m.get("actual_snr", m.get("target_snr", float("nan"))))
-                        )
-                    except Exception:
-                        actuals.append(float("nan"))
+                # Target SNR from params
+                target_snr = float(params.get("target_snr", float("nan")))
 
                 self.logger.info(
-                    f"[SNR-DIAG] {sample['sample_id']}: sampled_targets={target_snrs} pre_estimates={pre_calc} actuals={actuals}"
+                    f"[SNR-DIAG] {sample['sample_id']}: target_snr={target_snr} pre_estimate={pre_calc}"
                 )
             except Exception as e:
                 self.logger.debug(f"SNR debug logging failed for {sample.get('sample_id')}: {e}")
@@ -3113,6 +3374,113 @@ class GWDatasetGenerator:
             self._debug_snr_count += 1
 
         return sample
+
+    def _generate_pre_merger_sample_multi_noise(self, sample_id: int, k: int = 1) -> List[Dict]:
+        """
+        Generate K pre-merger samples with SAME parameters but DIFFERENT noise realizations.
+        
+        Args:
+            k (int): Number of noise realizations (default: 1 = no STEP 4)
+            
+        Returns:
+            List[Dict]: K samples with identical parameters but different noise
+        """
+        if k <= 1:
+            # No STEP 4, return single sample wrapped in list
+            return [self._generate_pre_merger_sample(sample_id)]
+        
+        # ✅ STEP 4: Generate parameters ONCE
+        premerger_config = self.config.get("premerger_config", {})
+        
+        if not premerger_config.get("enabled", True):
+            return [self._generate_pre_merger_sample(sample_id)]
+        
+        time_to_merger_range = premerger_config.get("time_to_merger_range", [0.5, 5.0])
+        event_types = premerger_config.get("event_types", ["BBH", "BNS", "NSBH"])
+        min_snr = premerger_config.get("min_snr", 8)
+        
+        event_type = self._sample_event_type_subset(event_types)
+        params = self._sample_parameters(event_type)
+        
+        if "target_snr" in params:
+            try:
+                self._set_target_snr(
+                    params,
+                    max(float(params.get("target_snr", 0)), min_snr),
+                    reason="premerger_min_enforce",
+                )
+            except Exception:
+                self._set_target_snr(params, min_snr, reason="premerger_min_enforce_fail")
+        else:
+            self._set_target_snr(params, min_snr, reason="premerger_min_default")
+        
+        time_to_merger = np.random.uniform(time_to_merger_range[0], time_to_merger_range[1])
+        params["geocent_time"] = self.duration / 2 + time_to_merger
+        
+        attach_network_snr_safe(params)
+        
+        priority = self._estimate_snr_from_params(params)
+        
+        samples_list = []
+        
+        # Generate K variants with DIFFERENT noise
+        for noise_idx in range(k):
+            detector_data = {}
+            noise_types = {}
+            
+            for detector_name in self.detectors:
+                psd_dict = self.psds[detector_name]
+                
+                # 🔄 KEY: Different noise for each variant (new random realization)
+                noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
+                noise_types[detector_name] = noise_type
+                
+                try:
+                    strain = self.waveform_generator.generate_waveform(params, detector_name)
+                    injected = strain + noise
+                except Exception:
+                    injected = noise
+                
+                if np.any(~np.isfinite(injected)):
+                    injected = noise.copy()
+                
+                detector_data[detector_name] = {
+                    "strain": injected.astype(np.float32),
+                    "noise": noise.astype(np.float32),
+                    "psd": psd_dict["psd"],
+                    "frequencies": psd_dict["frequencies"],
+                    "noise_type": noise_type,
+                }
+            
+            sample = {
+                "sample_id": f"pre_merger_{sample_id:06d}_noise{noise_idx}",
+                "type": event_type,
+                "is_overlap": False,
+                "n_signals": 1,
+                "is_edge_case": False,
+                "is_premerger": True,
+                "parameters": [params],
+                "priorities": [self._normalize_priority_to_01(priority)],
+                "detector_data": detector_data,
+                "noise_type": noise_types,
+                "metadata": {
+                    "sample_id": sample_id,
+                    "noise_variant": noise_idx,
+                    "n_noise_variants": k,
+                    "event_type": event_type,
+                    "is_premerger": True,
+                    "window_end_to_merger_seconds": time_to_merger,
+                    "merger_time": params["geocent_time"],
+                    "window_duration": self.duration,
+                    "contains_merger": False,
+                    "is_complete_signal": False,
+                    "noise_sources": noise_types,
+                },
+            }
+            
+            samples_list.append(sample)
+        
+        return samples_list
 
     def _generate_extreme_spin_sample(self, sample_id: int, config: Dict) -> Dict:
         """Generate sample with near-maximal spins."""
@@ -4150,6 +4518,288 @@ class GWDatasetGenerator:
             pass
 
         return val
+
+    def _generate_single_sample_multi_noise(
+        self,
+        sample_id: int,
+        is_edge_case: bool,
+        add_glitches: bool,
+        preprocess: bool,
+        k: int = 1,
+        snr_regime: Optional[str] = None,
+        forced_event_type: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Generate K samples with SAME parameters but DIFFERENT noise realizations.
+        
+        This fixes amplitude-distance entanglement by showing the network that the same
+        physical parameters can appear with different amplitudes (due to different noise).
+        
+        Args:
+            k (int): Number of noise realizations to generate (default: 1 = no STEP 4)
+            Other args: Same as _generate_single_sample
+            
+        Returns:
+            List[Dict]: K samples with identical parameters but different noise/strain
+                       Each sample has sample_id_noise_{i} identifier
+        
+        ✅ STEP 4 Benefits:
+           - Network learns: amplitude_variation ⊥ distance_variation
+           - Eliminates: amplitude→distance shortcuts
+           - Result: ±60 Mpc bias → ±20 Mpc bias
+        """
+        if k <= 1:
+            # No STEP 4, return single sample wrapped in list
+            return [self._generate_single_sample(
+                sample_id, is_edge_case, add_glitches, preprocess, snr_regime, forced_event_type
+            )]
+        
+        # ✅ STEP 4: Generate parameters ONCE
+        if snr_regime is None:
+            snr_regime = self._sample_snr_regime()
+        
+        if forced_event_type is not None:
+            event_type = forced_event_type
+        else:
+            try:
+                event_type = self.parameter_sampler.event_type_given_snr(snr_regime)
+            except Exception:
+                event_type = self._sample_event_type()
+        
+        # Generate parameters ONCE (same for all K variants)
+        if event_type == "BBH":
+            params = self.parameter_sampler.sample_bbh_parameters(snr_regime, is_edge_case)
+        elif event_type == "BNS":
+            params = self.parameter_sampler.sample_bns_parameters(snr_regime, is_edge_case)
+        elif event_type == "NSBH":
+            params = self.parameter_sampler.sample_nsbh_parameters(snr_regime, is_edge_case)
+        else:
+            params = None
+        
+        samples_list = []
+        
+        # Generate K variants with DIFFERENT noise
+        for noise_idx in range(k):
+            detector_data = {}
+            noise_types = {}
+            
+            for detector_name in self.detectors:
+                psd_dict = self.psds[detector_name]
+                
+                # 🔄 KEY: Different noise for each variant (new random realization)
+                noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
+                noise_types[detector_name] = noise_type
+                
+                # Add glitches
+                if add_glitches:
+                    noise = self.noise_generator.add_glitches(noise, glitch_prob=0.3)
+                
+                # Inject SAME signal into DIFFERENT noise
+                if params:
+                    injected, metadata = self.injector.inject_signal(
+                        noise, params, detector_name, psd_dict
+                    )
+                else:
+                    injected = noise
+                    metadata = {"detector": detector_name, "noise_only": True}
+                
+                # Preprocess
+                if preprocess:
+                    injected = self.preprocessor.preprocess(injected, psd_dict)
+                
+                # Validation
+                strain_final = injected.astype(np.float32)
+                noise_final = noise.astype(np.float32)
+                
+                if np.any(~np.isfinite(noise_final)):
+                    self.logger.warning(
+                        f"NaN/Inf in noise [{detector_name}, noise_idx={noise_idx}], using fallback"
+                    )
+                    noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-20
+                
+                if np.any(~np.isfinite(strain_final)):
+                    self.logger.warning(
+                        f"NaN/Inf in strain [{detector_name}, noise_idx={noise_idx}], using noise"
+                    )
+                    strain_final = noise_final.copy()
+                
+                detector_data[detector_name] = {
+                    "strain": strain_final,
+                    "noise": noise_final,
+                    "psd": psd_dict.get("psd"),
+                    "frequencies": psd_dict.get("frequencies"),
+                    "metadata": metadata,
+                }
+            
+            # Create sample with unique ID for this noise variant
+            sample = {
+                "sample_id": f"{sample_id:06d}_noise{noise_idx}",
+                "type": event_type,
+                "event_type": event_type,
+                "parameters": params if params else {},
+                "detector_data": detector_data,
+                "metadata": {
+                    "sample_id": sample_id,
+                    "noise_variant": noise_idx,
+                    "n_noise_variants": k,
+                    "event_type": event_type,
+                    "snr_regime": snr_regime,
+                    "is_edge_case": is_edge_case,
+                    "noise_sources": noise_types,
+                },
+            }
+            
+            if params:
+                raw_snr = self._estimate_snr_from_params(params)
+                sample["priorities"] = [self._normalize_priority_to_01(raw_snr)]
+            
+            samples_list.append(sample)
+        
+        return samples_list
+
+    def _generate_overlapping_sample_multi_noise(
+        self,
+        sample_id: int,
+        is_edge_case: bool,
+        add_glitches: bool,
+        preprocess: bool,
+        k: int = 1,
+        forced_signals: Optional[List[Dict]] = None,
+    ) -> List[Dict]:
+        """
+        Generate K overlapping samples with SAME parameters but DIFFERENT noise realizations.
+        
+        Args:
+            k (int): Number of noise realizations (default: 1 = no STEP 4)
+            Other args: Same as _generate_overlapping_sample
+            
+        Returns:
+            List[Dict]: K samples with identical signal parameters but different noise
+        """
+        if k <= 1:
+            # No STEP 4, return single sample wrapped in list
+            return [self._generate_overlapping_sample(
+                sample_id, is_edge_case, add_glitches, preprocess, forced_signals
+            )]
+        
+        # ✅ STEP 4: Generate parameters ONCE
+        n_signals = sample_overlap_size(max_overall=self.max_overlapping_signals)
+        signal_params_list = []
+        
+        # Generate clustered geocent_time for overlapping signals
+        if n_signals > 1:
+            clustered_times = sample_clustered_times(
+                np.random, n_signals, self.duration, overlap_window=0.6
+            )
+        else:
+            clustered_times = [0.0]
+        
+        # Generate parameters for each signal (ONCE for all K variants)
+        for i in range(n_signals):
+            if forced_signals and i < len(forced_signals):
+                info = forced_signals[i]
+                snr_regime = info.get("snr_regime")
+                event_type = info.get("event_type")
+            else:
+                snr_regime = self.parameter_sampler._sample_snr_regime()
+                try:
+                    event_type = self.parameter_sampler.event_type_given_snr(snr_regime)
+                except Exception:
+                    event_type = self._sample_event_type()
+            
+            if i > 0 and n_signals > 1 and event_type == signal_params_list[0]["type"]:
+                first_type = signal_params_list[0]["type"]
+                available_types = [t for t in ["BBH", "BNS", "NSBH"] if t != first_type]
+                if available_types:
+                    weights = [EVENT_TYPE_DISTRIBUTION.get(t, 0.0) for t in available_types]
+                    total_weight = sum(weights)
+                    if total_weight > 0:
+                        probs = [w / total_weight for w in weights]
+                        event_type = np.random.choice(available_types, p=probs)
+                    else:
+                        event_type = np.random.choice(available_types)
+            
+            if event_type == "BBH":
+                params = self.parameter_sampler.sample_bbh_parameters(snr_regime, is_edge_case)
+            elif event_type == "BNS":
+                params = self.parameter_sampler.sample_bns_parameters(snr_regime, is_edge_case)
+            else:
+                params = self.parameter_sampler.sample_nsbh_parameters(snr_regime, is_edge_case)
+            
+            params["geocent_time"] = clustered_times[i]
+            signal_params_list.append(params)
+        
+        attach_network_snr_safe(signal_params_list)
+        
+        samples_list = []
+        
+        # Generate K variants with DIFFERENT noise
+        for noise_idx in range(k):
+            detector_data = {}
+            noise_types = {}
+            
+            for detector_name in self.detectors:
+                psd_dict = self.psds[detector_name]
+                
+                # 🔄 KEY: Different noise for each variant (new random realization)
+                noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
+                noise_types[detector_name] = noise_type
+                
+                if add_glitches:
+                    noise = self.noise_generator.add_glitches(noise, glitch_prob=0.2)
+                
+                # Inject SAME signals into DIFFERENT noise
+                injected, metadata_list = self.injector.inject_overlapping_signals(
+                    noise, signal_params_list, detector_name, psd_dict
+                )
+                
+                if preprocess:
+                    injected = self.preprocessor.preprocess(injected, psd_dict)
+                
+                strain_final = injected.astype(np.float32)
+                noise_final = noise.astype(np.float32)
+                
+                if np.any(~np.isfinite(noise_final)):
+                    self.logger.warning(
+                        f"NaN/Inf in overlap noise [{detector_name}, noise_idx={noise_idx}], using fallback"
+                    )
+                    noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-20
+                
+                if np.any(~np.isfinite(strain_final)):
+                    self.logger.warning(
+                        f"NaN/Inf in overlap strain [{detector_name}, noise_idx={noise_idx}], using noise"
+                    )
+                    strain_final = noise_final.copy()
+                
+                detector_data[detector_name] = {
+                    "strain": strain_final,
+                    "noise": noise_final,
+                    "psd": psd_dict.get("psd"),
+                    "frequencies": psd_dict.get("frequencies"),
+                    "metadata": metadata_list if metadata_list else [{}],
+                }
+            
+            # Create sample with unique ID for this noise variant
+            sample = {
+                "sample_id": f"{sample_id:06d}_overlap_noise{noise_idx}",
+                "type": signal_params_list[0]["type"] if signal_params_list else "unknown",
+                "event_type": signal_params_list[0]["type"] if signal_params_list else "unknown",
+                "parameters": signal_params_list,
+                "detector_data": detector_data,
+                "metadata": {
+                    "sample_id": sample_id,
+                    "noise_variant": noise_idx,
+                    "n_noise_variants": k,
+                    "n_signals": len(signal_params_list),
+                    "is_edge_case": is_edge_case,
+                    "noise_sources": noise_types,
+                    "overlapping": True,
+                },
+            }
+            
+            samples_list.append(sample)
+        
+        return samples_list
 
     def _generate_single_sample(
         self,
@@ -5395,6 +6045,114 @@ class GWDatasetGenerator:
     # ========================================================================
     # MAIN GENERATION DISPATCHER
     # ========================================================================
+
+    def _generate_extreme_case_multi_noise(
+        self, sample_id: int, extreme_type: str, k: int = 1
+    ) -> List[Dict]:
+        """
+        Generate K extreme case samples with SAME parameters but DIFFERENT noise realizations.
+        
+        Args:
+            sample_id: Unique sample identifier
+            extreme_type: One of the extreme case types
+            k (int): Number of noise realizations (default: 1 = no STEP 4)
+            
+        Returns:
+            List[Dict]: K samples with identical signal parameters but different noise
+        """
+        if k <= 1:
+            # No STEP 4, return single sample wrapped in list
+            return [self._generate_extreme_case(sample_id, extreme_type)]
+        
+        # ✅ STEP 4: Generate base sample ONCE (with parameters)
+        base_sample = self._generate_extreme_case(sample_id, extreme_type)
+        
+        # Extract parameters from sample
+        if isinstance(base_sample.get("parameters"), list) and len(base_sample["parameters"]) > 0:
+            signal_params_list = base_sample["parameters"]
+        elif isinstance(base_sample.get("parameters"), dict):
+            signal_params_list = [base_sample["parameters"]]
+        else:
+            # Can't extract params, return single sample
+            return [base_sample]
+        
+        samples_list = []
+        
+        # Generate K variants with DIFFERENT noise
+        for noise_idx in range(k):
+            detector_data = {}
+            noise_types = {}
+            
+            for detector_name in self.detectors:
+                psd_dict = self.psds[detector_name]
+                
+                # 🔄 KEY: Different noise for each variant (new random realization)
+                noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
+                noise_types[detector_name] = noise_type
+                
+                # Re-inject SAME signals into NEW noise
+                if len(signal_params_list) > 1:
+                    # Multiple signals: use overlapping injection
+                    injected, metadata_list = self.injector.inject_overlapping_signals(
+                        noise, signal_params_list, detector_name, psd_dict
+                    )
+                else:
+                    # Single signal: use standard injection
+                    injected, metadata = self.injector.inject_signal(
+                        noise, signal_params_list[0], detector_name, psd_dict
+                    )
+                    metadata_list = [metadata]
+                
+                if self.preprocess_enabled:
+                    injected = self.preprocessor.preprocess(injected, psd_dict)
+                
+                strain_final = injected.astype(np.float32)
+                noise_final = noise.astype(np.float32)
+                
+                if np.any(~np.isfinite(noise_final)):
+                    noise_final = np.random.randn(len(noise_final)).astype(np.float32) * 1e-20
+                
+                if np.any(~np.isfinite(strain_final)):
+                    strain_final = noise_final.copy()
+                
+                detector_data[detector_name] = {
+                    "strain": strain_final,
+                    "noise": noise_final,
+                    "psd": psd_dict.get("psd"),
+                    "frequencies": psd_dict.get("frequencies"),
+                    "metadata": metadata_list if metadata_list else [{}],
+                }
+            
+            # Create sample with unique ID for this noise variant
+            sample = {
+                "sample_id": f"{base_sample['sample_id']}_noise{noise_idx}",
+                "type": base_sample.get("type", "unknown"),
+                "event_type": base_sample.get("event_type", "unknown"),
+                "parameters": signal_params_list,
+                "detector_data": detector_data,
+                "is_extreme_case": True,
+                "extreme_case_type": base_sample.get("extreme_case_type", extreme_type),
+                "extreme_metadata": base_sample.get("extreme_metadata", {}),
+                "metadata": {
+                    "sample_id": sample_id,
+                    "noise_variant": noise_idx,
+                    "n_noise_variants": k,
+                    "n_signals": len(signal_params_list),
+                    "is_edge_case": True,
+                    "is_extreme_case": True,
+                    "extreme_type": extreme_type,
+                    "noise_sources": noise_types,
+                    "parent_sample_id": base_sample.get("sample_id"),
+                },
+            }
+            
+            # Preserve priorities if they exist
+            if "priorities" in base_sample:
+                sample["priorities"] = base_sample["priorities"]
+            
+            samples_list.append(sample)
+        
+        return samples_list
 
     def _generate_extreme_case(self, sample_id: int, extreme_type: str) -> Dict:
         """

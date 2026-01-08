@@ -10,10 +10,12 @@
 # ==============================================================================
 
 # Number of samples to generate (start with 50k for full training)
-n_samples: 25000
+# STEP 4: K=5 means each unique parameter set gets 5 different noise realizations
+# So n_samples=1000 with K=5 generates 5000 total samples
+n_samples: 1000
 
 # Output configuration
-output_dir: "data/dataset"
+output_dir: "data/dataset2"
 output_format: "pkl"  # Efficient binary format
 
 # Batch size for saving samples to disk
@@ -70,10 +72,11 @@ add_glitches: true  # Disabled for faster testing (enable for production)
 # Always preprocess for ML training
 preprocess: true
 
-# Noise augmentation: 0.1 = 10x QUIETER for SNR validation
-# (Normal O4 sensitivity uses 1.0)
-# For SNR correlation testing, use 0.1
-noise_augmentation_k: 1
+# STEP 4: Multi-noise augmentation (K=5)
+# For each parameter set θ, generate K=5 different noise realizations
+# This fixes distance bias by decoupling amplitude variation from distance
+# Generates 1000 × 5 = 5000 total samples
+noise_augmentation_k: 5
 
 # Save minimal data for efficiency
 save_complete: false

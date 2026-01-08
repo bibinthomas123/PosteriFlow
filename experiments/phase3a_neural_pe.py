@@ -35,6 +35,7 @@ import json
 from ahsd.models.overlap_neuralpe import OverlapNeuralPE
 from experiments.train_priority_net import ChunkedGWDataLoader
 from ahsd.utils.universal_config import UniversalConfigReader, load_config
+from ahsd.utils.noise_marginalization import marginalize_loss_by_theta, should_marginalize
 
 # ✅ WANDB
 try:
@@ -176,6 +177,7 @@ class OverlapGWDataset(Dataset):
             "parameters": torch.tensor(all_params, dtype=torch.float32),
             "n_signals": n_signals,
             "metadata": sample.get("metadata", {}),
+            "sample_id": sample.get("sample_id", "unknown"),  # ✅ NEW: For noise marginalization
         }
 
     def _scale_parameters(self, params_dict):
@@ -189,8 +191,9 @@ def collate_fn(batch):
     parameters = torch.stack([item["parameters"] for item in batch])
     n_signals = torch.tensor([item["n_signals"] for item in batch])
     metadata = [item["metadata"] for item in batch]
+    sample_ids = [item.get("sample_id", "unknown") for item in batch]  # ✅ NEW: For marginalization
 
-    return strain_data, parameters, n_signals, metadata
+    return strain_data, parameters, n_signals, metadata, sample_ids
 
 
 class OverlapNeuralPETrainer:
@@ -430,21 +433,31 @@ class OverlapNeuralPETrainer:
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
 
-        for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(progress_bar):
+        for batch_idx, batch_output in enumerate(progress_bar):
             try:
                 batch_start = time.time()
                 self.optimizer.zero_grad()
+                
+                # ✅ Handle new sample_ids return value
+                if len(batch_output) == 5:
+                    strain_data, parameters, n_signals, metadata, sample_ids = batch_output
+                else:
+                    strain_data, parameters, n_signals, metadata = batch_output
+                    sample_ids = [f"batch_{i}" for i in range(len(strain_data))]  # Fallback
+                
                 strain_data = strain_data.to(self.device)
                 parameters = parameters.to(self.device)
 
                 target_params = parameters[:, 0, :]
 
-                # ✅ Nov 14: GET RL STATE AND COMPLEXITY RECOMMENDATION
-                complexity = "medium"
-                complexity_id = 1
-
                 # Compute loss
                 loss_dict = self.model.compute_loss(strain_data, target_params)
+                
+                # ✅ JAN 7: APPLY NOISE MARGINALIZATION (log every 50 batches)
+                if should_marginalize(sample_ids):
+                    loss_dict = marginalize_loss_by_theta(
+                        loss_dict, sample_ids, verbose=True, batch_idx=batch_idx, log_frequency=100
+                    )
 
                 # Backward pass
                 loss = loss_dict["total_loss"]
@@ -557,14 +570,27 @@ class OverlapNeuralPETrainer:
          all_parameters = []
 
          with torch.no_grad():
-             for batch_idx, (strain_data, parameters, n_signals, metadata) in enumerate(
+             for batch_idx, batch_output in enumerate(
                  tqdm(val_loader, desc="Validating")
              ):
+                 # ✅ Handle new sample_ids return value
+                 if len(batch_output) == 5:
+                     strain_data, parameters, n_signals, metadata, sample_ids = batch_output
+                 else:
+                     strain_data, parameters, n_signals, metadata = batch_output
+                     sample_ids = [f"batch_{i}" for i in range(len(strain_data))]
+                 
                  strain_data = strain_data.to(self.device)
                  parameters = parameters.to(self.device)
 
                  target_params = parameters[:, 0, :]
                  loss_dict = self.model.compute_loss(strain_data, target_params)
+                 
+                 # ✅ JAN 7: APPLY NOISE MARGINALIZATION IN VALIDATION TOO (log every 10 batches)
+                 if should_marginalize(sample_ids):
+                     loss_dict = marginalize_loss_by_theta(
+                         loss_dict, sample_ids, verbose=True, batch_idx=batch_idx, log_frequency=100
+                     )
 
                  epoch_losses.append(loss_dict["total_loss"].item())
                  epoch_nlls.append(loss_dict["flow_loss"].item())

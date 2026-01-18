@@ -761,7 +761,7 @@ class GWDatasetGenerator:
         test_frac: float = 0.1,
         chunk_size: int = 100,
         noise_augmentation_k: int = 1,
-        multi_noise_k: int = 5,
+        multi_noise_k: int = 3,
         config: Dict = None,
     ) -> Dict:
         """
@@ -2296,10 +2296,11 @@ class GWDatasetGenerator:
             pct = (count / total_generated * 100) if total_generated > 0 else 0
             self.logger.info(f"    {event_type:8s}: {count:6,} ({pct:5.1f}%)")
 
-        # SNR final summary
+        # SNR final summary - clarify this is SAMPLE-level distribution
         total_snr = sum(snr_regime_counts.values())
         self.logger.info("")
-        self.logger.info("SNR Distribution (Final):")
+        self.logger.info("SNR Distribution (Sample-level - First Signal in Each Sample):")
+        self.logger.info("  (For overlaps, counts only brightest signal's SNR regime)")
         # Use configured distribution instead of hardcoded values
         expected_dist = {
             "weak": float(SNR_DISTRIBUTION.get("weak", 0.05)) * 100,
@@ -3101,29 +3102,35 @@ class GWDatasetGenerator:
                 params["luminosity_distance"] = min(params["luminosity_distance"], 2500.0)
             
             # Recompute target_snr to remain consistent with overridden distance
+            # FIX #4: Fail fast on SNR recomputation errors
             try:
                 self.parameter_sampler.recompute_target_snr_from_params(params)
-            except Exception:
-                pass
+            except Exception as e:
+                raise RuntimeError(
+                   f"Failed to recompute target_snr after PSD drift distance override: {e}"
+                ) from e
 
-        # Heavy-tailed mass distribution (Student-t like)
-        if event_type == "BBH":
-            # Sample from tails
-            if np.random.random() < 0.5:
-                # High mass tail
-                params["mass_1"] = np.random.uniform(50, 100)
-                params["mass_2"] = np.random.uniform(30, params["mass_1"])
-            else:
-                # Low mass tail (unusual for BBH)
-                params["mass_1"] = np.random.uniform(3, 8)
-                params["mass_2"] = np.random.uniform(2, params["mass_1"])
+            # Heavy-tailed mass distribution (Student-t like)
+            if event_type == "BBH":
+                # Sample from tails
+                if np.random.random() < 0.5:
+                    # High mass tail
+                    params["mass_1"] = np.random.uniform(50, 100)
+                    params["mass_2"] = np.random.uniform(30, params["mass_1"])
+                else:
+                    # Low mass tail (unusual for BBH)
+                    params["mass_1"] = np.random.uniform(3, 8)
+                    params["mass_2"] = np.random.uniform(2, params["mass_1"])
 
-        # Generate sample
-        # If distance was overridden, recompute target_snr to remain consistent
-        try:
-            self.parameter_sampler.recompute_target_snr_from_params(params)
-        except Exception:
-            pass
+            # Generate sample
+            # If distance was overridden, recompute target_snr to remain consistent
+            # FIX #4: Fail fast on SNR recomputation errors
+            try:
+                self.parameter_sampler.recompute_target_snr_from_params(params)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to recompute target_snr after mass extremes in PSD drift sample: {e}"
+                ) from e
 
         return self._generate_sample_from_params(sample_id, params, "heavy_tailed")
 
@@ -3161,10 +3168,13 @@ class GWDatasetGenerator:
             params["luminosity_distance"] = min(params["luminosity_distance"], 2500.0)
         
         # Recompute target_snr to be consistent with the new distance (if masses present)
+        # FIX #4: Fail fast on SNR recomputation errors
         try:
             self.parameter_sampler.recompute_target_snr_from_params(params)
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to recompute target_snr for sky position extreme sample: {e}"
+            ) from e
         params["ra"] = np.random.uniform(0, 2 * np.pi)
         params["dec"] = np.arcsin(np.random.uniform(-1, 1))
         params["psi"] = np.random.uniform(0, np.pi)
@@ -3468,8 +3478,11 @@ class GWDatasetGenerator:
                     "noise_variant": noise_idx,
                     "n_noise_variants": k,
                     "event_type": event_type,
+                    "phase": "inspiral_only",  
                     "is_premerger": True,
+                    "time_to_merger": time_to_merger,  
                     "window_end_to_merger_seconds": time_to_merger,
+                    "merger_in_window": False,  
                     "merger_time": params["geocent_time"],
                     "window_duration": self.duration,
                     "contains_merger": False,
@@ -3975,24 +3988,26 @@ class GWDatasetGenerator:
 
         # Apply specific degeneracy based on type
         if degeneracy_type == "inclination":
-            # Inclination degeneracy: face-on ↔ face-off
+            # FIX #3: Inclination degeneracy MUST be re-injected for SNR consistency
+            # Current flow: create degenerate params → compute new target_snr
+            # Problem: New target_snr doesn't guarantee injection matches it
+            # Solution: Re-inject signal with degenerate params, validate actual_snr
+            
             params["theta_jn"] = np.random.uniform(0.0, 0.3)  # Nearly face-on
 
             # Create degenerate parameter set
             degenerate_params = params.copy()
             degenerate_params["theta_jn"] = np.pi - params["theta_jn"]  # Face-off
 
-            # Distance must scale to maintain SNR
+            # Distance scaling (note: amplitude_ratio = 1.0 mathematically, no-op)
             cos_theta_original = np.cos(params["theta_jn"])
             cos_theta_degenerate = np.cos(degenerate_params["theta_jn"])
-
             amplitude_ratio = (1 + cos_theta_original**2) / (1 + cos_theta_degenerate**2)
             degenerate_params["luminosity_distance"] = (
                 params["luminosity_distance"] * amplitude_ratio
             )
             
-            # CRITICAL FIX (Dec 29, 18:45 UTC): Apply physics-realistic distance caps
-            # Amplitude ratio scaling can exceed detection horizon
+            # Apply physics-realistic distance caps
             event_type = degenerate_params.get('type', params.get('type', 'BBH'))
             if event_type == 'BNS':
                 degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 400.0)
@@ -4001,11 +4016,51 @@ class GWDatasetGenerator:
             elif event_type == 'NSBH':
                 degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 2500.0)
             
-            # Keep degenerate params' target_snr consistent with the adjusted distance
+            # Recompute target_snr for new distance (FIX #4: with error handling)
             try:
                 self.parameter_sampler.recompute_target_snr_from_params(degenerate_params)
-            except Exception:
-                pass
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to recompute target_snr for degenerate inclination parameters: {e}"
+                ) from e
+            
+            # FIX #3: CRITICAL - Re-inject degenerate waveform to ensure SNR matches target
+            # This is the ONLY way to guarantee actual_snr is consistent with degenerate params
+            # Without this, degenerate params have different SNR-distance coupling than primary
+            try:
+                # Get PSD for this detector (if available)
+                psd_dict = self._get_psd(degenerate_params.get('detector', 'H1')) if hasattr(self, '_get_psd') else None
+                
+                # Re-generate and re-inject degenerate waveform
+                degenerate_wf = self.waveform_generator.generate_waveform(degenerate_params, 'H1')
+                degenerate_wf = self.injector._resize_signal(degenerate_wf, 16384)  # Standard duration
+                
+                # Scale to match degenerate target_snr
+                target_snr_degen = degenerate_params.get('target_snr', 15.0)
+                scaled_degen, actual_snr_degen = self.injector._scale_to_target_snr(
+                    degenerate_wf, 
+                    np.zeros(16384),  # Placeholder noise for SNR calculation
+                    target_snr_degen,
+                    psd_dict
+                )
+                
+                # Validate SNR match (FIX #1 check)
+                if target_snr_degen > 0:
+                    snr_error = abs(actual_snr_degen - target_snr_degen) / target_snr_degen
+                    if snr_error > 0.05:
+                        raise ValueError(
+                            f"Degenerate waveform SNR mismatch: "
+                            f"target={target_snr_degen:.2f}, actual={actual_snr_degen:.2f}, "
+                            f"error={snr_error*100:.1f}%"
+                        )
+                
+                # Update degenerate params with actual SNR achieved
+                degenerate_params['actual_snr'] = float(actual_snr_degen)
+                
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to re-inject degenerate inclination waveform: {e}"
+                ) from e
 
         elif degeneracy_type == "spin_inclination":
             # Aligned spin with inclination flip

@@ -479,7 +479,7 @@ Phase 2 (PriorityNet - src/ahsd/core/priority_net.py):
 ├── Affine Init: gain=0.588 (1.8×), bias=-0.05
 └── Best Val Loss: ~0.08 (MSE scale)
 
-Phase 3a (Neural PE - experiments/phase3a_neural_pe.py):
+Phase 3a (Neural PE - experiments/train_neuralpe.py):
 ├── Epochs: 200, early stopping ~120 expected
 ├── Batch Size: 16 (matches data loader)
 ├── Learning Rate: 1e-4 (AdamW)

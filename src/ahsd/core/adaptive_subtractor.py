@@ -7,16 +7,8 @@ import torch.nn as nn
 import numpy as np
 from typing import Dict, List, Tuple, Any, Optional
 import logging
+from ..utils.data_format import standardize_strain_data
 
-# Import data format utilities
-try:
-    from ..utils.data_format import standardize_strain_data
-except ImportError:
-    def standardize_strain_data(data):
-        if isinstance(data, dict):
-            return {k: np.array(v) if not isinstance(v, dict) else np.array(v.get('strain', v)) 
-                   for k, v in data.items()}
-        return data
 
 
 
@@ -285,9 +277,9 @@ class UncertaintyAwareSubtractor:
             
             return float(F_plus), float(F_cross)
             
-        except:
+        except Exception as e:
             # Fallback antenna patterns
-            return 0.7, 0.7
+            raise Exception(f"Failed to compute antenna patterns: {e}")
     
     def _compute_tukey_window(self, length: int, alpha: float = 0.2) -> np.ndarray:
         """Compute Tukey window for smooth template edges."""
@@ -297,7 +289,7 @@ class UncertaintyAwareSubtractor:
                 from scipy.signal import windows
                 return windows.tukey(length, alpha=alpha)
             except (ImportError, AttributeError):
-                pass
+                print("Scipy.signal Import Error")
             
             # Fallback: manual Tukey window computation
             window = np.ones(length)

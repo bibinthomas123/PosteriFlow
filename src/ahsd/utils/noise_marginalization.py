@@ -27,49 +27,45 @@ def extract_base_id(sample_id: str) -> str:
     
     Rules:
     - Single-signal with noise: "000123_noise4" → "000123" (marginalize over noise)
-    - Special multi-sample types: "overlap_001234" → "overlap" (group by type)
-    - Special multi-sample types: "pre_merger_001234" → "pre_merger" (group by type)
-    - Other special types: keep as-is
+    - Multi-signal types with noise: "overlap_001234_noise1" → "overlap_001234" (group by type+id)
+    - Special sample types (eccentric_mergers, strong_glitches, psd_drift, etc.):
+      Extract until _noise: "eccentric_mergers_005688_noise1" → "eccentric_mergers_005688"
     
     Examples:
         "000123_noise0" → "000123"
         "000123_noise4" → "000123"
         "001000_noise10" → "001000"
-        "overlap_001234" → "overlap"  (multiple overlaps grouped as one type)
-        "overlap_999" → "overlap"
-        "pre_merger_001234" → "pre_merger"  (multiple pre_merger grouped as one type)
-        "pre_merger_999" → "pre_merger"
+        "overlap_001234_noise1" → "overlap_001234"
+        "pre_merger_002517_noise1" → "pre_merger_002517"
+        "eccentric_mergers_005688_noise1" → "eccentric_mergers_005688"
+        "strong_glitches_005763_noise0" → "strong_glitches_005763"
+        "psd_drift_005808_noise2" → "psd_drift_005808"
         
     Args:
         sample_id: Sample identifier string
         
     Returns:
         Base ID for grouping:
-        - For _noiseK samples: the numeric ID before _noiseK
-        - For special prefixes (overlap, pre_merger, etc.): the prefix only
-        - For other samples: the full ID (treated as unique)
+        - Everything before _noise suffix (works for all types)
+        - If no _noise, return full ID (unique)
     
     Why this matters:
-        If we don't strip special prefix suffixes, multiple overlap/pre_merger samples
-        would be treated as different θ, breaking noise marginalization.
-        This would re-introduce spurious distance bias.
+        STEP 4 data has K=5 noise realizations per parameter set.
+        Each noisy variant of the same θ has suffix _noise0, _noise1, ..., _noise4.
+        We extract everything before _noise to group them.
     """
-    # ✅ STEP 4 noise marginalization: strip _noiseK
+    # ✅ CRITICAL: Strip _noiseK suffix (handles ALL types uniformly)
+    # This works for:
+    # - Regular samples: "000123_noise0" → "000123"
+    # - Multi-signal: "overlap_001234_noise1" → "overlap_001234"
+    # - Special types: "eccentric_mergers_005688_noise1" → "eccentric_mergers_005688"
+    # - All other variants with noise
     if "_noise" in sample_id:
         base = sample_id.rsplit("_noise", 1)[0]
         return base
     
-    # ✅ Special multi-sample prefixes: return prefix only (strip numeric suffix)
-    # These are handled as a group, not as individual θ
-    special_prefixes = ("overlap", "pre_merger")
-    for prefix in special_prefixes:
-        if sample_id.startswith(prefix + "_"):
-            # Strip the prefix and suffix, return prefix only
-            # e.g., "overlap_001234" → "overlap"
-            return prefix
-    
-    # ✅ Default: treat as unique θ (no grouping)
-    # This includes: glitch samples, custom samples, etc.
+    # ✅ Default: treat as unique θ (no noise variants)
+    # This includes samples without _noise suffix
     return sample_id
 
 

@@ -199,6 +199,17 @@ class SignalInjector:
         # Combine
         injected = noise + scaled_signal
         
+        # FIX #1: Enforce SNR consistency (fail-fast approach)
+        # Reject sample if actual_snr deviates >5% from target_snr
+        if target_snr > 0:
+            snr_error = abs(actual_snr - target_snr) / target_snr
+            if snr_error > 0.05:
+                raise ValueError(
+                    f"SNR mismatch too large for {detector_name}: "
+                    f"target={target_snr:.2f}, actual={actual_snr:.2f}, "
+                    f"error={snr_error*100:.1f}% (threshold 5%)"
+                )
+        
         # Validate injected data
         if np.any(~np.isfinite(injected)):
             self.logger.warning(
@@ -298,6 +309,16 @@ class SignalInjector:
             scaled_signal, actual_snr = self._scale_to_target_snr(
                 signal, noise, target_snr, psd_dict
             )
+            
+            # FIX #1: Enforce SNR consistency for each signal in overlap
+            if target_snr > 0:
+                snr_error = abs(actual_snr - target_snr) / target_snr
+                if snr_error > 0.05:
+                    raise ValueError(
+                        f"SNR mismatch for overlapping signal {i} in {detector_name}: "
+                        f"target={target_snr:.2f}, actual={actual_snr:.2f}, "
+                        f"error={snr_error*100:.1f}% (threshold 5%)"
+                    )
             
             # Add time offset for overlap
             time_offset = params.get('time_offset', 0.0)
@@ -987,10 +1008,11 @@ def attach_network_snr(d: dict):
         >>> d3['network_snr']
         18.5  # Priority 3: physics proxy used
     """
-    # HIGH PRIORITY: If target_snr was sampled/set, use it directly
-    if 'target_snr' in d and d['target_snr'] is not None:
+    # HIGHEST PRIORITY: If actual_snr from injection, use it (FIX #2)
+    # This is what was ACTUALLY achieved in the strain data
+    if 'actual_snr' in d and d['actual_snr'] is not None:
         try:
-            d['network_snr'] = float(d['target_snr'])
+            d['network_snr'] = float(d['actual_snr'])
             return
         except (ValueError, TypeError):
             pass

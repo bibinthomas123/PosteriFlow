@@ -44,7 +44,7 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
-    print("âš ï¸  WandB not available - install with: pip install wandb")
+    print("WandB not available - install with: pip install wandb")
 
 
 def setup_logging(output_dir: Path, verbose: bool = False):
@@ -59,6 +59,53 @@ def setup_logging(output_dir: Path, verbose: bool = False):
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
     )
+
+
+class GroupedBatchSampler:
+    """
+    Groups samples by base_id to keep K noise realizations together in batches.
+    
+    Problem: K=3 noise variants spread across chunks → standard shuffle scatters them
+    Solution: Keep all variants of same θ in same batch via grouped iteration
+    """
+    
+    def __init__(self, dataset, batch_size: int):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.indices = list(range(len(dataset)))
+        self._group_by_base_id()
+    
+    def _group_by_base_id(self):
+        """Group dataset indices by base sample ID."""
+        from collections import defaultdict
+        from src.ahsd.utils.noise_marginalization import extract_base_id
+        
+        groups = defaultdict(list)
+        for idx in self.indices:
+            sample = self.dataset[idx]
+            sample_id = sample.get('sample_id', str(idx))
+            base_id = extract_base_id(sample_id)
+            groups[base_id].append(idx)
+        
+        self.groups = groups
+        self.group_list = list(groups.items())
+    
+    def __iter__(self):
+        """Yield batches of grouped indices."""
+        batch = []
+        for base_id, group_indices in self.group_list:
+            if len(batch) + len(group_indices) > self.batch_size and batch:
+                yield batch
+                batch = []
+            batch.extend(group_indices)
+            if len(batch) >= self.batch_size:
+                yield batch[:self.batch_size]
+                batch = batch[self.batch_size:]
+        if batch:
+            yield batch
+    
+    def __len__(self):
+        return max(1, len(self.dataset) // self.batch_size)
 
 
 class OverlapGWDataset(Dataset):
@@ -960,11 +1007,14 @@ def main():
         # Get batch size from config
         batch_size = config.get("batch_size", 64)
 
-        # Create data loaders (num_workers=0 to avoid pickling issues)
+        # Create data loaders with grouped batch sampler
+        # ✅ CRITICAL: Use GroupedBatchSampler to keep K=3 noise variants together
+        # Problem: K=3 variants spread across chunks, shuffle=True scatters them
+        # Solution: GroupedBatchSampler groups by base_id, keeps variants in same batch
+        grouped_sampler = GroupedBatchSampler(train_dataset, batch_size)
         train_loader = DataLoader(
             train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
+            batch_sampler=grouped_sampler,
             collate_fn=collate_fn,
             num_workers=1,
             pin_memory=False,

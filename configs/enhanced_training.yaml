@@ -193,15 +193,8 @@ neural_posterior:
     num_layers: 12                        # ⬇️ OPTIMIZED (Jan 3): 16 → 14 (balance capacity vs speed)
     hidden_features: 256                  # ⬇️ OPTIMIZED (Jan 3): 512 → 384 (still 50% more than baseline)
     num_bins: 12                          # ⬇️ OPTIMIZED (Jan 3): 16 → 12 (faster spline computation)
-    tail_bound: 5.0                       # ✅ JAN 7: 3.0 → 5.0 (INCREASED to reduce rejection rate)
-                                          #   Problem: 40-50% high rejection rate in sampling
-                                          #   Cause: Tight bounds cause spline to reject valid samples
-                                          #   Solution: Wider tail bounds allow more flexibility in tails
-    dropout: 0.0                          # ✅ JAN 7: 0.15 → 0.0 (DISABLED - dropout noise causes oscillation)
-                                          #   Problem: Dropout during training adds stochasticity to context encoder
-                                          #   During inference (eval mode), no dropout → distribution shift
-                                          #   With multi-noise, different samples get different dropouts → inconsistent predictions
-                                          #   Solution: Disable dropout, use batch norm for regularization instead
+    tail_bound: 5.0                       
+    dropout: 0.1                          
     
     # ✅ JAN 7: Temperature scaling for base distribution
     # ✅ JAN 7 FIX: Reduced 1.5 → 1.0 to prevent posterior oscillation

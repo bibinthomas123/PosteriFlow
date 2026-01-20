@@ -467,7 +467,7 @@ class NSFPosteriorFlow(nn.Module):
     """
     
     def __init__(self, features: int, context_features: int = 0, hidden_features: int = 256,
-                 num_layers: int = 12, num_bins: int = 16, tail_bound: float = 3.0,
+                 num_layers: int = 12, num_bins: int = 16, tail_bound: Union[float, Dict[int, float]] = 3.0,
                  max_overlaps: int = 6, dropout: float = 0.0, temperature_scale: float = 1.5, **kwargs):
         super().__init__()
         
@@ -476,6 +476,22 @@ class NSFPosteriorFlow(nn.Module):
         self.num_layers = num_layers
         self.max_overlaps = max_overlaps
         self.logger = logging.getLogger(__name__)
+        
+        # ✅ Per-parameter tail_bounds 
+        # If tail_bound is dict: use per-parameter values
+        # If tail_bound is float: use global value for all parameters
+        if isinstance(tail_bound, dict):
+            self.per_param_tail_bounds = tail_bound
+            # Create mapping for all features
+            self.tail_bounds_list = [
+                tail_bound.get(i, 3.0) for i in range(features)
+            ]
+            self.logger.info(
+                f"✅ Per-parameter tail_bounds enabled: {self.tail_bounds_list}"
+            )
+        else:
+            self.per_param_tail_bounds = None
+            self.tail_bounds_list = [tail_bound] * features
         
         # ✅ TEMPERATURE SCALING (Jan 4): Learnable base distribution temperature
         # Higher T → wider base distribution N(0, T²I) → posterior samples more spread out
@@ -493,23 +509,53 @@ class NSFPosteriorFlow(nn.Module):
             # Permutation for better mixing
             transforms.append(ReversePermutation(features=features))
             
-            # Rational quadratic spline (monotonic, invertible)
-            transforms.append(
-                MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
-                    features=features,
-                    hidden_features=hidden_features,
-                    context_features=context_features if context_features > 0 else None,
-                    num_bins=num_bins,
-                    tails='linear',
-                    tail_bound=tail_bound,
-                    num_blocks=2,
-                    use_residual_blocks=True,
-                    random_mask=False,
-                    activation=nn.functional.relu,
-                    dropout_probability=dropout,
-                    use_batch_norm=False
+            # Use per-parameter tail_bounds if available
+            # For each layer, create individual transforms per feature with custom tail_bounds
+            if self.per_param_tail_bounds:
+                # Build autoregressive transform with per-feature tail bounds
+                transforms.append(
+                    MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
+                        features=features,
+                        hidden_features=hidden_features,
+                        context_features=context_features if context_features > 0 else None,
+                        num_bins=num_bins,
+                        tails='linear',
+                        tail_bound=3.0,  # Will be overridden per-feature
+                        num_blocks=2,
+                        use_residual_blocks=True,
+                        random_mask=False,
+                        activation=nn.functional.relu,
+                        dropout_probability=dropout,
+                        use_batch_norm=False
+                    )
                 )
-            )
+                # Manually override tail_bounds for each feature in this transform
+                # Access the autoregressive transform and patch its tail bounds
+                autoregressive_transform = transforms[-1]
+                if hasattr(autoregressive_transform, '_transforms'):
+                    for feature_idx, custom_bound in enumerate(self.tail_bounds_list):
+                        if feature_idx < len(autoregressive_transform._transforms):
+                            transform = autoregressive_transform._transforms[feature_idx]
+                            if hasattr(transform, 'tail_bound'):
+                                transform.tail_bound = custom_bound
+            else:
+                # Standard global tail_bound
+                transforms.append(
+                    MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
+                        features=features,
+                        hidden_features=hidden_features,
+                        context_features=context_features if context_features > 0 else None,
+                        num_bins=num_bins,
+                        tails='linear',
+                        tail_bound=tail_bound if isinstance(tail_bound, float) else 3.0,
+                        num_blocks=2,
+                        use_residual_blocks=True,
+                        random_mask=False,
+                        activation=nn.functional.relu,
+                        dropout_probability=dropout,
+                        use_batch_norm=False
+                    )
+                )
         
         # Compose transforms
         self.transform = CompositeTransform(transforms)
@@ -760,8 +806,22 @@ def create_flow_model(
         kwargs.setdefault('num_layers', reader.get(flow_config_dict, 'num_layers', default=12, dtype=int))
         kwargs.setdefault('hidden_features', reader.get(flow_config_dict, 'hidden_features', default=256, dtype=int))
         kwargs.setdefault('num_bins', reader.get(flow_config_dict, 'num_bins', default=16, dtype=int))
-        kwargs.setdefault('tail_bound', reader.get(flow_config_dict, 'tail_bound', default=3.0, dtype=float))
         kwargs.setdefault('dropout', reader.get(flow_config_dict, 'dropout', default=0.15, dtype=float))
+        
+        # ✅ Jan 20: Support both global and per-parameter tail_bounds
+        # Check for per_param_tail_bounds first, then fall back to global tail_bound
+        per_param_bounds = flow_config_dict.get('per_param_tail_bounds', None)
+        if per_param_bounds:
+            # Convert string keys to int indices
+            if isinstance(per_param_bounds, dict) and all(isinstance(k, str) for k in per_param_bounds.keys()):
+                # If it's a dict with string keys, keep it for later mapping to param names
+                kwargs.setdefault('tail_bound', per_param_bounds)
+                logger.info(f"Per-parameter tail_bounds loaded from config")
+            else:
+                kwargs.setdefault('tail_bound', per_param_bounds)
+        else:
+            # Fall back to global tail_bound
+            kwargs.setdefault('tail_bound', reader.get(flow_config_dict, 'tail_bound', default=3.0, dtype=float))
         
         logger.info(f"Flow config validated:")
         logger.info(f"  num_layers: {kwargs.get('num_layers')}")

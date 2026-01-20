@@ -451,8 +451,10 @@ class SignalFeatureExtractor(nn.Module):
             else:
                 chi_eff = torch.zeros_like(m1)
 
-            # Detection difficulty score
-            difficulty = torch.log(distance / 100.0) - torch.log(estimated_snr / 10.0 + 1e-6)
+            # FIX #7: Circular SNR-Distance Dependencies
+            # Difficulty should use distance only (not both distance and derived SNR which creates redundancy)
+            # Farther objects are harder to detect → difficulty proportional to distance
+            difficulty = torch.log(distance / 100.0)
 
             # Normalize features
             physics_features[:, 0] = torch.clamp(chirp_mass / 50.0, 0, 1)

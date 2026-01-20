@@ -19,6 +19,7 @@ from .injection import SignalInjector
 from .preprocessing import DataPreprocessor
 from .gwtc_loader import GWTCLoader
 from .noise_generator import NoiseGenerator, RealNoiseGenerator
+from . import snr_utils
 
 __all__ = [
     'GWDatasetGenerator',
@@ -29,7 +30,8 @@ __all__ = [
     'DataPreprocessor',
     'GWTCLoader',
     'NoiseGenerator',
-    'RealNoiseGenerator'
+    'RealNoiseGenerator',
+    'snr_utils'
 ]
 
 __version__ = '1.0.0'

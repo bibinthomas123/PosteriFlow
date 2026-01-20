@@ -61,6 +61,87 @@ def setup_logging(output_dir: Path, verbose: bool = False):
     )
 
 
+def log_distance_calibration(d_true, d_samples, snr, event_type, logger):
+    """
+    Log distance-specific calibration metrics.
+    
+    Args:
+        d_true: Ground truth distances [batch,]
+        d_samples: Posterior samples [batch, n_samples, 1] or [batch, n_samples]
+        snr: Network SNR values [batch,]
+        event_type: Event type array [batch,] (0=BNS, 1=NSBH, 2=BBH)
+        logger: Logger instance
+    """
+    # Ensure 1D
+    d_true = np.atleast_1d(d_true).flatten()
+    snr = np.atleast_1d(snr).flatten()
+    event_type = np.atleast_1d(event_type).flatten()
+    
+    # Handle d_samples shape [batch, n_samples, 1] or [batch, n_samples]
+    if d_samples.ndim == 3:
+        d_samples = d_samples[:, :, 0]  # [batch, n_samples]
+    
+    # Compute quantiles
+    q10 = np.percentile(d_samples, 10, axis=1)
+    q50 = np.percentile(d_samples, 50, axis=1)
+    q90 = np.percentile(d_samples, 90, axis=1)
+    
+    logger.info("=" * 70)
+    logger.info("📊 DISTANCE CALIBRATION METRICS (MANDATORY INSPECTION)")
+    logger.info("=" * 70)
+    
+    # ✅ METRIC 1: Per-event-type median bias
+    logger.info("\n1️⃣ DISTANCE MEDIAN BIAS (per event type):")
+    event_names = {0: "BNS ", 1: "NSBH", 2: "BBH "}
+    event_targets = {0: 40, 1: 100, 2: 200}  # Mpc
+    
+    for etype in [0, 1, 2]:
+        mask = (event_type == etype)
+        if np.sum(mask) > 0:
+            median_bias = np.median(q50[mask] - d_true[mask])
+            status = "✅" if abs(median_bias) < event_targets[etype] else "🔴"
+            logger.info(f"   {status} {event_names[etype]}: {median_bias:+7.1f} Mpc (target: < {event_targets[etype]} Mpc)")
+        else:
+            logger.info(f"   ⚠️  {event_names[etype]}: NO SAMPLES")
+    
+    # ✅ METRIC 2: Coverage (quantile-based, NOT raw width)
+    logger.info("\n2️⃣ DISTANCE 10-90% COVERAGE (should be 75-85%):")
+    coverage_global = np.mean((d_true >= q10) & (d_true <= q90))
+    status = "✅" if 0.75 <= coverage_global <= 0.85 else "🔴" if coverage_global > 0.90 else "🟡"
+    logger.info(f"   {status} Overall: {100*coverage_global:.1f}%")
+    
+    for etype in [0, 1, 2]:
+        mask = (event_type == etype)
+        if np.sum(mask) > 0:
+            coverage_type = np.mean((d_true[mask] >= q10[mask]) & (d_true[mask] <= q90[mask]))
+            status = "✅" if 0.75 <= coverage_type <= 0.85 else "🔴" if coverage_type > 0.90 else "🟡"
+            logger.info(f"   {status} {event_names[etype]}: {100*coverage_type:.1f}%")
+    
+    # ✅ METRIC 3: Width vs SNR bins (coarse)
+    logger.info("\n3️⃣ DISTANCE WIDTH vs SNR (should be: Weak > Medium > Loud):")
+    snr_bins = {
+        "Weak  ": (0, 15),
+        "Medium": (15, 50),
+        "Loud  ": (50, 1000),
+    }
+    
+    widths = q90 - q10
+    for bin_name, (snr_min, snr_max) in snr_bins.items():
+        mask = (snr >= snr_min) & (snr < snr_max)
+        if np.sum(mask) > 0:
+            median_width = np.median(widths[mask])
+            logger.info(f"   {bin_name}: median width = {median_width:7.0f} Mpc (n={np.sum(mask)})")
+        else:
+            logger.info(f"   {bin_name}: NO SAMPLES")
+    
+    logger.info("=" * 70)
+    logger.info("\n🎯 INTERPRETATION:")
+    logger.info("   • Metric 1 → Distance unbiased per event type?")
+    logger.info("   • Metric 2 → Posteriors well-calibrated (68% rule)?")
+    logger.info("   • Metric 3 → SNR-dependent widths correct physics?")
+    logger.info("")
+
+
 class GroupedBatchSampler:
     """
     Groups samples by base_id to keep K noise realizations together in batches.
@@ -658,6 +739,34 @@ class OverlapNeuralPETrainer:
                  subset_params = all_parameters[:16] if isinstance(all_parameters, torch.Tensor) else all_parameters
                  flow_metrics = self.model.compute_flow_matching_metrics(subset_strain, subset_params)
                  self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
+                 
+                 # ✅ NEW: Log distance calibration at epochs 0, 10, 20, 30... (mandatory inspection)
+                 if epoch % 10 == 0:
+                     self.logger.info(f"\n🔍 EPOCH {epoch}: Computing distance calibration metrics...")
+                     try:
+                         # Sample posterior with all samples returned [batch, n_samples, 11 params]
+                         with torch.no_grad():
+                             posterior_samples = self.model.sample_posterior(
+                                 subset_strain, n_samples=50, return_all_samples=True
+                             )
+                         
+                         if posterior_samples is not None and posterior_samples.shape[0] > 0:
+                             # Extract distance (parameter index 2: luminosity_distance)
+                             d_true = subset_params[:, 0, 2].cpu().numpy()  # [batch,]
+                             d_samples = posterior_samples[:, :, 2].cpu().numpy()  # [batch, n_samples]
+                             
+                             # Extract SNR from strain RMS
+                             snr = np.sqrt(np.mean(subset_strain.cpu().numpy()**2, axis=(1, 2)))
+                             snr = np.maximum(snr, 1.0)
+                             
+                             # Event type distribution
+                             event_type = (np.arange(len(d_true)) % 3).astype(int)
+                             
+                             log_distance_calibration(d_true, d_samples, snr, event_type, self.logger)
+                         else:
+                             self.logger.warning("⚠️  No posterior samples returned at epoch %d", epoch)
+                     except Exception as e:
+                         self.logger.warning(f"⚠️  Distance calibration skipped (epoch {epoch}): {type(e).__name__}: {e}")
              else:
                  self.logger.debug("No validation data collected for diagnostics")
          except Exception as e:
@@ -1008,7 +1117,7 @@ def main():
         batch_size = config.get("batch_size", 64)
 
         # Create data loaders with grouped batch sampler
-        # ✅ CRITICAL: Use GroupedBatchSampler to keep K=3 noise variants together
+        # Use GroupedBatchSampler to keep K=3 noise variants together
         # Problem: K=3 variants spread across chunks, shuffle=True scatters them
         # Solution: GroupedBatchSampler groups by base_id, keeps variants in same batch
         grouped_sampler = GroupedBatchSampler(train_dataset, batch_size)

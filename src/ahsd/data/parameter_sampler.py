@@ -211,7 +211,7 @@ class ParameterSampler:
         
         Returns:
             target_snr (float): 
-                SNR value in range [8.0, 100.0], clipped to [snr_min, snr_max] of selected regime.
+                SNR value in range [8.0, 200.0], clipped to [snr_min, snr_max] of selected regime.
                 
         Side Effects:
             Updates self.stats['snr_regimes'] count for selected regime.
@@ -414,11 +414,18 @@ class ParameterSampler:
         # Cap at 8000 Mpc (SNR=8 horizon for 60 M☉ BBH - heaviest systems)
         luminosity_distance = float(min(luminosity_distance, 8000.0))
         
-        # Recompute actual SNR after clipping using BBH-specific references
-        target_snr = (ref['snr'] * 
-                     (chirp_mass / ref['mass']) ** (5/6) * 
-                     (ref['distance'] / luminosity_distance))
-        target_snr = float(np.clip(target_snr, 8.0, 100.0))
+        # CRITICAL FIX (Jan 19, 2026): Add jitter after clipping to prevent degeneracy
+        # 59.46% duplicate distances caused gradient collapse in flow training.
+        # Add 3% multiplicative jitter to break exact degeneracies while preserving physics.
+        # This ensures: distance variations → different strain realizations → learning signal.
+        luminosity_distance *= np.exp(np.random.normal(0, 0.03))
+        
+        # CRITICAL FIX (Jan 19, 2026): Do NOT recompute SNR after clipping
+        # Recomputing SNR from clipped distance breaks the mathematical coupling
+        # between SNR and distance that the network must learn. The original target_snr
+        # (sampled at line 388) maintains the formula: distance = ref_d * (Mc/M_ref)^(5/6) * (SNR_ref/target_snr)
+        # Clipping is a physical constraint; recomputing would incorrectly shift the SNR-distance relationship.
+        # Keep the original target_snr sampled from the regime.
         
         self._sampling_event_type = None
         
@@ -646,11 +653,18 @@ class ParameterSampler:
         # Cap at 400 Mpc (SNR=8 horizon for BNS @ 1.4 M☉ - detection limit for LIGO)
         luminosity_distance = float(min(luminosity_distance, 400.0))
         
-        # Recompute actual SNR after clipping using BNS-specific references
-        target_snr = (ref['snr'] * 
-                     (chirp_mass / ref['mass']) ** (5/6) * 
-                     (ref['distance'] / luminosity_distance))
-        target_snr = float(np.clip(target_snr, 8.0, 100.0))
+        # CRITICAL FIX (Jan 19, 2026): Add jitter after clipping to prevent degeneracy
+        # 59.46% duplicate distances caused gradient collapse in flow training.
+        # Add 3% multiplicative jitter to break exact degeneracies while preserving physics.
+        # This ensures: distance variations → different strain realizations → learning signal.
+        luminosity_distance *= np.exp(np.random.normal(0, 0.03))
+        
+        # CRITICAL FIX (Jan 19, 2026): Do NOT recompute SNR after clipping
+        # Recomputing SNR from clipped distance breaks the mathematical coupling
+        # between SNR and distance that the network must learn. The original target_snr
+        # (sampled at line 611) maintains the formula: distance = ref_d * (Mc/M_ref)^(5/6) * (SNR_ref/target_snr)
+        # Clipping is a physical constraint; recomputing would incorrectly shift the SNR-distance relationship.
+        # Keep the original target_snr sampled from the regime.
         
         self._sampling_event_type = None
         
@@ -882,37 +896,53 @@ class ParameterSampler:
         snr_regime_sampled = snr_regime or self._sample_snr_regime()
         snr_min, snr_max = self.snr_ranges[snr_regime_sampled]
         
-        # Adjust regime bounds by boost multiplier (for mass-aware SNR scaling)
-        # FIX 3 (Dec 29, 15:30 UTC): Use sqrt(boost_mult) instead of boost_mult for gentler compensation
-        # Over-compensation with full boost caused low/medium regime samples to collapse to weak
-        # sqrt() allows better survival of lower regimes through boost transformation
+        # Get SNR bounds from config (now 8.0-200.0 in loud regime)
+        snr_mins = [rng[0] for rng in self.snr_ranges.values()]
+        snr_maxs = [rng[1] for rng in self.snr_ranges.values()]
+        snr_global_min = min(snr_mins)
+        snr_global_max = max(snr_maxs)
+        
+        # CRITICAL FIX (Jan 19, 15:45 UTC): Boost BEFORE distance calculation, not after
+        # Previous logic: sample base_snr → compute distance(base_snr) → boost SNR
+        # Problem: distance based on LOW base_snr, but SNR boosted HIGH → breaks anticorrelation
+        # Correct logic: sample SNR regime (which applies to boosted SNR) → boost → compute distance
+        
+        # 1. Sample from the SNR regime that applies to FINAL SNR (after boost)
+        snr_min, snr_max = self.snr_ranges[snr_regime_sampled]
+        
+        # 2. Pre-adjust bounds by dividing by boost_mult (so post-boost SNR lands in regime)
         if boost_mult > 1.0:
-            snr_min_adjusted = max(8.0, snr_min / (boost_mult ** 0.5))
-            snr_max_adjusted = min(100.0, snr_max / (boost_mult ** 0.5))
+            snr_min_preboost = max(snr_global_min, snr_min / boost_mult)
+            snr_max_preboost = min(snr_global_max, snr_max / boost_mult)
         else:
-            snr_min_adjusted = snr_min
-            snr_max_adjusted = snr_max
+            snr_min_preboost = snr_min
+            snr_max_preboost = snr_max
         
-        # 1. Sample target base SNR (pre-boost) uniformly from adjusted regime bounds
-        base_snr = float(np.random.uniform(snr_min_adjusted, snr_max_adjusted))
+        # 3. Sample PRE-BOOST SNR from adjusted bounds
+        base_snr = float(np.random.uniform(snr_min_preboost, snr_max_preboost))
         
-        # 2. Compute nominal distance from base SNR formula using NSBH-specific references
+        # 4. Apply boost FIRST (before distance calculation)
+        # This ensures: high boosted_snr → uses proper physics formula → close distance
+        target_snr = float(base_snr * boost_mult)
+        
+        # 5. Compute nominal distance from BOOSTED SNR (preserves physics)
+        # SNR ∝ M_c^(5/6) / distance, so distance ∝ SNR^(-1)
         ref = self.reference_params['NSBH']
         distance_nominal = (ref['distance'] * 
                            (chirp_mass / ref['mass']) ** (5/6) * 
-                           (ref['snr'] / base_snr))
+                           (ref['snr'] / target_snr))  # Use boosted SNR, not base_snr
         
-        # 3. Add cosmological scatter (lognormal with sigma=0.15)
+        # 6. Add cosmological scatter (lognormal with sigma=0.15)
         # FIX 4 (Dec 29, 15:30 UTC): CV-aware scatter tuning for NSBH
         # Target CV=0.55, budget allocation:
-        # - CV_Mc ≈ 0.40 (wide BH mass range + boost, fixed)
+        # - CV_Mc ≈ 0.40 (wide BH mass range, fixed)
         # - CV_SNR ≈ 0.44 (regime sampling, fixed)
         # - Remaining budget: sqrt(0.55² - 0.40² - 0.44²) ≈ 0.0 → use tight scatter sigma=0.15
         # Combined: sqrt(0.40² + 0.44² + 0.15²) ≈ 0.60-0.63 (matches CV target!)
         scatter_factor = np.random.lognormal(mean=0, sigma=0.15)
         luminosity_distance = float(distance_nominal * scatter_factor)
         
-        # 4. Clip distance to realistic range (keep original SNR for now)
+        # 7. Clip distance to realistic range
         d_min, d_max = self.distance_ranges['NSBH']
         luminosity_distance = float(np.clip(luminosity_distance, d_min, d_max))
         
@@ -921,14 +951,29 @@ class ParameterSampler:
         # Cap at 2500 Mpc (SNR=8 horizon for 50 M☉ BH + 1.4 M☉ NS - heavy NSBH systems)
         luminosity_distance = float(min(luminosity_distance, 2500.0))
         
-        # 5. Apply boost multiplier to base SNR (before final clipping)
-        # IMPORTANT: We do NOT recompute SNR from clipped distance because:
-        # - Clipping is a physical constraint, not a measurement error
-        # - Recomputing would shift mean distance upward (distances that got clipped
-        #   would have their SNR recomputed upward, making boosted SNR too high)
-        # - Instead, keep base_snr as sampled, apply boost, then clip final SNR
-        target_snr = float(base_snr * boost_mult)
-        target_snr = float(np.clip(target_snr, 8.0, 100.0))
+        # CRITICAL FIX (Jan 19, 2026): Add jitter after clipping to prevent degeneracy
+        # 59.46% duplicate distances caused gradient collapse in flow training.
+        # Add 3% multiplicative jitter to break exact degeneracies while preserving physics.
+        # This ensures: distance variations → different strain realizations → learning signal.
+        luminosity_distance *= np.exp(np.random.normal(0, 0.03))
+        
+        # FIX #4 EXTENSION: Fail fast on SNR bounds violation (don't silently clip)
+        # If boost pushes SNR beyond valid SNR range, reject the sample
+        # Get SNR bounds from config (now 8.0-200.0 in loud regime)
+        snr_mins = [rng[0] for rng in self.snr_ranges.values()]
+        snr_maxs = [rng[1] for rng in self.snr_ranges.values()]
+        snr_global_min = min(snr_mins)
+        snr_global_max = max(snr_maxs)
+        
+        if target_snr < snr_global_min or target_snr > snr_global_max:
+            raise ValueError(
+                f"NSBH SNR out of bounds after boost: base_snr={base_snr:.2f}, "
+                f"boost_mult={boost_mult:.2f}, target_snr={target_snr:.2f}. "
+                f"Valid range: [{snr_global_min}, {snr_global_max}]. "
+                f"Adjust snr_regime pre-scaling or boost multiplier."
+            )
+        
+        target_snr = float(np.clip(target_snr, snr_global_min, snr_global_max))
         
         self._sampling_event_type = None
         
@@ -1069,7 +1114,7 @@ class ParameterSampler:
         
         Returns:
             target_snr (float):
-                Recomputed SNR value in range [8.0, 100.0], also stored in params['target_snr']
+                Recomputed SNR value in range [8.0, 200.0], also stored in params['target_snr']
                 
         Side Effects:
             Updates params['target_snr'] with the recomputed value
@@ -1103,8 +1148,17 @@ class ParameterSampler:
 
         target = self.reference_snr * (M_chirp / self.reference_mass)**(5/6) * (self.reference_distance / d)
 
-        # Clip to reasonable physical range
-        target = float(np.clip(target, 8.0, 100.0))
+        # Get SNR bounds from config (now 8.0-200.0)
+        snr_mins = [rng[0] for rng in self.snr_ranges.values()]
+        snr_maxs = [rng[1] for rng in self.snr_ranges.values()]
+        snr_global_min = min(snr_mins)
+        snr_global_max = max(snr_maxs)
+        
+        # CRITICAL FIX (Jan 19, 15:10 UTC): Clamp instead of raising
+        # Edge case samples have intentionally unusual parameters (distance modified, etc.)
+        # that can produce out-of-bounds SNR. Per docstring, method should never raise.
+        # Just clamp to valid range and continue - edge cases are training data.
+        target = float(np.clip(target, snr_global_min, snr_global_max))
 
         params['target_snr'] = target
         return target

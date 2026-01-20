@@ -490,6 +490,9 @@ class GWDatasetGenerator:
             self.parameter_sampler = parameter_sampler
         else:
             self.parameter_sampler = ParameterSampler()
+        
+        # Initialize SNR reference value for validation (FIX #6)
+        self.reference_snr = 20.0
         self.waveform_generator = WaveformGenerator(sample_rate, duration)
         self.noise_generator = NoiseGenerator(sample_rate, duration)
         self.injector = SignalInjector(sample_rate, duration)
@@ -3086,10 +3089,14 @@ class GWDatasetGenerator:
 
         # Override with heavy-tailed distributions
         if log_uniform_distance:
-            # Log-uniform distance (more distant events)
+             # Log-uniform distance (more distant events)
             params["luminosity_distance"] = 10 ** np.random.uniform(
-                np.log10(100), np.log10(5000)  # 100 Mpc  # 5 Gpc
-            )
+                 np.log10(100), np.log10(5000)  # 100 Mpc  # 5 Gpc
+             )
+             
+             # CRITICAL FIX (Jan 19, 2026): Add jitter after log-uniform sampling
+             # Prevents 59.46% duplicate distances that cause gradient collapse
+            params["luminosity_distance"] *= np.exp(np.random.normal(0, 0.03))
             
             # CRITICAL FIX (Dec 29, 18:45 UTC): Apply physics-realistic distance caps
             # Log-uniform can create undetectable outliers (10,000+ Mpc)
@@ -3101,14 +3108,14 @@ class GWDatasetGenerator:
             elif event_type == 'NSBH':
                 params["luminosity_distance"] = min(params["luminosity_distance"], 2500.0)
             
-            # Recompute target_snr to remain consistent with overridden distance
-            # FIX #4: Fail fast on SNR recomputation errors
-            try:
-                self.parameter_sampler.recompute_target_snr_from_params(params)
-            except Exception as e:
-                raise RuntimeError(
-                   f"Failed to recompute target_snr after PSD drift distance override: {e}"
-                ) from e
+            # FIX #1: DO NOT recompute SNR after clipping
+            # Reason: Original SNR was sampled from regime distribution
+            # Clipping is a physical constraint, not measurement error
+            # Validate SNR is still valid after distance modification
+            params['target_snr'] = self._validate_snr(
+                params.get('target_snr', self.reference_snr),
+                context="psd_drift_distance_clipping"
+            )
 
             # Heavy-tailed mass distribution (Student-t like)
             if event_type == "BBH":
@@ -3122,15 +3129,12 @@ class GWDatasetGenerator:
                     params["mass_1"] = np.random.uniform(3, 8)
                     params["mass_2"] = np.random.uniform(2, params["mass_1"])
 
-            # Generate sample
-            # If distance was overridden, recompute target_snr to remain consistent
-            # FIX #4: Fail fast on SNR recomputation errors
-            try:
-                self.parameter_sampler.recompute_target_snr_from_params(params)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to recompute target_snr after mass extremes in PSD drift sample: {e}"
-                ) from e
+            # FIX #1: Keep original SNR even after mass modification
+            # Mass extremes modify Mc, but this is already accounted for during sampling
+            params['target_snr'] = self._validate_snr(
+                params.get('target_snr', self.reference_snr),
+                context="psd_drift_mass_extremes"
+            )
 
         return self._generate_sample_from_params(sample_id, params, "heavy_tailed")
 
@@ -3157,6 +3161,10 @@ class GWDatasetGenerator:
         max_distance = 5000 * broad_multiplier
         params["luminosity_distance"] = np.random.uniform(10, max_distance)  # Very broad
         
+        # CRITICAL FIX (Jan 19, 2026): Add jitter after broad uniform sampling
+        # Prevents 59.46% duplicate distances that cause gradient collapse
+        params["luminosity_distance"] *= np.exp(np.random.normal(0, 0.03))
+        
         # CRITICAL FIX (Dec 29, 18:45 UTC): Apply physics-realistic distance caps
         # Broad uniform sampling can exceed detection horizon
         event_type = params.get('type', 'BBH')
@@ -3167,14 +3175,13 @@ class GWDatasetGenerator:
         elif event_type == 'NSBH':
             params["luminosity_distance"] = min(params["luminosity_distance"], 2500.0)
         
-        # Recompute target_snr to be consistent with the new distance (if masses present)
-        # FIX #4: Fail fast on SNR recomputation errors
-        try:
-            self.parameter_sampler.recompute_target_snr_from_params(params)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to recompute target_snr for sky position extreme sample: {e}"
-            ) from e
+        # FIX #1: Preserve original SNR-distance relationship
+        # Broad uniform sampling can produce unusual distance, but SNR was
+        # correctly sampled upfront and should not change
+        params['target_snr'] = self._validate_snr(
+            params.get('target_snr', self.reference_snr),
+            context="uninformative_prior"
+        )
         params["ra"] = np.random.uniform(0, 2 * np.pi)
         params["dec"] = np.arcsin(np.random.uniform(-1, 1))
         params["psi"] = np.random.uniform(0, np.pi)
@@ -4016,13 +4023,12 @@ class GWDatasetGenerator:
             elif event_type == 'NSBH':
                 degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 2500.0)
             
-            # Recompute target_snr for new distance (FIX #4: with error handling)
-            try:
-                self.parameter_sampler.recompute_target_snr_from_params(degenerate_params)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to recompute target_snr for degenerate inclination parameters: {e}"
-                ) from e
+            # FIX #1: DON'T recompute - degenerate inclination doesn't change distance/mass
+            # Inclination affects waveform shape, not SNR scaling
+            degenerate_params['target_snr'] = self._validate_snr(
+                degenerate_params.get('target_snr', self.reference_snr),
+                context="inclination_degeneracy"
+            )
             
             # FIX #3: CRITICAL - Re-inject degenerate waveform to ensure SNR matches target
             # This is the ONLY way to guarantee actual_snr is consistent with degenerate params
@@ -4112,11 +4118,12 @@ class GWDatasetGenerator:
             elif event_type == 'NSBH':
                 degenerate_params["luminosity_distance"] = min(degenerate_params["luminosity_distance"], 2500.0)
             
-            # Keep the degenerate parameter's target_snr consistent with its new distance
-            try:
-                self.parameter_sampler.recompute_target_snr_from_params(degenerate_params)
-            except Exception:
-                pass
+            # FIX #1: Preserve original SNR even for mass-distance degeneracy
+            # Both objects have same SNR but different Mc/distance combinations
+            degenerate_params['target_snr'] = self._validate_snr(
+                degenerate_params.get('target_snr', self.reference_snr),
+                context="mass_distance_degeneracy"
+            )
 
         else:
             # Default: simple inclination flip
@@ -4372,13 +4379,37 @@ class GWDatasetGenerator:
             M_chirp = (m1 * m2) ** (3 / 5) / M_total ** (1 / 5)
 
             #  SNR scaling formula
-            # Reference: M_chirp=30 Msun at D=1500 Mpc (BBH), SNR=20
-            # SNR ∝ M_chirp^(5/6) / D_L
-            # Dec 29, 17:00 UTC CRITICAL FIX: Updated to match ParameterSampler scatter fix
-            # reference_snr: 70.0 → 20.0, reference_distance: 400.0 → 1500.0
-            reference_snr = 20.0        # Match ParameterSampler.reference_snr
-            reference_mass = 30.0        # Solar masses
-            reference_distance = 1500.0  # Mpc (updated from 1400.0, Dec 29, 17:00 UTC)
+            # Reference: M_chirp^(5/6) / D_L (physical scaling)
+            # CRITICAL FIX (Jan 19, 2026): Use event-type-specific reference parameters
+            # Different event types have different characteristic masses and distances
+            # Using single reference (1500 Mpc) was inflating SNR for BNS/NSBH
+            
+            # Determine event type from parameters or mass ratio inference
+            event_type = params.get('type', None)
+            if event_type is None:
+                # Infer event type from mass boundaries
+                # BNS: both masses < 2.5 M☉ (NS upper mass limit)
+                # NSBH: one mass < 2.5, other > 2.5 (extreme mass ratio)
+                # BBH: both masses > 2.5 M☉ (both likely BH)
+                
+                if m1 <= 2.5 and m2 <= 2.5:
+                    event_type = 'BNS'
+                elif (m1 <= 2.5 and m2 > 2.5) or (m2 <= 2.5 and m1 > 2.5):
+                    event_type = 'NSBH'
+                else:
+                    event_type = 'BBH'
+            
+            # Event-type-specific reference parameters (from ParameterSampler)
+            reference_params = {
+                'BBH': {'snr': 35.0, 'mass': 30.0, 'distance': 1300.0},
+                'BNS': {'snr': 25.0, 'mass': 1.4, 'distance': 130.0},
+                'NSBH': {'snr': 20.0, 'mass': 6.0, 'distance': 400.0}
+            }
+            
+            ref = reference_params.get(event_type, reference_params['BBH'])
+            reference_snr = ref['snr']
+            reference_mass = ref['mass']
+            reference_distance = ref['distance']
 
             snr_estimate = (
                 reference_snr
@@ -5166,6 +5197,43 @@ class GWDatasetGenerator:
                 fraction = type_config.get("fraction", 0.1)
                 self.type_counts[type_name] = fraction
 
+    def _validate_snr(self, snr: float, context: str = "") -> float:
+        """
+        Validate SNR is finite and positive, with logging.
+        
+        Edge case samples can produce invalid SNR values (NaN, Inf, negative).
+        This method catches and replaces them with reference_snr.
+        
+        FIX #6: Missing SNR Validation
+        """
+        if snr is None:
+            self.logger.warning(
+                f"SNR is None in {context}, replacing with reference_snr={self.reference_snr}"
+            )
+            return self.reference_snr
+        
+        if not np.isfinite(snr):
+            self.logger.warning(
+                f"Invalid SNR (NaN/Inf) in {context}: {snr}, replacing with reference_snr={self.reference_snr}"
+            )
+            return self.reference_snr
+        
+        if snr <= 0:
+            self.logger.warning(
+                f"Negative/zero SNR in {context}: {snr}, replacing with reference_snr={self.reference_snr}"
+            )
+            return self.reference_snr
+        
+        if snr < 8.0:
+            self.logger.warning(f"SNR below minimum in {context}: {snr:.2f}, clamping to 8.0")
+            return 8.0
+        
+        if snr > 200.0:
+            self.logger.warning(f"SNR above maximum in {context}: {snr:.2f}, clamping to 200.0")
+            return 200.0
+        
+        return float(snr)
+
     def _sample_parameters(self, event_type: str) -> Dict:
         """Sample parameters for given event type."""
         snr_regime = self._sample_snr_regime()
@@ -5645,13 +5713,18 @@ class GWDatasetGenerator:
                 )
             except Exception:
                 params_strong["target_snr"] = float(
-                    np.random.uniform(strong_snr_range[0], strong_snr_range[1])
-                )
-        params_strong["luminosity_distance"] = np.random.uniform(100, 400)
-        try:
-            self.parameter_sampler.recompute_target_snr_from_params(params_strong)
-        except Exception:
-            pass
+                     np.random.uniform(strong_snr_range[0], strong_snr_range[1])
+                 )
+                params_strong["luminosity_distance"] = np.random.uniform(100, 400)
+                
+                # CRITICAL FIX (Jan 19, 2026): Add jitter to prevent duplicate distances
+                # Weak-strong overlaps bypass standard sampler, need explicit jitter
+                params_strong["luminosity_distance"] *= np.exp(np.random.normal(0, 0.03))
+        # FIX #1: Preserve original SNR for overlap scenario
+        params_strong['target_snr'] = self._validate_snr(
+            params_strong.get('target_snr', self.reference_snr),
+            context="weak_strong_overlap_strong"
+        )
         params_strong["geocent_time"] = 0.0
         parameters_list.append(params_strong)
 
@@ -5667,13 +5740,18 @@ class GWDatasetGenerator:
                 )
             except Exception:
                 params_weak["target_snr"] = float(
-                    np.random.uniform(weak_snr_range[0], weak_snr_range[1])
-                )
-        params_weak["luminosity_distance"] = np.random.uniform(800, 2000)
-        try:
-            self.parameter_sampler.recompute_target_snr_from_params(params_weak)
-        except Exception:
-            pass
+                     np.random.uniform(weak_snr_range[0], weak_snr_range[1])
+                 )
+                params_weak["luminosity_distance"] = np.random.uniform(800, 2000)
+                
+                # CRITICAL FIX (Jan 19, 2026): Add jitter to prevent duplicate distances
+                # Weak-strong overlaps bypass standard sampler, need explicit jitter
+                params_weak["luminosity_distance"] *= np.exp(np.random.normal(0, 0.03))
+        # FIX #1: Preserve original SNR for weak signal in overlap
+        params_weak['target_snr'] = self._validate_snr(
+            params_weak.get('target_snr', self.reference_snr),
+            context="weak_strong_overlap_weak"
+        )
         params_weak["geocent_time"] = np.random.uniform(-0.5, 0.5)  # Small offset
         parameters_list.append(params_weak)
 
@@ -6947,15 +7025,37 @@ class GWDatasetGenerator:
         m1 = params.get("mass_1", 30.0)
         m2 = params.get("mass_2", 30.0)
 
-        # Reference: SNR ~ sqrt(M_chirp) / distance
+        # Reference: SNR ∝ M_chirp^(5/6) / distance
         chirp_mass = (m1 * m2) ** (3 / 5) / (m1 + m2) ** (1 / 5)
 
-        # Baseline: 30 Msun at 500 Mpc gives SNR ~15
-        snr_baseline = 15.0
-        distance_baseline = 500.0
-        mass_baseline = 30.0
+        # CRITICAL FIX (Jan 19, 2026): Use event-type-specific baseline (same as _estimate_snr_from_params)
+        event_type = params.get('type', None)
+        if event_type is None:
+            # Infer event type from mass boundaries
+            # BNS: both masses < 2.5 M☉ (NS upper mass limit)
+            # NSBH: one mass < 2.5, other > 2.5 (extreme mass ratio)
+            # BBH: both masses > 2.5 M☉ (both likely BH)
+            
+            if m1 <= 2.5 and m2 <= 2.5:
+                event_type = 'BNS'
+            elif (m1 <= 2.5 and m2 > 2.5) or (m2 <= 2.5 and m1 > 2.5):
+                event_type = 'NSBH'
+            else:
+                event_type = 'BBH'
+        
+        # Event-type-specific baseline parameters (consistency with _estimate_snr_from_params)
+        baseline_params = {
+            'BBH': {'snr': 35.0, 'mass': 30.0, 'distance': 1300.0},
+            'BNS': {'snr': 25.0, 'mass': 1.4, 'distance': 130.0},
+            'NSBH': {'snr': 20.0, 'mass': 6.0, 'distance': 400.0}
+        }
+        
+        baseline = baseline_params.get(event_type, baseline_params['BBH'])
+        snr_baseline = baseline['snr']
+        distance_baseline = baseline['distance']
+        mass_baseline = baseline['mass']
 
-        snr = snr_baseline * (distance_baseline / distance) * np.sqrt(chirp_mass / mass_baseline)
+        snr = snr_baseline * (distance_baseline / distance) * (chirp_mass / mass_baseline) ** (5/6)
 
         # Add random factor for realism (±20%)
         snr *= np.random.uniform(0.8, 1.2)

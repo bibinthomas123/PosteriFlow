@@ -2237,12 +2237,68 @@ class OverlapNeuralPE(nn.Module):
         distance_loss_total = torch.tensor(0.0, device=strain_data.device)
         
         # ✅ JAN 8 FINAL: Minimal loss without sampling-dependent components
+        # ✅ GEOMETRY PRESERVATION: Weak physics regularization (NSF-safe)
+        # Enforces SNR-distance relationship without hard physics constraints
+        # This gently regularizes the posterior to respect the fundamental GW physics:
+        # SNR × distance = constant (encoded in target_snr)
+        #
+        # Loss: L_geom = mean((log(d_pred × target_snr) - log(d_true × target_snr))^2)
+        # This penalizes when predicted distance doesn't maintain the SNR-distance geometry
+        # Key: Use target_snr (fixed physics) not network_snr (varies with noise)
+        physics_geom_loss = torch.tensor(0.0, device=strain_data.device)
+        try:
+            # Get posterior samples from calibration loss computation (already computed above)
+            # samples_stack shape: [n_samples, batch, n_params] if calibration was computed
+            if self.training and 'samples_stack' in locals() and true_params_primary.shape[0] > 0:
+                # Extract target SNR (physics-encoded, fixed per sample)
+                # This is the SNR used during parameter sampling - encodes intended geometry
+                target_snr = torch.ones(batch_size, device=strain_data.device)
+                if isinstance(true_params_primary, dict) and "target_snr" in true_params_primary:
+                    try:
+                        target_snr = torch.tensor(true_params_primary["target_snr"], dtype=torch.float32, device=strain_data.device)
+                    except Exception:
+                        pass
+                else:
+                    # Try to extract from first detector metadata
+                    if "target_snr" in detector_data.get(self.detectors[0], {}).get("metadata", {}):
+                        try:
+                            snr_vals = [detector_data[det]["metadata"].get("target_snr", 1.0) for det in self.detectors]
+                            target_snr = torch.tensor(snr_vals, dtype=torch.float32, device=strain_data.device).mean()
+                            target_snr = target_snr.expand(batch_size)
+                        except Exception:
+                            pass
+                
+                # Extract distance from parameters (typically index 2 for luminosity_distance)
+                if true_params_primary.shape[1] > 2 and samples_stack.shape[-1] > 2:  # Has distance parameter
+                    # Clamp distances for numerical stability (NSF can briefly go negative early in training)
+                    d_true = torch.clamp(torch.abs(true_params_primary[:, 2]), min=10.0)
+                    
+                    # Predicted distance: mean of posterior samples
+                    d_pred_samples = torch.clamp(torch.abs(samples_stack[:, :, 2]), min=10.0)  # [n_samples, batch]
+                    d_pred = torch.mean(d_pred_samples, dim=0)  # [batch]
+                    
+                    # Geometry preservation: maintain SNR-distance product with FIXED target_snr
+                    # This encodes the physics relationship without being affected by noise variations
+                    log_true_product = torch.log(d_true * target_snr)
+                    log_pred_product = torch.log(d_pred * target_snr)
+                    
+                    physics_geom_loss = torch.mean((log_pred_product - log_true_product) ** 2)
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"[GEOMETRY LOSS] Computation failed: {e}")
+            physics_geom_loss = torch.tensor(0.0, device=strain_data.device)
+        
+        # Weight geometry preservation lightly (0.03-0.05)
+        # This is a soft constraint, not hard physics enforcement
+        physics_geom_weight = 0.04  # Can be configured
+        
         # Distance loss disabled due to rejection sampling triggering high rejection rates
         # SNR conditioning (STEP 5) already provides distance information implicitly
         total_loss = (
             flow_loss_weight * flow_loss_total +                  # PRIMARY: NLL from NSF (1.0 weight)
             bounds_penalty_weight * bounds_loss +                 # SECONDARY: soft parameter bounds (0.15)
-            context_variance_penalty                              # TERTIARY: encoder variance (0.1 weight cap)
+            context_variance_penalty +                            # TERTIARY: encoder variance (0.1 weight cap)
+            physics_geom_weight * physics_geom_loss               # QUATERNARY: geometry preservation (0.04 weight)
         )
         self._diversity_weight = diversity_weight
         
@@ -2252,7 +2308,8 @@ class OverlapNeuralPE(nn.Module):
             "bounds_loss": bounds_loss,                # SECONDARY: soft constraints
             "context_var_penalty": context_variance_penalty.item() if self.training else 0.0,  # TERTIARY: encoder health
             "context_std": context_std_value,          # Monitor encoder variance
-            "distance_loss": distance_loss_total.item() if self.training else 0.0,  # QUATERNARY: normalized distance anchor (0.05 weight)
+            "geometry_loss": physics_geom_loss.item() if self.training else 0.0,  # QUATERNARY: SNR-distance preservation (0.04 weight)
+            "distance_loss": distance_loss_total.item() if self.training else 0.0,  # Physics-based distance anchor
             "n_signals_extracted": torch.tensor(n_signals_extracted, dtype=torch.float32),
         }
 

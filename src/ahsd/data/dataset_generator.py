@@ -721,6 +721,20 @@ class GWDatasetGenerator:
                         injected, metadata_list = self.injector.inject_overlapping_signals(
                             new_noise, params_list, det_name, psd_dict
                         )
+                        
+                        # ✅ PHYSICS CORRECTION: Enforce SNR-distance coupling for augmented overlapping signals
+                        for i, (metadata, params) in enumerate(zip(metadata_list, params_list)):
+                            if metadata.get("actual_snr", 0) > 0:
+                                target_snr = params.get("target_snr", 0)
+                                achieved_snr = metadata.get("actual_snr", 0)
+                                
+                                if target_snr > 0 and achieved_snr > 0:
+                                    original_distance = params.get("luminosity_distance", 0)
+                                    corrected_distance = original_distance * (target_snr / achieved_snr)
+                                    corrected_distance = np.clip(corrected_distance, 10.0, 5000.0)
+                                    params["luminosity_distance"] = float(corrected_distance)
+                                    metadata["corrected_distance"] = float(corrected_distance)
+                                    metadata["distance_correction_factor"] = float(target_snr / achieved_snr)
                     else:
                         # Single signal
                         params = sample["parameters"]
@@ -728,6 +742,19 @@ class GWDatasetGenerator:
                             injected, metadata = self.injector.inject_signal(
                                 new_noise, params, det_name, psd_dict
                             )
+                            
+                            # ✅ PHYSICS CORRECTION: Enforce SNR-distance coupling for augmented single signal
+                            if metadata.get("actual_snr", 0) > 0:
+                                target_snr = params.get("target_snr", 0)
+                                achieved_snr = metadata.get("actual_snr", 0)
+                                
+                                if target_snr > 0 and achieved_snr > 0:
+                                    original_distance = params.get("luminosity_distance", 0)
+                                    corrected_distance = original_distance * (target_snr / achieved_snr)
+                                    corrected_distance = np.clip(corrected_distance, 10.0, 5000.0)
+                                    params["luminosity_distance"] = float(corrected_distance)
+                                    metadata["corrected_distance"] = float(corrected_distance)
+                                    metadata["distance_correction_factor"] = float(target_snr / achieved_snr)
                         else:
                             injected = new_noise
                             metadata = {"noise_only": True}
@@ -2575,6 +2602,10 @@ class GWDatasetGenerator:
                     "edge_case_type": edge_type,
                     "event_type": event_type,
                     "noise_sources": noise_types,
+                    # FIX #3: Missing SNR in Metadata (edge cases) - Jan 27, 2026
+                    "target_snr": float(params.get("target_snr", 0.0)) if params else 0.0,
+                    "luminosity_distance": float(params.get("luminosity_distance", 0.0)) if params else 0.0,
+                    "chirp_mass": float(params.get("chirp_mass", 0.0)) if params else 0.0,
                 },
             }
             
@@ -4265,6 +4296,11 @@ class GWDatasetGenerator:
                 "n_signals": n_signals,
                 "edge_case_type": "partial_overlap",
                 "temporal_separation": "partial",
+                # FIX #3: Missing SNR in Metadata (overlaps) - Jan 27, 2026
+                # For overlaps, include SNR/distance of primary (first) signal
+                "target_snr": float(parameters_list[0].get("target_snr", 0.0)) if parameters_list else 0.0,
+                "luminosity_distance": float(parameters_list[0].get("luminosity_distance", 0.0)) if parameters_list else 0.0,
+                "chirp_mass": float(parameters_list[0].get("chirp_mass", 0.0)) if parameters_list else 0.0,
             },
         }
 
@@ -4296,7 +4332,7 @@ class GWDatasetGenerator:
                             val = float(params.get("target_snr", 0.0))
                         except Exception:
                             val = 0.0
-                        if val > 100.1:
+                        if val > 200.1:
                             entry = {
                                 "sample_index": si,
                                 "sample_id": sample.get("sample_id"),
@@ -4417,25 +4453,28 @@ class GWDatasetGenerator:
                 * (reference_distance / distance)
             )
 
-            #  Clamp to reasonable range
+            # ✅ PHYSICS-CORRECT SNR BOUNDS (Jan 27, 2026)
+            # Allow SNR to vary naturally up to 200 based on physics
+            # SNR > 100 is rare but NOT forbidden - it happens for nearby sources
+            # Hard-clipping at 100 breaks SNR-distance correlation (r stalls at -0.35)
+            # Solution: Allow high SNR, make it rare via sampling distribution
+            
             # Minimum SNR: 5 (detection threshold)
-            # Maximum SNR: 100 (very loud event)
+            # Maximum SNR: 200 (extremely rare but physics-allowed)
             unclipped = float(snr_estimate)
-            clipped = float(np.clip(unclipped, 5.0, 100.0))
-
-            # Diagnostic: log when unclipped value exceeds the upper cap (likely cause of 80/100 caps)
+            clipped = float(np.clip(unclipped, 5.0, 200.0))
+            
+            # Diagnostic: log when SNR is unusually high (rare event)
             try:
-                if clipped >= 99.999 and unclipped > 100.0:
+                if unclipped > 100.0:
                     import traceback
 
                     short_params = {
                         k: params.get(k) for k in ("mass_1", "mass_2", "luminosity_distance")
                     }
-                    self.logger.warning(
-                        f"[SNR-CLIP] _estimate_snr_from_params clipped {unclipped:.2f} -> {clipped:.2f}; params={short_params}"
+                    self.logger.debug(
+                        f"[SNR-HIGH] _estimate_snr_from_params: {unclipped:.2f} SNR (rare but allowed); params={short_params}"
                     )
-                    stack = "".join(traceback.format_stack(limit=6))
-                    self.logger.warning(stack)
             except Exception:
                 pass
 
@@ -4591,7 +4630,7 @@ class GWDatasetGenerator:
 
         # If value is effectively clipped/high, log stack for diagnostics
         try:
-            if isinstance(val, (int, float)) and val >= 100.0:
+            if isinstance(val, (int, float)) and val >= 200.0:
                 import traceback
 
                 self.logger.warning(
@@ -4689,6 +4728,31 @@ class GWDatasetGenerator:
                     injected = noise
                     metadata = {"detector": detector_name, "noise_only": True}
                 
+                # ✅ PHYSICS CORRECTION: Enforce SNR-distance coupling AFTER noise injection
+                # Issue: Clipping breaks correlation between achieved SNR and distance
+                # Solution: Recompute distance from achieved SNR to maintain physics
+                # Physics rule: distance × SNR = constant (up to noise variation)
+                if params and metadata.get("actual_snr", 0) > 0:
+                    target_snr = params.get("target_snr", 0)
+                    achieved_snr = metadata.get("actual_snr", 0)
+                    
+                    if target_snr > 0 and achieved_snr > 0:
+                        # Compute corrected distance based on achieved SNR
+                        original_distance = params.get("luminosity_distance", 0)
+                        corrected_distance = original_distance * (target_snr / achieved_snr)
+                        
+                        # Clip to valid range once at the END
+                        corrected_distance = np.clip(
+                            corrected_distance,
+                            10.0,
+                            5000.0
+                        )
+                        
+                        # Update both params and metadata to reflect actual physics
+                        params["luminosity_distance"] = float(corrected_distance)
+                        metadata["corrected_distance"] = float(corrected_distance)
+                        metadata["distance_correction_factor"] = float(target_snr / achieved_snr)
+                
                 # Preprocess
                 if preprocess:
                     injected = self.preprocessor.preprocess(injected, psd_dict)
@@ -4732,6 +4796,13 @@ class GWDatasetGenerator:
                     "snr_regime": snr_regime,
                     "is_edge_case": is_edge_case,
                     "noise_sources": noise_types,
+                    # FIX #3: Missing SNR in Metadata - Issue #3 FIXED (Jan 27, 2026)
+                    # CRITICAL: Added actual SNR values to metadata for training diagnostics
+                    # Problem: Only regime name stored, not actual numeric SNR values
+                    # Solution: Include target_snr and luminosity_distance for SNR-distance analysis
+                    "target_snr": float(params.get("target_snr", 0.0)) if params else 0.0,
+                    "luminosity_distance": float(params.get("luminosity_distance", 0.0)) if params else 0.0,
+                    "chirp_mass": float(params.get("chirp_mass", 0.0)) if params else 0.0,
                 },
             }
             
@@ -4838,6 +4909,32 @@ class GWDatasetGenerator:
                 injected, metadata_list = self.injector.inject_overlapping_signals(
                     noise, signal_params_list, detector_name, psd_dict
                 )
+                
+                # ✅ PHYSICS CORRECTION: Enforce SNR-distance coupling for each overlapping signal
+                # Issue: Clipping breaks correlation between achieved SNR and distance
+                # Solution: Recompute distance from achieved SNR to maintain physics
+                # Physics rule: distance × SNR = constant (up to noise variation)
+                for i, (metadata, params) in enumerate(zip(metadata_list, signal_params_list)):
+                    if metadata.get("actual_snr", 0) > 0:
+                        target_snr = params.get("target_snr", 0)
+                        achieved_snr = metadata.get("actual_snr", 0)
+                        
+                        if target_snr > 0 and achieved_snr > 0:
+                            # Compute corrected distance based on achieved SNR
+                            original_distance = params.get("luminosity_distance", 0)
+                            corrected_distance = original_distance * (target_snr / achieved_snr)
+                            
+                            # Clip to valid range once at the END
+                            corrected_distance = np.clip(
+                                corrected_distance,
+                                10.0,
+                                5000.0
+                            )
+                            
+                            # Update both params and metadata to reflect actual physics
+                            params["luminosity_distance"] = float(corrected_distance)
+                            metadata["corrected_distance"] = float(corrected_distance)
+                            metadata["distance_correction_factor"] = float(target_snr / achieved_snr)
                 
                 if preprocess:
                     injected = self.preprocessor.preprocess(injected, psd_dict)
@@ -4947,6 +5044,31 @@ class GWDatasetGenerator:
             else:
                 injected = noise
                 metadata = {"detector": detector_name, "noise_only": True}
+
+            # ✅ PHYSICS CORRECTION: Enforce SNR-distance coupling AFTER noise injection
+            # Issue: Clipping breaks correlation between achieved SNR and distance
+            # Solution: Recompute distance from achieved SNR to maintain physics
+            # Physics rule: distance × SNR = constant (up to noise variation)
+            if params and metadata.get("actual_snr", 0) > 0:
+                target_snr = params.get("target_snr", 0)
+                achieved_snr = metadata.get("actual_snr", 0)
+                
+                if target_snr > 0 and achieved_snr > 0:
+                    # Compute corrected distance based on achieved SNR
+                    original_distance = params.get("luminosity_distance", 0)
+                    corrected_distance = original_distance * (target_snr / achieved_snr)
+                    
+                    # Clip to valid range once at the END
+                    corrected_distance = np.clip(
+                        corrected_distance,
+                        10.0,
+                        5000.0
+                    )
+                    
+                    # Update both params and metadata to reflect actual physics
+                    params["luminosity_distance"] = float(corrected_distance)
+                    metadata["corrected_distance"] = float(corrected_distance)
+                    metadata["distance_correction_factor"] = float(target_snr / achieved_snr)
 
             # Preprocess
             if preprocess:
@@ -5089,6 +5211,32 @@ class GWDatasetGenerator:
             injected, metadata_list = self.injector.inject_overlapping_signals(
                 noise, signal_params_list, detector_name, psd_dict
             )
+
+            # ✅ PHYSICS CORRECTION: Enforce SNR-distance coupling for each overlapping signal
+            # Issue: Clipping breaks correlation between achieved SNR and distance
+            # Solution: Recompute distance from achieved SNR to maintain physics
+            # Physics rule: distance × SNR = constant (up to noise variation)
+            for i, (metadata, params) in enumerate(zip(metadata_list, signal_params_list)):
+                if metadata.get("actual_snr", 0) > 0:
+                    target_snr = params.get("target_snr", 0)
+                    achieved_snr = metadata.get("actual_snr", 0)
+                    
+                    if target_snr > 0 and achieved_snr > 0:
+                        # Compute corrected distance based on achieved SNR
+                        original_distance = params.get("luminosity_distance", 0)
+                        corrected_distance = original_distance * (target_snr / achieved_snr)
+                        
+                        # Clip to valid range once at the END
+                        corrected_distance = np.clip(
+                            corrected_distance,
+                            10.0,
+                            5000.0
+                        )
+                        
+                        # Update both params and metadata to reflect actual physics
+                        params["luminosity_distance"] = float(corrected_distance)
+                        metadata["corrected_distance"] = float(corrected_distance)
+                        metadata["distance_correction_factor"] = float(target_snr / achieved_snr)
 
             if preprocess:
                 injected = self.preprocessor.preprocess(injected, psd_dict)

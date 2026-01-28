@@ -734,20 +734,21 @@ class OverlapNeuralPETrainer:
          try:
              # Only run diagnostics if we collected data
              if len(all_strain_data) > 0 and len(all_parameters) > 0:
-                 # Use only first 16 samples to avoid massive compute (64 * 50 = 3200 forward passes)
-                 subset_strain = all_strain_data[:16] if isinstance(all_strain_data, torch.Tensor) else all_strain_data
-                 subset_params = all_parameters[:16] if isinstance(all_parameters, torch.Tensor) else all_parameters
+                 # Use up to 256 samples for diagnostics (one batch, much faster)
+                 n_diag = min(256, len(all_strain_data) if isinstance(all_strain_data, torch.Tensor) else len(all_strain_data))
+                 subset_strain = all_strain_data[:n_diag] if isinstance(all_strain_data, torch.Tensor) else all_strain_data
+                 subset_params = all_parameters[:n_diag] if isinstance(all_parameters, torch.Tensor) else all_parameters
                  flow_metrics = self.model.compute_flow_matching_metrics(subset_strain, subset_params)
                  self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
                  
-                 # ✅ NEW: Log distance calibration at epochs 0, 10, 20, 30... (mandatory inspection)
-                 if epoch % 10 == 0:
-                     self.logger.info(f"\n🔍 EPOCH {epoch}: Computing distance calibration metrics...")
+                 # ✅ JAN 28: Log distance calibration every 5 epochs (not every 10, and not every epoch!)
+                 if epoch % 5 == 0 or epoch == 0:
+                     self.logger.info(f"\n🔍 EPOCH {epoch}: Computing distance calibration metrics (n={n_diag})...")
                      try:
                          # Sample posterior with all samples returned [batch, n_samples, 11 params]
                          with torch.no_grad():
                              posterior_samples = self.model.sample_posterior(
-                                 subset_strain, n_samples=50, return_all_samples=True
+                                 subset_strain, n_samples=256, return_all_samples=True
                              )
                          
                          if posterior_samples is not None and posterior_samples.shape[0] > 0:
@@ -786,7 +787,7 @@ class OverlapNeuralPETrainer:
         start_epoch: int = 0,
     ):
         """Complete training loop."""
-        self.logger.info("ðŸš€ Starting OverlapNeuralPE training")
+        self.logger.info("Starting OverlapNeuralPE training")
         self.logger.info(f"Epochs: {self.epochs}, Batch size: {self.batch_size}")
         self.logger.info(f"Training samples: {len(train_loader.dataset)}")
         self.logger.info(f"Validation samples: {len(val_loader.dataset)}")

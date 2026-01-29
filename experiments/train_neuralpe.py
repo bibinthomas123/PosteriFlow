@@ -696,6 +696,7 @@ class OverlapNeuralPETrainer:
          # Collect data for final diagnostics
          all_strain_data = []
          all_parameters = []
+         all_target_snrs = []  # Collect target_snr from metadata
 
          with torch.no_grad():
              for batch_idx, batch_output in enumerate(
@@ -729,6 +730,13 @@ class OverlapNeuralPETrainer:
                  if len(all_strain_data) == 0:
                      all_strain_data = strain_data
                      all_parameters = parameters
+                     # Extract target_snr from metadata
+                     if isinstance(metadata, dict) and 'target_snr' in metadata:
+                         all_target_snrs = metadata['target_snr']
+                     elif isinstance(metadata, dict):
+                         # Fallback: compute from strain RMS if target_snr not available
+                         all_target_snrs = np.sqrt(np.mean(strain_data.cpu().numpy()**2, axis=(1, 2)))
+                         all_target_snrs = np.maximum(all_target_snrs, 1.0)
 
          # ✅ FINAL: Compute and log diagnostics after entire validation epoch
          try:
@@ -756,9 +764,13 @@ class OverlapNeuralPETrainer:
                              d_true = subset_params[:, 0, 2].cpu().numpy()  # [batch,]
                              d_samples = posterior_samples[:, :, 2].cpu().numpy()  # [batch, n_samples]
                              
-                             # Extract SNR from strain RMS
-                             snr = np.sqrt(np.mean(subset_strain.cpu().numpy()**2, axis=(1, 2)))
-                             snr = np.maximum(snr, 1.0)
+                             # Use target_snr from metadata (much more accurate than computing from strain RMS)
+                             if isinstance(all_target_snrs, (list, np.ndarray)):
+                                 snr = np.array(all_target_snrs[:len(d_true)]).astype(float)
+                             else:
+                                 # Fallback: compute from strain RMS if target_snr not available
+                                 snr = np.sqrt(np.mean(subset_strain.cpu().numpy()**2, axis=(1, 2)))
+                                 snr = np.maximum(snr, 1.0)
                              
                              # Event type distribution
                              event_type = (np.arange(len(d_true)) % 3).astype(int)

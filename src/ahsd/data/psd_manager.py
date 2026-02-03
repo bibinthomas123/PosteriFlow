@@ -263,9 +263,9 @@ class PSDManager:
                     scaling = 1e-46 / psd_arr[idx_100]
                     psd_arr = psd_arr * scaling
                 
-                # Clamp ASD to realistic values (1e-23 to 1e-22 strain per sqrt Hz)
-                asd = np.sqrt(np.maximum(psd_arr, 1e-46))
-                asd = np.maximum(asd, 1e-22)  # Ensure minimum realistic noise floor
+                # Clamp ASD to realistic values (1e-24 to 1e-22 strain per sqrt Hz)
+                asd = np.sqrt(np.maximum(psd_arr, 1e-48))
+                asd = np.maximum(asd, 1e-24)  # Much less aggressive clamp - preserves frequency structure
                 return {
                     'psd': asd ** 2,  # Recompute PSD from clamped ASD
                     'frequencies': freqs,
@@ -285,9 +285,9 @@ class PSDManager:
             scaling = 1e-46 / psd_arr[idx_100]
             psd_arr = psd_arr * scaling
         
-        # Clamp ASD to realistic values (1e-23 to 1e-22 strain per sqrt Hz)
-        asd = np.sqrt(np.maximum(psd_arr, 1e-46))
-        asd = np.maximum(asd, 1e-22)  # Ensure minimum realistic noise floor
+        # Clamp ASD to realistic values (1e-24 to 1e-22 strain per sqrt Hz)
+        asd = np.sqrt(np.maximum(psd_arr, 1e-48))
+        asd = np.maximum(asd, 1e-24)  # Much less aggressive clamp - preserves frequency structure
         return {
             'psd': asd ** 2,  # Recompute PSD from clamped ASD
             'frequencies': freqs,
@@ -377,8 +377,9 @@ class PSDManager:
         psd = self._add_spectral_lines(frequencies, psd, detector_name)
         
         # Clamp ASD to realistic values (1e-23 to 1e-22 strain per sqrt Hz)
-        asd = np.sqrt(np.maximum(psd, 1e-46))
-        asd = np.maximum(asd, 1e-22)  # Ensure minimum realistic noise floor
+        asd = np.sqrt(np.maximum(psd, 1e-48))  # Very loose lower bound
+        # Only clamp extremely low values (below quantum noise floor)
+        asd = np.maximum(asd, 1e-24)  # Much less aggressive clamp
         return {
             'psd': asd ** 2,  # Recompute PSD from clamped ASD
             'frequencies': frequencies,

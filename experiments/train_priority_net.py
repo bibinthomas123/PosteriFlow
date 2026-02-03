@@ -1641,18 +1641,20 @@ def collate_priority_batch(batch):
                or a tuple (detections, priorities, [edge_type_ids], [snr_values], [strain])
 
     Returns:
-        Tuple of 5 lists:
+        Tuple of 6 lists:
           detections_batch: List[List[Dict]]
           priorities_batch: List[torch.Tensor]
           edge_type_ids_batch: List[torch.LongTensor]
           strain_batch: List[Optional[torch.Tensor]] - strain segments [n_detectors, time_samples]
           snr_values_batch: List[Optional[torch.Tensor]]
+          detector_data_batch: List[Optional[Dict]] - PSD data for modulation
     """
     detections_batch = []
     priorities_batch = []
     edge_type_ids_batch = []
     strain_batch = []
     snr_values_batch = []
+    detector_data_batch = []
 
     for item in batch:
         if isinstance(item, dict):
@@ -1688,6 +1690,7 @@ def collate_priority_batch(batch):
             edge_type_ids_batch.append(edge_ids)
             strain_batch.append(strain_tensor)
             snr_values_batch.append(snr_vals)
+            detector_data_batch.append(detector_data)  # ✅ FEB 1, 2026: Include PSD data
         else:
             # Tuple format: (detections, priorities, [edge_type_ids], [strain], [snr_values])
             dets = item[0]
@@ -1701,8 +1704,9 @@ def collate_priority_batch(batch):
             edge_type_ids_batch.append(edge_ids)
             strain_batch.append(strain)
             snr_values_batch.append(snr_vals)
+            detector_data_batch.append({})  # Empty dict for tuple format (no PSD data)
 
-    return detections_batch, priorities_batch, edge_type_ids_batch, strain_batch, snr_values_batch
+    return detections_batch, priorities_batch, edge_type_ids_batch, strain_batch, snr_values_batch, detector_data_batch
 
 
 def train_priority_net_with_validation(config, train_dataset, val_dataset, output_dir: Path, resume_state: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1873,12 +1877,13 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
         with torch.no_grad():
             val_pbar = tqdm(val_loader, desc=f"Val Epoch {epoch + 1}/{n_epochs}")
             for batch in val_pbar:
-                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch])
+                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch][, detector_data_batch])
                 detections_batch = batch[0]
                 priorities_batch = batch[1]
                 edge_type_ids_batch = batch[2] if len(batch) > 2 else None
                 strain_batch = batch[3] if len(batch) > 3 else None
                 snr_values_batch = batch[4] if len(batch) > 4 else None
+                detector_data_batch = batch[5] if len(batch) > 5 else None
 
                 batch_ranking = 0.0
                 batch_priority = 0.0
@@ -1902,9 +1907,12 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
                         strain_segments = torch.zeros((n, 3, 2048), dtype=torch.float32)
 
                     try:
-                        predicted_priorities, uncertainties = model(
-                            detections, strain_segments=strain_segments, edge_type_ids=edge_ids_item
-                        )
+                         # ✅ FEB 1, 2026: Pass detector_data for PSD modulation
+                         detector_data = detector_data_batch[idx] if detector_data_batch and idx < len(detector_data_batch) else {}
+                         predicted_priorities, uncertainties = model(
+                             detections, strain_segments=strain_segments, edge_type_ids=edge_ids_item,
+                             detector_data=detector_data
+                         )
                     except Exception as e:
                         logging.debug(f"Validation step error: {e}")
                         continue
@@ -1963,12 +1971,13 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
             }
 
             for batch in val_loader:
-                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch])
+                # Support (detections_batch, priorities_batch, edge_type_ids_batch[, strain_batch][, snr_values_batch][, detector_data_batch])
                 detections_batch = batch[0]
                 priorities_batch = batch[1]
                 edge_type_ids_batch = batch[2] if len(batch) > 2 else None
                 strain_batch = batch[3] if len(batch) > 3 else None
                 snr_values_batch = batch[4] if len(batch) > 4 else None
+                detector_data_batch = batch[5] if len(batch) > 5 else None
 
                 for i, (detections, priorities) in enumerate(
                     zip(detections_batch, priorities_batch)
@@ -1987,8 +1996,11 @@ def train_priority_net_with_validation(config, train_dataset, val_dataset, outpu
                         )
 
                     try:
+                        # ✅ FEB 1, 2026: Pass detector_data for PSD modulation
+                        detector_data = detector_data_batch[i] if detector_data_batch and i < len(detector_data_batch) else {}
                         pred, _ = model(
-                            detections, strain_segments=strain_segments, edge_type_ids=edge_ids_item
+                            detections, strain_segments=strain_segments, edge_type_ids=edge_ids_item,
+                            detector_data=detector_data
                         )
                         pred_np = (
                             pred.detach().cpu().numpy()
@@ -2387,10 +2399,12 @@ def evaluate_priority_net(
                             # Add batch dimension: [n_detectors, time] -> [1, n_detectors, time]
                             strain_segments = strain_tensor.unsqueeze(0).to(device)
                     
+                    # ✅ FEB 1, 2026: Pass detector_data for PSD modulation
                     pred_priorities, uncertainties = model(
                         detections, 
                         strain_segments=strain_segments,
-                        edge_type_ids=edge_ids
+                        edge_type_ids=edge_ids,
+                        detector_data=detector_data
                     )
                 except Exception as e:
                     if item_idx < 5:
@@ -2947,7 +2961,11 @@ def load_checkpoint(checkpoint_path: Optional[str], config, device=None) -> Opti
                 raise
 
         # 8. CREATE TRAINER
-        trainer = PriorityNetTrainer(model, config)
+        # Extract priority_net config section (same as line 1751-1753)
+        priority_net_config = (
+            config.get("priority_net", config) if hasattr(config, "get") else config
+        )
+        trainer = PriorityNetTrainer(model, priority_net_config)
 
         # 9. RESTORE OPTIMIZER & SCHEDULER (skip if architecture changed)
         if not had_mismatches:

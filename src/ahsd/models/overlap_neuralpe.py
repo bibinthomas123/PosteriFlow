@@ -1601,9 +1601,9 @@ class OverlapNeuralPE(nn.Module):
                             # De-scale: flow models normalized distance
                             params_for_flow[:, distance_idx] = params_norm[:, distance_idx] / (distance_scale + 1e-6)
                             
-                            # ✅ FEB 4 DIAGNOSTIC: Monitor distance_head learning
+                            # ✅ FEB 4 DIAGNOSTIC: Monitor distance_head learning (every epoch)
                             # Expected: corr(log_distance_scale, network_snr) < -0.7 (strong negative)
-                            if self.training and self.training_step % 500 == 0:
+                            if self.training and signal_idx == 0:  # Log once per epoch (first signal)
                                 with torch.no_grad():
                                     # Extract network SNR from context (last dimension before SNR concat)
                                     # context = [context_768, snr_1] after concat
@@ -1612,13 +1612,15 @@ class OverlapNeuralPE(nn.Module):
                                     
                                     # Compute correlation
                                     try:
-                                        cov = torch.cov(torch.stack([log_distance_scale_batch, network_snr_batch]))
-                                        self.logger.info(
-                                            f"✅ [DISTANCE HEAD] Step {self.training_step}: "
-                                            f"corr(log_scale, SNR)={corr:.4f} (target < -0.7), "
-                                            f"scale_mean={distance_scale.mean():.4f}, "
-                                            f"scale_std={distance_scale.std():.4f}"
-                                        )
+                                        if len(log_distance_scale_batch) > 1:  # Need at least 2 samples
+                                            cov = torch.cov(torch.stack([log_distance_scale_batch, network_snr_batch]))
+                                            corr = cov[0, 1] / (cov[0, 0].sqrt() * cov[1, 1].sqrt() + 1e-6)
+                                            self.logger.info(
+                                                f"✅ [DISTANCE HEAD] Epoch {self.training_step}: "
+                                                f"corr(log_scale, SNR)={corr:.4f} (target < -0.7), "
+                                                f"scale_mean={distance_scale.mean():.4f}, "
+                                                f"scale_std={distance_scale.std():.4f}"
+                                            )
                                     except Exception as e:
                                         self.logger.debug(f"Distance correlation logging failed: {e}")
                         except Exception as e:

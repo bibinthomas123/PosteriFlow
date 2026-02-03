@@ -29,16 +29,16 @@ priority_net:
   
   # --- TRAINING SCHEDULE ---
   batch_size: 32                          # ⬆️ Increased from 6 (larger batch → stable BatchNorm)
-  epochs: 40
+  epochs: 100
   patience: 15                            
   
   # --- WARMUP ---
-  warmup_epochs: 6
+  warmup_epochs: 10
   warmup_start_factor: 0.02
   
   # --- LEARNING RATE SCHEDULER ---
   scheduler: "ReduceLROnPlateau"
-  scheduler_patience: 7
+  scheduler_patience: 5
   scheduler_factor: 0.5
   scheduler_threshold: 5e-3
   min_lr: 1.0e-6
@@ -113,9 +113,9 @@ priority_net:
   #   - Effect: Dominant but balanced signal to expand predictions to full [0, 1] range
   output_bias_init: 0.45                  # Initialize output bias to 0.45 (slightly below mean)
   output_weight_std: 0.10                 # Weight std (2x standard for stronger gradients)
-  calib_mean_weight: 0.30                 # Mean alignment: 2× mse_weight (0.15 × 2)
-  calib_max_weight: 0.40                  # Max expansion: 2.67× mse_weight (0.15 × 2.67) - CRITICAL for ceiling
-  calib_range_weight: 0.40                # Range expansion: 2.67× mse_weight (0.15 × 2.67) - CRITICAL for variance
+  calib_mean_weight: 0.35                 # Mean alignment: moderate increase (0.30→0.35)
+  calib_max_weight: 0.60                  # Max expansion: moderate increase (0.40→0.60) to avoid collapse
+  calib_range_weight: 0.60                # Range expansion: moderate increase (0.40→0.60) to avoid collapse
   affine_gain_min: 1.2                    # Gain lower bound (prevent collapse)
   affine_gain_max: 2.5                    # Gain upper bound (allow aggressive expansion)
   affine_bias_min: -0.2                   # Bias lower bound (push floor down)
@@ -196,18 +196,21 @@ neural_posterior:
     tail_bound: 3.0                       # Global default (overridden by per_param_tail_bounds if set)
     dropout: 0.1                          
     
-    # ✅ JAN 20: Per-parameter tail bounds to fix MEDIAN/MEAN conflict
-    # Problem: Global tail_bound=3.0 constrains distance distribution
-    #   MEDIAN: +60 to +230 Mpc (right side, positive)
-    #   MEAN:   -70 to -265 Mpc (left side, negative)
-    #   They fight because tail_bound prevents distribution expansion
-    # Solution: Give distance 7.0, keep others at 1.5-2.0
-    #   Distance has huge skewed range [10, 8000] Mpc
-    #   Spins, angles, masses have smaller bounded ranges
+    # ✅ FEB 4: Per-parameter tail bounds with distance_head scaling
+    # Problem (JAN 20): Global tail_bound=3.0 or 7.0 creates MEDIAN/MEAN conflict
+    # Solution (FEB 4): Distance_head handles SNR-dependent amplitude
+    #   → Flow now learns SHAPE (de-scaled distance)
+    #   → Distance_head learns SCALE (SNR-driven)
+    #   → Tight tail_bound (1.0) for flow, not constrained by scale
+    #
+    # Physics:
+    #   Distance ∝ 1/SNR (inverse relationship)
+    #   corr(log_distance_scale, network_snr) should be < -0.7
+    #   Flow sees normalized distance, learns shape independent of amplitude
     per_param_tail_bounds:
       0: 2.0   # mass_1: [1, 100] Msun (moderate range)
       1: 2.0   # mass_2: [1, 100] Msun (moderate range)
-      2: 7.0   # luminosity_distance: [10, 8000] Mpc (HUGE skewed range, needs freedom!)
+      2: 1.0   # luminosity_distance: TIGHT (FEB 4 FIX) - amplitude from distance_head, shape from flow
       3: 1.5   # ra: bounded angle, small range
       4: 1.5   # dec: bounded angle, small range
       5: 1.5   # theta_jn: [0, pi], moderate constraint

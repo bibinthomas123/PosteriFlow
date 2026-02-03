@@ -686,110 +686,244 @@ class OverlapNeuralPETrainer:
         return avg_metrics
 
     def validate_epoch(self, val_loader: DataLoader, epoch: int) -> Dict[str, float]:
-         """Validate one epoch."""
-         self.model.eval()
+        """Validate one epoch."""
+        self.model.eval()
+        epoch_losses = []
+        epoch_nlls = []
+        epoch_physics_losses = []
+        
+        # Collect data for final diagnostics
+        all_strain_data = []
+        all_parameters = []
+        all_target_snrs = []  # Collect target_snr from metadata
 
-         epoch_losses = []
-         epoch_nlls = []
-         epoch_physics_losses = []
-         
-         # Collect data for final diagnostics
-         all_strain_data = []
-         all_parameters = []
-         all_target_snrs = []  # Collect target_snr from metadata
-
-         with torch.no_grad():
-             for batch_idx, batch_output in enumerate(
-                 tqdm(val_loader, desc="Validating")
-             ):
-                 # ✅ Handle new sample_ids return value
-                 if len(batch_output) == 5:
-                     strain_data, parameters, n_signals, metadata, sample_ids = batch_output
-                 else:
-                     strain_data, parameters, n_signals, metadata = batch_output
-                     sample_ids = [f"batch_{i}" for i in range(len(strain_data))]
+        with torch.no_grad():
+            for batch_idx, batch_output in enumerate(
+                tqdm(val_loader, desc="Validating")
+            ):
+                # ✅ Handle new sample_ids return value
+                if len(batch_output) == 5:
+                    strain_data, parameters, n_signals, metadata, sample_ids = batch_output
+                else:
+                    strain_data, parameters, n_signals, metadata = batch_output
+                    sample_ids = [f"batch_{i}" for i in range(len(strain_data))]
+                
+                strain_data = strain_data.to(self.device)
+                parameters = parameters.to(self.device)
+                target_params = parameters[:, 0, :]
+                loss_dict = self.model.compute_loss(strain_data, target_params)
+                
+                # ✅ JAN 7: APPLY NOISE MARGINALIZATION IN VALIDATION TOO (log every 10 batches)
+                if should_marginalize(sample_ids):
+                    loss_dict = marginalize_loss_by_theta(
+                        loss_dict, sample_ids, verbose=True, batch_idx=batch_idx, log_frequency=100
+                    )
+                epoch_losses.append(loss_dict["total_loss"].item())
+                epoch_nlls.append(loss_dict["flow_loss"].item())
+                if "physics_loss" in loss_dict:
+                    epoch_physics_losses.append(loss_dict["physics_loss"].item())
                  
-                 strain_data = strain_data.to(self.device)
-                 parameters = parameters.to(self.device)
-
-                 target_params = parameters[:, 0, :]
-                 loss_dict = self.model.compute_loss(strain_data, target_params)
-                 
-                 # ✅ JAN 7: APPLY NOISE MARGINALIZATION IN VALIDATION TOO (log every 10 batches)
-                 if should_marginalize(sample_ids):
-                     loss_dict = marginalize_loss_by_theta(
-                         loss_dict, sample_ids, verbose=True, batch_idx=batch_idx, log_frequency=100
-                     )
-
-                 epoch_losses.append(loss_dict["total_loss"].item())
-                 epoch_nlls.append(loss_dict["flow_loss"].item())
-                 if "physics_loss" in loss_dict:
-                     epoch_physics_losses.append(loss_dict["physics_loss"].item())
-                 
-                 # Collect first batch worth of data for diagnostics
-                 if len(all_strain_data) == 0:
-                     all_strain_data = strain_data
-                     all_parameters = parameters
-                     # Extract target_snr from metadata
-                     if isinstance(metadata, dict) and 'target_snr' in metadata:
-                         all_target_snrs = metadata['target_snr']
-                     elif isinstance(metadata, dict):
-                         # Fallback: compute from strain RMS if target_snr not available
-                         all_target_snrs = np.sqrt(np.mean(strain_data.cpu().numpy()**2, axis=(1, 2)))
-                         all_target_snrs = np.maximum(all_target_snrs, 1.0)
+                # Collect first batch worth of data for diagnostics
+                if len(all_strain_data) == 0:
+                    all_strain_data = strain_data
+                    all_parameters = parameters
+                    # Extract target_snr from metadata (handle both dict and list formats)
+                    all_target_snrs = []
+                    if isinstance(metadata, dict) and 'target_snr' in metadata:
+                        all_target_snrs = metadata['target_snr']
+                    elif isinstance(metadata, list):
+                        # metadata is list of dicts (one per sample)
+                        for meta_sample in metadata:
+                            if isinstance(meta_sample, dict) and 'target_snr' in meta_sample:
+                                all_target_snrs.append(meta_sample['target_snr'])
+                            else:
+                                all_target_snrs.append(None)
+                    
+                    # Fallback: compute from strain RMS if target_snr not available
+                    if not all_target_snrs or all(s is None for s in all_target_snrs):
+                        all_target_snrs = np.sqrt(np.mean(strain_data.cpu().numpy()**2, axis=(1, 2)))
+                        all_target_snrs = np.maximum(all_target_snrs, 1.0)
+                    else:
+                        all_target_snrs = np.array([s if s is not None else 1.0 for s in all_target_snrs])
 
          # ✅ FINAL: Compute and log diagnostics after entire validation epoch
-         try:
-             # Only run diagnostics if we collected data
-             if len(all_strain_data) > 0 and len(all_parameters) > 0:
-                 # Use up to 256 samples for diagnostics (one batch, much faster)
-                 n_diag = min(256, len(all_strain_data) if isinstance(all_strain_data, torch.Tensor) else len(all_strain_data))
-                 subset_strain = all_strain_data[:n_diag] if isinstance(all_strain_data, torch.Tensor) else all_strain_data
-                 subset_params = all_parameters[:n_diag] if isinstance(all_parameters, torch.Tensor) else all_parameters
-                 flow_metrics = self.model.compute_flow_matching_metrics(subset_strain, subset_params)
-                 self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
-                 
-                 # ✅ JAN 28: Log distance calibration every 5 epochs (not every 10, and not every epoch!)
-                 if epoch % 5 == 0 or epoch == 0:
-                     self.logger.info(f"\n🔍 EPOCH {epoch}: Computing distance calibration metrics (n={n_diag})...")
-                     try:
-                         # Sample posterior with all samples returned [batch, n_samples, 11 params]
-                         with torch.no_grad():
-                             posterior_samples = self.model.sample_posterior(
-                                 subset_strain, n_samples=256, return_all_samples=True
-                             )
-                         
-                         if posterior_samples is not None and posterior_samples.shape[0] > 0:
-                             # Extract distance (parameter index 2: luminosity_distance)
-                             d_true = subset_params[:, 0, 2].cpu().numpy()  # [batch,]
-                             d_samples = posterior_samples[:, :, 2].cpu().numpy()  # [batch, n_samples]
-                             
-                             # Use target_snr from metadata (much more accurate than computing from strain RMS)
-                             if isinstance(all_target_snrs, (list, np.ndarray)):
-                                 snr = np.array(all_target_snrs[:len(d_true)]).astype(float)
-                             else:
-                                 # Fallback: compute from strain RMS if target_snr not available
-                                 snr = np.sqrt(np.mean(subset_strain.cpu().numpy()**2, axis=(1, 2)))
-                                 snr = np.maximum(snr, 1.0)
-                             
-                             # Event type distribution
-                             event_type = (np.arange(len(d_true)) % 3).astype(int)
-                             
-                             log_distance_calibration(d_true, d_samples, snr, event_type, self.logger)
-                         else:
-                             self.logger.warning("⚠️  No posterior samples returned at epoch %d", epoch)
-                     except Exception as e:
-                         self.logger.warning(f"⚠️  Distance calibration skipped (epoch {epoch}): {type(e).__name__}: {e}")
-             else:
-                 self.logger.debug("No validation data collected for diagnostics")
-         except Exception as e:
-             self.logger.error(f"Flow diagnostics failed: {type(e).__name__}: {e}")
+        try:
+            # Only run diagnostics if we collected data
+            if len(all_strain_data) > 0 and len(all_parameters) > 0:
+                # Use up to 256 samples for diagnostics (one batch, much faster)
+                n_diag = min(256, len(all_strain_data) if isinstance(all_strain_data, torch.Tensor) else len(all_strain_data))
+                subset_strain = all_strain_data[:n_diag] if isinstance(all_strain_data, torch.Tensor) else all_strain_data
+                subset_params = all_parameters[:n_diag] if isinstance(all_parameters, torch.Tensor) else all_parameters
+                flow_metrics = self.model.compute_flow_matching_metrics(subset_strain, subset_params)
+                self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
+                
+                # ✅ JAN 28: Log distance calibration every 5 epochs (not every 10, and not every epoch!)
+                if epoch % 5  == 0 and not epoch == 0:
+                    self.logger.info(f"\n🔍 EPOCH {epoch}: Computing distance calibration metrics (n={n_diag})...")
+                    try:
+                        # Sample posterior with all samples returned [batch, n_samples, 11 params]
+                        with torch.no_grad():
+                            posterior_samples = self.model.sample_posterior(
+                                subset_strain, n_samples=256, return_all_samples=True
+                            )
+                        
+                        if posterior_samples is not None and posterior_samples.shape[0] > 0:
+                            # Extract distance (parameter index 2: luminosity_distance)
+                            d_true = subset_params[:, 0, 2].cpu().numpy()  # [batch,]
+                            d_samples = posterior_samples[:, :, 2].cpu().numpy()  # [batch, n_samples]
+                            
+                            # Use target_snr from metadata (much more accurate than computing from strain RMS)
+                            if isinstance(all_target_snrs, (list, np.ndarray)):
+                                snr = np.array(all_target_snrs[:len(d_true)]).astype(float)
+                            else:
+                                # Fallback: compute from strain RMS if target_snr not available
+                                snr = np.sqrt(np.mean(subset_strain.cpu().numpy()**2, axis=(1, 2)))
+                                snr = np.maximum(snr, 1.0)
+                            
+                            # Event type distribution
+                            event_type = (np.arange(len(d_true)) % 3).astype(int)
+                            
+                            #log_distance_calibration(d_true, d_samples, snr, event_type, self.logger)
+                        else:
+                            self.logger.warning("⚠️  No posterior samples returned at epoch %d", epoch)
+                    except Exception as e:
+                        self.logger.warning(f"⚠️  Distance calibration skipped (epoch {epoch}): {type(e).__name__}: {e}")
+                    
+                    # ✅ LOG 5 PSD CONDITIONING METRICS (FEB 2, 2026)
+                    try:
+                        self.logger.info(f"\n📊 PSD CONDITIONING METRICS (Epoch {epoch}):")
+                        self.logger.info("=" * 70)
+                        
+                        # Debug: Check what's in metadata
+                        if epoch % 10 == 0:  # Every 10 epochs
+                            self.logger.debug(f"[DEBUG] metadata type: {type(metadata)}, keys: {metadata.keys() if isinstance(metadata, dict) else 'N/A'}")
+                        
+                        psd_sigma = []
+                        
+                        # Compute PSD amplitude scale (σ_psd) from strain RMS
+                        # PSD amplitude correlates with strain power (inversely with SNR)
+                        # σ_psd = RMS normalized to mean=1, clipped to [0.3, 3.0]
+                        if isinstance(all_strain_data, torch.Tensor):
+                            strain_rms = torch.std(all_strain_data[:n_diag], dim=2).cpu().numpy()  # [batch, n_det]
+                        else:
+                            strain_rms = np.std(all_strain_data[:n_diag], axis=-1)  # [batch, n_det]
+                        
+                        # Take geometric mean across detectors (RMS per sample)
+                        psd_sigma = np.mean(strain_rms, axis=1) if strain_rms.ndim > 1 else strain_rms  # [batch]
+                        
+                        # Normalize to distribution mean=1.0
+                        psd_mean_global = psd_sigma.mean()
+                        if psd_mean_global > 0:
+                            psd_sigma = psd_sigma / psd_mean_global
+                        
+                        # Physical bounds: [0.3, 3.0]
+                        psd_sigma = np.clip(psd_sigma, 0.3, 3.0)
+                        
+                        # Ensure psd_sigma is numpy array with proper shape
+                        if isinstance(psd_sigma, np.ndarray) and len(psd_sigma) > 0:
+                            psd_std = psd_sigma.std()
+                            psd_mean = psd_sigma.mean()
+                            self.logger.info(f"1️⃣  PSD σ Distribution: mean={psd_mean:.4f}, std={psd_std:.4f}, range=[{psd_sigma.min():.4f}, {psd_sigma.max():.4f}]")
+                            try:
+                                with torch.no_grad():
+                                    post_samples = self.model.sample_posterior(subset_strain, n_samples=50, return_all_samples=True)
+                                if post_samples is not None:
+                                    post_std = post_samples.std(dim=1).mean(dim=1).cpu().numpy()
+                                    div = np.mean(1.0 - np.abs(post_std / (post_std.max() + 1e-6)))
+                                    self.logger.info(f"2️⃣  Sample Diversity: {div:.4f} (target: > 0.05)")
+                            except:
+                                pass
+                            try:
+                                if len(epoch_nlls) > 1:
+                                    nll_recent = np.array(epoch_nlls[-min(len(psd_sigma), len(epoch_nlls)):])
+                                    if len(nll_recent) > 1 and len(psd_sigma) >= len(nll_recent):
+                                        corr_psd_nll = np.corrcoef(psd_sigma[:len(nll_recent)], nll_recent)[0, 1]
+                                        self.logger.info(f"3️⃣  PSD-NLL Correlation: {corr_psd_nll:.4f} (target: |r| > 0.20)")
+                            except:
+                                pass
+                            try:
+                                # CRITICAL: Measure posterior width in NORMALIZED space (where PSD acts)
+                                # NOT in physical space (where denormalization destroys differences)
+                                with torch.no_grad():
+                                    # Get NORMALIZED samples directly from flow
+                                    subset_strain_tensor = torch.tensor(subset_strain, dtype=torch.float32, device=self.device)
+                                    strain_norm = self.model._normalize_strain(subset_strain_tensor)
+                                    context = self.model.context_encoder(strain_norm)
+                                    
+                                    # Add SNR conditioning if enabled
+                                    try:
+                                        np_config = self.model.config.get("neural_posterior", {})
+                                        if np_config.get("snr_conditioning", True):
+                                            # ✅ FEB 4 FIX: Use raw log-RMS without extra normalization
+                                            # _compute_network_snr already returns log-RMS in natural scale [-5, +2]
+                                            # Do NOT re-normalize - that creates train-test mismatch
+                                            # Must match sample_posterior and compute_loss behavior exactly
+                                            network_snr = self.model._compute_network_snr(subset_strain_tensor)  # [batch, 1] raw log-RMS
+                                            
+                                            # ✅ FEB 4: Normalize context (not SNR) to unit std
+                                            context_mean = context.mean(dim=0, keepdim=True)
+                                            context_std = context.std(dim=0, keepdim=True) + 1e-6
+                                            context_normalized = (context - context_mean) / context_std
+                                            
+                                            # ✅ FEB 4: Concatenate raw SNR (no extra normalization)
+                                            context = torch.cat([context_normalized, network_snr], dim=1)  # [batch, 769]
+                                    except:
+                                        pass
+                                    
+                                    # Sample directly from flow in normalized space
+                                    n_samples = 50
+                                    samples_norm_list = []
+                                    for _ in range(n_samples):
+                                        z = torch.randn(len(subset_strain), self.model.param_dim, device=self.device)
+                                        x_norm, _ = self.model.flow.inverse(z, context)  # [batch, param_dim] normalized
+                                        samples_norm_list.append(x_norm)
+                                    
+                                    samples_norm = torch.stack(samples_norm_list, dim=1)  # [batch, n_samples, param_dim]
+                                    post_std_norm = samples_norm.std(dim=1).cpu().numpy()  # [batch, param_dim] in [-1,1] space
+                                    post_std_mean = post_std_norm.mean(axis=1)  # [batch] mean width across params
+                                    
+                                    if len(post_std_mean) > 1:
+                                        loud_mask = psd_sigma < psd_sigma.mean()
+                                        quiet_mask = psd_sigma >= psd_sigma.mean()
+                                        loud_posteriors = post_std_mean[loud_mask].mean() if loud_mask.sum() > 0 else 1.0
+                                        quiet_posteriors = post_std_mean[quiet_mask].mean() if quiet_mask.sum() > 0 else 1.0
+                                        ratio = quiet_posteriors / (loud_posteriors + 1e-6)
+                                        self.logger.info(f"4️⃣  Posterior Width Scaling (quiet/loud): {ratio:.3f} (target: > 1.1) [normalized space]")
+                                        self.logger.info(f"     Posteriors: quiet={quiet_posteriors:.4f}, loud={loud_posteriors:.4f}")
+                                        self.logger.info(f"     PSD σ range: [{psd_sigma.min():.4f}, {psd_sigma.max():.4f}]")
+                            except Exception as e:
+                                self.logger.debug(f"Posterior width scaling error: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                pass
+                            try:
+                                if len(epoch_losses) > 1:
+                                    loss_recent = np.array(epoch_losses[-min(len(psd_sigma), len(epoch_losses)):])
+                                    if len(loss_recent) > 1 and len(psd_sigma) >= len(loss_recent):
+                                        quiet_loss = loss_recent[psd_sigma[:len(loss_recent)] < psd_sigma.mean()].mean() if (psd_sigma[:len(loss_recent)] < psd_sigma.mean()).sum() > 0 else 0
+                                        loud_loss = loss_recent[psd_sigma[:len(loss_recent)] > psd_sigma.mean()].mean() if (psd_sigma[:len(loss_recent)] > psd_sigma.mean()).sum() > 0 else 0
+                                        self.logger.info(f"5️⃣  Loss Variation: quiet={quiet_loss:.4f}, loud={loud_loss:.4f} (target: |diff| > 0.01)")
+                            except:
+                                pass
+                            self.logger.info("=" * 70)
+                            if self.use_wandb:
+                                try:
+                                    wandb.log({"psd/sigma_mean": float(psd_mean), "psd/sigma_std": float(psd_std)}, step=epoch)
+                                except:
+                                    pass
+                    except Exception as e:
+                        self.logger.debug(f"PSD metrics skipped: {e}")
+                else:
+                    self.logger.debug("No validation data collected for diagnostics")
 
-         val_metrics = {"avg_loss": np.mean(epoch_losses), "avg_flow_loss": np.mean(epoch_nlls)}
-         if epoch_physics_losses:
-             val_metrics["avg_physics_loss"] = np.mean(epoch_physics_losses)
+        except Exception as e:
+            self.logger.error(f"Flow diagnostics failed: {type(e).__name__}: {e}")
 
-         return val_metrics
+        val_metrics = {"avg_loss": np.mean(epoch_losses), "avg_flow_loss": np.mean(epoch_nlls)}
+        if epoch_physics_losses:
+            val_metrics["avg_physics_loss"] = np.mean(epoch_physics_losses)
+
+        return val_metrics
 
     def train(
         self,

@@ -12,7 +12,7 @@
 # Number of samples to generate (start with 50k for full training)
 # STEP 4: K=5 means each unique parameter set gets 5 different noise realizations
 # So n_samples=1000 with K=5 generates 5000 total samples
-n_samples: 1500
+n_samples: 2000
 
 # Output configuration
 output_dir: "data/dataset"

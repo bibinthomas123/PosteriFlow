@@ -595,6 +595,95 @@ class GWDatasetGenerator:
             noise = noise * (target_std / current_std)
         return noise
 
+    def _apply_psd_variance(self, psd_dict: Dict, detector_name: str) -> Dict:
+        """
+        Apply physics-correct frequency-dependent PSD shape variation.
+        
+        Implements: PSD_sample(f) = α · PSD_0(f) · (1 + β(f/f₀)^γ)
+        
+        Where:
+          α   = overall amplitude variation [0.8, 1.2]
+          β   = tilt strength parameter [-0.3, 0.3] (shot noise or calibration effects)
+          γ   = tilt exponent (1 = linear in log-log, 2 = quadratic)
+          f₀  = 150 Hz (pivot in merger band)
+        
+        This generates realistic, physically-correct PSD variations where:
+        - Each sample has unique spectral shape (not just amplitude scaling)
+        - Merger band (100-300 Hz) becomes genuinely informative
+        - Low freq, mid freq, and high freq scale independently
+        
+        Physics basis:
+          - α captures detector sensitivity changes (optical power, gains)
+          - β·(f/f₀)^γ models shot noise scaling (γ>0) or calibration roll-off (γ<0)
+          - f₀=150 Hz chosen to center variation in most sensitive band
+        
+        Args:
+            psd_dict: PSD dictionary with 'psd', 'frequencies', 'asd' keys
+            detector_name: Detector name ('H1', 'L1', 'V1')
+            
+        Returns:
+            Modified psd_dict with frequency-dependent shape variation
+        """
+        
+        if 'psd' not in psd_dict or 'frequencies' not in psd_dict:
+            return psd_dict
+        
+        psd = psd_dict['psd'].copy()
+        freqs = psd_dict['frequencies']
+        
+        # Pivot frequency at merger band center
+        f0 = 150.0
+        
+        # Detector-specific variation parameters
+        if detector_name in ['H1', 'L1']:  # aLIGO
+            # aLIGO: large environmental/optical coupling
+            alpha_min, alpha_max = 0.75, 1.25       # ±25% amplitude
+            beta_min, beta_max = -0.30, 0.30        # ±30% shape distortion
+            gamma_vals = np.array([0.5, 1.0, 1.5])  # Multiple tilt exponents
+        elif detector_name == 'V1':  # Virgo
+            # Virgo: more stable suspension
+            alpha_min, alpha_max = 0.85, 1.15       # ±15% amplitude
+            beta_min, beta_max = -0.20, 0.20        # ±20% shape distortion
+            gamma_vals = np.array([0.5, 1.0, 1.5])
+        else:
+            return psd_dict
+        
+        # Draw random parameters for this sample
+        alpha = np.random.uniform(alpha_min, alpha_max)    # Overall amplitude
+        beta = np.random.uniform(beta_min, beta_max)       # Tilt strength
+        gamma = np.random.choice(gamma_vals)                # Tilt exponent
+        
+        # Compute frequency-dependent shape factor
+        # Normalized by f0 to keep tilt centered at 150 Hz
+        freq_ratio = np.maximum(freqs / f0, 1e-6)  # Avoid division by zero at f=0
+        shape_factor = 1.0 + beta * (freq_ratio ** gamma)
+        
+        # Apply physics-correct formula: PSD_sample = α · PSD_0 · (1 + β(f/f₀)^γ)
+        psd = psd * alpha * shape_factor
+        
+        # Ensure no NaN/Inf and numerical stability
+        psd = np.nan_to_num(psd, nan=psd_dict['psd'][0], posinf=1e-40, neginf=1e-48)
+        psd = np.maximum(psd, 1e-48)
+        
+        # Store variance metadata for later analysis
+        if 'metadata' not in psd_dict:
+            psd_dict['metadata'] = {}
+        
+        psd_dict['metadata']['psd_variance'] = {
+            'alpha': float(alpha),
+            'beta': float(beta),
+            'gamma': float(gamma),
+            'f0': f0,
+            'method': 'frequency_dependent_shape'
+        }
+        
+        # Update all related fields
+        psd_dict = psd_dict.copy()
+        psd_dict['psd'] = psd
+        psd_dict['asd'] = np.sqrt(psd)
+        
+        return psd_dict
+
     def _get_noise_for_detector(self, detector_name: str, psd_dict: Dict) -> Tuple[np.ndarray, str]:
         """
         Get noise for a detector with priority order:
@@ -705,7 +794,10 @@ class GWDatasetGenerator:
 
             # Generate new noise realization for each detector
             for det_name in self.detectors:
-                psd_dict = self.psds[det_name]
+                psd_dict = self.psds[det_name].copy()
+                
+                # ✅ ADD PSD VARIANCE: Apply realistic PSD variation for augmented samples
+                psd_dict = self._apply_psd_variance(psd_dict, det_name)
 
                 # Generate fresh noise
                 new_noise, _ = self._get_noise_for_detector(det_name, psd_dict)
@@ -2560,7 +2652,10 @@ class GWDatasetGenerator:
             noise_types = {}
             
             for detector_name in self.detectors:
-                psd_dict = self.psds[detector_name]
+                psd_dict = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_dict = self._apply_psd_variance(psd_dict, detector_name)
                 
                 # 🔄 KEY: Different noise for each variant (new random realization)
                 noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
@@ -2854,7 +2949,10 @@ class GWDatasetGenerator:
         detector_data = {}
 
         for detector_name in self.detectors:
-            psd_info = self.psds[detector_name]
+            psd_info = self.psds[detector_name].copy()
+            
+            # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+            psd_info = self._apply_psd_variance(psd_info, detector_name)
 
             if use_multiple_epochs:
                 half_duration = self.duration / 2
@@ -2893,7 +2991,7 @@ class GWDatasetGenerator:
             detector_data[detector_name] = {
                 "strain": combined_strain.astype(np.float32),
                 "noise": combined_noise.astype(np.float32),
-                "psd": psd_info["psd"],
+                "psd": psd_info["psd"],  # ✅ Now storing the VARIED PSD
                 "frequencies": psd_info["frequencies"],
                 "noise_type": noise_type,
             }
@@ -2962,7 +3060,10 @@ class GWDatasetGenerator:
             noise_types = {}
             
             for detector_name in self.detectors:
-                psd_info = self.psds[detector_name]
+                psd_info = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_info = self._apply_psd_variance(psd_info, detector_name)
                 
                 if use_multiple_epochs:
                     half_duration = self.duration / 2
@@ -3001,7 +3102,7 @@ class GWDatasetGenerator:
                 detector_data[detector_name] = {
                     "strain": combined_strain.astype(np.float32),
                     "noise": combined_noise.astype(np.float32),
-                    "psd": psd_info["psd"],
+                    "psd": psd_info["psd"],  # ✅ Now storing the VARIED PSD
                     "frequencies": psd_info["frequencies"],
                     "noise_type": noise_type,
                 }
@@ -3058,7 +3159,11 @@ class GWDatasetGenerator:
         detector_data = {}
 
         for detector_name in self.detectors:
-            psd_info = self.psds[detector_name]
+            psd_info = self.psds[detector_name].copy()
+            
+            # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+            psd_info = self._apply_psd_variance(psd_info, detector_name)
+            
             noise, noise_type = self._get_noise_for_detector(detector_name, psd_info)
             signal = self.waveform_generator.generate_waveform(params, detector_name)
             combined_strain = noise + signal
@@ -3069,7 +3174,7 @@ class GWDatasetGenerator:
             detector_data[detector_name] = {
                 "strain": combined_strain.astype(np.float32),
                 "noise": noise.astype(np.float32),
-                "psd": psd_info["psd"],
+                "psd": psd_info["psd"],  # ✅ Now storing the VARIED PSD
                 "frequencies": psd_info["frequencies"],
                 "noise_type": noise_type,
             }
@@ -3316,7 +3421,11 @@ class GWDatasetGenerator:
         detector_data = {}
 
         for detector_name in self.detectors:
-            psd_dict = self.psds[detector_name]
+            psd_dict = self.psds[detector_name].copy()
+            
+            # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+            psd_dict = self._apply_psd_variance(psd_dict, detector_name)
+            
             noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
 
             try:
@@ -3477,7 +3586,10 @@ class GWDatasetGenerator:
             noise_types = {}
             
             for detector_name in self.detectors:
-                psd_dict = self.psds[detector_name]
+                psd_dict = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_dict = self._apply_psd_variance(psd_dict, detector_name)
                 
                 # 🔄 KEY: Different noise for each variant (new random realization)
                 noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
@@ -3667,7 +3779,10 @@ class GWDatasetGenerator:
         detector_data = {}
 
         for detector_name in self.detectors:
-            psd_dict = self.psds[detector_name]
+            psd_dict = self.psds[detector_name].copy()
+            
+            # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+            psd_dict = self._apply_psd_variance(psd_dict, detector_name)
 
             # Generate noise
             noise, _ = self._get_noise_for_detector(detector_name, psd_dict)
@@ -4244,7 +4359,11 @@ class GWDatasetGenerator:
         detector_data = {}
 
         for detector_name in self.detectors:
-            psd_dict = self.psds[detector_name]
+            psd_dict = self.psds[detector_name].copy()
+            
+            # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+            psd_dict = self._apply_psd_variance(psd_dict, detector_name)
+            
             noise, _ = self._get_noise_for_detector(detector_name, psd_dict)
             combined = noise.copy()
 
@@ -4709,7 +4828,10 @@ class GWDatasetGenerator:
             noise_types = {}
             
             for detector_name in self.detectors:
-                psd_dict = self.psds[detector_name]
+                psd_dict = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_dict = self._apply_psd_variance(psd_dict, detector_name)
                 
                 # 🔄 KEY: Different noise for each variant (new random realization)
                 noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
@@ -4896,7 +5018,10 @@ class GWDatasetGenerator:
             noise_types = {}
             
             for detector_name in self.detectors:
-                psd_dict = self.psds[detector_name]
+                psd_dict = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_dict = self._apply_psd_variance(psd_dict, detector_name)
                 
                 # 🔄 KEY: Different noise for each variant (new random realization)
                 noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
@@ -5026,7 +5151,10 @@ class GWDatasetGenerator:
         detector_data = {}
         noise_types = {}
         for detector_name in self.detectors:
-            psd_dict = self.psds[detector_name]
+            psd_dict = self.psds[detector_name].copy()  # Copy to avoid modifying cached PSD
+            
+            # ✅ ADD PSD VARIANCE: Apply realistic sample-by-sample PSD variation
+            psd_dict = self._apply_psd_variance(psd_dict, detector_name)
 
             # Generate noise
             noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
@@ -5200,7 +5328,10 @@ class GWDatasetGenerator:
         detector_data = {}
         noise_types = {}
         for detector_name in self.detectors:
-            psd_dict = self.psds[detector_name]
+            psd_dict = self.psds[detector_name].copy()  # Copy to avoid modifying cached PSD
+            
+            # ✅ ADD PSD VARIANCE: Apply realistic sample-by-sample PSD variation
+            psd_dict = self._apply_psd_variance(psd_dict, detector_name)
 
             noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
             noise_types[detector_name] = noise_type
@@ -6365,7 +6496,10 @@ class GWDatasetGenerator:
             noise_types = {}
             
             for detector_name in self.detectors:
-                psd_dict = self.psds[detector_name]
+                psd_dict = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_dict = self._apply_psd_variance(psd_dict, detector_name)
                 
                 # 🔄 KEY: Different noise for each variant (new random realization)
                 noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
@@ -6598,7 +6732,10 @@ class GWDatasetGenerator:
             detector_data = {}
 
             for detector_name in self.detectors:
-                psd_dict = self.psds[detector_name]
+                psd_dict = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_dict = self._apply_psd_variance(psd_dict, detector_name)
 
                 # Generate noise-only strain
                 noise, _ = self._get_noise_for_detector(detector_name, psd_dict)
@@ -6647,7 +6784,10 @@ class GWDatasetGenerator:
         signal_contributions = {det: {} for det in self.detectors}
 
         for detector_name in self.detectors:
-            psd_dict = self.psds[detector_name]
+            psd_dict = self.psds[detector_name].copy()
+            
+            # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+            psd_dict = self._apply_psd_variance(psd_dict, detector_name)
 
             # Generate noise
             noise, _ = self._get_noise_for_detector(detector_name, psd_dict)
@@ -7089,7 +7229,11 @@ class GWDatasetGenerator:
                     synth = np.array(synth, dtype=np.float32)
 
                 # Generate noise for synthesized GWTC strain
-                psd_dict = self.psds[detector_name]
+                psd_dict = self.psds[detector_name].copy()
+                
+                # ✅ CRITICAL FIX: Apply PSD variance BEFORE all operations and STORE varied PSD
+                psd_dict = self._apply_psd_variance(psd_dict, detector_name)
+                
                 noise, noise_type = self._get_noise_for_detector(detector_name, psd_dict)
 
                 detector_data[detector_name] = {

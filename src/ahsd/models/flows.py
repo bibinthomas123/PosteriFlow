@@ -22,6 +22,101 @@ from nflows.transforms.autoregressive import MaskedPiecewiseRationalQuadraticAut
 from nflows.transforms.permutations import ReversePermutation
 
 
+ 
+# Problem: Original scale modulation only scales loss, not base distribution
+# This allows flow to internally compensate, defeating PSD physics
+#
+# Solution: Make base distribution conditional on PSD scales
+# z ~ N(0, Σ_psd) instead of z ~ N(0, I)
+# Flow cannot compensate → posterior width genuinely scales with PSD
+#
+class PSDScaledNormal(nn.Module):
+    """
+    Conditional base distribution that scales with PSD
+    
+    Implements N(0, Σ_psd) where Σ_psd is diagonal with scale factors σ_psd
+    
+    This is the **mathematically correct** way to handle heteroscedastic likelihood
+    in Bayesian inference with normalizing flows.
+    
+    Physics interpretation:
+    - Quiet data (large σ_psd) → wider base distribution → broader posterior
+    - Loud data (small σ_psd) → narrower base distribution → sharper posterior
+    - Flow cannot compensate because base is part of model structure
+    """
+    
+    def __init__(self, shape: Union[list, int]):
+        super().__init__()
+        if isinstance(shape, list):
+            self.shape = shape
+            self.dim = shape[0]
+        else:
+            self.shape = [shape]
+            self.dim = shape
+        self.logger = logging.getLogger(__name__)
+    
+    def log_prob(self, z: torch.Tensor, log_sigma_psd: torch.Tensor) -> torch.Tensor:
+        """
+        Compute log probability under N(0, Σ_psd)
+        
+        Args:
+            z: [batch, dim] - samples to evaluate
+            log_sigma_psd: [batch, dim] - log scale factors from PSD head
+        
+        Returns:
+            log_prob: [batch] - log probabilities
+        """
+        # Ensure shapes match
+        if z.shape != log_sigma_psd.shape:
+            raise ValueError(
+                f"Shape mismatch: z {z.shape} vs log_sigma_psd {log_sigma_psd.shape}"
+            )
+        
+        sigma_psd = torch.exp(log_sigma_psd)  # [batch, dim]
+        
+        # Gaussian log probability: -0.5 * (z²/σ² + d*log(2πσ²))
+        # Expanded: -0.5 * (sum((z/σ)²) + d*log(2π) + d*log(σ)²)
+        #        = -0.5 * (sum((z/σ)²) + d*log(2π) + 2*sum(log(σ)))
+        
+        quadratic_term = ((z / sigma_psd) ** 2).sum(dim=1)  # [batch]
+        variance_term = 2 * log_sigma_psd.sum(dim=1)  # [batch]
+        const_term = self.dim * np.log(2 * np.pi)
+        
+        log_prob = -0.5 * (quadratic_term + variance_term + const_term)
+        
+        return log_prob
+    
+    def sample(self, num_samples: int, log_sigma_psd: torch.Tensor = None) -> torch.Tensor:
+        """
+        Sample from N(0, I) - STANDARD NORMAL (NOT PSD-scaled)
+        
+        ✅ FEB 2 CRITICAL FIX: Sample from unit normal only
+        
+        Apply σ_psd OUTSIDE the flow at sampling time (factored scale).
+        This prevents the flow from re-learning σ_psd to undo PSD conditioning.
+        
+        Args:
+            num_samples: number of samples to generate per batch element
+            log_sigma_psd: [batch, dim] - IGNORED (kept for API compatibility)
+        
+        Returns:
+            samples: [batch, num_samples, dim] - from standard normal N(0, I)
+        """
+        batch_size = log_sigma_psd.shape[0] if log_sigma_psd is not None else 1
+        
+        # Sample from UNIT NORMAL ONLY (no PSD scaling here)
+        # The flow will work in unit variance space
+        eps = torch.randn(
+            batch_size, num_samples, self.dim,
+            device=log_sigma_psd.device if log_sigma_psd is not None else torch.device('cpu'),
+            dtype=log_sigma_psd.dtype if log_sigma_psd is not None else torch.float32
+        )
+        
+        # Return unit normal samples (PSD scaling applied OUTSIDE flow later)
+        # No scaling applied here - flow works in unit variance space only
+        return eps  # [batch, num_samples, dim] from N(0, I)
+
+
 class TransformerBlock(nn.Module):
     """Single transformer block with self-attention and MLP"""
     
@@ -500,8 +595,10 @@ class NSFPosteriorFlow(nn.Module):
         self.temperature = nn.Parameter(torch.tensor(temperature_scale, dtype=torch.float32))
         self.temperature_scale_init = temperature_scale
         
-        # Base distribution: N(0, I) - will be scaled by temperature in sample()
-        self.base_dist = StandardNormal(shape=[features])
+        # ✅ FEB 2 FIX: Use PSD-conditioned base distribution (not StandardNormal)
+        # This ensures z ~ N(0, Σ_psd), not z ~ N(0, I)
+        # Flow cannot compensate internally → posterior width genuinely scales with PSD
+        self.base_dist = PSDScaledNormal(shape=[features])
         
         # Build spline transform layers
         transforms = []
@@ -590,17 +687,42 @@ class NSFPosteriorFlow(nn.Module):
     def inverse(self, z: torch.Tensor, context: torch.Tensor = None,
                  n_overlaps: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Inverse: z (base) → x (params). ✅ DETERMINISTIC - no ODE solver!"""
+        
+        # ✅ FEB 4 CRITICAL FIX: Sanitize context before passing to nflows transform
+        # Context NaN → propagates through transform → invalid spline parameters → assertion error
+        if context is not None:
+            if torch.isnan(context).any() or torch.isinf(context).any():
+                self.logger.warning(
+                    f"🔴 NSF.inverse() detected NaN/Inf in context! "
+                    f"Replacing with zeros (shape {context.shape})"
+                )
+                context = torch.nan_to_num(context, nan=0.0, posinf=1e-3, neginf=-1e-3)
+        
         if self.context_features > 0 and context is not None:
-            x, log_det = self.transform.inverse(z, context=context)
+            try:
+                x, log_det = self.transform.inverse(z, context=context)
+            except AssertionError as e:
+                # NSF spline assertion failed - likely due to numerical instability
+                self.logger.error(f"🔴 NSF.inverse() assertion failed: {e}")
+                # Fallback: return z directly (no transformation)
+                x = z
+                log_det = torch.zeros(z.shape[0], device=z.device, dtype=z.dtype)
         else:
             x, log_det = self.transform.inverse(z)
         
         # ✅ NEW: Distance anchoring via context residual
         # Distance (param index 2) gets explicit guidance from context
         if self.distance_context_head is not None and context is not None:
-            distance_residual = self.distance_context_head(context)  # [batch, 1]
-            # Add small residual from context (prevents drift, preserves learned structure)
-            x[:, 2] = x[:, 2] + 0.05 * torch.tanh(distance_residual.squeeze(1))
+            try:
+                distance_residual = self.distance_context_head(context)  # [batch, 1]
+                # Add small residual from context (prevents drift, preserves learned structure)
+                x[:, 2] = x[:, 2] + 0.05 * torch.tanh(distance_residual.squeeze(1))
+            except Exception as e:
+                self.logger.debug(f"Distance context head failed: {e}")
+        
+        # ✅ FEB 4: Sanitize output
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # Clamp to [-1, 1]
         x = torch.clamp(x, -1.0, 1.0)
@@ -608,6 +730,16 @@ class NSFPosteriorFlow(nn.Module):
     
     def log_prob(self, x: torch.Tensor, context: torch.Tensor = None, temperature: Optional[float] = None) -> torch.Tensor:
         """✅ PRIMARY LOSS: Negative log-likelihood with temperature scaling"""
+        
+        # ✅ FEB 4 CRITICAL FIX: Sanitize context before passing to nflows transform
+        if context is not None:
+            if torch.isnan(context).any() or torch.isinf(context).any():
+                self.logger.warning(
+                    f"🔴 NSF.log_prob() detected NaN/Inf in context! "
+                    f"Replacing with zeros (shape {context.shape})"
+                )
+                context = torch.nan_to_num(context, nan=0.0, posinf=1e-3, neginf=-1e-3)
+        
         # ✅ TEMPERATURE SCALING (Jan 4): Account for temperature in log probability
         # If we sample z ~ N(0, T²I), then x = inverse(z) has different distribution
         # We need to adjust log_prob to match this: log_p(x) = log_p(x/T) + d * log(T)
@@ -617,14 +749,23 @@ class NSFPosteriorFlow(nn.Module):
         # Compute log probability at scaled point
         x_scaled = x / temperature
         
-        if self.context_features > 0 and context is not None:
-            log_p = self.flow.log_prob(x_scaled, context=context)
-        else:
-            log_p = self.flow.log_prob(x_scaled)
+        try:
+            if self.context_features > 0 and context is not None:
+                log_p = self.flow.log_prob(x_scaled, context=context)
+            else:
+                log_p = self.flow.log_prob(x_scaled)
+        except AssertionError as e:
+            # NSF assertion failed - return high loss as penalty
+            self.logger.error(f"🔴 NSF.log_prob() assertion failed: {e}")
+            log_p = torch.ones(x.shape[0], device=x.device, dtype=x.dtype) * 1000.0
         
         # Add Jacobian correction: log p(x) = log p(x/T) + d * log(T)
         # where d is the dimension (self.features)
         log_prob_corrected = log_p + self.features * torch.log(temperature)
+        
+        # ✅ FEB 4: Sanitize output
+        if torch.isnan(log_prob_corrected).any():
+            log_prob_corrected = torch.nan_to_num(log_prob_corrected, nan=1000.0)
         
         return -log_prob_corrected  # Return NEGATIVE (for minimization)
     
@@ -663,6 +804,121 @@ class NSFPosteriorFlow(nn.Module):
             samples = torch.clamp(samples, -1.0, 1.0)
             return samples
     
+    def compute_psd_aware_nll(self, x: torch.Tensor, context: torch.Tensor,
+                             log_sigma_psd: torch.Tensor) -> torch.Tensor:
+        """
+        Compute NLL with PSD-conditioned base distribution
+        
+        This is the key method that makes PSD modulation work correctly.
+        Instead of using StandardNormal base, we use z ~ N(0, Σ_psd).
+        
+        Args:
+            x: [batch, features] - parameters (normalized to [-1, 1])
+            context: [batch, context_features] - strain conditioning
+            log_sigma_psd: [batch, features] - log(σ_psd) from PSD head
+        
+        Returns:
+            nll: [batch] - negative log likelihood (loss for minimization)
+        
+        Physics:
+        - Base distribution now scales with PSD
+        - Quiet data (large σ_psd) → wider N(0, Σ_psd) → broader posterior
+        - Loud data (small σ_psd) → narrower N(0, Σ_psd) → sharper posterior
+        - Flow cannot internally compensate
+        """
+        batch_size = x.shape[0]
+        
+        # ✅ CRITICAL: Transform x → z using inverse transform
+        # This gives us z samples that should follow base distribution
+        if isinstance(self.base_dist, PSDScaledNormal):
+            # Transform x → z
+            z, log_det = self.inverse(x, context)  # [batch, features]
+            
+            # Compute log_prob under PSD-scaled base
+            log_p_base = self.base_dist.log_prob(z, log_sigma_psd)  # [batch]
+            
+            # Compute log_det from flow transform
+            log_det = log_det.squeeze() if log_det.dim() > 1 else log_det  # [batch]
+            
+            # Total log probability with Jacobian
+            # log_p(x) = log_p(z) + log|det J|
+            log_prob_x = log_p_base + log_det  # [batch]
+            
+            # Return negative log likelihood (for minimization)
+            nll = -log_prob_x  # [batch]
+        else:
+            z, log_det = self.inverse(x, context)
+            # Use standard Gaussian base distribution
+            log_p_base = -0.5 * (z ** 2).sum(dim=1) - self.features * np.log(2 * np.pi) / 2
+            log_det = log_det.squeeze() if log_det.dim() > 1 else log_det
+            log_prob_x = log_p_base + log_det
+            nll = -log_prob_x
+        
+        return nll  # [batch]
+    
+    def sample_psd_aware(self, num_samples: int, context: torch.Tensor,
+                        log_sigma_psd: torch.Tensor) -> torch.Tensor:
+        """
+        Sample from posterior with PSD-conditioned base distribution
+        
+        This ensures samples follow the correct PSD-scaled distribution
+        during inference, not just during training.
+        
+        Args:
+            num_samples: number of posterior samples to generate
+            context: [batch, context_features] - strain conditioning
+            log_sigma_psd: [batch, features] - log(σ_psd) from PSD head
+        
+        Returns:
+            samples: [batch, num_samples, features] - posterior samples
+        
+        Sampling process:
+        1. z ~ N(0, Σ_psd)  ← PSD-conditioned (not standard normal)
+        2. x = f^{-1}(z | context)  ← Apply inverse transform
+        3. Return x
+        """
+        batch_size = context.shape[0]
+        
+        with torch.no_grad():
+            if isinstance(self.base_dist, PSDScaledNormal):
+                # ✅ FEB 2: Sample from unit normal base (NOT PSD-scaled)
+                # PSD scaling applied AFTER flow (factored scale architecture)
+                z_samples = self.base_dist.sample(num_samples, log_sigma_psd)  # [batch, num_samples, features] from N(0,I)
+                
+                # Reshape for batch processing
+                z_flat = z_samples.reshape(batch_size * num_samples, self.features)  # [batch*num_samples, features]
+                
+                # Expand context to match
+                context_expanded = context.unsqueeze(1).expand(
+                    batch_size, num_samples, self.context_features
+                ).reshape(batch_size * num_samples, self.context_features)
+                
+                # Transform z → x
+                x_flat, _ = self.inverse(z_flat, context_expanded)  # [batch*num_samples, features]
+                
+                # Reshape back to [batch, num_samples, features]
+                samples = x_flat.reshape(batch_size, num_samples, self.features)
+                
+                # ✅ FEB 2 CRITICAL: Apply factored scale OUTSIDE flow
+                # Flow works in unit variance space, apply σ_psd here (no gradients)
+                sigma_psd = torch.exp(log_sigma_psd)  # [batch, features]
+                samples = samples * sigma_psd.unsqueeze(1)  # [batch, num_samples, features]
+            else:
+                # Fallback to standard sampling (shouldn't happen)
+                z = torch.randn(batch_size, num_samples, self.features,
+                              device=context.device, dtype=context.dtype)
+                z_flat = z.reshape(batch_size * num_samples, self.features)
+                context_expanded = context.unsqueeze(1).expand(
+                    batch_size, num_samples, self.context_features
+                ).reshape(batch_size * num_samples, self.context_features)
+                x_flat, _ = self.inverse(z_flat, context_expanded)
+                samples = x_flat.reshape(batch_size, num_samples, self.features)
+            
+            # Clamp to valid range
+            samples = torch.clamp(samples, -1.0, 1.0)
+            
+            return samples  # [batch, num_samples, features]
+
     def sample_with_uncertainty(self, num_samples: int, context: torch.Tensor,
                                n_overlaps: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         """

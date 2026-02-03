@@ -118,6 +118,9 @@ test.py
 FIX_DOCS/
 github/
 github.pub
+analyze_*
+check_*
+diagnose_*
 
 # ============================================================================
 # Configuration & Sensitive Data

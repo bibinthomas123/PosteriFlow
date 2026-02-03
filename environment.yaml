@@ -486,7 +486,7 @@ dependencies:
       - ndindex==1.10.1
       - nflows==0.14
       - numexpr==2.14.1
-      - nvidia-nccl-cu12==2.28.3
+      # - nvidia-nccl-cu12==2.28.3
       - omegaconf==2.3.0
       - posteriflow==1.0.0
       - protobuf==6.32.1

@@ -1628,7 +1628,7 @@ class OverlapNeuralPE(nn.Module):
                             # Continue without de-scaling if it fails
                      
                     nll_loss = self.flow.compute_psd_aware_nll(params_for_flow, context, log_sigma_psd_for_loss)
-                     bounds_penalty = self.flow.compute_bounds_penalty(params_norm)
+                    bounds_penalty = self.flow.compute_bounds_penalty(params_norm)
                     
                     # ✅ FEB 4 CRITICAL: Add distance_head supervision loss
                     # Distance_head learns SNR-distance relationship
@@ -1639,21 +1639,33 @@ class OverlapNeuralPE(nn.Module):
                             # Extract SNR from context
                             network_snr_batch = context[:, -1:].squeeze(1)  # [batch]
                             
-                            # We want: corr(log_scale, SNR) < -0.5
-                            # Equivalently: minimize dot product (they should be opposite)
-                            # Loss: push log_distance_scale and SNR to be anti-correlated
-                            # Simple approach: penalize when log_scale and SNR have same sign trend
+                            # We want: corr(log_scale, SNR) < -0.5 (strong negative)
+                            # Strategy: penalize BOTH positive correlation AND weak negative correlation
+                            # This gives consistent gradient signal to learn the relationship
                             
                             # Center both variables
                             log_scale_centered = log_distance_scale_batch - log_distance_scale_batch.mean()
                             snr_centered = network_snr_batch - network_snr_batch.mean()
                             
-                            # Compute unnormalized correlation signal
-                            correlation_signal = (log_scale_centered * snr_centered).mean()
+                            # Normalize for scale-invariant correlation
+                            log_scale_std = log_scale_centered.std() + 1e-6
+                            snr_std = snr_centered.std() + 1e-6
+                            log_scale_norm = log_scale_centered / log_scale_std
+                            snr_norm = snr_centered / snr_std
                             
-                            # Loss: penalize positive correlation (should be negative)
-                            # If corr=0, loss=0. If corr>0 (wrong sign), penalize.
-                            distance_head_loss = torch.relu(correlation_signal) * 0.5  # Only penalize wrong sign
+                            # Compute correlation signal (ranges -1 to +1)
+                            correlation_signal = (log_scale_norm * snr_norm).mean()
+                            
+                            # Loss: Push toward negative correlation
+                            # Penalize: positive correlation (wrong sign) + weak negative (not strong enough)
+                            # Target: correlation < -0.5
+                            target_corr = -0.5
+                            correlation_loss = torch.relu(correlation_signal - target_corr)
+                            
+                            # Also penalize scale being too far from 1.0 (scale exploding)
+                            scale_magnitude_loss = torch.relu(torch.abs(log_distance_scale_batch).mean() - 0.3) * 0.5
+                            
+                            distance_head_loss = correlation_loss + 0.5 * scale_magnitude_loss
                         except Exception as e:
                             self.logger.debug(f"Distance head loss computation failed: {e}")
                             distance_head_loss = torch.tensor(0.0, device=context.device, dtype=context.dtype)

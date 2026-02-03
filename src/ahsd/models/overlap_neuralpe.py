@@ -273,6 +273,9 @@ class OverlapNeuralPE(nn.Module):
             nn.Linear(256, 1)  # Output: log(distance_scale)
         )
         self.logger.info("✅ Distance head initialized for SNR-aware distance scaling")
+        
+        # ✅ Epoch tracking for per-epoch logging
+        self.last_logged_epoch = -1
          
          # Performance tracking
         self.performance_tracker = {
@@ -1603,7 +1606,10 @@ class OverlapNeuralPE(nn.Module):
                             
                             # ✅ FEB 4 DIAGNOSTIC: Monitor distance_head learning (every epoch)
                             # Expected: corr(log_distance_scale, network_snr) < -0.7 (strong negative)
-                            if self.training and signal_idx == 0:  # Log once per epoch (first signal)
+                            # Track epochs: training_step increments per batch, so estimate epoch
+                            current_epoch = self.training_step // 100  # Rough estimate: 100 batches per epoch
+                            if self.training and signal_idx == 0 and current_epoch != self.last_logged_epoch:
+                                self.last_logged_epoch = current_epoch
                                 with torch.no_grad():
                                     # Extract network SNR from context (last dimension before SNR concat)
                                     # context = [context_768, snr_1] after concat

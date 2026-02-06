@@ -233,7 +233,7 @@ neural_posterior:
   enable_event_specific_priors: true      # Use physics-informed priors per event type
   
   # --- TRAINING ---
-  learning_rate: 1.0e-5                  # ✅ JAN 7: 3.0e-5 → 1.0e-5 (REDUCED for stability with multi-noise)
+  learning_rate: 6.0e-6                  # ✅ JAN 7: 3.0e-5 → 1.0e-5 (REDUCED for stability with multi-noise)
                                            #   Multi-noise causes 5× more training examples per epoch
                                            #   Higher LR + more samples = gradient explosion + oscillation
                                            #   Reduced LR = smoother updates = stable convergence
@@ -277,7 +277,9 @@ neural_posterior:
   # Solution: DISABLE distance-specific losses entirely, let flow learn distance naturally
   #   Flow is 11D posterior estimator; forcing specific distance values conflicts with posterior learning
   #   Distance will converge naturally as flow learns from multi-noise data
+  # ✅ FEB 7 UPDATE: Verified these are still all 0.0 (correct state)
   auxiliary_distance_loss_weight: 0.0      # ✅ JAN 7: 0.25 → 0.0 (DISABLED - conflicting gradients)
+  direct_flow_distance_weight: 0.0         # ✅ FEB 7: Explicitly disable (same as auxiliary_distance_loss_weight)
   distance_endpoint_loss_weight: 0.0       # ✅ JAN 7: 1.5 → 0.0 (DISABLED - oscillation source)
   distance_prior_weight: 0.0               # ✅ JAN 7: 0.2 → 0.0 (DISABLED - unnecessary constraint)
   

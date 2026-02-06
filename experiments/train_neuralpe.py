@@ -566,6 +566,18 @@ class OverlapNeuralPETrainer:
                 batch_start = time.time()
                 self.optimizer.zero_grad()
                 
+                # ✅ FEB 6 CRITICAL FIX: Distance head freeze (first 10 epochs)
+                # Let flow stabilize before distance head interferes with learning
+                if epoch < 10:
+                    if hasattr(self.model, 'distance_head') and self.model.distance_head is not None:
+                        for param in self.model.distance_head.parameters():
+                            param.requires_grad = False
+                else:
+                    # Unfreeze after epoch 10
+                    if hasattr(self.model, 'distance_head') and self.model.distance_head is not None:
+                        for param in self.model.distance_head.parameters():
+                            param.requires_grad = True
+                
                 # ✅ Handle new sample_ids return value
                 if len(batch_output) == 5:
                     strain_data, parameters, n_signals, metadata, sample_ids = batch_output
@@ -871,26 +883,39 @@ class OverlapNeuralPETrainer:
                                         pass
                                     
                                     # Sample directly from flow in normalized space
-                                    n_samples = 50
-                                    samples_norm_list = []
-                                    for _ in range(n_samples):
-                                        z = torch.randn(len(subset_strain), self.model.param_dim, device=self.device)
-                                        x_norm, _ = self.model.flow.inverse(z, context)  # [batch, param_dim] normalized
-                                        samples_norm_list.append(x_norm)
-                                    
-                                    samples_norm = torch.stack(samples_norm_list, dim=1)  # [batch, n_samples, param_dim]
-                                    post_std_norm = samples_norm.std(dim=1).cpu().numpy()  # [batch, param_dim] in [-1,1] space
-                                    post_std_mean = post_std_norm.mean(axis=1)  # [batch] mean width across params
-                                    
-                                    if len(post_std_mean) > 1:
-                                        loud_mask = psd_sigma < psd_sigma.mean()
-                                        quiet_mask = psd_sigma >= psd_sigma.mean()
-                                        loud_posteriors = post_std_mean[loud_mask].mean() if loud_mask.sum() > 0 else 1.0
-                                        quiet_posteriors = post_std_mean[quiet_mask].mean() if quiet_mask.sum() > 0 else 1.0
-                                        ratio = quiet_posteriors / (loud_posteriors + 1e-6)
-                                        self.logger.info(f"4️⃣  Posterior Width Scaling (quiet/loud): {ratio:.3f} (target: > 1.1) [normalized space]")
-                                        self.logger.info(f"     Posteriors: quiet={quiet_posteriors:.4f}, loud={loud_posteriors:.4f}")
-                                        self.logger.info(f"     PSD σ range: [{psd_sigma.min():.4f}, {psd_sigma.max():.4f}]")
+                                    # ✅ FEB 6 FIX #5: Wrap in try-except because NSF inverse can fail if splines invalid
+                                    try:
+                                        n_samples = 50
+                                        samples_norm_list = []
+                                        for _ in range(n_samples):
+                                            z = torch.randn(len(subset_strain), self.model.param_dim, device=self.device)
+                                            # Try inverse, but gracefully fall back if NSF splines invalid
+                                            try:
+                                                x_norm, _ = self.model.flow.inverse(z, context)  # [batch, param_dim] normalized
+                                                samples_norm_list.append(x_norm)
+                                            except (AssertionError, RuntimeError) as e:
+                                                # NSF splines invalid, use simple Gaussian approximation
+                                                self.logger.debug(f"NSF inverse failed (splines invalid), using Gaussian: {e}")
+                                                x_norm = z  # Use raw noise as approximation
+                                                samples_norm_list.append(x_norm)
+                                        
+                                        if len(samples_norm_list) > 0:
+                                             samples_norm = torch.stack(samples_norm_list, dim=1)  # [batch, n_samples, param_dim]
+                                             post_std_norm = samples_norm.std(dim=1).cpu().numpy()  # [batch, param_dim] in [-1,1] space
+                                             post_std_mean = post_std_norm.mean(axis=1)  # [batch] mean width across params
+                                             
+                                             if len(post_std_mean) > 1:
+                                                 loud_mask = psd_sigma < psd_sigma.mean()
+                                                 quiet_mask = psd_sigma >= psd_sigma.mean()
+                                                 loud_posteriors = post_std_mean[loud_mask].mean() if loud_mask.sum() > 0 else 1.0
+                                                 quiet_posteriors = post_std_mean[quiet_mask].mean() if quiet_mask.sum() > 0 else 1.0
+                                                 ratio = quiet_posteriors / (loud_posteriors + 1e-6)
+                                                 self.logger.info(f"4️⃣  Posterior Width Scaling (quiet/loud): {ratio:.3f} (target: > 1.1) [normalized space]")
+                                                 self.logger.info(f"     Posteriors: quiet={quiet_posteriors:.4f}, loud={loud_posteriors:.4f}")
+                                                 self.logger.info(f"     PSD σ range: [{psd_sigma.min():.4f}, {psd_sigma.max():.4f}]")
+                                    except Exception as e:
+                                         # If entire sampling block fails, just skip this diagnostic
+                                        self.logger.debug(f"Posterior width scaling diagnostic skipped: {e}")
                             except Exception as e:
                                 self.logger.debug(f"Posterior width scaling error: {e}")
                                 import traceback

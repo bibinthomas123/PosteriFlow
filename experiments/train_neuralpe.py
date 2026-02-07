@@ -770,7 +770,7 @@ class OverlapNeuralPETrainer:
                 self.model.log_flow_diagnostics(flow_metrics, epoch, prefix="VALIDATION (EPOCH FINAL)")
                 
                 # ✅ JAN 28: Log distance calibration every 5 epochs (not every 10, and not every epoch!)
-                if epoch % 5  == 0 and not epoch == 0:
+                if epoch % 10  == 0 and not epoch == 0:
                     self.logger.info(f"\n🔍 EPOCH {epoch}: Computing distance calibration metrics (n={n_diag})...")
                     try:
                         # Sample posterior with all samples returned [batch, n_samples, 11 params]
@@ -780,20 +780,76 @@ class OverlapNeuralPETrainer:
                             )
                         
                         if posterior_samples is not None and posterior_samples.shape[0] > 0:
-                            # Extract distance (parameter index 2: luminosity_distance)
-                            d_true = subset_params[:, 0, 2].cpu().numpy()  # [batch,]
-                            d_samples = posterior_samples[:, :, 2].cpu().numpy()  # [batch, n_samples]
-                            
-                            # Use target_snr from metadata (much more accurate than computing from strain RMS)
-                            if isinstance(all_target_snrs, (list, np.ndarray)):
-                                snr = np.array(all_target_snrs[:len(d_true)]).astype(float)
-                            else:
-                                # Fallback: compute from strain RMS if target_snr not available
-                                snr = np.sqrt(np.mean(subset_strain.cpu().numpy()**2, axis=(1, 2)))
-                                snr = np.maximum(snr, 1.0)
-                            
-                            # Event type distribution
-                            event_type = (np.arange(len(d_true)) % 3).astype(int)
+                             # Extract distance (parameter index 2: luminosity_distance)
+                             d_true = subset_params[:, 0, 2].cpu().numpy()  # [batch,]
+                             d_samples = posterior_samples[:, :, 2].cpu().numpy()  # [batch, n_samples]
+                             
+                             # Use target_snr from metadata (much more accurate than computing from strain RMS)
+                             if isinstance(all_target_snrs, (list, np.ndarray)):
+                                 snr = np.array(all_target_snrs[:len(d_true)]).astype(float)
+                             else:
+                                 # Fallback: compute from strain RMS if target_snr not available
+                                 snr = np.sqrt(np.mean(subset_strain.cpu().numpy()**2, axis=(1, 2)))
+                                 snr = np.maximum(snr, 1.0)
+                             
+                             # Event type distribution
+                             event_type = (np.arange(len(d_true)) % 3).astype(int)
+                             
+                             # ✅ SNR-BINNED CALIBRATION DIAGNOSTIC (FEB 6, 2026)
+                             self.logger.info(f"\n📊 SNR-BINNED DISTANCE CALIBRATION (Epoch {epoch}, n={len(d_true)}):")
+                             self.logger.info("=" * 80)
+                             
+                             # Define SNR bins
+                             low_snr_mask = (snr < 15)
+                             med_snr_mask = (snr >= 15) & (snr < 30)
+                             high_snr_mask = (snr >= 30)
+                             
+                             # Process each SNR bin
+                             for mask, label, target_width in [
+                                 (low_snr_mask, "Low SNR  (8-15)", 2400),
+                                 (med_snr_mask, "Med SNR  (15-30)", 1200),
+                                 (high_snr_mask, "High SNR (30+)", 600)
+                             ]:
+                                 if mask.sum() > 0:
+                                     # Compute 10-90% credible intervals
+                                     q10 = np.percentile(d_samples[mask], 10, axis=1)
+                                     q90 = np.percentile(d_samples[mask], 90, axis=1)
+                                     
+                                     # Compute biases at percentiles
+                                     bias_10 = np.median(q10 - d_true[mask])
+                                     bias_90 = np.median(q90 - d_true[mask])
+                                     width = bias_90 - bias_10
+                                     
+                                     # Coverage check: fraction of true values inside 10-90% range
+                                     coverage = np.mean((d_true[mask] >= q10) & (d_true[mask] <= q90))
+                                     
+                                     # Quality assessment
+                                     if width < 400:
+                                         status = "🔴 OVERCONFIDENT (too narrow)"
+                                     elif width > 3000:
+                                         status = "🔴 UNDERCONFIDENT (too wide)"
+                                     elif abs(bias_10 + bias_90) / 2 > 500:  # Large asymmetry
+                                         status = "🟡 BIASED (asymmetric)"
+                                     elif coverage < 0.70:
+                                         status = "🟡 UNDER-COVERAGE"
+                                     elif coverage > 0.90:
+                                         status = "🟡 OVER-COVERAGE"
+                                     else:
+                                         status = "✅ HEALTHY"
+                                     
+                                     self.logger.info(f"  {label}:")
+                                     self.logger.info(f"    Range:    [{bias_10:7.0f}, {bias_90:7.0f}] Mpc (target: {target_width:.0f})")
+                                     self.logger.info(f"    Width:    {width:.0f} Mpc (target: {target_width:.0f}, ratio: {width/target_width:.2f}×)")
+                                     self.logger.info(f"    Coverage: {coverage*100:.1f}% (target: 80%)")
+                                     self.logger.info(f"    Status:   {status}")
+                                 else:
+                                     self.logger.info(f"  {label}: No samples in this bin")
+                             
+                             # Overall calibration check
+                             overall_coverage = np.mean((d_true >= np.percentile(d_samples, 10, axis=1)) & 
+                                                       (d_true <= np.percentile(d_samples, 90, axis=1)))
+                             self.logger.info(f"\n  OVERALL: Coverage={overall_coverage*100:.1f}% (target: 80%)")
+                             self.logger.info("=" * 80)
                             
                             #log_distance_calibration(d_true, d_samples, snr, event_type, self.logger)
                         else:

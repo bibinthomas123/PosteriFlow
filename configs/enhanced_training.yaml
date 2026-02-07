@@ -210,11 +210,11 @@ neural_posterior:
     per_param_tail_bounds:
       0: 2.0   # mass_1: [1, 100] Msun (moderate range)
       1: 2.0   # mass_2: [1, 100] Msun (moderate range)
-      2: 1.0   # luminosity_distance: TIGHT (FEB 4 FIX) - amplitude from distance_head, shape from flow
+      2: 0.8   # luminosity_distance: TIGHT (FEB 4 FIX) - amplitude from distance_head, shape from flow
       3: 1.5   # ra: bounded angle, small range
       4: 1.5   # dec: bounded angle, small range
       5: 1.5   # theta_jn: [0, pi], moderate constraint
-      6: 1.5   # psi: [0, pi], moderate constraint
+      6: 1.5   # psi: [0, pi], moderate constraint 
       7: 1.5   # phase: [0, 2pi], moderate constraint
       8: 2.5   # geocent_time: [-2, 8]s, needs more room for overlap timing
       9: 1.0   # a1: [0, 0.99], tiny range, tight constraint

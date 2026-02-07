@@ -763,11 +763,11 @@ class OverlapNeuralPE(nn.Module):
                             # Use random samples as fallback
                             self.logger.warning(f"⚠️ Using random sample fallback for sample_posterior")
                             samples_normalized = torch.rand(n_samples * 2, self.param_dim, device=self.device) * 2 - 1
-                   
-                   # Clamp to [-1, 1] to ensure we stay in valid range
-                    samples_normalized = torch.clamp(samples_normalized, -1.0, 1.0)
 
-                   # ✅ FIX 2: Check raw normalized outputs (before clamping)
+                            # ✅ FEB 7: NO CLAMPING - PSD scaling intentionally expands samples beyond [-1, 1]
+                            # Clamping happens in flows.py BEFORE PSD scaling, and in _clamp_to_bounds() AFTER denormalization
+
+                            # ✅ FIX 2: Check raw normalized outputs (diagnostic - samples can exceed [-1,1] due to PSD)
                     out_of_bounds_norm = (samples_normalized < -1.0) | (samples_normalized > 1.0)
                     norm_violation_pct = (
                         out_of_bounds_norm.sum().float() / out_of_bounds_norm.numel()
@@ -937,7 +937,18 @@ class OverlapNeuralPE(nn.Module):
         Returns:
             physical: [batch, param_dim] physical parameter values
         """
-        return self.param_scaler.denormalize_batch(normalized_params)
+        # ✅ FEB 7 CRITICAL FIX: Clamp normalized values to [-1, 1] before denormalization
+        # Problem: Flow can output values beyond [-1, 1], causing negative/exploding physical values
+        # Solution: Hard clamp in normalized space prevents denormalization issues
+        clamped_params = torch.clamp(normalized_params, min=-1.0, max=1.0)
+        physical = self.param_scaler.denormalize_batch(clamped_params)
+        
+        # Additional safety: Ensure luminosity_distance is always positive
+        # Index 2 is luminosity_distance
+        if physical.shape[1] > 2:
+            physical[:, 2] = torch.clamp(physical[:, 2], min=10.0)  # Min 10 Mpc
+        
+        return physical
 
     def _check_sample_validity(self, samples: torch.Tensor) -> torch.Tensor:
          """Check if samples are within physical bounds.

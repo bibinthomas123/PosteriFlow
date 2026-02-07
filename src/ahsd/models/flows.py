@@ -700,26 +700,33 @@ class NSFPosteriorFlow(nn.Module):
                 # Transform z → x
                 x_flat, _ = self.inverse(z_flat, context_expanded)  # [batch*num_samples, features]
                 
+                # ✅ FEB 7 CRITICAL FIX: Clamp in normalized space BEFORE reshaping
+                # Must clamp BEFORE PSD scaling to prevent scaling destruction
+                x_flat = torch.clamp(x_flat, -1.0, 1.0)  # Clamp normalized values first
+                
                 # Reshape back to [batch, num_samples, features]
                 samples = x_flat.reshape(batch_size, num_samples, self.features)
                 
                 # ✅ FEB 2 CRITICAL: Apply factored scale OUTSIDE flow
                 # Flow works in unit variance space, apply σ_psd here (no gradients)
+                # This scaling is NOT clamped - intentional, to preserve PSD effect
                 sigma_psd = torch.exp(log_sigma_psd)  # [batch, features]
                 samples = samples * sigma_psd.unsqueeze(1)  # [batch, num_samples, features]
+                # ✅ FEB 7: NO CLAMPING AFTER PSD SCALING - let samples expand per PSD!
             else:
                 # Fallback to standard sampling (shouldn't happen)
                 z = torch.randn(batch_size, num_samples, self.features,
-                              device=context.device, dtype=context.dtype)
+                               device=context.device, dtype=context.dtype)
                 z_flat = z.reshape(batch_size * num_samples, self.features)
                 context_expanded = context.unsqueeze(1).expand(
                     batch_size, num_samples, self.context_features
                 ).reshape(batch_size * num_samples, self.context_features)
                 x_flat, _ = self.inverse(z_flat, context_expanded)
+                # ✅ FEB 7: Clamp here too before reshaping
+                x_flat = torch.clamp(x_flat, -1.0, 1.0)
                 samples = x_flat.reshape(batch_size, num_samples, self.features)
-            
-            # Clamp to valid range
-            samples = torch.clamp(samples, -1.0, 1.0)
+                
+                # ✅ FEB 7: Removed clamp after PSD scaling - denormalization will handle bounds
             
             return samples  # [batch, num_samples, features]
 

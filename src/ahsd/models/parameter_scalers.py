@@ -1,7 +1,7 @@
 """
 Parameter Normalization & Denormalization
 ====================================================
-Implements data-driven parameter scalers based on empirical analysis of 8,370 single-signal samples.
+Implements data-driven parameter scalers based on empirical analysis of 5,895 samples across all splits (BBH+BNS+NSBH).
 
 Key Features:
 - Event-type-specific scaling strategies
@@ -53,16 +53,16 @@ class ParameterScaler:
             if param == "mass_1":
                 scalers[param] = {
                     "type": "log_zscore",
-                    "log_mean": 2.908,   # log(18.3 M☉)
-                    "log_std": 0.719,
+                    "log_mean": 2.660,   # log(14.3 M☉) — measured from 5895 samples across all splits
+                    "log_std": 1.354,    # previous value 0.719 was 2× too narrow (single-type subset)
                     "min": 1.0,
                     "max": 100.0,
                 }
             elif param == "mass_2":
                 scalers[param] = {
                     "type": "log_zscore",
-                    "log_mean": 1.733,   # log(5.6 M☉)
-                    "log_std": 1.053,
+                    "log_mean": 1.939,   # log(6.9 M☉) — measured from full dataset
+                    "log_std": 1.459,    # previous value 1.053 was 1.4× too narrow
                     "min": 0.1,
                     "max": 100.0,
                 }
@@ -109,8 +109,8 @@ class ParameterScaler:
                     "type": "bounded_zscore",
                     "min": 0.0,
                     "max": 1.0,
-                    "mean": 0.215 if "1" in param else 0.166,
-                    "std": 0.230 if "1" in param else 0.193,
+                    "mean": 0.249 if "1" in param else 0.173,  # measured from full dataset
+                    "std": 0.236 if "1" in param else 0.186,   # previous values were from single-type subset
                 }
             elif param == "effective_spin":
                 scalers[param] = {
@@ -122,13 +122,19 @@ class ParameterScaler:
                 }
             
             # ============================================================
-            # ANGLES - SKY: Periodic embedding (RA, phase)
+            # ANGLES - SKY: Linear mapping [0, 2π] → [-1, 1]
             # ============================================================
+            # Note: proper periodic handling (cos/sin embedding) requires expanding
+            # param_dim from 11 to 13. That is an architectural change deferred to a
+            # future refactor. For now, linear_minmax gives a consistent single-column
+            # representation; the wrap-around discontinuity at 0/2π is a known
+            # limitation (BUG-C).
             elif param in ["ra", "phase"]:
                 scalers[param] = {
-                    "type": "periodic",
-                    "period": 2 * np.pi,
-                    "embedding": "cos_sin",  # Return [cos, sin] for NN input
+                    "type": "linear_minmax",
+                    "min": 0.0,
+                    "max": 2 * np.pi,
+                    "scale_to": [-1, 1],
                 }
             
             # ============================================================
@@ -146,21 +152,21 @@ class ParameterScaler:
                     "type": "bounded_angle",
                     "min": 0.0,
                     "max": np.pi,
-                    "normalize_to": [0, 1],
+                    "normalize_to": [-1, 1],  # BUG-D FIX: was [0,1], heterogeneous with other params
                 }
             elif param == "psi":
                 scalers[param] = {
                     "type": "bounded_angle",
                     "min": 0.0,
                     "max": np.pi,
-                    "normalize_to": [0, 1],
+                    "normalize_to": [-1, 1],  # BUG-D FIX: was [0,1], heterogeneous with other params
                 }
             elif param in ["tilt1", "tilt2", "tilt_1", "tilt_2"]:
                 scalers[param] = {
                     "type": "bounded_angle",
                     "min": 0.0,
                     "max": np.pi,
-                    "normalize_to": [0, 1],
+                    "normalize_to": [-1, 1],  # BUG-D FIX: consistent with all other angle params
                 }
             
             # ============================================================
@@ -169,9 +175,9 @@ class ParameterScaler:
             elif param == "geocent_time":
                 scalers[param] = {
                     "type": "zscore",
-                    "mean": 1.371,
-                    "std": 2.267,
-                    "clip": [-2.0, 7.0],  # Clip extreme outliers
+                    "mean": 0.722,   # measured from full dataset (5895 samples, all splits)
+                    "std": 1.903,    # previous mean=1.371 caused +0.65s systematic bias
+                    "clip": [-2.0, 7.0],  # data range is [-1.83, 6.99]
                 }
             elif param == "time_delay":
                 scalers[param] = {

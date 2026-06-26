@@ -246,16 +246,19 @@ class OverlapGWDataset(Dataset):
             # New format: detector_data with 'strain' key
             h1_strain = detector_data.get("H1", {}).get("strain", np.zeros(16384))
             l1_strain = detector_data.get("L1", {}).get("strain", np.zeros(16384))
+            v1_strain = detector_data.get("V1", {}).get("strain", np.zeros(16384))
         else:
             # Legacy format: whitened_data
             strain_dict = sample.get("whitened_data", {})
             h1_strain = strain_dict.get("H1", np.zeros(16384))
             l1_strain = strain_dict.get("L1", np.zeros(16384))
+            v1_strain = strain_dict.get("V1", np.zeros(16384))
 
         # Ensure proper numpy arrays
         h1_strain = np.asarray(h1_strain, dtype=np.float32)
         l1_strain = np.asarray(l1_strain, dtype=np.float32)
-        strain_data = np.stack([h1_strain, l1_strain], axis=0)
+        v1_strain = np.asarray(v1_strain, dtype=np.float32)
+        strain_data = np.stack([h1_strain, l1_strain, v1_strain], axis=0)
 
         # ✅ FIX: Resize to fixed length BEFORE augmentation
         target_length = 16384
@@ -301,7 +304,7 @@ class OverlapGWDataset(Dataset):
         )
 
         return {
-            "strain_data": torch.tensor(strain_data, dtype=torch.float32),  # Always [2, 16384]
+            "strain_data": torch.tensor(strain_data, dtype=torch.float32),  # Always [3, 16384] (H1, L1, V1)
             "parameters": torch.tensor(all_params, dtype=torch.float32),
             "n_signals": n_signals,
             "metadata": sample.get("metadata", {}),
@@ -566,17 +569,11 @@ class OverlapNeuralPETrainer:
                 batch_start = time.time()
                 self.optimizer.zero_grad()
                 
-                # ✅ FEB 6 CRITICAL FIX: Distance head freeze (first 10 epochs)
-                # Let flow stabilize before distance head interferes with learning
-                if epoch < 10:
-                    if hasattr(self.model, 'distance_head') and self.model.distance_head is not None:
-                        for param in self.model.distance_head.parameters():
-                            param.requires_grad = False
-                else:
-                    # Unfreeze after epoch 10
-                    if hasattr(self.model, 'distance_head') and self.model.distance_head is not None:
-                        for param in self.model.distance_head.parameters():
-                            param.requires_grad = True
+                # BUG-A FIX: distance_head freeze removed.
+                # The prior freeze (epoch < 10) re-introduced BUG-03: head stayed at random
+                # init and corrupted any auxiliary computation that used it.
+                # overlap_neuralpe.py already removed the in-model freeze (Fix #2).
+                # distance_head trains from step 0 alongside the rest of the network.
                 
                 # ✅ Handle new sample_ids return value
                 if len(batch_output) == 5:

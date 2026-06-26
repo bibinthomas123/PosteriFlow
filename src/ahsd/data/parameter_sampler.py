@@ -1013,8 +1013,8 @@ class ParameterSampler:
         theta_jn = float(np.arccos(cos_theta_jn))
         psi = float(np.random.uniform(0, np.pi))
         phase = float(np.random.uniform(0, 2*np.pi))
-        geocent_time = 0.0
-        
+        geocent_time = float(np.random.uniform(-0.1, 0.1))
+
         # Tidal parameters
         lambda_1 = 0.0
         if approximant_type == 'tidal':

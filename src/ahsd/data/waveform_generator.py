@@ -113,8 +113,25 @@ class WaveformGenerator:
 
 
     def generate_pycbc_waveform(self, params: Dict, detector_name: str = None) -> np.ndarray:
-        """Generate waveform using PyCBC with detector projection"""
-        
+        """Generate waveform using PyCBC with detector projection and time delay.
+
+        Fix 8: Apply inter-detector time delay so that different detectors see the
+        signal shifted by the light-travel time from Earth centre to each detector.
+        This is the primary cue for sky localisation (ra, dec) recovery.
+
+        The approach:
+        1. Generate geocentric hp, hc polarisations.
+        2. Find the geocentric peak position and define a consistent extraction window.
+        3. Window BOTH polarisations using the same geocentric reference window so
+           that all detectors share a common time axis.
+        4. Apply the detector-specific time delay as an integer-sample roll on the
+           windowed polarisations (at most ±110 samples = ±27 ms for H1-V1 at 4096 Hz).
+        5. Apply the antenna-pattern projection.
+
+        The resulting multi-channel tensor (H1, L1, V1) carries genuine inter-detector
+        timing differences that encode sky position.
+        """
+
         # Generate polarizations
         hp, hc = get_td_waveform(
             approximant=params.get('approximant', 'IMRPhenomD'),
@@ -130,8 +147,37 @@ class WaveformGenerator:
             lambda1=params.get('lambda_1', 0.0),
             lambda2=params.get('lambda_2', 0.0)
         )
-        
-        # Project onto detector if specified
+
+        # Convert GEOCENTRIC polarisations to numpy (used to determine shared window).
+        hp_data = np.array(hp.data if hasattr(hp, 'data') else hp, dtype=np.float32)
+        hc_data = np.array(hc.data if hasattr(hc, 'data') else hc, dtype=np.float32)
+
+        # ------------------------------------------------------------------
+        # Step 1: Determine the GEOCENTRIC extraction window (shared across
+        # all detectors for this event so that time delays are preserved).
+        # ------------------------------------------------------------------
+        N = len(hp_data)
+        if N < self.n_samples:
+            # Waveform shorter than analysis window: zero-pad at front.
+            pad = self.n_samples - N
+            hp_windowed = np.pad(hp_data, (pad, 0), mode='constant')
+            hc_windowed = np.pad(hc_data, (pad, 0), mode='constant')
+        else:
+            # Use the geocentric peak to define the window.
+            peak_idx = int(np.argmax(np.abs(hp_data)))
+            post_samples = min(self.sample_rate // 2, N - peak_idx)
+            end_idx = peak_idx + post_samples
+            start_idx = end_idx - self.n_samples
+            if start_idx < 0:
+                hp_windowed = np.pad(hp_data[:end_idx], (-start_idx, 0), mode='constant')
+                hc_windowed = np.pad(hc_data[:end_idx], (-start_idx, 0), mode='constant')
+            else:
+                hp_windowed = hp_data[start_idx:end_idx]
+                hc_windowed = hc_data[start_idx:end_idx]
+
+        # ------------------------------------------------------------------
+        # Step 2: Apply detector-specific time delay and antenna projection.
+        # ------------------------------------------------------------------
         if detector_name and detector_name in self.detectors:
             detector = self.detectors[detector_name]
             fp, fc = detector.antenna_pattern(
@@ -140,38 +186,37 @@ class WaveformGenerator:
                 params.get('psi', 0.0),
                 params.get('geocent_time', 0.0)
             )
-            signal = fp * hp + fc * hc
-        else:
-            # No detector projection - use plus polarization
-            signal = hp
-        
-        # Convert to numpy array first (handles both TimeSeries and numpy)
-        signal_data = np.array(signal.data if hasattr(signal, 'data') else signal, dtype=np.float32)
-        
-        # Resize to match duration by extracting a window around the merger.
-        if len(signal_data) < self.n_samples:
-            # Waveform is shorter than the analysis window: zero-pad at the front.
-            signal_data = np.pad(signal_data, (self.n_samples - len(signal_data), 0), mode='constant')
-        else:
-            # Waveform is longer than the analysis window.
-            # Different approximants place the merger at different positions:
-            #   - IMRPhenomNSBH: merger ~at the end (near sample N-1)
-            #   - IMRPhenomD / TaylorF2: 5 s of post-merger zero-pad after the merger
-            #
-            # Using tail alignment (-n_samples:) only works for the first class.
-            # Using center extraction gives the inspiral only.
-            # Correct approach: locate the amplitude peak and extract a window that
-            # keeps 0.5 s of post-merger ringdown; the rest is pre-merger inspiral.
-            peak_idx = int(np.argmax(np.abs(signal_data)))
-            post_samples = min(self.sample_rate // 2, len(signal_data) - peak_idx)
-            end_idx = peak_idx + post_samples
-            start_idx = end_idx - self.n_samples
-            if start_idx < 0:
-                # Peak is too close to the beginning; pad the front with zeros.
-                signal_data = np.pad(signal_data[:end_idx], (-start_idx, 0), mode='constant')
+
+            # Time delay from geocentre to this detector (seconds).
+            # Positive dt means the signal arrives at this detector AFTER geocentre.
+            dt = detector.time_delay_from_earth_center(
+                params.get('ra', 0.0),
+                params.get('dec', 0.0),
+                params.get('geocent_time', 0.0)
+            )
+            dt_samples = int(np.round(dt * self.sample_rate))
+
+            if dt_samples != 0:
+                # Shift the windowed polarisations by dt_samples.
+                # np.roll wraps around; zero the wrapped region to avoid
+                # end-of-window data leaking into the start (and vice versa).
+                hp_shifted = np.roll(hp_windowed, dt_samples)
+                hc_shifted = np.roll(hc_windowed, dt_samples)
+                if dt_samples > 0:
+                    hp_shifted[:dt_samples] = 0.0
+                    hc_shifted[:dt_samples] = 0.0
+                else:
+                    hp_shifted[dt_samples:] = 0.0
+                    hc_shifted[dt_samples:] = 0.0
             else:
-                signal_data = signal_data[start_idx:end_idx]
-        
+                hp_shifted = hp_windowed
+                hc_shifted = hc_windowed
+
+            signal_data = fp * hp_shifted + fc * hc_shifted
+        else:
+            # No detector projection - return geocentric plus polarisation.
+            signal_data = hp_windowed
+
         return signal_data
     
     def generate_analytical_waveform(self, params: Dict, detector_name: str = None) -> np.ndarray:

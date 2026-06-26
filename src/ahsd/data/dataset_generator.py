@@ -758,10 +758,13 @@ class GWDatasetGenerator:
         # Fallback: generate synthetic colored Gaussian noise (default path)
         noise = self.noise_generator.generate_colored_noise(psd_dict)
         self.noise_source_stats["synthetic"] += 1
-        
-        # Normalize to consistent power (prevents non-stationarity issues)
-        noise = self._normalize_noise_power(noise)
-        
+
+        # Fix 9: Do NOT normalize synthetic noise. Its amplitude is already set correctly
+        # by the PSD via colored_fft = white_fft * sqrt(PSD). Rescaling to target_std=1e-21
+        # amplified noise by ~54× (natural std ~1.83e-23 → 1e-21), causing whitened strain
+        # std ~36 instead of the expected ~0.66 after bandpass + whitening.
+        # (For real/cached noise above the normalization is kept to handle variable segment power.)
+
         return noise, "synthetic"
 
     def create_noise_augmentations(self, sample: Dict, k: int) -> List[Dict]:

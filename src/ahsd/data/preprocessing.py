@@ -351,9 +351,13 @@ class DataPreprocessor:
             # denominator ~10^8 times too large and producing strain at ~1e-10 instead of O(1).
             psd_interp = np.maximum(psd_interp, 1e-55)
 
-            # Compute whitening denominator safely
-            whitening_denom = np.sqrt(psd_interp * self.sample_rate / 2)
-            whitening_denom = np.maximum(whitening_denom, 1e-30)  # Clamp minimum (was 1e-15)
+            # Compute whitening denominator.
+            # The analytical noise generator colors white noise with sqrt(PSD) so
+            # the inverse transform is 1/sqrt(PSD).  The previous formula
+            # sqrt(PSD * sr/2) divided by an extra sqrt(sr/2) ≈ 45 factor,
+            # producing whitened std ≈ 1/sqrt(sr) ≈ 0.016 instead of ~1.
+            whitening_denom = np.sqrt(psd_interp)
+            whitening_denom = np.maximum(whitening_denom, 1e-30)  # Clamp minimum
             
             # Whiten
             whitened_fft = strain_fft / whitening_denom

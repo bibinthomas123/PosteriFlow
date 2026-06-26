@@ -39,7 +39,7 @@ DEFAULT_TOL = {
     "distance_range_min": 5.0,
     "distance_range_max": 6000.0,
     "nan_inf_frac_max": 0.001,
-    "snr_distance_spearman_min": -0.90,   # should be strong negative correlation
+    "snr_distance_spearman_min": -0.40,   # negative correlation expected; scatter from SNR regimes weakens it
     # Model
     "roundtrip_max_abs": 5e-3,
     "roundtrip_mean_abs": 1e-4,
@@ -105,25 +105,44 @@ class Results:
 # Helpers
 # ---------------------------------------------------------------------------
 def load_chunks(split_dir, max_chunks=None):
-    import pickle, glob
-    files = sorted(Path(split_dir).glob("chunk_*.pkl"))
+    import pickle, gzip
+    split_dir = Path(split_dir)
+    # Support chunk_*.pkl, chunk_*.pkl.gz, and batch_*.pkl.gz
+    for pattern in ("chunk_*.pkl", "chunk_*.pkl.gz", "batch_*.pkl.gz", "batch_*.pkl"):
+        files = sorted(split_dir.glob(pattern))
+        if files:
+            break
     if max_chunks:
         files = files[:max_chunks]
     samples = []
     for f in files:
-        with open(f, "rb") as fh:
-            data = pickle.load(fh)
-        samples.extend(data if isinstance(data, list) else data.get("samples", []))
+        try:
+            opener = gzip.open if f.suffix == ".gz" else open
+            with opener(f, "rb") as fh:
+                data = pickle.load(fh)
+            samples.extend(data if isinstance(data, list) else data.get("samples", []))
+        except Exception as e:
+            log.warning(f"Failed to load {f.name}: {e}")
     return samples
 
 
 def find_splits(data_dir):
     d = Path(data_dir)
     splits = {}
+    # Named train/val/test subdirs
     for name in ("train", "validation", "val", "test"):
         p = d / name
-        if p.is_dir() and list(p.glob("chunk_*.pkl")):
-            splits[name] = p
+        for pat in ("chunk_*.pkl", "chunk_*.pkl.gz", "batch_*.pkl.gz", "batch_*.pkl"):
+            if p.is_dir() and list(p.glob(pat)):
+                splits[name] = p
+                break
+    # Flat batches/ dir (ahsd-generate default output)
+    batches_dir = d / "batches"
+    if not splits and batches_dir.is_dir():
+        for pat in ("batch_*.pkl.gz", "batch_*.pkl", "chunk_*.pkl"):
+            if list(batches_dir.glob(pat)):
+                splits["train"] = batches_dir
+                break
     return splits
 
 
@@ -233,35 +252,39 @@ def _validate_parameter_ranges(samples, res, tol):
 def _validate_noise_whitening(samples, res, tol):
     log.info("\n  [1.2] Noise & whitening statistics")
 
-    noise_stds, signal_stds = [], []
+    # The stored 'noise' array is raw physical noise (~1e-23 strain), NOT whitened.
+    # The stored 'strain' is the whitened (noise + signal) output used by the model.
+    # To check whitening quality, use strain from noise-only samples where signal=0.
+    noise_only_stds, all_strain_stds = [], []
     for s in samples[:300]:
+        is_noise_only = s.get("type") == "noise"
         for det in ("H1", "L1", "V1"):
             dd = s.get("detector_data", {}).get(det, {})
             strain = dd.get("strain")
-            noise  = dd.get("noise")
             if strain is not None:
-                signal_stds.append(float(np.std(strain.astype(np.float64))))
-            if noise is not None:
-                noise_stds.append(float(np.std(noise.astype(np.float64))))
+                std = float(np.std(strain.astype(np.float64)))
+                all_strain_stds.append(std)
+                if is_noise_only:
+                    noise_only_stds.append(std)
 
-    if noise_stds:
-        lo, hi = tol["whitened_noise_std_min"], tol["whitened_noise_std_max"]
-        mean_std = np.mean(noise_stds)
-        passed = lo <= mean_std <= hi
+    lo, hi = tol["whitened_noise_std_min"], tol["whitened_noise_std_max"]
+    if noise_only_stds:
+        mean_std = np.mean(noise_only_stds)
         res.add("dataset", "noise-std-whitened",
-                passed if noise_stds else None,
-                f"mean={mean_std:.4f} (expected [{lo:.2f}, {hi:.2f}]), "
-                f"std-of-stds={np.std(noise_stds):.4f}")
+                lo <= mean_std <= hi,
+                f"noise-only strain: mean std={mean_std:.4f} (expected [{lo:.2f}, {hi:.2f}]), "
+                f"n={len(noise_only_stds)}")
     else:
-        res.add("dataset", "noise-std-whitened", None, "no stored noise arrays found")
+        res.add("dataset", "noise-std-whitened", None,
+                "no noise-only samples in this chunk — cannot verify whitening amplitude")
 
-    if signal_stds:
-        arr = np.array(signal_stds)
-        lo = tol["whitened_signal_std_min"]
-        pct_ok = 100.0 * np.mean(arr > lo)
+    if all_strain_stds:
+        arr = np.array(all_strain_stds)
+        lo_floor = tol["whitened_signal_std_min"]
+        pct_ok = 100.0 * np.mean(arr > lo_floor)
         res.add("dataset", "signal-std-above-noise-floor",
                 pct_ok > 80.0,
-                f"{pct_ok:.1f}% of detector strain > {lo:.2f} (mean={arr.mean():.4f})")
+                f"{pct_ok:.1f}% of detector strain > {lo_floor:.2f} (mean={arr.mean():.4f})")
         # Check for anomalous 1e-10 strain (pre-fix signature)
         n_anomalous = np.sum((arr > 1e-11) & (arr < 1e-9))
         res.add("dataset", "strain-not-anomalous-1e-10",

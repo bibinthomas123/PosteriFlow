@@ -68,7 +68,7 @@ from scipy.fftpack import rfft, rfftfreq
 
 try:
     from pycbc.filter import matched_filter, sigma
-    from pycbc.types import TimeSeries
+    from pycbc.types import TimeSeries, FrequencySeries
     PYCBC_AVAILABLE = True
 except ImportError:
     PYCBC_AVAILABLE = False
@@ -463,12 +463,23 @@ class SignalInjector:
             - Fallback path uses simple RMS-based scaling if this method fails.
         """
         
-        # Convert to PyCBC TimeSeries
-        signal_ts = TimeSeries(signal, delta_t=1.0/self.sample_rate)
-        psd = psd_dict['psd']
-        
+        # Convert to PyCBC TimeSeries. sigma() requires float64 precision.
+        signal_ts = TimeSeries(signal.astype(np.float64), delta_t=1.0/self.sample_rate)
+
+        # Wrap the numpy PSD array in a PyCBC FrequencySeries so that sigma()
+        # can use it. Passing a bare numpy array causes:
+        #   ValueError: The truth value of an array with more than one element is ambiguous
+        # Also ensure float64 to match the signal TimeSeries (precision must agree).
+        psd_numpy = psd_dict['psd'].astype(np.float64)
+        psd_freqs = psd_dict.get('frequencies')
+        if psd_freqs is not None and len(psd_freqs) > 1:
+            delta_f = float(psd_freqs[1] - psd_freqs[0])
+        else:
+            delta_f = 1.0 / (len(psd_numpy) * (1.0 / self.sample_rate))
+        psd_fs = FrequencySeries(psd_numpy, delta_f=delta_f)
+
         # Calculate optimal SNR
-        sig = sigma(signal_ts, psd=psd, low_frequency_cutoff=20.0)
+        sig = sigma(signal_ts, psd=psd_fs, low_frequency_cutoff=20.0)
         
         # Convert sig to scalar - sigma() can return array in some PyCBC versions
         sig = float(np.atleast_1d(sig)[0]) if hasattr(sig, '__len__') else float(sig)
@@ -524,12 +535,14 @@ class SignalInjector:
             - For colored noise, use PyCBC method instead.
         """
         
-        # Estimate noise level
-        noise_rms = np.std(noise)
-        
-        # Signal power
-        signal_rms = np.sqrt(np.mean(signal**2))
-        
+        # Estimate noise level. Cast to float64 first to avoid float32 underflow:
+        # squaring values ~1e-23 gives ~1e-46 which is below float32 minimum (~1e-38),
+        # causing np.std to return 0.0 for physically valid noise.
+        noise_rms = float(np.std(noise.astype(np.float64)))
+
+        # Signal power (same float32 underflow risk)
+        signal_rms = float(np.sqrt(np.mean(signal.astype(np.float64)**2)))
+
         if signal_rms > 0 and noise_rms > 1e-30:
             # Current SNR estimate
             current_snr = signal_rms / noise_rms

@@ -150,15 +150,14 @@ class WaveformGenerator:
         
         # Resize to match duration
         if len(signal_data) < self.n_samples:
-            # Pad with zeros at the beginning
+            # Pad with zeros at the beginning (merger stays at the end of the array)
             signal_data = np.pad(signal_data, (self.n_samples - len(signal_data), 0), mode='constant')
         else:
-            # PyCBC generates long waveforms with the signal concentrated around the peak
-            # Extract a centered window to capture the signal
-            # This is better than taking first or last samples which are mostly padding
-            start_idx = (len(signal_data) - self.n_samples) // 2
-            end_idx = start_idx + self.n_samples
-            signal_data = signal_data[start_idx:end_idx]
+            # PyCBC places the merger (coalescence) at the END of the generated array.
+            # Taking the last n_samples keeps the merger and the immediate ringdown.
+            # The previous center-window approach discarded the merger for long waveforms
+            # (e.g. BNS/NSBH that are many seconds long), cutting SNR significantly.
+            signal_data = signal_data[-self.n_samples:]
         
         return signal_data
     

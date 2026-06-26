@@ -589,7 +589,10 @@ class GWDatasetGenerator:
         Returns:
             Normalized noise array
         """
-        current_std = np.std(noise)
+        # Cast to float64 before std() to avoid float32 underflow: squaring noise
+        # values ~1e-23 gives ~1e-46, below float32 minimum (~1.18e-38), so
+        # np.std on a float32 array silently returns 0.0 for valid aLIGO noise.
+        current_std = float(np.std(noise.astype(np.float64)))
         # Only normalize if significantly different (avoid unnecessary rescaling)
         if current_std > 0 and np.abs(current_std - target_std) / target_std > 0.5:
             noise = noise * (target_std / current_std)

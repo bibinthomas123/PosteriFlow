@@ -43,7 +43,7 @@ class DataPreprocessor:
     
     **Numerical Stability**:
     Whitening can amplify noise at low frequencies where PSD is small. Implementation uses:
-    - Clipped PSD minimum (1e-30) to prevent division by zero
+    - Clipped PSD minimum (1e-55) to prevent division by zero without distorting aLIGO values
     - High-pass filtering after whitening to remove low-frequency artifacts
     - Intermediate NaN/Inf sanitization to detect numerical errors
     - Fallback to original strain on processing failure
@@ -270,7 +270,7 @@ class DataPreprocessor:
         6. High-pass filter at 10 Hz to remove low-frequency artifacts
         
         **Numerical Stability**:
-        - PSD minimum clipped to 1e-30 to prevent division by zero
+        - PSD minimum clipped to 1e-55 to prevent division by zero without distorting aLIGO values
         - High-pass filter removes noise amplification at frequencies where PSD→0
         - Intermediate NaN/Inf checks preserve numerical integrity
         - Forward-backward filtering preserves phase information
@@ -344,12 +344,16 @@ class DataPreprocessor:
                 fill_value=(psd[0], psd[-1])
             )(freqs_fft)
             
-            # Avoid division by zero (use larger minimum to avoid numerical issues)
-            psd_interp = np.maximum(psd_interp, 1e-30)
-            
+            # Avoid division by zero. Must be well below aLIGO PSD floor (~1e-48
+            # at high frequencies) so real PSD values are never clamped up.
+            # Original value of 1e-30 was larger than the actual aLIGO PSD (~1e-46),
+            # which caused all PSD values to be replaced by 1e-30, making the whitening
+            # denominator ~10^8 times too large and producing strain at ~1e-10 instead of O(1).
+            psd_interp = np.maximum(psd_interp, 1e-55)
+
             # Compute whitening denominator safely
             whitening_denom = np.sqrt(psd_interp * self.sample_rate / 2)
-            whitening_denom = np.maximum(whitening_denom, 1e-15)  # Clamp minimum
+            whitening_denom = np.maximum(whitening_denom, 1e-30)  # Clamp minimum (was 1e-15)
             
             # Whiten
             whitened_fft = strain_fft / whitening_denom

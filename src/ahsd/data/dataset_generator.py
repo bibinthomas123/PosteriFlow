@@ -1587,7 +1587,10 @@ class GWDatasetGenerator:
         batch_dir = self.output_dir / "batches"
         batch_dir.mkdir(parents=True, exist_ok=True)
 
-        existing_batch_files = sorted(glob.glob(str(batch_dir / "batch*.pkl")))
+        existing_batch_files = sorted(
+            glob.glob(str(batch_dir / "batch*.pkl")) +
+            glob.glob(str(batch_dir / "batch*.pkl.gz"))
+        )
         existing_sample_count = 0
 
         if existing_batch_files:
@@ -2792,8 +2795,12 @@ class GWDatasetGenerator:
         import glob
         import pickle
 
+        import gzip as _gzip
         batch_dir = self.output_dir / "batches"
-        batch_files = sorted(glob.glob(str(batch_dir / "batch*.pkl")))
+        batch_files = sorted(
+            glob.glob(str(batch_dir / "batch*.pkl")) +
+            glob.glob(str(batch_dir / "batch*.pkl.gz"))
+        )
 
         if not batch_files:
             self.logger.error(f"No batch files found in {batch_dir}")
@@ -2804,7 +2811,8 @@ class GWDatasetGenerator:
 
         for batch_file in tqdm(batch_files, desc="Loading batches"):
             try:
-                with open(batch_file, "rb") as f:
+                opener = _gzip.open if batch_file.endswith(".gz") else open
+                with opener(batch_file, "rb") as f:
                     batch_data = pickle.load(f)
                     if isinstance(batch_data, list):
                         all_samples.extend(batch_data)

@@ -148,16 +148,29 @@ class WaveformGenerator:
         # Convert to numpy array first (handles both TimeSeries and numpy)
         signal_data = np.array(signal.data if hasattr(signal, 'data') else signal, dtype=np.float32)
         
-        # Resize to match duration
+        # Resize to match duration by extracting a window around the merger.
         if len(signal_data) < self.n_samples:
-            # Pad with zeros at the beginning (merger stays at the end of the array)
+            # Waveform is shorter than the analysis window: zero-pad at the front.
             signal_data = np.pad(signal_data, (self.n_samples - len(signal_data), 0), mode='constant')
         else:
-            # PyCBC places the merger (coalescence) at the END of the generated array.
-            # Taking the last n_samples keeps the merger and the immediate ringdown.
-            # The previous center-window approach discarded the merger for long waveforms
-            # (e.g. BNS/NSBH that are many seconds long), cutting SNR significantly.
-            signal_data = signal_data[-self.n_samples:]
+            # Waveform is longer than the analysis window.
+            # Different approximants place the merger at different positions:
+            #   - IMRPhenomNSBH: merger ~at the end (near sample N-1)
+            #   - IMRPhenomD / TaylorF2: 5 s of post-merger zero-pad after the merger
+            #
+            # Using tail alignment (-n_samples:) only works for the first class.
+            # Using center extraction gives the inspiral only.
+            # Correct approach: locate the amplitude peak and extract a window that
+            # keeps 0.5 s of post-merger ringdown; the rest is pre-merger inspiral.
+            peak_idx = int(np.argmax(np.abs(signal_data)))
+            post_samples = min(self.sample_rate // 2, len(signal_data) - peak_idx)
+            end_idx = peak_idx + post_samples
+            start_idx = end_idx - self.n_samples
+            if start_idx < 0:
+                # Peak is too close to the beginning; pad the front with zeros.
+                signal_data = np.pad(signal_data[:end_idx], (-start_idx, 0), mode='constant')
+            else:
+                signal_data = signal_data[start_idx:end_idx]
         
         return signal_data
     

@@ -135,9 +135,13 @@ mass_ranges:
 # BNS: Allow 10-1000 Mpc (though most nearby ~100 Mpc, allow far samples for balance)
 # NSBH: Allow 20-1500 Mpc (scales between BNS and BBH)
 distance_ranges:
-  BBH: [50.0, 5000.0]    # BBH: Wide range prevents clipping
-  BNS: [10.0, 1000.0]    # BNS: Widened from [10, 180] to allow far samples
-  NSBH: [20.0, 2000.0]   # NSBH: Widened from [20, 600] to allow far samples
+  # Calibrated to the corrected matched-filter SNR formula (ρ² = 4·df·∑|H_c|²/S_n).
+  # With the previous buggy formula (missing 1/fs² factor), ranges were 4096× too
+  # permissive.  These ranges ensure most events have a realistic chance of SNR>8.
+  # Heavy BBH (m1=80M☉) detectable to ~2 Gpc; typical BBH (m1=20M☉) to ~800 Mpc.
+  BBH: [50.0, 2000.0]
+  BNS: [10.0, 300.0]     # aLIGO BNS range ~200 Mpc
+  NSBH: [20.0, 800.0]    # between BNS and BBH
 
 # ==============================================================================
 # SECTION 11: EVENT TYPE DISTRIBUTION (REALISTIC O4 RATES)
@@ -349,7 +353,7 @@ extreme_cases:
 # SNR is MEASURED after injection (not targeted). Samples below min_snr are
 # rejected and regenerated. Network SNR = sqrt(sum(SNR_det^2)).
 min_snr: 8.0              # Detection threshold (ρ_net ≥ 8 for realistic training)
-max_retries: 30           # Max regeneration attempts before skipping a parameter set
+max_retries: 50           # Increased: volume-weighted prior rejects ~10-30% of draws
 
 # ── Real GWOSC noise ──────────────────────────────────────────────────────────
 # Download real O3/O4 noise segments with:

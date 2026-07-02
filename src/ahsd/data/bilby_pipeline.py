@@ -33,6 +33,11 @@ _log = logging.getLogger(__name__)
 # Directory for cached real noise segments (set via env or config)
 GWOSC_CACHE_DIR = os.environ.get("GWOSC_CACHE_DIR", "data/gwosc_cache")
 
+# Fixed reference GPS time (O4 era) — MUST match parameter_sampler.GPS_REF.
+# All data windows are centered on this time: [GPS_REF - T/2, GPS_REF + T/2].
+# Mergers are sampled within [GPS_REF - T/2 + margin, GPS_REF + T/2 - margin].
+_GPS_REF: float = 1369224018.0  # 2023-05-24 18:00:00 UTC
+
 # ── Approximant selection ─────────────────────────────────────────────────────
 _APPROXIMANTS = {
     "bbh": "IMRPhenomXP",
@@ -223,7 +228,9 @@ class BilbyWaveformGenerator:
         )
         polarizations = wfg.frequency_domain_strain(p)
 
-        start_time = float(p.get("geocent_time", 0.0)) - self.duration
+        # Fixed window: [GPS_REF - T/2, GPS_REF + T/2] so the merger appears at
+        # position (geocent_time_gps - start_time)*fs within the array, not always at the end.
+        start_time = _GPS_REF - self.duration / 2.0
         ifo = get_empty_interferometer(detector)
         ifo.minimum_frequency = self.f_lower
         ifo.maximum_frequency = self.f_upper
@@ -459,14 +466,17 @@ class BilbySignalInjector:
         n = len(waveform)
         dt = 1.0 / self.sample_rate
         freqs = np.fft.rfftfreq(n, dt)
-        hf = np.fft.rfft(waveform.astype(np.float64))
+        # rfft returns DFT coefficients X[k] = sum_n x[n]*exp(-2πikn/N)
+        # which approximates H_c(f_k) * sample_rate (continuous FT × sample_rate).
+        # The matched-filter SNR uses the continuous FT:
+        #   ρ² = 4·df·∑ |H_c(f_k)|² / S_n(f_k) = 4·df·∑ |rfft(h)[k]|² / (fs²·S_n(f_k))
+        hf = np.fft.rfft(waveform.astype(np.float64)) / self.sample_rate
         if psd_dict and "psd" in psd_dict and "frequencies" in psd_dict:
             psd_vals = np.interp(freqs, psd_dict["frequencies"], psd_dict["psd"])
         else:
             psd_obj = PowerSpectralDensity.from_aligo()
             psd_vals = np.interp(freqs, psd_obj.frequency_array, psd_obj.psd_array)
         psd_vals = np.maximum(psd_vals, 1e-55)
-        # Zero below f_lower
         mask = freqs >= self.f_lower
         df = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0 / self.duration
         snr_sq = 4.0 * df * float(np.sum(np.abs(hf[mask]) ** 2 / psd_vals[mask]))

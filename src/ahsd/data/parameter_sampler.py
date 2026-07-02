@@ -23,8 +23,14 @@ _log = logging.getLogger(__name__)
 GPS_REF: float = 1369224018.0
 
 # ── Distance priors (Mpc) ──────────────────────────────────────────────────────
+# Upper bounds chosen so that typical events have network SNR > 8 after the
+# correct matched-filter formula (ρ² = 4·df·∑|H_c|²/S_n).  Very distant events
+# are still drawn but rejected by the SNR gate during dataset generation.
+# BBH: typical (m1~20M☉) detectable to ~800 Mpc; heavy (m1~80M☉) to ~2000 Mpc
+# BNS: aLIGO BNS range ~200 Mpc
+# NSBH: between BNS and BBH
 _DIST_MIN = {"BBH": 50.0, "BNS": 10.0, "NSBH": 20.0}
-_DIST_MAX = {"BBH": 5000.0, "BNS": 600.0, "NSBH": 2000.0}
+_DIST_MAX = {"BBH": 2000.0, "BNS": 300.0, "NSBH": 800.0}
 
 # ── Mass bounds (M☉) ──────────────────────────────────────────────────────────
 _MASS_BBH = (5.0, 100.0)
@@ -98,10 +104,12 @@ class ParameterSampler:
         p["theta_jn"] = float(np.arccos(self.rng.uniform(-1.0, 1.0)))
         p["psi"] = float(self.rng.uniform(0.0, np.pi))
         p["phase"] = float(self.rng.uniform(0.0, 2 * np.pi))
-        # geocent_time as offset [-2, 7] s; absolute GPS kept separately
-        t_off = float(self.rng.uniform(-2.0, 7.0))
-        p["geocent_time"] = t_off
-        p["geocent_time_gps"] = GPS_REF + t_off
+        # Data window: [GPS_REF - T/2, GPS_REF + T/2] = [GPS_REF-2, GPS_REF+2] for T=4s.
+        # Sample merger within this window with 0.5s margins from each edge.
+        # geocent_time = offset from GPS_REF (the NPE label, in seconds).
+        t_off = float(self.rng.uniform(-1.5, 1.5))
+        p["geocent_time"] = t_off          # NPE label: offset within window
+        p["geocent_time_gps"] = GPS_REF + t_off  # absolute GPS for bilby
         p.update(self._sample_spins(event_type))
         m1, m2 = p["mass_1"], p["mass_2"]
         p["chirp_mass"] = float((m1 * m2) ** 0.6 / (m1 + m2) ** 0.2)

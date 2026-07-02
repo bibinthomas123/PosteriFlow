@@ -178,13 +178,13 @@ class ParameterScaler:
             # TIME: Z-score (can be negative, includes edge cases)
             # ============================================================
             elif param == "geocent_time":
-                # linear_minmax over the full prior range guarantees 0% clipping at ±FLOW_NORM_BOUND.
-                # zscore was clipping 1.8% of samples: at the clip boundary (7.0),
-                # z = (7.0 - 0.722) / 1.903 = 3.30 > 3.0. Stale scaler stats amplified this.
+                # Merger is sampled uniformly within [-1.5, 1.5] s of GPS_REF.
+                # Data window is [GPS_REF-2, GPS_REF+2]; 0.5s margins on each edge.
+                # linear_minmax guarantees exact coverage with zero clipping.
                 scalers[param] = {
                     "type": "linear_minmax",
-                    "min": -2.0,
-                    "max": 7.0,
+                    "min": -1.5,
+                    "max": 1.5,
                     "scale_to": [-1.0, 1.0],
                 }
             elif param == "time_delay":

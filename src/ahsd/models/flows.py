@@ -519,16 +519,10 @@ class NSFPosteriorFlow(nn.Module):
         else:
             x, log_det = self.transform.inverse(z)
         
-        # ✅ NEW: Distance anchoring via context residual
-        # Distance (param index 2) gets explicit guidance from context
-        if self.distance_context_head is not None and context is not None:
-            try:
-                distance_residual = self.distance_context_head(context)  # [batch, 1]
-                # Add small residual from context (prevents drift, preserves learned structure)
-                x[:, 2] = x[:, 2] + 0.05 * torch.tanh(distance_residual.squeeze(1))
-            except Exception as e:
-                self.logger.debug(f"Distance context head failed: {e}")
-        
+        # NOTE: distance_context_head residual was removed — it modified x[:, 2] post-transform,
+        # breaking flow bijectivity: forward(x)→z does not invert this residual, so log|det J|
+        # was computed for a different transformation than inverse() applied, corrupting NLL.
+
         # ✅ FEB 4: Sanitize output
         if torch.isnan(x).any() or torch.isinf(x).any():
             x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -568,9 +562,10 @@ class NSFPosteriorFlow(nn.Module):
             self.logger.error(f"🔴 NSF.log_prob() assertion failed: {e}")
             log_p = torch.ones(x.shape[0], device=x.device, dtype=x.dtype) * 1000.0
         
-        # Add Jacobian correction: log p(x) = log p(x/T) + d * log(T)
-        # where d is the dimension (self.features)
-        log_prob_corrected = log_p + self.features * torch.log(temperature)
+        # Change-of-variables: y=x/T → log p_x(x) = log p_y(x/T) + log|det ∂y/∂x|
+        # det ∂y/∂x = T^{-d}  →  log|det| = -d·log(T)
+        # Correct: log p_x(x) = log p_y(x/T) - d·log(T)
+        log_prob_corrected = log_p - self.features * torch.log(temperature)
         
         # ✅ FEB 4: Sanitize output
         if torch.isnan(log_prob_corrected).any():

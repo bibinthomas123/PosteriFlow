@@ -105,10 +105,9 @@ class Results:
 # Helpers
 # ---------------------------------------------------------------------------
 def load_chunks(split_dir, max_chunks=None):
-    import pickle, gzip
+    import pickle
     split_dir = Path(split_dir)
-    # Support chunk_*.pkl, chunk_*.pkl.gz, and batch_*.pkl.gz
-    for pattern in ("chunk_*.pkl", "chunk_*.pkl.gz", "batch_*.pkl.gz", "batch_*.pkl"):
+    for pattern in ("chunk_*.pkl", "batch_*.pkl"):
         files = sorted(split_dir.glob(pattern))
         if files:
             break
@@ -117,8 +116,7 @@ def load_chunks(split_dir, max_chunks=None):
     samples = []
     for f in files:
         try:
-            opener = gzip.open if f.suffix == ".gz" else open
-            with opener(f, "rb") as fh:
+            with open(f, "rb") as fh:
                 data = pickle.load(fh)
             samples.extend(data if isinstance(data, list) else data.get("samples", []))
         except Exception as e:
@@ -129,17 +127,15 @@ def load_chunks(split_dir, max_chunks=None):
 def find_splits(data_dir):
     d = Path(data_dir)
     splits = {}
-    # Named train/val/test subdirs
     for name in ("train", "validation", "val", "test"):
         p = d / name
-        for pat in ("chunk_*.pkl", "chunk_*.pkl.gz", "batch_*.pkl.gz", "batch_*.pkl"):
+        for pat in ("chunk_*.pkl", "batch_*.pkl"):
             if p.is_dir() and list(p.glob(pat)):
                 splits[name] = p
                 break
-    # Flat batches/ dir (ahsd-generate default output)
     batches_dir = d / "batches"
     if not splits and batches_dir.is_dir():
-        for pat in ("batch_*.pkl.gz", "batch_*.pkl", "chunk_*.pkl"):
+        for pat in ("batch_*.pkl", "chunk_*.pkl"):
             if list(batches_dir.glob(pat)):
                 splits["train"] = batches_dir
                 break

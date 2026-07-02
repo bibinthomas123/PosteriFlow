@@ -23,7 +23,6 @@ try:
 except ImportError:
     HAS_WHISPER = False
     HAS_WHISPER_CONFIG = False
-    logging.warning("Whisper not available; will use lightweight Transformer fallback")
 
 
 class TransformerStrainEncoder(nn.Module):

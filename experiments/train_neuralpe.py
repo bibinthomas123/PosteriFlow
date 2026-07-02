@@ -33,6 +33,7 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import json
 from ahsd.models.overlap_neuralpe import OverlapNeuralPE
+from ahsd.models.transformer_encoder import HAS_WHISPER
 from experiments.train_priority_net import ChunkedGWDataLoader
 from ahsd.utils.universal_config import UniversalConfigReader, load_config
 from ahsd.utils.noise_marginalization import marginalize_loss_by_theta, should_marginalize
@@ -44,7 +45,6 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
-    print("WandB not available - install with: pip install wandb")
 
 
 def setup_logging(output_dir: Path, verbose: bool = False):
@@ -995,7 +995,8 @@ class OverlapNeuralPETrainer:
                     self.logger.debug("No validation data collected for diagnostics")
 
         except Exception as e:
-            self.logger.error(f"Flow diagnostics failed: {type(e).__name__}: {e}")
+            import traceback
+            self.logger.error(f"Flow diagnostics failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
 
         val_metrics = {"avg_loss": np.mean(epoch_losses), "avg_flow_loss": np.mean(epoch_nlls)}
         if epoch_physics_losses:
@@ -1244,6 +1245,11 @@ def main():
     output_dir = Path(args.output_dir)
     setup_logging(output_dir, args.verbose)
     logger = logging.getLogger(__name__)
+
+    if not WANDB_AVAILABLE:
+        logger.info("WandB not available - install with: pip install wandb")
+    if not HAS_WHISPER:
+        logger.info("Whisper not available; using lightweight Transformer fallback")
 
     # ✅ Load config using UniversalConfigReader
     logger.info("Loading config with UniversalConfigReader...")

@@ -15,7 +15,7 @@ from pathlib import Path
 from ahsd.core.priority_net import PriorityNet
 from ahsd.core.adaptive_subtractor import AdaptiveSubtractor
 from ahsd.models.flows import create_flow_model
-from ahsd.models.parameter_scalers import TorchParameterScaler
+from ahsd.models.parameter_scalers import TorchParameterScaler, FLOW_NORM_BOUND
 from ahsd.utils import UniversalConfigReader, ConfigDict
 
 
@@ -306,31 +306,6 @@ class OverlapNeuralPE(nn.Module):
         self.logger.info(f"   Distance prediction head initialized ({self._count_distance_head_params():,} params)")
         self.logger.info(f"   PSD head initialized ({self._count_psd_head_params():,} params) with physics-correct scaling")
 
-    def _parse_config(self, config: Union[Dict[str, Any], ConfigDict, str, Path]) -> ConfigDict:
-        """
-        Parse configuration from various formats.
-        
-        Args:
-            config: Config as dict, ConfigDict, or path to YAML file
-        
-        Returns:
-            ConfigDict with configuration
-        """
-        if isinstance(config, ConfigDict):
-            return config
-        elif isinstance(config, dict):
-            return self._reader._to_config_dict(config)
-        elif isinstance(config, (str, Path)):
-            # Load from file
-            config_path = Path(config)
-            if not config_path.exists():
-                self.logger.warning(f"Config file not found: {config_path}, using empty config")
-                return ConfigDict()
-            return self._reader.load(config_path)
-        else:
-            self.logger.warning(f"Unknown config type: {type(config)}, using empty config")
-            return ConfigDict()
-    
     def _get_parameter_bounds(self) -> Dict[str, Tuple[float, float]]:
          """Get parameter bounds for normalization - CORRECTED TO MATCH ACTUAL DATASET (Dec 14, REVISED)."""
          bounds = {
@@ -666,7 +641,7 @@ class OverlapNeuralPE(nn.Module):
                 self.logger.error(f"   Context shape BEFORE SNR concat: {context.shape}")
                 self.logger.error(f"   Network SNR shape: {network_snr_before_norm.shape}")
                 self.logger.error(f"   SNR conditioning enabled: {snr_conditioning_enabled}")
-                self.logger.error(f"   Distance head expects context_dim: 769 (768 + 1)")
+                self.logger.error(f"   Distance head expects context_dim: {self.context_dim_with_snr} ({self.context_dim} + 1)")
                 self.logger.error(f"   But will receive context with shape: {context.shape[1]}")
                 # Try to add SNR anyway
                 try:
@@ -894,7 +869,7 @@ class OverlapNeuralPE(nn.Module):
          param_bounds = [
              (1.0, 100.0),          # mass_1
              (1.0, 100.0),          # mass_2
-             (10.0, 15000.0),       # luminosity_distance
+             (10.0, 5000.0),        # luminosity_distance — matches scaler log_max=ln(5000)
              (0.0, 2*np.pi),        # ra
              (-np.pi/2, np.pi/2),   # dec
              (0.0, np.pi),          # theta_jn
@@ -931,16 +906,29 @@ class OverlapNeuralPE(nn.Module):
     def _denormalize_parameters(self, normalized_params: torch.Tensor) -> torch.Tensor:
         """
         Denormalize parameters back to physical units using advanced scaler.
-        
+
         Args:
             normalized_params: [batch, param_dim] normalized to [-1, 1]
         Returns:
             physical: [batch, param_dim] physical parameter values
         """
-        # ✅ FEB 7 CRITICAL FIX: Clamp normalized values to [-1, 1] before denormalization
-        # Problem: Flow can output values beyond [-1, 1], causing negative/exploding physical values
-        # Solution: Hard clamp in normalized space prevents denormalization issues
-        clamped_params = torch.clamp(normalized_params, min=-1.0, max=1.0)
+        # Per-parameter clamping: bounded scalers (log_minmax, bounded_angle,
+        # linear_minmax, periodic) live in [-1, 1] and must be clamped there.
+        # Z-score scalers (log_zscore, bounded_zscore, zscore) have legitimate
+        # support beyond ±1 — blanket clamping to [-1, 1] truncates posteriors
+        # for heavy masses (>37.7 M☉), fast spins (>0.445), and extreme times.
+        # denormalize_batch already enforces physical bounds internally on both paths.
+        _BOUNDED_TYPES = {"log_minmax", "bounded_angle", "linear_minmax", "periodic"}
+        clamped_params = normalized_params.clone()
+        for i, pname in enumerate(self.param_names):
+            if i >= clamped_params.shape[1]:
+                break
+            stype = self.param_scaler.scalers[pname].get("type", "linear_minmax")
+            if stype in _BOUNDED_TYPES:
+                clamped_params[:, i] = torch.clamp(normalized_params[:, i], -1.0, 1.0)
+            else:
+                # Z-score types: allow ±5σ (matches normalize_batch clip)
+                clamped_params[:, i] = torch.clamp(normalized_params[:, i], -5.0, 5.0)
         physical = self.param_scaler.denormalize_batch(clamped_params)
         
         # Additional safety: Ensure luminosity_distance is always positive
@@ -1345,14 +1333,9 @@ class OverlapNeuralPE(nn.Module):
         # Distance head needs original [batch, 768] context, not the [batch, 769] with SNR
         context_for_distance_head = context.clone()
         
-        # ✅ FEB 6 CRITICAL FIX: Freeze distance head to prevent bias corruption
-        # The distance head was learning a scale factor that biased the flow's learned distribution
-        # By epoch 5, this caused +389 Mpc median bias (vs correct 0 normalized distance)
-        # Solution: Freeze distance head parameters and add normalization prior loss instead
-        # This allows the flow to learn the true distribution without interference
-        if hasattr(self, 'distance_head'):
-            for param in self.distance_head.parameters():
-                param.requires_grad = False
+        # Distance head freeze removed. The prior bias was caused by BUG-01 (wrong NLL
+        # direction), not the distance head itself. With BUG-01 fixed, the head no longer
+        # needs to be frozen — and freezing at random init corrupted the flow input.
         
         # ✅ STEP 5: EXPLICIT SNR CONDITIONING (INFERENCE-SAFE)
         # Append ONLY network SNR to context (always available at inference)
@@ -1540,10 +1523,6 @@ class OverlapNeuralPE(nn.Module):
         # Without adapter (PriorityNet disabled):
         # - Use original weight 5.0 (no help from task transformation)
         # - Keep threshold 0.6
-        # ✅ REMOVED (Jan 2): Unused penalty computation - actual penalty is in STEP 6 (lines 1886+)
-        # This code was computing a penalty but never using it, causing confusion
-        # The real variance penalty is computed below at line 1909 using weight 10.0
-        
         # ========================================
         # STEP 2: EXTRACT SIGNALS (Using Ground Truth for Now)
         # ========================================
@@ -1626,64 +1605,12 @@ class OverlapNeuralPE(nn.Module):
                         log_sigma_psd_for_loss = torch.zeros(batch_size, self.param_dim,
                                                             device=params_norm.device, dtype=params_norm.dtype)
                     
-                    # ✅ FEB 4 CRITICAL FIX: Distance de-scaling (resolve flow-distance-head conflict)
-                    # Distance is almost entirely SNR-driven, not learned by flow
-                    # De-scale distance before flow: flow learns manifold shape, not amplitude
-                    # Re-scale during sampling
-                    distance_idx = 2  # luminosity_distance is 3rd parameter
+                    # Pass normalized parameters directly to the flow without de-scaling.
+                    # The distance head de-scaling was removed because:
+                    # 1. The head was frozen at random init (BUG-03), adding random noise to distance.
+                    # 2. The original bias it was meant to fix was caused by BUG-01 (wrong NLL
+                    #    direction), which is now corrected. The flow learns distance directly.
                     params_for_flow = params_norm.clone()
-                    
-                    # Predict distance scale from context
-                    if hasattr(self, 'distance_head') and self.distance_head is not None:
-                        try:
-                            log_distance_scale = self.distance_head(context)  # [batch, 1]
-                            distance_scale = torch.exp(log_distance_scale).squeeze(1)  # [batch]
-                            # De-scale: flow models normalized distance
-                            params_for_flow[:, distance_idx] = params_norm[:, distance_idx] / (distance_scale + 1e-6)
-                            
-                            # ✅ FEB 5 CRITICAL FIX: Track distance_head learning metrics for epoch-level logging
-                            # IMPORTANT: Extract SNR BEFORE LayerNorm (which destroys batch-level structure)
-                            # LayerNorm normalizes per-sample, destroying global amplitude information
-                            # We need raw values across many samples to see SNR-distance relationship
-                            with torch.no_grad():
-                                # Get network SNR from context BEFORE LayerNorm was applied
-                                # (context was concatenated with SNR at line ~565, before any norm)
-                                # Extract from raw context before normalization
-                                network_snr_batch = context[:, -1:].squeeze(1)  # [batch]
-                                log_distance_scale_batch = log_distance_scale.squeeze(1)  # [batch]
-                                
-                                # Accumulate across batches for epoch-level correlation
-                                # (cannot compute meaningful correlation within one batch after LayerNorm)
-                                try:
-                                    if not hasattr(self, '_epoch_distance_data'):
-                                        self._epoch_distance_data = {'snr': [], 'log_scale': []}
-                                    
-                                    # Use RAW SNR stored during context computation (before LayerNorm)
-                                    # This is updated every batch, so accumulate it here
-                                    if hasattr(self, '_raw_snr_batch') and self._raw_snr_batch is not None:
-                                        snr_np = self._raw_snr_batch.cpu().numpy().astype(np.float32)
-                                    else:
-                                        # Fallback: use SNR from context (after LayerNorm, less variance but better than nothing)
-                                        snr_np = network_snr_batch.cpu().detach().numpy().astype(np.float32)
-                                    
-                                    scale_np = log_distance_scale_batch.cpu().detach().numpy().astype(np.float32)
-                                    
-                                    # Accumulate this batch's data
-                                    self._epoch_distance_data['snr'].extend(snr_np.flatten().tolist())
-                                    self._epoch_distance_data['log_scale'].extend(scale_np.flatten().tolist())
-                                    
-                                    # Debug: log SNR variance per batch
-                                    if len(snr_np) > 1:
-                                        batch_snr_std = float(np.std(snr_np))
-                                        if batch_snr_std > 1e-6:
-                                            self.logger.debug(f"Distance: batch SNR std={batch_snr_std:.3e}, accumulated n={len(self._epoch_distance_data['snr'])}")
-                                except Exception as e:
-                                    self.logger.debug(f"Distance data accumulation failed: {e}")
-                        except Exception as e:
-                            self.logger.debug(f"Distance de-scaling failed: {e}")
-                            # Continue without de-scaling if it fails
-                    else:
-                        self.logging.error("Distance head is None")
                     nll_loss = self.flow.compute_psd_aware_nll(params_for_flow, context, log_sigma_psd_for_loss)
                     bounds_penalty = self.flow.compute_bounds_penalty(params_norm)
                     
@@ -1691,45 +1618,9 @@ class OverlapNeuralPE(nn.Module):
                     # Early freeze allows flow to stabilize before distance head interferes
                     #should_freeze_distance_head = (self.training_step < 1000)  # ~first 10 epochs
                     
-                    # ✅ FEB 4 CRITICAL: Add distance_head supervision loss
-                    # Distance_head learns SNR-distance relationship
-                    # Loss: Make log_distance_scale inversely correlated with SNR
+                    # Distance head supervision loss removed along with the de-scaling block.
+                    # The flow now learns distance directly from normalized parameters.
                     distance_head_loss = torch.tensor(0.0, device=context.device, dtype=context.dtype)
-                    if hasattr(self, 'distance_head') and self.distance_head is not None:
-                        try:
-                            # Extract SNR from context
-                            network_snr_batch = context[:, -1:].squeeze(1)  # [batch]
-                            
-                            # We want: corr(log_scale, SNR) < -0.5 (strong negative)
-                            # Strategy: penalize BOTH positive correlation AND weak negative correlation
-                            # This gives consistent gradient signal to learn the relationship
-                            
-                            # Center both variables
-                            log_scale_centered = log_distance_scale_batch - log_distance_scale_batch.mean()
-                            snr_centered = network_snr_batch - network_snr_batch.mean()
-                            
-                            # Normalize for scale-invariant correlation
-                            log_scale_std = log_scale_centered.std() + 1e-6
-                            snr_std = snr_centered.std() + 1e-6
-                            log_scale_norm = log_scale_centered / log_scale_std
-                            snr_norm = snr_centered / snr_std
-                            
-                            # Compute correlation signal (ranges -1 to +1)
-                            correlation_signal = (log_scale_norm * snr_norm).mean()
-                            
-                            # Loss: Push toward negative correlation
-                            # Penalize: positive correlation (wrong sign) + weak negative (not strong enough)
-                            # Target: correlation < -0.5
-                            target_corr = -0.5
-                            correlation_loss = torch.relu(correlation_signal - target_corr)
-                            
-                            # Also penalize scale being too far from 1.0 (scale exploding)
-                            scale_magnitude_loss = torch.relu(torch.abs(log_distance_scale_batch).mean() - 0.3) * 0.5
-                            
-                            distance_head_loss = correlation_loss + 0.5 * scale_magnitude_loss
-                        except Exception as e:
-                            self.logger.debug(f"Distance head loss computation failed: {e}")
-                            distance_head_loss = torch.tensor(0.0, device=context.device, dtype=context.dtype)
                     
                     # REMOVED mean-anchor loss entirely
                     # Reason: Rank loss (calibration) already does the right thing
@@ -1979,8 +1870,8 @@ class OverlapNeuralPE(nn.Module):
         try:
             true_params_primary = true_params[:, 0, :]
             params_norm = self._normalize_parameters(true_params_primary)
-            # Check if any parameters are out of [-1, 1] after normalization
-            out_of_bounds_mask = torch.abs(params_norm) > 1.0
+            # Check if any parameters are out of [-FLOW_NORM_BOUND, FLOW_NORM_BOUND]
+            out_of_bounds_mask = torch.abs(params_norm) > FLOW_NORM_BOUND
             out_of_bounds_fraction = out_of_bounds_mask.float().mean()
             # Penalize out-of-bounds samples
             bounds_loss = 0.5 * out_of_bounds_fraction
@@ -2355,10 +2246,11 @@ class OverlapNeuralPE(nn.Module):
                         #         Gradients stop vanishing at large distances
                         #         Posterior geometry becomes sane
                         # 
-                        # Log-space normalization bounds (from parameter scaler):
-                        # log(D_L) ∈ [log(10), log(5000)] Mpc = [2.303, 8.517]
-                        log_dist_min = np.log(10.0)    # 2.303
-                        log_dist_max = np.log(5000.0)  # 8.517
+                        # Log-space normalization bounds — read directly from scaler to
+                        # stay in sync if the distance prior range ever changes.
+                        _dist_scaler = self.param_scaler.scalers.get("luminosity_distance", {})
+                        log_dist_min = _dist_scaler.get("log_min", np.log(10.0))
+                        log_dist_max = _dist_scaler.get("log_max", np.log(5000.0))
                         
                         #  [-1, 1] → log-space
                         # Formula: x_mapped = x * (b-a)/2 + (a+b)/2
@@ -2622,29 +2514,14 @@ class OverlapNeuralPE(nn.Module):
             except Exception:
                 pass  # Ignore if distance head not ready
         
-        # ✅ FEB 6 CRITICAL FIX: Distance normalization prior to prevent flow bias
-        # The distance head learns a scale factor that biases the flow's output distribution
-        # By epoch 5, normalized distance drifts to +0.44 causing +389 Mpc median bias
-        # Solution: Add prior loss that keeps normalized distance centered at 0
-        # This allows flow to learn true unbiased distribution
-        distance_norm_prior_loss = torch.tensor(0.0, device=strain_data.device)
-        if self.training and params_norm.shape[1] > 2:  # Has distance parameter (index 2)
-            # Penalize if normalized distance deviates from expected [-1, 1] center (0.0)
-            # Weight: 0.02 (light regularization, allows flow to still learn variations)
-            distance_norm = params_norm[:, 2]  # [batch]
-            distance_norm_prior_loss = 0.02 * torch.mean(distance_norm ** 2)
-        
-        # ✅ FEB 7 FIX: Removed auxiliary distance losses from total_loss
-        # auxiliary_dist_loss_weight and distance_prior_loss both disabled (weight=0.0)
-        # Flow learns distance naturally from SNR-distance physics
-        # Added: distance_norm_prior_loss to prevent systematic bias
         total_loss = (
-            flow_loss_weight * flow_loss_total +                  # PRIMARY: NLL from NSF (1.0 weight)
-            bounds_penalty_weight * bounds_loss +                 # SECONDARY: soft parameter bounds (0.15)
-            context_variance_penalty +                            # TERTIARY: encoder variance (0.1 weight cap)
-            physics_geom_weight * physics_geom_loss +             # QUATERNARY: geometry preservation (0.04 weight)
-            distance_norm_prior_loss                              # QUINARY: distance centering (0.02 weight) - FEB 6 FIX
+            flow_loss_weight * flow_loss_total +     # PRIMARY: NLL from NSF
+            bounds_penalty_weight * bounds_loss +    # SECONDARY: soft parameter bounds
+            context_variance_penalty +               # TERTIARY: encoder variance cap
+            physics_geom_weight * physics_geom_loss +# QUATERNARY: geometry preservation
+            calibration_loss                         # QUINARY: posterior calibration
         )
+        distance_norm_prior_loss = torch.tensor(0.0, device=strain_data.device)
         self._diversity_weight = diversity_weight
         
         return {
@@ -2711,15 +2588,22 @@ class OverlapNeuralPE(nn.Module):
                     q90_bias_per_param = {}
                     std_per_param = {}
                     
+                    # Circular parameters (ra=index 3, phase=index 7): wrap errors into [-π, π]
+                    _circular_params = {"ra", "phase"}
+                    import math as _math
                     for i, param_name in enumerate(self.param_names):
-                        errors = (pred_mean[:, i] - true_params_primary[:, i])
-                        
+                        raw_errors = pred_mean[:, i] - true_params_primary[:, i]
+                        if param_name in _circular_params:
+                            errors = ((raw_errors + _math.pi) % (2 * _math.pi)) - _math.pi
+                        else:
+                            errors = raw_errors
+
                         # Mean bias (for reference, but not the target metric)
                         mean_bias = errors.mean().item()
-                        
+
                         # MEDIAN BIAS (THIS IS THE TARGET - should → 0)
                         median_bias = errors.median().item()
-                        
+
                         # QUANTILE BIAS (10-90% range)
                         q10_bias = torch.quantile(errors, 0.1).item()
                         q90_bias = torch.quantile(errors, 0.9).item()
@@ -2744,7 +2628,8 @@ class OverlapNeuralPE(nn.Module):
                     metrics['sample_mse'] = 999.0
                     metrics['max_bias'] = 999.0
             except Exception as e:
-                self.logger.debug(f"Sample MSE computation failed: {e}")
+                import traceback as _tb
+                self.logger.warning(f"Sample MSE computation failed: {type(e).__name__}: {e}\n{_tb.format_exc()}")
                 metrics['sample_mse'] = 999.0
             
             # ===== METRIC 2: Sample Diversity (Variance Check) =====
@@ -2918,7 +2803,7 @@ class OverlapNeuralPE(nn.Module):
                 metrics['context_norm_mean'] = torch.norm(context, dim=-1).mean().item()
                 metrics['context_norm_std'] = torch.norm(context, dim=-1).std().item()
             except Exception as e:
-                self.logger.debug(f"Context utilization computation failed: {e}")
+                self.logger.warning(f"Context utilization computation failed: {type(e).__name__}: {e}")
             
             # ===== METRIC 4: Velocity Network Output Norms (FlowMatching only) =====
               # NSF doesn't have velocity_net, skip this diagnostic

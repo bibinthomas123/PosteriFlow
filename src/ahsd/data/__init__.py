@@ -1,37 +1,38 @@
 """
 AHSD Data Module
-===============
-Complete gravitational wave dataset generation and management for AHSD pipeline.
-
-Main Components:
-- Dataset generation with overlapping signals
-- PSD management and noise generation
-- Waveform injection and parameter sampling
-- GWTC catalog integration
-- Preprocessing and quality validation
+================
+Gravitational-wave dataset generation using bilby for all physics.
 """
 
-from .dataset_generator import GWDatasetGenerator
+from .dataset_generator import GWDatasetGenerator, PARAM_NAMES, DETECTORS
 from .parameter_sampler import ParameterSampler
-from .psd_manager import PSDManager
-from .waveform_generator import WaveformGenerator
-from .injection import SignalInjector
-from .preprocessing import DataPreprocessor
-from .gwtc_loader import GWTCLoader
-from .noise_generator import NoiseGenerator, RealNoiseGenerator
+from .bilby_pipeline import (
+    BilbyWaveformGenerator as WaveformGenerator,
+    BilbyNoiseGenerator as NoiseGenerator,
+    BilbySignalInjector as SignalInjector,
+    BilbyPreprocessor as DataPreprocessor,
+    get_default_psd,
+)
 from . import snr_utils
 
+# Optional: GWTC catalog loader (requires extra deps)
+try:
+    from .gwtc_loader import GWTCLoader
+except ImportError:
+    GWTCLoader = None
+
 __all__ = [
-    'GWDatasetGenerator',
-    'ParameterSampler',
-    'PSDManager',
-    'WaveformGenerator',
-    'SignalInjector',
-    'DataPreprocessor',
-    'GWTCLoader',
-    'NoiseGenerator',
-    'RealNoiseGenerator',
-    'snr_utils'
+    "GWDatasetGenerator",
+    "PARAM_NAMES",
+    "DETECTORS",
+    "ParameterSampler",
+    "WaveformGenerator",
+    "NoiseGenerator",
+    "SignalInjector",
+    "DataPreprocessor",
+    "get_default_psd",
+    "GWTCLoader",
+    "snr_utils",
 ]
 
-__version__ = '1.0.0'
+__version__ = "2.0.0"

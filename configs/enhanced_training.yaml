@@ -208,17 +208,17 @@ neural_posterior:
     #   corr(log_distance_scale, network_snr) should be < -0.7
     #   Flow sees normalized distance, learns shape independent of amplitude
     per_param_tail_bounds:
-      0: 2.0   # mass_1: [1, 100] Msun (moderate range)
-      1: 2.0   # mass_2: [1, 100] Msun (moderate range)
-      2: 0.8   # luminosity_distance: TIGHT (FEB 4 FIX) - amplitude from distance_head, shape from flow
-      3: 1.5   # ra: bounded angle, small range
-      4: 1.5   # dec: bounded angle, small range
-      5: 1.5   # theta_jn: [0, pi], moderate constraint
-      6: 1.5   # psi: [0, pi], moderate constraint 
-      7: 1.5   # phase: [0, 2pi], moderate constraint
-      8: 2.5   # geocent_time: [-2, 8]s, needs more room for overlap timing
-      9: 1.0   # a1: [0, 0.99], tiny range, tight constraint
-      10: 1.0  # a2: [0, 0.99], tiny range, tight constraint
+      0: 3.0   # mass_1: log_zscore → spans [-3, +3] at prior edges
+      1: 3.0   # mass_2: log_zscore → spans [-3, +3] at prior edges
+      2: 1.5   # luminosity_distance: log_minmax → [-1, 1] + safety margin
+      3: 1.5   # ra: linear_minmax → [-1, 1] + safety margin
+      4: 1.5   # dec: linear_minmax → [-1, 1] + safety margin
+      5: 1.5   # theta_jn: linear_minmax → [-1, 1] + safety margin
+      6: 1.5   # psi: linear_minmax → [-1, 1] + safety margin
+      7: 1.5   # phase: linear_minmax → [-1, 1] + safety margin
+      8: 1.5   # geocent_time: linear_minmax [-2,7] → [-1, 1] + safety margin
+      9: 3.0   # a1: bounded_zscore → can reach ±3 (prior 0.6% clips at ±3)
+      10: 3.0  # a2: bounded_zscore → can reach ±3 (prior 0.3% clips at ±3)
     
     # ✅ JAN 7: Temperature scaling for base distribution
     # ✅ JAN 7 FIX: Reduced 1.5 → 1.0 to prevent posterior oscillation

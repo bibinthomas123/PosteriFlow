@@ -14,6 +14,11 @@ import logging
 # ✅ Import UniversalConfigReader for type-safe config access
 from ahsd.utils.universal_config import UniversalConfigReader, ConfigDict
 
+# Single source of truth for the normalizing flow's expected input/output range.
+# Imported from parameter_scalers so both sides of the normalize→flow boundary
+# always reference the same constant.
+from ahsd.models.parameter_scalers import FLOW_NORM_BOUND
+
 # ✅ NSF imports from nflows library
 from nflows.flows import Flow
 from nflows.distributions.normal import StandardNormal
@@ -366,7 +371,7 @@ class NSFPosteriorFlow(nn.Module):
     """
     
     def __init__(self, features: int, context_features: int = 0, hidden_features: int = 256,
-                 num_layers: int = 12, num_bins: int = 16, tail_bound: Union[float, Dict[int, float]] = 3.0,
+                 num_layers: int = 12, num_bins: int = 16, tail_bound: Union[float, Dict[int, float]] = FLOW_NORM_BOUND,
                  max_overlaps: int = 6, dropout: float = 0.0, temperature_scale: float = 1.5, **kwargs):
         super().__init__()
         
@@ -383,7 +388,7 @@ class NSFPosteriorFlow(nn.Module):
             self.per_param_tail_bounds = tail_bound
             # Create mapping for all features
             self.tail_bounds_list = [
-                tail_bound.get(i, 3.0) for i in range(features)
+                tail_bound.get(i, FLOW_NORM_BOUND) for i in range(features)
             ]
             self.logger.info(
                 f"✅ Per-parameter tail_bounds enabled: {self.tail_bounds_list}"
@@ -421,7 +426,7 @@ class NSFPosteriorFlow(nn.Module):
                         context_features=context_features if context_features > 0 else None,
                         num_bins=num_bins,
                         tails='linear',
-                        tail_bound=3.0,  # Will be overridden per-feature
+                        tail_bound=FLOW_NORM_BOUND,  # Will be overridden per-feature
                         num_blocks=2,
                         use_residual_blocks=True,
                         random_mask=False,
@@ -448,7 +453,7 @@ class NSFPosteriorFlow(nn.Module):
                         context_features=context_features if context_features > 0 else None,
                         num_bins=num_bins,
                         tails='linear',
-                        tail_bound=tail_bound if isinstance(tail_bound, float) else 3.0,
+                        tail_bound=tail_bound if isinstance(tail_bound, float) else FLOW_NORM_BOUND,
                         num_blocks=2,
                         use_residual_blocks=True,
                         random_mask=False,
@@ -528,8 +533,8 @@ class NSFPosteriorFlow(nn.Module):
         if torch.isnan(x).any() or torch.isinf(x).any():
             x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # Clamp to [-1, 1]
-        x = torch.clamp(x, -1.0, 1.0)
+        # Clamp to ±FLOW_NORM_BOUND — matches tail_bound and normalize_batch output range
+        x = torch.clamp(x, -FLOW_NORM_BOUND, FLOW_NORM_BOUND)
         return x, log_det
     
     def log_prob(self, x: torch.Tensor, context: torch.Tensor = None, temperature: Optional[float] = None) -> torch.Tensor:
@@ -605,7 +610,7 @@ class NSFPosteriorFlow(nn.Module):
                 z = z * temperature  # ✅ Apply temperature scaling to samples without context
                 samples, _ = self.inverse(z, None)
             
-            samples = torch.clamp(samples, -1.0, 1.0)
+            samples = torch.clamp(samples, -FLOW_NORM_BOUND, FLOW_NORM_BOUND)
             return samples
     
     def compute_psd_aware_nll(self, x: torch.Tensor, context: torch.Tensor,
@@ -632,26 +637,28 @@ class NSFPosteriorFlow(nn.Module):
         """
         batch_size = x.shape[0]
         
-        # ✅ CRITICAL: Transform x → z using inverse transform
-        # This gives us z samples that should follow base distribution
+        # Transform x (data) → z (latent) using the FORWARD transform.
+        # Change-of-variables: log p(x) = log p(z) + log|det ∂z/∂x|
+        # self.forward() returns (z, log|det ∂z/∂x|) — correct for density evaluation.
+        # self.inverse() maps z→x (sampling direction) and must NOT be used here.
         if isinstance(self.base_dist, PSDScaledNormal):
-            # Transform x → z
-            z, log_det = self.inverse(x, context)  # [batch, features]
-            
+            # Transform x → z (data → latent, correct direction)
+            z, log_det = self.forward(x, context)  # [batch, features]
+
             # Compute log_prob under PSD-scaled base
             log_p_base = self.base_dist.log_prob(z, log_sigma_psd)  # [batch]
-            
+
             # Compute log_det from flow transform
             log_det = log_det.squeeze() if log_det.dim() > 1 else log_det  # [batch]
-            
+
             # Total log probability with Jacobian
-            # log_p(x) = log_p(z) + log|det J|
+            # log_p(x) = log_p(z) + log|det ∂z/∂x|
             log_prob_x = log_p_base + log_det  # [batch]
-            
+
             # Return negative log likelihood (for minimization)
             nll = -log_prob_x  # [batch]
         else:
-            z, log_det = self.inverse(x, context)
+            z, log_det = self.forward(x, context)
             # Use standard Gaussian base distribution
             log_p_base = -0.5 * (z ** 2).sum(dim=1) - self.features * np.log(2 * np.pi) / 2
             log_det = log_det.squeeze() if log_det.dim() > 1 else log_det
@@ -700,9 +707,9 @@ class NSFPosteriorFlow(nn.Module):
                 # Transform z → x
                 x_flat, _ = self.inverse(z_flat, context_expanded)  # [batch*num_samples, features]
                 
-                # ✅ FEB 7 CRITICAL FIX: Clamp in normalized space BEFORE reshaping
-                # Must clamp BEFORE PSD scaling to prevent scaling destruction
-                x_flat = torch.clamp(x_flat, -1.0, 1.0)  # Clamp normalized values first
+                # Clamp in normalized space BEFORE PSD scaling.
+                # Use ±FLOW_NORM_BOUND to match tail_bound and normalize_batch output range.
+                x_flat = torch.clamp(x_flat, -FLOW_NORM_BOUND, FLOW_NORM_BOUND)
                 
                 # Reshape back to [batch, num_samples, features]
                 samples = x_flat.reshape(batch_size, num_samples, self.features)
@@ -722,8 +729,7 @@ class NSFPosteriorFlow(nn.Module):
                     batch_size, num_samples, self.context_features
                 ).reshape(batch_size * num_samples, self.context_features)
                 x_flat, _ = self.inverse(z_flat, context_expanded)
-                # ✅ FEB 7: Clamp here too before reshaping
-                x_flat = torch.clamp(x_flat, -1.0, 1.0)
+                x_flat = torch.clamp(x_flat, -FLOW_NORM_BOUND, FLOW_NORM_BOUND)
                 samples = x_flat.reshape(batch_size, num_samples, self.features)
                 
                 # ✅ FEB 7: Removed clamp after PSD scaling - denormalization will handle bounds
@@ -796,8 +802,8 @@ class NSFPosteriorFlow(nn.Module):
         nll = self.log_prob(params_norm, context).mean()
         return nll
     
-    def compute_bounds_penalty(self, params_norm: torch.Tensor, 
-                              bounds: Tuple[float, float] = (-1.0, 1.0)) -> torch.Tensor:
+    def compute_bounds_penalty(self, params_norm: torch.Tensor,
+                              bounds: Tuple[float, float] = (-FLOW_NORM_BOUND, FLOW_NORM_BOUND)) -> torch.Tensor:
         """
         ✅ NSF SECONDARY LOSS: Bounds penalty
         
@@ -818,8 +824,8 @@ class NSFPosteriorFlow(nn.Module):
         batch_size = params_norm.shape[0]
         
         # Sample extreme noise values
-        z_min = torch.full((batch_size, self.features), -3.0, device=params_norm.device)
-        z_max = torch.full((batch_size, self.features), +3.0, device=params_norm.device)
+        z_min = torch.full((batch_size, self.features), -FLOW_NORM_BOUND, device=params_norm.device)
+        z_max = torch.full((batch_size, self.features), +FLOW_NORM_BOUND, device=params_norm.device)
         
         # Transform to parameter space
         x_min, _ = self.inverse(z_min, context)
@@ -888,7 +894,7 @@ def create_flow_model(
                 kwargs.setdefault('tail_bound', per_param_bounds)
         else:
             # Fall back to global tail_bound
-            kwargs.setdefault('tail_bound', reader.get(flow_config_dict, 'tail_bound', default=3.0, dtype=float))
+            kwargs.setdefault('tail_bound', reader.get(flow_config_dict, 'tail_bound', default=FLOW_NORM_BOUND, dtype=float))
         
         logger.info(f"Flow config validated:")
         logger.info(f"  num_layers: {kwargs.get('num_layers')}")
@@ -901,7 +907,7 @@ def create_flow_model(
     kwargs.setdefault('num_layers', 12)
     kwargs.setdefault('hidden_features', 256)
     kwargs.setdefault('num_bins', 16)
-    kwargs.setdefault('tail_bound', 3.0)
+    kwargs.setdefault('tail_bound', FLOW_NORM_BOUND)
     kwargs.setdefault('dropout', 0.15)
     
     flow_type_lower = flow_type.lower()

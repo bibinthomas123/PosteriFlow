@@ -21,6 +21,11 @@ import torch.nn as nn
 from typing import Dict, Any, List
 import logging
 
+# Single source of truth for the normalizing flow's expected input range.
+# Must match: NSFPosteriorFlow tail_bound, normalize_batch clamp, sample/inverse clamps,
+# compute_bounds_penalty default bounds, and compute_endpoint_loss z extremes.
+FLOW_NORM_BOUND: float = 3.0
+
 
 logger = logging.getLogger(__name__)
 
@@ -173,11 +178,14 @@ class ParameterScaler:
             # TIME: Z-score (can be negative, includes edge cases)
             # ============================================================
             elif param == "geocent_time":
+                # linear_minmax over the full prior range guarantees 0% clipping at ±FLOW_NORM_BOUND.
+                # zscore was clipping 1.8% of samples: at the clip boundary (7.0),
+                # z = (7.0 - 0.722) / 1.903 = 3.30 > 3.0. Stale scaler stats amplified this.
                 scalers[param] = {
-                    "type": "zscore",
-                    "mean": 0.722,   # measured from full dataset (5895 samples, all splits)
-                    "std": 1.903,    # previous mean=1.371 caused +0.65s systematic bias
-                    "clip": [-2.0, 7.0],  # data range is [-1.83, 6.99]
+                    "type": "linear_minmax",
+                    "min": -2.0,
+                    "max": 7.0,
+                    "scale_to": [-1.0, 1.0],
                 }
             elif param == "time_delay":
                 scalers[param] = {
@@ -650,7 +658,11 @@ class TorchParameterScaler(nn.Module):
                 norm = 2.0 * angle / period - 1.0
                 normalized[:, i] = norm
 
-        
+        # Clamp all parameters to ±FLOW_NORM_BOUND to match the flow's tail_bound.
+        # Without this, log_zscore types can produce values up to ±5 while the
+        # flow samples are clamped at ±FLOW_NORM_BOUND — training-sampling range mismatch.
+        normalized = torch.clamp(normalized, -FLOW_NORM_BOUND, FLOW_NORM_BOUND)
+
         return normalized
     
     def denormalize_batch(self, normalized: torch.Tensor) -> torch.Tensor:

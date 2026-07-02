@@ -56,52 +56,34 @@ class DatasetWriter:
                       metadata: Dict = None,
                       compress: bool = False) -> Path:
         """
-        Save batch of samples to pickle file
-        
-        Args:
-            batch_id: Batch identifier
-            samples: List of sample dictionaries
-            metadata: Metadata dictionary
-            compress: Use gzip compression
-            
-        Returns:
-            Path to saved file
+        Save batch of samples to pickle file.
+        compress parameter is accepted but ignored — always writes uncompressed .pkl.
         """
-        
-        if compress:
-            filename = f"batch_{batch_id:05d}.pkl.gz"
-        else:
-            filename = f"batch_{batch_id:05d}.pkl"
-        
+
+        filename = f"batch_{batch_id:05d}.pkl"
+
         batch_dir = self.output_dir / "batches"
         batch_dir.mkdir(parents=True, exist_ok=True)
         filepath = batch_dir / filename
-        
+
         try:
-            # Create batch data structure
             batch_data = {
                 'metadata': metadata or {},
                 'samples': samples,
                 'batch_id': batch_id,
                 'n_samples': len(samples)
             }
-            
-            # Add metadata fields
+
             if metadata:
                 batch_data['metadata']['batch_id'] = batch_id
                 batch_data['metadata']['n_samples'] = len(samples)
-            
-            # Save with or without compression
-            if compress:
-                with gzip.open(filepath, 'wb') as f:
-                    pickle.dump(batch_data, f, protocol=pickle.HIGHEST_PROTOCOL)
-            else:
-                with open(filepath, 'wb') as f:
-                    pickle.dump(batch_data, f, protocol=pickle.HIGHEST_PROTOCOL)
-            
+
+            with open(filepath, 'wb') as f:
+                pickle.dump(batch_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
             self.logger.debug(f"✓ Batch {batch_id} saved to PKL ({len(samples)} samples)")
             return filepath
-            
+
         except Exception as e:
             self.logger.error(f"Failed to save PKL batch {batch_id}: {e}")
             raise
@@ -124,52 +106,37 @@ class DatasetWriter:
             Path to saved file
         """
         
-        if compress and not filename.endswith('.gz'):
-            if not filename.endswith('.pkl'):
-                filename = filename + '.pkl.gz'
-            else:
-                filename = filename + '.gz'
-        elif not compress and not filename.endswith('.pkl'):
+        if not filename.endswith('.pkl'):
             filename = filename + '.pkl'
-        
+
         filepath = self.output_dir / filename
-        
+
         try:
-            
-            # Ensure metadata has format_version
             if metadata is None:
                 metadata = {}
-            
+
             if 'format_version' not in metadata:
                 metadata['format_version'] = '1.0.0'
-            
+
             if 'creation_time' not in metadata:
                 from datetime import datetime
                 metadata['creation_time'] = datetime.now().isoformat()
-                
-                
+
             dataset = {
                 'metadata': metadata or {},
                 'samples': all_samples,
                 'n_samples': len(all_samples),
                 'format_version': '1.0.0'
             }
-            
-            # Add statistics
+
             from .io_utils import MetadataManager
             meta_manager = MetadataManager()
             stats = meta_manager.compute_dataset_statistics(all_samples)
             dataset['statistics'] = stats
-            
-            # Save
-            if compress:
-                with gzip.open(filepath, 'wb') as f:
-                    pickle.dump(dataset, f, protocol=pickle.HIGHEST_PROTOCOL)
-                self.logger.info(f"✓ Complete dataset saved to {filepath} (compressed)")
-            else:
-                with open(filepath, 'wb') as f:
-                    pickle.dump(dataset, f, protocol=pickle.HIGHEST_PROTOCOL)
-                self.logger.info(f"✓ Complete dataset saved to {filepath}")
+
+            with open(filepath, 'wb') as f:
+                pickle.dump(dataset, f, protocol=pickle.HIGHEST_PROTOCOL)
+            self.logger.info(f"✓ Complete dataset saved to {filepath}")
             
             # Get file size
             size_mb = filepath.stat().st_size / (1024 * 1024)
@@ -236,24 +203,17 @@ class DatasetWriter:
                 group.attrs[key] = str(value)
     
     def save_pickle(self, filename: str, data: Any, compress: bool = False) -> Path:
-        """Save arbitrary data to pickle file"""
-        
-        if compress and not filename.endswith('.gz'):
-            filename = filename + '.gz'
-        
+        """Save arbitrary data to pickle file. compress is accepted but ignored."""
+
         filepath = self.output_dir / filename
-        
+
         try:
-            if compress:
-                with gzip.open(filepath, 'wb') as f:
-                    pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-            else:
-                with open(filepath, 'wb') as f:
-                    pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-            
+            with open(filepath, 'wb') as f:
+                pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
             self.logger.info(f"✓ Saved pickle to {filepath}")
             return filepath
-            
+
         except Exception as e:
             self.logger.error(f"Failed to save pickle: {e}")
             raise
@@ -322,30 +282,23 @@ class DatasetWriter:
             start_idx = chunk_idx * chunk_size
             end_idx = min((chunk_idx + 1) * chunk_size, len(samples))
             chunk_samples = samples[start_idx:end_idx]
-            
-            # Save chunk
-            if compress:
-                chunk_file = split_dir / f'chunk_{chunk_idx:04d}.pkl.gz'
-                with gzip.open(chunk_file, 'wb') as f:
-                    pickle.dump(chunk_samples, f, protocol=pickle.HIGHEST_PROTOCOL)
-            else:
-                chunk_file = split_dir / f'chunk_{chunk_idx:04d}.pkl'
-                with open(chunk_file, 'wb') as f:
-                    pickle.dump(chunk_samples, f, protocol=pickle.HIGHEST_PROTOCOL)
-            
+
+            chunk_file = split_dir / f'chunk_{chunk_idx:04d}.pkl'
+            with open(chunk_file, 'wb') as f:
+                pickle.dump(chunk_samples, f, protocol=pickle.HIGHEST_PROTOCOL)
+
             self.logger.debug(f"  Chunk {chunk_idx+1}/{n_chunks}: {len(chunk_samples)} samples")
-        
+
         # Prepare comprehensive metadata
         split_metadata = {
-            'split': split_name,  
+            'split': split_name,
             'n_samples': len(samples),
             'n_chunks': n_chunks,
             'chunk_size': chunk_size,
-            'compressed': compress,
-            'file_pattern': 'chunk_XXXX.pkl.gz' if compress else 'chunk_XXXX.pkl',
-            'created_at': datetime.now(timezone.utc).isoformat(),  # ✅ UTC ISO format
-            'chunk_files': [f'chunk_{i:04d}.pkl' + ('.gz' if compress else '') 
-                        for i in range(n_chunks)]
+            'compressed': False,
+            'file_pattern': 'chunk_XXXX.pkl',
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'chunk_files': [f'chunk_{i:04d}.pkl' for i in range(n_chunks)]
         }
         
         if metadata:

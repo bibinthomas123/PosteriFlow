@@ -30,29 +30,20 @@ def setup_logging(verbose: bool = False):
 
 def load_split_samples(split_dir: Path, max_chunks: int = None):
     """Load samples from split directory."""
-    patterns = ['*chunk*.pkl', '*chunk*.pkl.gz', '*.pkl']
-    
-    chunk_files = []
-    for pattern in patterns:
-        chunk_files = sorted(split_dir.glob(pattern))
-        if chunk_files:
-            break
-    
+    chunk_files = sorted(split_dir.glob('*chunk*.pkl'))
+    if not chunk_files:
+        chunk_files = sorted(split_dir.glob('*.pkl'))
+
     if not chunk_files:
         return []
-    
+
     samples = []
     chunks_to_load = chunk_files[:max_chunks] if max_chunks else chunk_files
-    
+
     for chunk_file in chunks_to_load:
         try:
-            if chunk_file.suffix == '.gz':
-                import gzip
-                with gzip.open(chunk_file, 'rb') as f:
-                    chunk_data = pickle.load(f)
-            else:
-                with open(chunk_file, 'rb') as f:
-                    chunk_data = pickle.load(f)
+            with open(chunk_file, 'rb') as f:
+                chunk_data = pickle.load(f)
             
             if isinstance(chunk_data, list):
                 samples.extend(chunk_data)
@@ -984,7 +975,7 @@ def validate_split(split_name: str, split_dir: Path, logger, expected_config: Di
     validation['passed'] = True
     
     # Check chunk files
-    chunk_files = list(split_dir.glob('*chunk*.pkl')) + list(split_dir.glob('*chunk*.pkl.gz'))
+    chunk_files = sorted(split_dir.glob('*chunk*.pkl'))
     
     if not chunk_files:
         logger.error(f"  ✗ No chunk files found")

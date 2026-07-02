@@ -94,6 +94,7 @@ setup(
             "ahsd-test=ahsd.experiments.test_neuralpe:main",
             "ahsd-generate=ahsd.data.scripts.generate_dataset:main",
             "ahsd-validate=ahsd.data.scripts.validate_dataset:main",
+            "ahsd-validate-full=scripts.validate:main",
         ],
     },
     include_package_data=True,

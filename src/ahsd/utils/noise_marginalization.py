@@ -197,21 +197,19 @@ def marginalize_loss_by_theta(
         marginalized_loss = torch.stack(group_losses).mean()
         marginalized_dict[key] = marginalized_loss
     
-    # ✅ Log only every N batches to avoid spam
     if verbose and batch_idx % log_frequency == 0:
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
         n_unique_theta = len(groups)
         n_total_samples = len(batch_sample_ids)
         avg_noise_k = n_total_samples / n_unique_theta
-        print(
-            f"  ✅ Marginalization (batch {batch_idx}): {n_unique_theta} unique θ, "
-            f"{n_total_samples} total samples (K≈{avg_noise_k:.1f})"
-        )
         marginalized_keys = [k for k in loss_dict.keys() if k in MARGINALIZE_KEYS]
         regularizer_keys = [k for k in loss_dict.keys() if k not in MARGINALIZE_KEYS and isinstance(loss_dict[k], torch.Tensor)]
-        if marginalized_keys:
-            print(f"    Marginalized (likelihood): {marginalized_keys}")
-        if regularizer_keys:
-            print(f"    Batch-averaged (regularizers): {regularizer_keys}")
+        _log.debug(
+            f"Marginalization (batch {batch_idx}): {n_unique_theta} unique θ, "
+            f"{n_total_samples} total samples (K≈{avg_noise_k:.1f}) | "
+            f"marginalized={marginalized_keys} regularizers={regularizer_keys}"
+        )
     
     return marginalized_dict
 

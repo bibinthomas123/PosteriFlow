@@ -334,7 +334,7 @@ class GWDatasetGenerator:
         n_test = max(1, n - n_train - n_val)
 
         splits = {"train": batch_files[:n_train],
-                  "val": batch_files[n_train: n_train + n_val],
+                  "validation": batch_files[n_train: n_train + n_val],
                   "test": batch_files[n_train + n_val:]}
 
         for split_name, files in splits.items():
@@ -346,7 +346,7 @@ class GWDatasetGenerator:
                     dest.symlink_to(bf.resolve())
         _log.info(
             f"Splits: train={len(splits['train'])} "
-            f"val={len(splits['val'])} test={len(splits['test'])} batches"
+            f"validation={len(splits['validation'])} test={len(splits['test'])} batches"
         )
 
 

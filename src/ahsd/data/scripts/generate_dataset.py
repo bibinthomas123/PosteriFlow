@@ -373,10 +373,7 @@ def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
     # Check for complete file (optional)
     complete_file = None
     if config.get("save_complete", False):
-        if config.get("output_format") == "pkl_compressed":
-            complete_file = output_dir / "complete_dataset.pkl.gz"
-        else:
-            complete_file = output_dir / "complete_dataset.pkl"
+        complete_file = output_dir / "complete_dataset.pkl"
 
         if complete_file and complete_file.exists():
             validation_report["checks"]["complete_file_exists"] = True

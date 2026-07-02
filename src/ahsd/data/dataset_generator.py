@@ -278,9 +278,9 @@ class GWDatasetGenerator:
                 det_snr = snrs[0] if snrs else 0.0  # primary signal SNR
             per_det_snr[det] = float(det_snr)
 
-            # 3. Whiten
+            # 3. Whiten using the correct detector PSD
             if do_preprocess:
-                whitened = self.preprocessor.preprocess(strain, psd)
+                whitened = self.preprocessor.preprocess(strain, psd, detector=det)
             else:
                 whitened = strain.astype(np.float32)
 

@@ -308,7 +308,9 @@ class BilbyNoiseGenerator:
             psd_interp = np.interp(freqs, psd_dict["frequencies"], psd_dict["psd"])
             psd_interp = np.maximum(psd_interp, 1e-55)
             wf = np.fft.rfft(white)
-            wf *= np.sqrt(psd_interp * self.sample_rate / 2.0)
+            # Correct scaling: E[|X[k]|²] = n·S_n(f_k), so amplitude = sqrt(n·S_n/2)
+            # Using sample_rate/2 would be 2× wrong for duration > 1s
+            wf *= np.sqrt(psd_interp * n / 2.0)
             white = np.fft.irfft(wf, n=n)
         return white.astype(np.float64)
 
@@ -359,20 +361,21 @@ class BilbyPreprocessor:
         self.n_samples = int(sample_rate * duration)
 
     def preprocess(self, strain: np.ndarray, psd_dict: Optional[Dict],
-                   whiten: bool = True, **kwargs) -> np.ndarray:
+                   detector: str = "H1", whiten: bool = True, **kwargs) -> np.ndarray:
         if not whiten:
             return np.asarray(strain, dtype=np.float32)
         try:
-            return self._bilby_whiten(strain, psd_dict)
+            return self._bilby_whiten(strain, psd_dict, detector)
         except Exception as e:
             _log.warning(f"Whitening failed ({e}); returning raw strain")
             return np.asarray(strain, dtype=np.float32)
 
-    def _bilby_whiten(self, strain: np.ndarray, psd_dict: Optional[Dict]) -> np.ndarray:
+    def _bilby_whiten(self, strain: np.ndarray, psd_dict: Optional[Dict],
+                      detector: str = "H1") -> np.ndarray:
         strain64 = np.asarray(strain, dtype=np.float64)
         n = len(strain64)
         dur = n / self.sample_rate
-        ifo = _make_ifo("H1", psd_dict, self.sample_rate, dur)
+        ifo = _make_ifo(detector, psd_dict, self.sample_rate, dur)
         ifo.strain_data.set_from_time_domain_strain(
             strain64, sampling_frequency=self.sample_rate,
             duration=dur, start_time=0.0,

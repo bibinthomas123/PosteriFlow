@@ -134,10 +134,13 @@ class ParameterSampler:
         et = event_type.upper()
         if et == "BBH":
             lo, hi = _MASS_BBH
-            # Flat-in-log for m1 (power-law P(m)∝1/m), flat for m2 in [lo, m1]
+            # Both masses flat-in-log → joint prior p(m1,m2) ∝ 1/(m1·m2) for m1≥m2.
+            # Matches bilby/LALInference default BBH prior. Using uniform for m2
+            # would over-weight equal-mass systems (high q) vs the log-flat standard.
             log_m1 = self.rng.uniform(np.log(lo), np.log(hi))
             m1 = float(np.exp(log_m1))
-            m2 = float(self.rng.uniform(lo, m1))
+            log_m2 = self.rng.uniform(np.log(lo), log_m1)
+            m2 = float(np.exp(log_m2))
         elif et == "BNS":
             lo, hi = _MASS_BNS
             m1 = float(self.rng.uniform(lo, hi))

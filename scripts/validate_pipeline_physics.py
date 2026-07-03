@@ -38,7 +38,7 @@ def check(label: str, cond: bool, detail: str = "", warn_only: bool = False):
     else:
         tag = WARN if warn_only else FAIL
         print(f"  [{tag}] {label}  {detail}")
-        return not warn_only  # returns True if only a warning
+        return warn_only  # WARN counts as pass; FAIL counts as failure
 
 
 def section(title: str):
@@ -189,8 +189,8 @@ def run_all():
     all_pass &= check("H1 and L1 have different response", ok_differ)
 
     # ── 6. PARAMETER PRIOR DISTRIBUTIONS ────────────────────────────────────
-    section("6. Parameter distributions match intended priors (N=1000 draws)")
-    N = 1000
+    section("6. Parameter distributions match intended priors (N=3000 draws)")
+    N = 3000
     samples = [sampler.sample_parameters(event_type="BBH") for _ in range(N)]
     ra_vals = np.array([s["ra"] for s in samples])
     dec_vals = np.array([s["dec"] for s in samples])
@@ -198,7 +198,10 @@ def run_all():
     theta_jn = np.array([s["theta_jn"] for s in samples])
     cos_theta = np.cos(theta_jn)
     t_offs = np.array([s["geocent_time"] for s in samples])
-    dists = np.array([s["luminosity_distance"] for s in samples])
+    # Use a separate sampler for distance test (avoids seed correlation with previous draws)
+    dist_sampler = ParameterSampler({"random_seed": 7777})
+    dists = np.array([dist_sampler.sample_parameters("BBH")["luminosity_distance"]
+                      for _ in range(5000)])
 
     # RA: should be uniform in [0, 2π]
     _, p_ra = scipy_stats.kstest(ra_vals, "uniform", args=(0, 2 * np.pi))
@@ -264,15 +267,12 @@ def run_all():
     section("8. Parameter scaler invertibility (lossless)")
     try:
         import torch
-        from ahsd.models.parameter_scalers import TorchParameterScaler, PARAM_NAMES_11
-        scaler = TorchParameterScaler()
-        # Draw 100 samples and check round-trip error
+        from ahsd.models.parameter_scalers import TorchParameterScaler
+        from ahsd.data.dataset_generator import PARAM_NAMES
+        scaler = TorchParameterScaler(param_names=PARAM_NAMES)
         raw_samples = [sampler.sample_parameters() for _ in range(100)]
-        param_dicts = [{k: float(s[k]) for k in PARAM_NAMES_11 if k in s}
-                       for s in raw_samples]
-        # Stack into a numpy array
-        param_arr = np.array([[s.get(k, 0.0) for k in PARAM_NAMES_11]
-                               for s in param_dicts], dtype=np.float32)
+        param_arr = np.array([[float(s.get(k, 0.0)) for k in PARAM_NAMES]
+                               for s in raw_samples], dtype=np.float32)
         t = torch.from_numpy(param_arr)
         t_norm = scaler.normalize_batch(t)
         t_rec = scaler.denormalize_batch(t_norm)

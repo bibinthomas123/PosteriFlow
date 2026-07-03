@@ -386,13 +386,11 @@ class OverlapNeuralPE(nn.Module):
                         # Normal with mean=1.4, std=0.15 (σ ≈ 10% of mean)
                         priors[param] = torch.distributions.Normal(loc=1.4, scale=0.15)
                     elif self.event_type == "NSBH":
-                        # NSBH: differentiate primary (NS) and secondary (BH)
+                        # By GW convention: mass_1 ≥ mass_2, so mass_1 = BH, mass_2 = NS
                         if "mass_1" in param or param == "mass_1":
-                            # Primary mass (NS): ~1.4 Msun
-                            priors[param] = torch.distributions.Normal(loc=1.4, scale=0.15)
+                            priors[param] = torch.distributions.Pareto(5.0, 2.35)   # BH
                         else:
-                            # Secondary mass (BH): broader distribution starting at 5 Msun
-                            priors[param] = torch.distributions.Pareto(5.0, 2.35)
+                            priors[param] = torch.distributions.Normal(loc=1.4, scale=0.15)  # NS
                     else:
                         # Fallback for unknown event type
                         priors[param] = torch.distributions.Pareto(1.0, 2.35)

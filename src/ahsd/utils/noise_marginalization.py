@@ -1,15 +1,14 @@
 """
 Noise-Marginalized Loss
 
-Problem: STEP 4 generates K noise realizations per parameter set θ.
-But standard training treats each (θ, noise_k) as independent.
+The dataset generates K noise realizations per parameter set θ, but standard
+training treats each (θ, noise_k) pair as independent. That lets the model learn
+spurious correlations (e.g. distance = f(noise_pattern)), causing posterior
+shifts, over-coverage, and SBC rank collapse.
 
-This causes:
-- Model learns spurious correlations: distance = f(noise_pattern)
-- Posterior shifts, over-coverage, SBC rank collapse
-
-Solution: Group samples by base parameter ID and average loss within each group.
-This approximates: E_θ [ E_noise [ -log p(θ | strain) ] ] instead of E_{(θ,noise)} [ ... ]
+This module groups samples by base parameter ID and averages loss within each
+group, approximating E_θ [ E_noise [ -log p(θ | strain) ] ] instead of
+E_{(θ,noise)} [ ... ].
 
 Usage:
     losses = compute_batch_loss(batch)  # Standard loss computation
@@ -48,24 +47,17 @@ def extract_base_id(sample_id: str) -> str:
         Base ID for grouping:
         - Everything before _noise suffix (works for all types)
         - If no _noise, return full ID (unique)
-    
+
     Why this matters:
-        STEP 4 data has K=5 noise realizations per parameter set.
-        Each noisy variant of the same θ has suffix _noise0, _noise1, ..., _noise4.
-        We extract everything before _noise to group them.
+        Each noisy variant of the same θ has suffix _noise0, _noise1, ..., _noiseK-1.
+        Stripping everything from _noise onward groups them back together,
+        regardless of sample type (regular, overlap, special).
     """
-    # ✅ CRITICAL: Strip _noiseK suffix (handles ALL types uniformly)
-    # This works for:
-    # - Regular samples: "000123_noise0" → "000123"
-    # - Multi-signal: "overlap_001234_noise1" → "overlap_001234"
-    # - Special types: "eccentric_mergers_005688_noise1" → "eccentric_mergers_005688"
-    # - All other variants with noise
     if "_noise" in sample_id:
         base = sample_id.rsplit("_noise", 1)[0]
         return base
-    
-    # ✅ Default: treat as unique θ (no noise variants)
-    # This includes samples without _noise suffix
+
+    # No noise suffix: treat as a unique θ
     return sample_id
 
 
@@ -95,7 +87,7 @@ def group_batch_by_theta(
     return groups
 
 
-# ✅ JAN 7: CRITICAL - Only marginalize likelihood terms, not regularizers
+# Only marginalize likelihood terms, not regularizers
 MARGINALIZE_KEYS = {
     "total_loss",       # Overall loss (if it's just sum of likelihoods)
     "flow_loss",        # Flow NLL
@@ -133,26 +125,22 @@ def marginalize_loss_by_theta(
         - Likelihood terms: marginalized then averaged
         - Regularizer terms: batch-averaged (standard way)
         
-    Example (STEP 4 data with K=5):
-        # Before marginalization (WRONG - entangles distance with noise):
-        batch = ["000123_noise0", "000123_noise1", "000123_noise2", 
+    Example (K=5 noise realizations per θ):
+        batch = ["000123_noise0", "000123_noise1", "000123_noise2",
                  "000456_noise0", "000456_noise1"]
-        flow_loss = [2.5, 2.3, 2.4, 3.1, 3.0]  # Each (θ, noise) independent
-        mean_loss = 2.66 (all samples equally weighted)
-        
-        # After marginalization (CORRECT - marginalizes over noise):
+        flow_loss = [2.5, 2.3, 2.4, 3.1, 3.0]  # each (θ, noise) pair independent
+
         groups = {
             "000123": [2.5, 2.3, 2.4] → mean = 2.4  (averaged over 3 noise realizations)
             "000456": [3.1, 3.0]     → mean = 3.05 (averaged over 2 noise realizations)
         }
         mean_loss = (2.4 + 3.05) / 2 = 2.725 (each θ equally weighted)
-        
-        This correctly implements: E_θ [ E_noise [ -log p(θ | strain) ] ]
-    
+
+        This implements: E_θ [ E_noise [ -log p(θ | strain) ] ]
+
     Key assumption:
-        - All unique θ should have the SAME K (number of noise realizations)
-        - Currently enforced by STEP 4 data generation (K=5 always)
-        - If K varies, need weighted averaging (not yet implemented)
+        - All unique θ have the same K (number of noise realizations)
+        - If K varies across θ, this would need weighted averaging (not implemented)
     """
     groups = group_batch_by_theta(batch_sample_ids)
     
@@ -179,7 +167,6 @@ def marginalize_loss_by_theta(
             marginalized_dict[key] = loss_tensor
             continue
         
-        # ✅ CRITICAL: Check if this key should be marginalized
         if key not in MARGINALIZE_KEYS:
             # Regularizer: batch-average (standard way)
             marginalized_dict[key] = loss_tensor.mean()
@@ -216,9 +203,7 @@ def marginalize_loss_by_theta(
 
 def should_marginalize(batch_sample_ids: List[str]) -> bool:
     """
-    Check if batch contains STEP 4 data (multiple noise realizations per θ).
-    
-    Returns True only if batch contains noise-variant samples that can be grouped.
+    Check if batch contains multiple noise realizations per θ that can be grouped.
     """
     noise_samples = sum(1 for sid in batch_sample_ids if "_noise" in sid)
     # Only marginalize if we have meaningful groups

@@ -187,6 +187,14 @@ class GWDatasetGenerator:
             "event_types": {}, "snr_mean": [], "n_signals_dist": {},
         }
 
+        # Pre-merger config
+        pm_cfg = cfg.get("premerger_config", {})
+        pm_enabled  = bool(pm_cfg.get("enabled", False))
+        pm_fraction = float(pm_cfg.get("fraction", 0.08))
+        pm_types    = set(pm_cfg.get("event_types", ["BNS", "NSBH"]))
+        pm_ttm_min, pm_ttm_max = pm_cfg.get("time_to_merger_range", [0.5, 3.0])
+        half_dur = self.duration / 2.0  # window goes [-half_dur, +half_dur] from GPS_REF
+
         with tqdm(total=n_samples, desc="Generating samples") as pbar:
             param_idx = 0
             while stats["generated"] < n_samples:
@@ -199,6 +207,28 @@ class GWDatasetGenerator:
                 # Draw parameters
                 param_sets = [self.sampler.sample_parameters() for _ in range(n_sig)]
 
+                # Decide pre-merger for eligible single-signal BNS/NSBH events
+                time_to_merger = None
+                primary_et = param_sets[0].get("event_type", "BBH")
+                if (pm_enabled and n_sig == 1 and primary_et in pm_types
+                        and self._rng.uniform() < pm_fraction):
+                    time_to_merger = float(self._rng.uniform(pm_ttm_min, pm_ttm_max))
+                    # Push merger to happen time_to_merger seconds after window end
+                    t_off = half_dur + time_to_merger
+                    from .parameter_sampler import GPS_REF
+                    param_sets[0]["geocent_time"] = t_off
+                    param_sets[0]["geocent_time_gps"] = GPS_REF + t_off
+                    # Honor premerger_config.distance_range (previously a dead
+                    # key): with the merger past the window end, only the
+                    # inspiral tail contributes in-band SNR, so events at the
+                    # full distance prior (up to ~2 Gpc) almost always fail
+                    # the min_snr gate — measured 0 premerger survivors in a
+                    # 300-sample pilot. Early-warning sources are nearby by
+                    # definition; re-draw distance in the configured range.
+                    pm_d_lo, pm_d_hi = pm_cfg.get("distance_range", [50.0, 400.0])
+                    param_sets[0]["luminosity_distance"] = float(
+                        self._rng.uniform(pm_d_lo, pm_d_hi))
+
                 # k noise realizations per parameter set
                 for k in range(k_noise):
                     if stats["generated"] >= n_samples:
@@ -207,6 +237,7 @@ class GWDatasetGenerator:
                     sample, rej = self._make_sample(
                         param_sets, min_snr, add_glitches, do_preprocess,
                         seed_offset=param_idx * k_noise + k,
+                        time_to_merger=time_to_merger,
                     )
 
                     if sample is None:
@@ -221,6 +252,8 @@ class GWDatasetGenerator:
                     stats["snr_mean"].append(sample.get("network_snr", 0.0))
                     ns = sample.get("n_signals", 1)
                     stats["n_signals_dist"][ns] = stats["n_signals_dist"].get(ns, 0) + 1
+                    if time_to_merger is not None:
+                        stats["premerger"] = stats.get("premerger", 0) + 1
                     pbar.update(1)
 
                     # Save batch
@@ -252,13 +285,23 @@ class GWDatasetGenerator:
                      min_snr: float,
                      add_glitches: bool,
                      do_preprocess: bool,
-                     seed_offset: int = 0) -> Tuple[Optional[Dict], int]:
+                     seed_offset: int = 0,
+                     time_to_merger: Optional[float] = None) -> Tuple[Optional[Dict], int]:
         """
         Generate noise, inject signals, whiten.
         Returns (sample_dict, 0) or (None, 1) if SNR below threshold.
         """
         detector_data: Dict[str, Dict] = {}
         per_det_snr: Dict[str, float] = {}
+
+        # Component storage: keep whitened noise and each whitened signal
+        # SEPARATELY (float16) alongside the summed strain. Whitening is
+        # linear, so whiten(noise + Σ sig_i) == whiten(noise) + Σ whiten(sig_i)
+        # and a training loader can re-mix components on the fly:
+        # fresh noise draws per epoch, per-signal time shifts, and exact
+        # distance re-labelling via amplitude scaling — turning a fixed
+        # dataset into effectively unlimited augmented examples.
+        store_components = bool(self.config.get("store_components", True))
 
         for i, det in enumerate(self.detectors):
             psd = self._psd_cache[det]
@@ -269,12 +312,22 @@ class GWDatasetGenerator:
             if add_glitches:
                 noise = self.noise_gen.add_glitches(noise)
 
-            # 2. Inject all signals; track per-detector SNR for primary signal
+            # 2. Inject signals ONE AT A TIME into zeros so each component is
+            #    available separately; the summed strain is reconstructed
+            #    exactly (same float64 additions as inject_multiple performed).
+            zeros = np.zeros_like(noise)
+            signal_components: List[np.ndarray] = []
             if param_sets[0].get("event_type") == "noise":
                 strain = noise.astype(np.float64)
                 det_snr = 0.0
             else:
-                strain, snrs = self.injector.inject_multiple(noise, param_sets, det, psd)
+                strain = noise.astype(np.float64)
+                snrs = []
+                for p in param_sets:
+                    sig, sig_snrs = self.injector.inject_multiple(zeros, [p], det, psd)
+                    signal_components.append(sig)
+                    snrs.append(sig_snrs[0] if sig_snrs else 0.0)
+                    strain = strain + sig
                 det_snr = snrs[0] if snrs else 0.0  # primary signal SNR
             per_det_snr[det] = float(det_snr)
 
@@ -284,7 +337,21 @@ class GWDatasetGenerator:
             else:
                 whitened = strain.astype(np.float32)
 
-            detector_data[det] = {"strain": whitened, "snr": float(det_snr)}
+            det_entry = {"strain": whitened, "snr": float(det_snr)}
+            if store_components:
+                if do_preprocess:
+                    wh_noise = self.preprocessor.preprocess(
+                        noise.astype(np.float64), psd, detector=det)
+                    wh_sigs = [
+                        self.preprocessor.preprocess(s, psd, detector=det)
+                        for s in signal_components
+                    ]
+                else:
+                    wh_noise = noise.astype(np.float32)
+                    wh_sigs = [s.astype(np.float32) for s in signal_components]
+                det_entry["noise"] = wh_noise.astype(np.float16)
+                det_entry["signals"] = [s.astype(np.float16) for s in wh_sigs]
+            detector_data[det] = det_entry
 
         # 4. SNR gate (primary signal network SNR)
         net_snr = _network_snr(per_det_snr)
@@ -306,6 +373,8 @@ class GWDatasetGenerator:
                 "mass_ratio": float(primary.get("mass_ratio", 1.0)),
                 "luminosity_distance": float(primary.get("luminosity_distance", 0.0)),
                 "n_signals": len(param_sets),
+                "is_premerger": time_to_merger is not None,
+                "time_to_merger": float(time_to_merger) if time_to_merger is not None else None,
             },
         }, 0
 

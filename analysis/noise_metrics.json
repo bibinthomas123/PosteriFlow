@@ -1,17 +1,10 @@
 {
-  "samples_with_noise": 25000,
+  "samples_with_noise": 50000,
   "samples_without_noise": 0,
-  "noise_stats": {
-    "mean": 1.0521526355605147e-21,
-    "std": 6.841298634212467e-22,
-    "min": 0.0,
-    "max": 1.4553517479247404e-20,
-    "rms": 1.168274273473594e-21,
-    "samples_analyzed": 25000000
-  },
+  "noise_stats": {},
   "psd_validation": {
-    "psd_median": 1.0369608636003646e-43,
-    "psd_mean": 1.471363387541058e-43,
+    "psd_median": 0.6586100459098816,
+    "psd_mean": 0.9465896487236023,
     "freq_range_hz": [
       50,
       2000

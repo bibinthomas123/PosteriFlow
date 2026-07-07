@@ -115,6 +115,16 @@ def validate_config(config: Dict) -> Dict:
         # ✅ ADD REAL NOISE CONFIGURATION:
         "use_real_noise_prob": config.get("use_real_noise_prob", 0.0),
         "real_noise_cache_dir": config.get("real_noise_cache_dir", "gw_segments"),
+        # Pre-merger (early-warning) events: this key was previously NOT
+        # whitelisted here, so the yaml's premerger_config never reached the
+        # generator and premerger generation was silently disabled in every
+        # scripted run (generator default: enabled=False). Same for
+        # store_components (which only worked because ITS default is True)
+        # and the overlap/SNR caps.
+        "premerger_config": config.get("premerger_config", {}),
+        "store_components": config.get("store_components", True),
+        "max_overlapping_signals": config.get("max_overlapping_signals", 4),
+        "min_snr": config.get("min_snr", 6.0),
     }
 
     # Validate ranges

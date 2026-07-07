@@ -1,0 +1,19 @@
+scaler_stats:
+  a1:
+    mean: 0.368
+    std: 0.3301
+  a2:
+    mean: 0.2475
+    std: 0.3017
+  luminosity_distance:
+    log_mean: 6.5826
+    log_std: 0.826
+  mass_1:
+    log_mean: 2.7422
+    log_std: 1.3239
+  mass_2:
+    log_mean: 1.7545
+    log_std: 1.2361
+  network_snr:
+    log_mean: 2.5089
+    log_std: 0.4972

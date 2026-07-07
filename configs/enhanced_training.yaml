@@ -28,7 +28,7 @@ priority_net:
   weight_decay: 1.5e-5
   
   # --- TRAINING SCHEDULE ---
-  batch_size: 32                          # ⬆️ Increased from 6 (larger batch → stable BatchNorm)
+  batch_size: 64                          # 64 saturates MPS cores better; halves number of steps per epoch
   epochs: 100
   patience: 15                            
   
@@ -147,9 +147,9 @@ neural_posterior:
    
   # --- PARAMETERS (11-dimensional parameter space) ---
   param_names:
+    - luminosity_distance                 # Distance to source
     - mass_1                              # Primary mass
     - mass_2                              # Secondary mass
-    - luminosity_distance                 # Distance to source
     - ra                                  # Right ascension
     - dec                                 # Declination
     - theta_jn                            # Inclination angle
@@ -161,7 +161,10 @@ neural_posterior:
   
   # --- ARCHITECTURE (auto-adjusted by flow_type) ---
   context_dim: 768                        # ⬆️ PHASE 3A: INCREASED from 384 to 768 (100% capacity boost for distance sensitivity)
-  max_iterations: 5                       # Max adaptive refinement iterations
+  max_iterations: 1                       # 1 for epochs 0-50 (flow posteriors too noisy for subtraction); increase to 3 at epoch 50+
+  aux_context_loss_weight: 0.3            # ⬆️ Raised from default 0.05: at 0.05 the per-parameter context-specialization
+                                           # pressure was too weak against NLL -- output_cos_sim stayed ~0.998 through 2 epochs
+                                           # even after fixing the param_queries init-scale bug (see overlap_neuralpe.py).
   
   # --- FLOW TYPE (Q3 REDESIGN: NSF) ---
   flow_type: "nsf"                          # ✅ CHANGED: flowmatching → nsf (Dec 24, 2025)
@@ -175,12 +178,11 @@ neural_posterior:
   
   # ✅ STEP 5: EXPLICIT SNR CONDITIONING (Jan 7, 2026) — INFERENCE-SAFE
   # Append ONLY network SNR to context for adaptive learning across SNR regimes
-  # ✅ CRITICAL: Only network_snr (RMS-based, always available at inference)
-  #    Never target_snr (ground truth → data leakage, artificial calibration)
-  # Cost: +1 feature (768 → 769), gains: 2× improvement on SNR-sensitive params
-  snr_conditioning: true                    # Enable SNR as explicit context feature
-  snr_features: ["network"]                 # Only network SNR (RMS from strain, inference-safe)
-  
+  # Explicit scalar SNR/PSD conditioning removed (see docs/ARCHITECTURE_uncertainty_conditioning.md):
+  # it duplicated amplitude information the ContextEncoder already extracts from
+  # whitened strain, and had no precedent in the GW-SBI literature (DINGO/GNPE/etc.
+  # condition on learned strain embeddings, not hand-crafted scalar summaries).
+
   # --- NORMALIZING FLOW (Q3: NSF ONLY) ---
   flow_config:
     # ✅ Q3 REDESIGN: NSF (Monotonic Rational Quadratic Splines)
@@ -192,7 +194,7 @@ neural_posterior:
     
     num_layers: 12                        # ⬇️ OPTIMIZED (Jan 3): 16 → 14 (balance capacity vs speed)
     hidden_features: 256                  # ⬇️ OPTIMIZED (Jan 3): 512 → 384 (still 50% more than baseline)
-    num_bins: 12                          # ⬇️ OPTIMIZED (Jan 3): 16 → 12 (faster spline computation)
+    num_bins: 24                          # ⬆️ Jul 4: 12 → 24 (doubled to match distance tail_bound doubling 1.5→3.0; keeps per-bin resolution roughly constant over the now-2x-wider distance domain). Global (applies to all 11 params — architecture has no per-param bin count mechanism yet)
     tail_bound: 3.0                       # Global default (overridden by per_param_tail_bounds if set)
     dropout: 0.1                          
     
@@ -210,7 +212,7 @@ neural_posterior:
     per_param_tail_bounds:
       0: 3.0   # mass_1: log_zscore → spans [-3, +3] at prior edges
       1: 3.0   # mass_2: log_zscore → spans [-3, +3] at prior edges
-      2: 1.5   # luminosity_distance: log_minmax → [-1, 1] + safety margin
+      2: 3.0   # luminosity_distance: log_minmax → scale_to (-3,3); tail_bound must match scaler range (was 1.5, truncating 44.5% of events into the spline's identity tail — see analysis/checkpoint_diagnostics)
       3: 1.5   # ra: linear_minmax → [-1, 1] + safety margin
       4: 1.5   # dec: linear_minmax → [-1, 1] + safety margin
       5: 1.5   # theta_jn: linear_minmax → [-1, 1] + safety margin
@@ -237,10 +239,9 @@ neural_posterior:
                                            #   Multi-noise causes 5× more training examples per epoch
                                            #   Higher LR + more samples = gradient explosion + oscillation
                                            #   Reduced LR = smoother updates = stable convergence
-  batch_size: 32                          # ✅ JAN 7: 64 → 32 (REDUCED for gradient stability)
-                                           #   Problem: Batch size 64 on 5K samples = few unique batches
-                                           #   Smaller batch = more gradient updates = better gradient averaging
-  epochs: 50                              # Training epochs
+  batch_size: 64                          # MPS Mac: 64 saturates Apple GPU cores better than 32
+                                           # MPS works best with powers-of-2 batch sizes
+  epochs: 200                              # Training epochs
   patience: 15                            # Early stopping patience
   weight_decay: 1.0e-4                   # L2 regularization
   gradient_clip: 5.0                     # ✅ JAN 7: 20.0 → 5.0 (TIGHTENED to prevent big parameter jumps)
@@ -260,35 +261,12 @@ neural_posterior:
   
   flow_loss_weight: 1.0                   # NLL loss (primary objective for NSF)
   bounds_penalty_weight: 0.15             # Soft parameter constraints
-  pit_loss_weight: 0.0                    # ✅ JAN 7: 2.0 → 0.0 (DISABLED - causes oscillation after distance losses disabled)
-  endpoint_loss_weight: 0.0               # ✅ JAN 7: 1.5 → 0.0 (DISABLED - distance already constrained by flow)
-  
-  # ✅ NEW (Jan 3): KL divergence weight for flow regularization
-  # Higher KL weight forces flow closer to prior (Gaussian) → better calibration
-  # NOTE: Increased gradient norms observed, may need tuning during training
-  kl_divergence_weight: 0.05              # ⬆️ TUNED (Jan 3): Start conservative, increase if stable
-                                          # Gradient spikes expected during warmup (use gradient_clip: 20-50)
-  
-  # --- DISTANCE-SPECIFIC LOSS (PHASE 3A: DISTANCE SENSITIVITY) ---
-  # ✅ JAN 7 CRITICAL FIX: Disabled distance losses causing diverging bias
-  # Problem: auxiliary_distance_loss (0.25) + flow losses create OPPOSING gradients
-  #   Epoch 6: bias=-10.8 Mpc (OK) → Epoch 7: bias=-81.8 Mpc (7.5× worse) → Epoch 8: bias=-296.9 Mpc (diverging)
-  # Root cause: Distance head predicts 322 Mpc, Flow wants 924 Mpc → conflict → oscillation
-  # Solution: DISABLE distance-specific losses entirely, let flow learn distance naturally
-  #   Flow is 11D posterior estimator; forcing specific distance values conflicts with posterior learning
-  #   Distance will converge naturally as flow learns from multi-noise data
-  # ✅ FEB 7 UPDATE: Verified these are still all 0.0 (correct state)
-  auxiliary_distance_loss_weight: 0.0      # ✅ JAN 7: 0.25 → 0.0 (DISABLED - conflicting gradients)
-  direct_flow_distance_weight: 0.0         # ✅ FEB 7: Explicitly disable (same as auxiliary_distance_loss_weight)
-  distance_endpoint_loss_weight: 0.0       # ✅ JAN 7: 1.5 → 0.0 (DISABLED - oscillation source)
-  distance_prior_weight: 0.0               # ✅ JAN 7: 0.2 → 0.0 (DISABLED - unnecessary constraint)
-  
-  # --- CONTEXT COLLAPSE PREVENTION (Dec 24: fix epoch 1 collapse, UPDATED Jan 1) ---
-  context_variance_weight: 0.10           # ✅ REDUCED (Jan 1): 0.25 → 0.10 (soft guidance, encoder not crushed)
-  context_std_target: 0.75                # ✅ REDUCED (Jan 1): 0.80 → 0.75 (more achievable target with lower weight)
-  context_noise_scale: 0.1                # Adaptive noise injection when std < 0.4
-  context_collapse_threshold: 0.4         # Threshold to trigger noise injection
-  
+
+  # Context-collapse prevention (VICReg: invariance + variance + covariance) is
+  # implemented directly in OverlapNeuralPE.__init__ (VICREG_*_WEIGHT_INITIAL,
+  # CONTEXT_VAR_TARGET, CONTEXT_PER_DIM_STD_TARGET) rather than read from this
+  # config file -- those constants are gradient-calibrated, not config-tunable.
+
   # --- DATA AUGMENTATION (✅ JAN 7: ADJUSTED FOR STEP 4 MULTI-NOISE) ---
   data_augmentation:
     enabled: false                        # ✅ JAN 7: Disabled! Multi-noise provides natural augmentation

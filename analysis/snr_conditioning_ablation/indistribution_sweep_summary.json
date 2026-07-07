@@ -1,0 +1,35 @@
+{
+  "real_event_snr": 21.08474959913041,
+  "real_event_proxy_val": -0.020342160016298294,
+  "real_proxy_population": {
+    "min": -0.032841406762599945,
+    "max": 0.17972014844417572,
+    "std": 0.03799091706328828
+  },
+  "in_distribution_sweep": {
+    "range": [
+      -0.05,
+      0.2
+    ],
+    "sigma_psd_range": [
+      0.3366713523864746,
+      0.34095993638038635
+    ],
+    "total_variation": 0.004288583993911743,
+    "spearman_r": 1.0,
+    "p": 0.0
+  },
+  "out_of_distribution_sweep": {
+    "range": [
+      -4.5,
+      2.0
+    ],
+    "sigma_psd_range": [
+      0.27146613597869873,
+      0.374426007270813
+    ],
+    "total_variation": 0.10295987129211426,
+    "spearman_r": 1.0,
+    "p": 0.0
+  }
+}

@@ -1,0 +1,122 @@
+# Smoke-test training config — 5 epochs on 200 samples to verify end-to-end pipeline
+experiment_name: "smoke_test"
+random_seed: 42
+device: "auto"
+
+priority_net:
+  hidden_dims: [128, 64]
+  dropout: 0.1
+  importance_hidden_dim: 16
+  use_strain: false
+  use_edge_conditioning: false
+  n_edge_types: 19
+  use_transformer_encoder: false
+  optimizer: "AdamW"
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  batch_size: 16
+  epochs: 3
+  patience: 3
+  warmup_epochs: 1
+  warmup_start_factor: 0.1
+  scheduler: "ReduceLROnPlateau"
+  scheduler_patience: 2
+  scheduler_factor: 0.5
+  scheduler_threshold: 5e-3
+  min_lr: 1.0e-6
+  ranking_weight: 0.80
+  mse_weight: 0.05
+  uncertainty_weight: 0.15
+  use_snr_weighting: true
+  loss_scale_factor: 0.002
+  uncertainty_lower_bound: 0.01
+  uncertainty_upper_bound: 0.50
+  uncertainty_bounds_weight: 0.05
+  output_bias_init: 0.45
+  output_weight_std: 0.10
+  calib_mean_weight: 0.35
+  calib_max_weight: 0.60
+  calib_range_weight: 0.60
+  affine_gain_min: 1.2
+  affine_gain_max: 2.5
+
+neural_posterior:
+  param_names:
+    - mass_1
+    - mass_2
+    - luminosity_distance
+    - ra
+    - dec
+    - theta_jn
+    - psi
+    - phase
+    - geocent_time
+    - a1
+    - a2
+
+  context_dim: 256
+  max_iterations: 1
+
+  flow_type: "nsf"
+
+  flow_config:
+    num_layers: 4
+    hidden_features: 64
+    num_bins: 8
+    tail_bound: 3.0
+    dropout: 0.0
+    per_param_tail_bounds:
+      0: 3.0
+      1: 3.0
+      2: 1.5
+      3: 1.5
+      4: 1.5
+      5: 1.5
+      6: 1.5
+      7: 1.5
+      8: 1.5
+      9: 3.0
+      10: 3.0
+    temperature_scale: 1.0
+
+  event_type: "BBH"
+  enable_event_specific_priors: true
+
+  learning_rate: 1.0e-4
+  batch_size: 16
+  epochs: 5
+  patience: 5
+  weight_decay: 1.0e-4
+  gradient_clip: 5.0
+  optimizer: "AdamW"
+  warmup_epochs: 1
+  warmup_start_factor: 0.01
+  scheduler: "ReduceLROnPlateau"
+  scheduler_patience: 3
+  scheduler_factor: 0.5
+  min_lr: 1.0e-6
+
+context_encoder:
+  model_type: "transformer"
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  d_ff: 128
+  dropout: 0.0
+  context_dim: 256
+  sample_rate: 4096
+  duration: 4.0
+  n_detectors: 3
+  batch_size: 16
+  learning_rate: 1.0e-4
+  epochs: 5
+  patience: 5
+  scheduler: "ReduceLROnPlateau"
+  scheduler_patience: 3
+  scheduler_factor: 0.5
+  min_lr: 1.0e-6
+
+output:
+  save_frequency: 5
+  log_frequency: 1
+  early_stopping: true

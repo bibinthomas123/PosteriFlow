@@ -477,7 +477,7 @@ class AdaptiveSubtractor:
         self.logger = logging.getLogger(__name__)
         
         # Advanced configuration
-        self.max_iterations = 3  # Maximum iterative refinement
+        self.max_iterations = 1  # 1 during early training; increase after posteriors stabilise (~epoch 50)
         self.convergence_threshold = 0.01  # Convergence criterion
         
         self.logger.info("✅ AdaptiveSubtractor initialized with physics-based logic")

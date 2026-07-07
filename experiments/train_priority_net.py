@@ -331,37 +331,66 @@ class ChunkedGWDataLoader:
 
     def _load_split_info(self):
         split_dir = self.dataset_path / self.split
+        # Also try common abbreviations: "validation" → "val", "val" → "validation"
         if not split_dir.exists():
-            raise FileNotFoundError(f"Split directory not found: {split_dir}")
+            alternates = {"validation": "val", "val": "validation"}
+            alt = alternates.get(self.split)
+            if alt and (self.dataset_path / alt).exists():
+                self.split = alt
+                split_dir = self.dataset_path / self.split
+            else:
+                raise FileNotFoundError(f"Split directory not found: {split_dir}")
         split_info_file = split_dir / "split_info.json"
         if split_info_file.exists():
             with open(split_info_file, "r") as f:
                 self.split_info = json.load(f)
         else:
-            chunk_files = list(split_dir.glob("chunk_*.pkl"))
-            self.split_info = {
-                "n_chunks": len(chunk_files),
-                "chunk_size": 500,
-                "file_pattern": "chunk_XXXX.pkl",
-            }
+            # Support both chunk_*.pkl (legacy) and batch_*.pkl (current generator)
+            chunk_files = sorted(split_dir.glob("chunk_*.pkl"))
+            batch_files = sorted(split_dir.glob("batch_*.pkl"))
+            if batch_files and not chunk_files:
+                self._batch_files = batch_files
+                self.split_info = {
+                    "n_chunks": len(batch_files),
+                    "chunk_size": 100,
+                    "file_pattern": "batch_XXXX.pkl",
+                }
+            else:
+                self._batch_files = None
+                self.split_info = {
+                    "n_chunks": len(chunk_files),
+                    "chunk_size": 500,
+                    "file_pattern": "chunk_XXXX.pkl",
+                }
         self.n_chunks = self.split_info["n_chunks"]
         self.chunk_size = self.split_info["chunk_size"]
         self.logger.info(
             f" {self.split}: {self.n_chunks} chunks, {self.chunk_size} samples per chunk"
         )
 
+    @staticmethod
+    def _extract_samples(chunk_data) -> list:
+        """Handle both list-of-samples and {'samples': [...]} dict formats."""
+        if isinstance(chunk_data, dict):
+            return chunk_data.get("samples", [])
+        return list(chunk_data)
+
     def iter_all_samples(self) -> Iterator[Dict]:
         total_yielded = 0
         self.logger.info(f"Loading {self.split} chunks (streaming)...")
-        for chunk_id in range(self.n_chunks):
-            chunk_file = self.dataset_path / self.split / f"chunk_{chunk_id:04d}.pkl"
+        split_dir = self.dataset_path / self.split
+        # Use batch_files list if detected, otherwise build chunk file names
+        files = getattr(self, "_batch_files", None)
+        if files is None:
+            files = [split_dir / f"chunk_{i:04d}.pkl" for i in range(self.n_chunks)]
+        for chunk_file in files:
             if not chunk_file.exists():
                 self.logger.warning(f"Chunk file not found: {chunk_file}")
                 continue
             try:
                 with open(chunk_file, "rb") as f:
                     chunk_data = pickle.load(f)
-                for sample in chunk_data:
+                for sample in self._extract_samples(chunk_data):
                     yield sample
                     total_yielded += 1
                     if self.max_samples and total_yielded >= self.max_samples:
@@ -369,7 +398,7 @@ class ChunkedGWDataLoader:
                         return
                 del chunk_data
             except Exception as e:
-                self.logger.warning(f"Failed to load chunk {chunk_id}: {e}")
+                self.logger.warning(f"Failed to load chunk {chunk_file.name}: {e}")
                 continue
 
     def _convert_noise_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:

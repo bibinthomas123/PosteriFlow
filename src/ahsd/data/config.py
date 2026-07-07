@@ -3,8 +3,6 @@ AHSD Configuration Module
 =========================
 Production configuration for realistic O4 / Design LIGO sensitivity,
 optimized for Neural Posterior Estimation and PriorityNet training.
-Version: 2.0 - Physics-Validated
-Generated: 2025-11-06
 """
 
 
@@ -44,8 +42,8 @@ SNR_DISTRIBUTION = {
 # SNR ranges for each regime
 # Expanded ranges to allow stronger distance-SNR correlation
 SNR_RANGES = {
-    'weak':   (8.0, 12.0),   # Changed from (5.0, 10.0)
-    'low':    (12.0, 20.0),  # Changed from (10.0, 20.0)
+    'weak':   (8.0, 12.0),
+    'low':    (12.0, 20.0),
     'medium': (20.0, 40.0),
     'high':   (40.0, 70.0),
     'loud':   (70.0, 200.0)
@@ -64,7 +62,7 @@ MASS_RANGES = {
 # NSBH: Intermediate mass systems scaling between BNS and BBH
 DISTANCE_RANGES = {
     'BBH': (50.0, 5000.0),
-    'BNS': (10.0, 500.0),     # CRITICAL FIX (Dec 29, 15:30 UTC): Reduced max from 1000 to 500 Mpc
+    'BNS': (10.0, 500.0),     # capped below 1000 Mpc to avoid unrealistic BNS outliers
     'NSBH': (20.0, 2000.0)
 }
 

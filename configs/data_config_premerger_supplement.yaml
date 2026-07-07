@@ -1,0 +1,249 @@
+n_samples: 4000
+output_dir: data/dataset_v2_premerger
+output_format: pkl
+save_batch_size: 100
+sample_rate: 4096
+duration: 4.0
+detectors:
+- H1
+- L1
+- V1
+overlap_fraction: 0.15
+edge_case_fraction: 0.08
+create_splits: true
+train_frac: 0.8
+val_frac: 0.1
+test_frac: 0.1
+chunk_size: 100
+max_overlapping_signals: 10
+add_glitches: true
+preprocess: true
+noise_augmentation_k: 5
+save_complete: false
+random_seed: 42
+approximant: IMRPhenomXAS
+f_ref: 20.0
+f_lower: 20.0
+f_upper: 1024.0
+snr_ranges:
+  weak:
+  - 8.0
+  - 12.0
+  low:
+  - 12.0
+  - 20.0
+  medium:
+  - 20.0
+  - 40.0
+  high:
+  - 40.0
+  - 70.0
+  loud:
+  - 70.0
+  - 200.0
+snr_distribution:
+  weak: 0.05
+  low: 0.35
+  medium: 0.45
+  high: 0.12
+  loud: 0.03
+mass_ranges:
+  BBH:
+  - 5.0
+  - 100.0
+  BNS:
+  - 1.0
+  - 2.5
+  NSBH:
+  - 1.0
+  - 100.0
+distance_ranges:
+  BBH:
+  - 50.0
+  - 2000.0
+  BNS:
+  - 10.0
+  - 300.0
+  NSBH:
+  - 20.0
+  - 800.0
+event_type_distribution:
+  BBH: 0.55
+  BNS: 0.2
+  NSBH: 0.2
+  noise: 0.05
+premerger_config:
+  enabled: true
+  fraction: 0.6
+  time_to_merger_range:
+  - 0.5
+  - 3.0
+  event_types:
+  - BNS
+  - NSBH
+  min_snr: 8
+  distance_range:
+  - 50
+  - 400
+quota_mode: true
+quota_max_attempts: 25
+expected_signals_per_overlap: 3.8
+quota_joint_enforcement: true
+quota_include_extremes: true
+quota_verbose: false
+calibration:
+  enabled: true
+  n_samples: 500
+  random_seed: 42
+debug_snr_diagnostic: false
+debug_snr_limit: 50
+edge_cases:
+  physical_extremes:
+    enabled: true
+    fraction: 0.25
+    types:
+      high_mass_ratio:
+        fraction: 0.25
+        q_range:
+        - 0.05
+        - 0.15
+      extreme_spins:
+        fraction: 0.2
+        spin_range:
+        - 0.8
+        - 0.95
+        aligned_fraction: 0.6
+      eccentric_mergers:
+        fraction: 0.15
+        eccentricity_range:
+        - 0.02
+        - 0.15
+      precessing_systems:
+        fraction: 0.25
+      short_duration_high_mass:
+        fraction: 0.15
+        mass_range:
+        - 50
+        - 80
+  observational_extremes:
+    enabled: true
+    fraction: 0.25
+    types:
+      strong_glitches:
+        fraction: 0.4
+        glitch_prob: 0.6
+        glitch_types:
+        - blip
+        - scattered_light
+      psd_drift:
+        fraction: 0.25
+        use_multiple_epochs: true
+      detector_dropout:
+        fraction: 0.2
+        dropout_prob: 0.3
+      sky_position_extremes:
+        fraction: 0.15
+        use_uniform_sky: true
+  statistical_extremes:
+    enabled: true
+    fraction: 0.2
+    types:
+      multimodal_posteriors:
+        fraction: 0.4
+      heavy_tailed_regions:
+        fraction: 0.35
+        log_uniform_distance: false
+      uninformative_priors:
+        fraction: 0.25
+        broad_prior_multiplier: 3.0
+        sample_intrinsic_params: false
+  overlapping_extremes:
+    enabled: true
+    fraction: 0.3
+    types:
+      subtle_ranking:
+        fraction: 0.5
+        snr_difference_range:
+        - 0.5
+        - 3.0
+      heavy_overlaps:
+        fraction: 0.4
+        n_signals_range:
+        - 3
+        - 10
+      partial_overlaps:
+        fraction: 0.2
+        overlap_time_ms:
+        - 150
+        - 600
+extreme_cases:
+  enabled: true
+  fraction: 0.03
+  types:
+    near_simultaneous_mergers:
+      enabled: true
+      fraction: 0.25
+      delta_t_range:
+      - 0.1
+      - 0.3
+      min_overlap: 2
+      max_overlap: 3
+      event_type_pairs:
+      - - BBH
+        - BBH
+      - - BNS
+        - BNS
+    extreme_mass_ratio:
+      enabled: true
+      fraction: 0.15
+      q_max: 0.08
+      q_range:
+      - 0.05
+      - 0.08
+      total_mass_range:
+      - 15.0
+      - 40.0
+    high_spin_aligned:
+      enabled: true
+      fraction: 0.15
+      spin_min: 0.8
+      spin_range:
+      - 0.8
+      - 0.95
+      tilt_max: 0.4
+    weak_strong_overlaps:
+      enabled: true
+      fraction: 0.25
+      weak_snr_max: 12
+      strong_snr_min: 25
+      snr_ratio_min: 2.5
+    noise_confused_overlaps:
+      enabled: true
+      fraction: 0.15
+      n_signals: 2
+      glitch_probability: 0.5
+    long_duration_bns_overlaps:
+      enabled: true
+      fraction: 0.05
+      f_lower_max: 15
+      overlap_required: true
+    detector_dropouts:
+      enabled: false
+    eccentric_overlaps:
+      enabled: false
+    cosmological_distance:
+      enabled: false
+min_snr: 8.0
+max_retries: 50
+real_noise_prob: 0.0
+real_noise_cache_dir: data/gwosc_cache
+validation:
+  inclination_isotropy_pvalue_min: 0.05
+  mass_distance_correlation_max:
+    BBH: 0.55
+    BNS: 0.35
+    NSBH: 0.45
+  min_samples_per_type:
+    BBH: 100
+    BNS: 50
+    NSBH: 50

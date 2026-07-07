@@ -44,7 +44,7 @@ class ParameterScaler:
         self.param_names = param_names
         self.event_type = event_type.upper()
         self.scalers = self._build_scalers()
-        self._validate_scalers()  # ✅ DEC 15: Sanity check on initialization
+        self._validate_scalers()
         
     def _build_scalers(self) -> Dict[str, Dict[str, Any]]:
         """Build parameter-specific scaler configurations based on empirical analysis."""
@@ -59,7 +59,7 @@ class ParameterScaler:
                 scalers[param] = {
                     "type": "log_zscore",
                     "log_mean": 2.660,   # log(14.3 M☉) — measured from 5895 samples across all splits
-                    "log_std": 1.354,    # previous value 0.719 was 2× too narrow (single-type subset)
+                    "log_std": 1.354,
                     "min": 1.0,
                     "max": 100.0,
                 }
@@ -67,7 +67,7 @@ class ParameterScaler:
                 scalers[param] = {
                     "type": "log_zscore",
                     "log_mean": 1.939,   # log(6.9 M☉) — measured from full dataset
-                    "log_std": 1.459,    # previous value 1.053 was 1.4× too narrow
+                    "log_std": 1.459,
                     "min": 0.1,
                     "max": 100.0,
                 }
@@ -81,11 +81,10 @@ class ParameterScaler:
                 }
             
             # ============================================================
-            # DISTANCE: Log-minmax (FIXED Dec 31: Match actual data ranges)
+            # DISTANCE: Log-minmax
             # ============================================================
             elif param == 'luminosity_distance':
-                # ✅ FIXED Dec 31: Use actual data ranges from config.py
-                # Data generation uses:
+                # Data generation ranges by event type:
                 #   BBH: 50-5000 Mpc
                 #   BNS: 10-500 Mpc
                 #   NSBH: 20-2000 Mpc
@@ -94,7 +93,7 @@ class ParameterScaler:
                     'type': 'log_minmax',
                     'log_min': np.log(10.0),     # log(10 Mpc) = 2.303
                     'log_max': np.log(5000.0),   # log(5000 Mpc) = 8.517
-                    'scale_to': (-1, 1),         # ✅ FIX TYPO: 'scaleto' → 'scale_to'
+                    'scale_to': (-3.0, 3.0),     # Match flow tail_bound so samples stay in-range during inference
                 }
 
             elif param == "redshift":
@@ -115,7 +114,7 @@ class ParameterScaler:
                     "min": 0.0,
                     "max": 1.0,
                     "mean": 0.249 if "1" in param else 0.173,  # measured from full dataset
-                    "std": 0.236 if "1" in param else 0.186,   # previous values were from single-type subset
+                    "std": 0.236 if "1" in param else 0.186,
                 }
             elif param == "effective_spin":
                 scalers[param] = {
@@ -133,7 +132,7 @@ class ParameterScaler:
             # param_dim from 11 to 13. That is an architectural change deferred to a
             # future refactor. For now, linear_minmax gives a consistent single-column
             # representation; the wrap-around discontinuity at 0/2π is a known
-            # limitation (BUG-C).
+            # limitation.
             elif param in ["ra", "phase"]:
                 scalers[param] = {
                     "type": "linear_minmax",
@@ -157,21 +156,21 @@ class ParameterScaler:
                     "type": "bounded_angle",
                     "min": 0.0,
                     "max": np.pi,
-                    "normalize_to": [-1, 1],  # BUG-D FIX: was [0,1], heterogeneous with other params
+                    "normalize_to": [-1, 1],  # keep consistent with other angle params
                 }
             elif param == "psi":
                 scalers[param] = {
                     "type": "bounded_angle",
                     "min": 0.0,
                     "max": np.pi,
-                    "normalize_to": [-1, 1],  # BUG-D FIX: was [0,1], heterogeneous with other params
+                    "normalize_to": [-1, 1],  # keep consistent with other angle params
                 }
             elif param in ["tilt1", "tilt2", "tilt_1", "tilt_2"]:
                 scalers[param] = {
                     "type": "bounded_angle",
                     "min": 0.0,
                     "max": np.pi,
-                    "normalize_to": [-1, 1],  # BUG-D FIX: consistent with all other angle params
+                    "normalize_to": [-1, 1],  # keep consistent with other angle params
                 }
             
             # ============================================================
@@ -181,6 +180,8 @@ class ParameterScaler:
                 # Merger is sampled uniformly within [-1.5, 1.5] s of GPS_REF.
                 # Data window is [GPS_REF-2, GPS_REF+2]; 0.5s margins on each edge.
                 # linear_minmax guarantees exact coverage with zero clipping.
+                # Current dataset: merger sampled in (-1.5, 1.5)s — use exact range for full normalized coverage
+                # When regenerating dataset with pre-merger events, change to min=-2.0, max=6.0
                 scalers[param] = {
                     "type": "linear_minmax",
                     "min": -1.5,
@@ -222,8 +223,8 @@ class ParameterScaler:
     def _validate_scalers(self) -> None:
         """
         Validate that all parameters have properly configured scalers.
-        
-        ✅ DEC 15: Sanity check on initialization to catch configuration errors early.
+
+        Sanity check on initialization to catch configuration errors early.
         """
         for param in self.param_names:
             if param not in self.scalers:
@@ -249,7 +250,7 @@ class ParameterScaler:
                     f"Valid types: {valid_types}"
                 )
         
-        logger.info(f"✅ Validated scalers for {len(self.param_names)} parameters ({self.event_type} event type)")
+        logger.info(f"Validated scalers for {len(self.param_names)} parameters ({self.event_type} event type)")
         
     def normalize(self, params: Dict[str, float]) -> Dict[str, Any]:
         """
@@ -521,39 +522,50 @@ class TorchParameterScaler(nn.Module):
         self._register_scaler_buffers()
     
     def _register_scaler_buffers(self):
-        """Register scaler statistics as non-trainable buffers."""
+        """
+        Register scaler statistics as non-trainable buffers.
+
+        Explicitly cast to float32: the source values are Python/numpy
+        floats (often numpy.float64 under the hood, e.g. from np.log(...)),
+        and torch.tensor() infers dtype from the source, silently producing
+        float64 buffers otherwise. MPS (Apple Silicon GPU) has NO float64
+        support at all -- any float64 buffer makes the whole model
+        uninstantiable on MPS. float32 is also more than enough precision
+        for these scaler statistics and avoids silent dtype-promotion with
+        the rest of the (float32) model on every backend.
+        """
         for param_name, scaler in self.scalers.items():
             scaler_type = scaler.get("type", "linear_minmax")
-            
+
             if "log_mean" in scaler:
                 self.register_buffer(
                     f"{param_name}_log_mean",
-                    torch.tensor(scaler["log_mean"], device=self.device)
+                    torch.tensor(scaler["log_mean"], dtype=torch.float32, device=self.device)
                 )
             if "log_std" in scaler:
                 self.register_buffer(
                     f"{param_name}_log_std",
-                    torch.tensor(scaler["log_std"], device=self.device)
+                    torch.tensor(scaler["log_std"], dtype=torch.float32, device=self.device)
                 )
             if "mean" in scaler:
                 self.register_buffer(
                     f"{param_name}_mean",
-                    torch.tensor(scaler["mean"], device=self.device)
+                    torch.tensor(scaler["mean"], dtype=torch.float32, device=self.device)
                 )
             if "std" in scaler:
                 self.register_buffer(
                     f"{param_name}_std",
-                    torch.tensor(scaler["std"], device=self.device)
+                    torch.tensor(scaler["std"], dtype=torch.float32, device=self.device)
                 )
             if "log_min" in scaler:
                 self.register_buffer(
                     f"{param_name}_log_min",
-                    torch.tensor(scaler["log_min"], device=self.device)
+                    torch.tensor(scaler["log_min"], dtype=torch.float32, device=self.device)
                 )
             if "log_max" in scaler:
                 self.register_buffer(
                     f"{param_name}_log_max",
-                    torch.tensor(scaler["log_max"], device=self.device)
+                    torch.tensor(scaler["log_max"], dtype=torch.float32, device=self.device)
                 )
     
     def normalize_batch(self, params: torch.Tensor) -> torch.Tensor:
@@ -587,13 +599,14 @@ class TorchParameterScaler(nn.Module):
             elif scaler_type == "log_minmax":
                 log_min = getattr(self, f"{param_name}_log_min")
                 log_max = getattr(self, f"{param_name}_log_max")
-                
+                scale_to = scaler.get("scale_to", [-1, 1])
+
                 min_val = torch.exp(log_min)
                 max_val = torch.exp(log_max)
                 clamped = torch.clamp(params[:, i], min_val, max_val)
                 log_val = torch.log(clamped)
-                norm = 2.0 * (log_val - log_min) / (log_max - log_min) - 1.0
-                normalized[:, i] = torch.clamp(norm, -1.0, 1.0)
+                norm = scale_to[0] + (log_val - log_min) / (log_max - log_min) * (scale_to[1] - scale_to[0])
+                normalized[:, i] = torch.clamp(norm, scale_to[0], scale_to[1])
             
             elif scaler_type == "zscore":
                 mean = getattr(self, f"{param_name}_mean")
@@ -611,8 +624,8 @@ class TorchParameterScaler(nn.Module):
                 )
             
             elif scaler_type == "bounded_zscore":
-                min_val = torch.tensor(scaler["min"], device=self.device)
-                max_val = torch.tensor(scaler["max"], device=self.device)
+                min_val = torch.tensor(scaler["min"], dtype=torch.float32, device=self.device)
+                max_val = torch.tensor(scaler["max"], dtype=torch.float32, device=self.device)
                 mean = getattr(self, f"{param_name}_mean")
                 std = getattr(self, f"{param_name}_std")
                 
@@ -621,10 +634,9 @@ class TorchParameterScaler(nn.Module):
                     (clamped - mean) / (std + 1e-8), -5.0, 5.0
                 )
             
-            # ✅ FIXED (Dec 15): Add missing scaler types
             elif scaler_type == "bounded_angle":
-                min_val = torch.tensor(scaler["min"], device=self.device)
-                max_val = torch.tensor(scaler["max"], device=self.device)
+                min_val = torch.tensor(scaler["min"], dtype=torch.float32, device=self.device)
+                max_val = torch.tensor(scaler["max"], dtype=torch.float32, device=self.device)
                 scale_to = scaler["normalize_to"]
                 
                 clamped = torch.clamp(params[:, i], min_val, max_val)
@@ -632,8 +644,8 @@ class TorchParameterScaler(nn.Module):
                 normalized[:, i] = norm
             
             elif scaler_type == "linear_minmax":
-                min_val = torch.tensor(scaler["min"], device=self.device)
-                max_val = torch.tensor(scaler["max"], device=self.device)
+                min_val = torch.tensor(scaler["min"], dtype=torch.float32, device=self.device)
+                max_val = torch.tensor(scaler["max"], dtype=torch.float32, device=self.device)
                 scale_to = scaler.get("scale_to", [-1, 1])
                 
                 clamped = torch.clamp(params[:, i], min_val, max_val)
@@ -645,15 +657,15 @@ class TorchParameterScaler(nn.Module):
                 normalized[:, i] = norm
             
             elif scaler_type == "periodic":
-                # For periodic angles in batch mode: just normalize to [-1, 1]
-                # ✅ Note: This doesn't expand to cos/sin (that requires different handling)
-                
+                # For periodic angles in batch mode: just normalize to [-1, 1].
+                # Does not expand to cos/sin (that requires different handling).
+
                 # Only warn once per scaler instance (not every batch!)
                 if not hasattr(self, '_periodic_warning_shown'):
-                    logger.info(f"ℹ️  Periodic angles (ra, phase) using simple normalization in batch mode (not cos/sin)")
+                    logger.info("Periodic angles (ra, phase) using simple normalization in batch mode (not cos/sin)")
                     self._periodic_warning_shown = True
                 
-                period = torch.tensor(scaler["period"], device=self.device)
+                period = torch.tensor(scaler["period"], dtype=torch.float32, device=self.device)
                 angle = params[:, i] % period
                 norm = 2.0 * angle / period - 1.0
                 normalized[:, i] = norm
@@ -684,8 +696,8 @@ class TorchParameterScaler(nn.Module):
             if scaler_type == "log_zscore":
                 log_mean = getattr(self, f"{param_name}_log_mean")
                 log_std = getattr(self, f"{param_name}_log_std")
-                min_val = torch.tensor(scaler["min"], device=self.device)
-                max_val = torch.tensor(scaler["max"], device=self.device)
+                min_val = torch.tensor(scaler["min"], dtype=torch.float32, device=self.device)
+                max_val = torch.tensor(scaler["max"], dtype=torch.float32, device=self.device)
                 
                 log_val = normalized[:, i] * log_std + log_mean
                 val = torch.exp(log_val)
@@ -694,8 +706,9 @@ class TorchParameterScaler(nn.Module):
             elif scaler_type == "log_minmax":
                 log_min = getattr(self, f"{param_name}_log_min")
                 log_max = getattr(self, f"{param_name}_log_max")
-                
-                log_val = (normalized[:, i] + 1.0) / 2.0 * (log_max - log_min) + log_min
+                scale_to = scaler.get("scale_to", [-1, 1])
+
+                log_val = (normalized[:, i] - scale_to[0]) / (scale_to[1] - scale_to[0]) * (log_max - log_min) + log_min
                 val = torch.exp(log_val)
                 min_val = torch.exp(log_min)
                 max_val = torch.exp(log_max)
@@ -713,24 +726,23 @@ class TorchParameterScaler(nn.Module):
             elif scaler_type == "bounded_zscore":
                 mean = getattr(self, f"{param_name}_mean")
                 std = getattr(self, f"{param_name}_std")
-                min_val = torch.tensor(scaler["min"], device=self.device)
-                max_val = torch.tensor(scaler["max"], device=self.device)
+                min_val = torch.tensor(scaler["min"], dtype=torch.float32, device=self.device)
+                max_val = torch.tensor(scaler["max"], dtype=torch.float32, device=self.device)
                 
                 val = normalized[:, i] * std + mean
                 params[:, i] = torch.clamp(val, min_val, max_val)
             
-            # ✅ FIXED (Dec 15): Add missing denormalize cases
             elif scaler_type == "bounded_angle":
-                min_val = torch.tensor(scaler["min"], device=self.device)
-                max_val = torch.tensor(scaler["max"], device=self.device)
+                min_val = torch.tensor(scaler["min"], dtype=torch.float32, device=self.device)
+                max_val = torch.tensor(scaler["max"], dtype=torch.float32, device=self.device)
                 scale_to = scaler["normalize_to"]
                 
                 val = min_val + (normalized[:, i] - scale_to[0]) / (scale_to[1] - scale_to[0] + 1e-8) * (max_val - min_val)
                 params[:, i] = torch.clamp(val, min_val, max_val)
             
             elif scaler_type == "linear_minmax":
-                min_val = torch.tensor(scaler["min"], device=self.device)
-                max_val = torch.tensor(scaler["max"], device=self.device)
+                min_val = torch.tensor(scaler["min"], dtype=torch.float32, device=self.device)
+                max_val = torch.tensor(scaler["max"], dtype=torch.float32, device=self.device)
                 scale_to = scaler.get("scale_to", [-1, 1])
                 
                 val = min_val + (normalized[:, i] - scale_to[0]) / (scale_to[1] - scale_to[0] + 1e-8) * (max_val - min_val)
@@ -738,7 +750,7 @@ class TorchParameterScaler(nn.Module):
             
             elif scaler_type == "periodic":
                 # Reverse of periodic normalization
-                period = torch.tensor(scaler["period"], device=self.device)
+                period = torch.tensor(scaler["period"], dtype=torch.float32, device=self.device)
                 angle = (normalized[:, i] + 1.0) / 2.0 * period
                 params[:, i] = angle % period
         

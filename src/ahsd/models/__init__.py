@@ -1,25 +1,21 @@
 """
 Machine learning models for parameter estimation and control.
+
+OverlapNeuralPE was removed 2026-07-07: its context encoder was measured to
+produce a constant (event-independent) context — a pure marginal fit (see
+analysis/context_conditioning_test.json). LeanNPE is its replacement; the
+old code remains in git history.
 """
 
-from .neural_pe import NeuralPosteriorEstimator
 from .transformer_encoder import TransformerStrainEncoder
 from .parameter_scalers import ParameterScaler, TorchParameterScaler
-
-try:
-    from .overlap_neuralpe import OverlapNeuralPE, ContextEncoder
-except Exception as e:
-    # Skip if overlap_neuralpe fails (depends on flows which has issues)
-    import logging
-    logging.warning(f"Could not import OverlapNeuralPE: {e}")
-    OverlapNeuralPE = None
-    ContextEncoder = None
+from .lean_npe import LeanNPE, LeanStrainEncoder, ParamScaler
 
 __all__ = [
-    "NeuralPosteriorEstimator",
     "TransformerStrainEncoder",
-    "OverlapNeuralPE",
-    "ContextEncoder",
+    "LeanNPE",
+    "LeanStrainEncoder",
+    "ParamScaler",
     "ParameterScaler",
     "TorchParameterScaler",
 ]

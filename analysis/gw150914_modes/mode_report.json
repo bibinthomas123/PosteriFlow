@@ -1,0 +1,63 @@
+{
+ "modes": {
+  "A_low_m1": {
+   "weight": 0.624,
+   "n": 12513,
+   "rail_frac_in_mode": 0.308,
+   "median": {
+    "mass_1": 57.9,
+    "mass_2": 32.7,
+    "luminosity_distance": 1261.4
+   },
+   "median_q": 0.75,
+   "median_theta_jn": 0.8,
+   "map_sample": {
+    "mass_1": 30.1,
+    "mass_2": 30.0,
+    "luminosity_distance": 839.4
+   },
+   "published_inside_90CI": {
+    "mass_1": true,
+    "mass_2": true,
+    "luminosity_distance": false
+   }
+  },
+  "B_high_m1": {
+   "weight": 0.376,
+   "n": 7487,
+   "rail_frac_in_mode": 0.017,
+   "median": {
+    "mass_1": 64.2,
+    "mass_2": 40.2,
+    "luminosity_distance": 1459.5
+   },
+   "median_q": 0.64,
+   "median_theta_jn": 2.34,
+   "map_sample": {
+    "mass_1": 78.5,
+    "mass_2": 2.4,
+    "luminosity_distance": 773.3
+   },
+   "published_inside_90CI": {
+    "mass_1": false,
+    "mass_2": true,
+    "luminosity_distance": false
+   }
+  }
+ },
+ "per_dim_railing": {
+  "mass_1": 0.0073,
+  "mass_2": 0.0053,
+  "luminosity_distance": 0.0075,
+  "dec": 0.0036,
+  "theta_jn": 0.1608,
+  "geocent_time": 0.0028,
+  "a1": 0.0411,
+  "a2": 0.1295
+ },
+ "spike_weight_seeds": [
+  0.194375,
+  0.192625,
+  0.195625
+ ]
+}

@@ -17,8 +17,9 @@ Usage:
 import argparse, glob, json, pickle, sys
 from pathlib import Path
 
-sys.path.insert(0, "src")
-sys.path.insert(0, "experiments")
+_ROOT = str(Path(__file__).resolve().parents[1])
+sys.path.insert(0, _ROOT)
+sys.path.insert(0, f"{_ROOT}/src")
 
 import numpy as np
 import torch
@@ -87,7 +88,7 @@ def main():
     if args.noise == "real":
         # same validation events, deterministic real-noise crops + re-colored
         # signals — built by the SAME loader used in training (no duplication)
-        from v2_remix_data import RemixDataset, build_memmap_cache
+        from experiments.remix_data import RemixDataset, build_memmap_cache
         vcache = Path(args.data) / "memmap" / "validation"
         if not (vcache / "events.json").exists():
             build_memmap_cache(args.data, "validation", str(vcache))

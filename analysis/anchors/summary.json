@@ -1,0 +1,94 @@
+[
+ {
+  "cell": {
+   "mc": 10,
+   "q": 0.9,
+   "theta_jn": 2.9
+  },
+  "snr": 24.0,
+  "true": {
+   "mass_1": 12.1,
+   "mass_2": 10.9,
+   "luminosity_distance": 803.0
+  },
+  "npe": {
+   "mass_1": 24.7,
+   "mass_2": 7.3,
+   "luminosity_distance": 681.8
+  },
+  "dynesty": {
+   "mass_1": 12.8,
+   "mass_2": 10.3,
+   "luminosity_distance": 700.1
+  }
+ },
+ {
+  "cell": {
+   "mc": 20,
+   "q": 0.9,
+   "theta_jn": 1.57
+  },
+  "snr": 24.0,
+  "true": {
+   "mass_1": 24.2,
+   "mass_2": 21.8,
+   "luminosity_distance": 529.0
+  },
+  "npe": {
+   "mass_1": 36.7,
+   "mass_2": 17.0,
+   "luminosity_distance": 1389.4
+  },
+  "dynesty": {
+   "mass_1": 25.8,
+   "mass_2": 21.0,
+   "luminosity_distance": 1109.3
+  }
+ },
+ {
+  "cell": {
+   "mc": 30,
+   "q": 0.4,
+   "theta_jn": 2.9
+  },
+  "snr": 24.3,
+  "true": {
+   "mass_1": 55.6,
+   "mass_2": 22.2,
+   "luminosity_distance": 2050.0
+  },
+  "npe": {
+   "mass_1": 54.9,
+   "mass_2": 30.6,
+   "luminosity_distance": 1516.1
+  },
+  "dynesty": {
+   "mass_1": 57.4,
+   "mass_2": 22.0,
+   "luminosity_distance": 1772.5
+  }
+ },
+ {
+  "cell": {
+   "mc": 45,
+   "q": 0.7,
+   "theta_jn": 0.5
+  },
+  "snr": 24.0,
+  "true": {
+   "mass_1": 62.0,
+   "mass_2": 43.4,
+   "luminosity_distance": 1689.0
+  },
+  "npe": {
+   "mass_1": 82.0,
+   "mass_2": 51.2,
+   "luminosity_distance": 1529.5
+  },
+  "dynesty": {
+   "mass_1": 58.2,
+   "mass_2": 49.3,
+   "luminosity_distance": 1163.4
+  }
+ }
+]

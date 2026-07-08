@@ -21,6 +21,19 @@ SR = 4096
 SEG = 64          # seconds per segment
 WIN_N = 16384     # 4 s window the training pipeline uses
 O3B_START, O3B_END = 1256655618, 1269363618
+O1_START, O1_END = 1126623617, 1136649617
+O2_START, O2_END = 1164556817, 1187733618
+# Observing-run GPS ranges for the multi-era bank. Real-event inference spans
+# O1-O3, so the noise/texture family must too (measured: O3b-only training
+# gives +1-1.5 sigma distance bias on O1/O2 events). Virgo only observed from
+# late O2 onward.
+RUN_RANGES = {
+    "O1":  (O1_START, O1_END),
+    "O2":  (O2_START, O2_END),
+    "O3b": (O3B_START, O3B_END),
+}
+DET_RUNS = {"H1": ("O1", "O2", "O3b"), "L1": ("O1", "O2", "O3b"),
+            "V1": ("O3b",)}   # V1's late-O2 stretch is short; O3b suffices
 
 
 def main():
@@ -33,9 +46,18 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     freqs_win = np.fft.rfftfreq(WIN_N, 1.0 / SR)
-    # randomized GPS grid, same candidates for every detector
-    candidates = np.sort(rng.choice(
-        np.arange(O3B_START + 10000, O3B_END - 10000, 3600), size=600, replace=False))
+    # randomized GPS grid PER DETECTOR, spanning that detector's observing runs
+    # (shuffled so eras interleave and the bank fills uniformly across runs)
+    det_candidates = {}
+    for det, runs in DET_RUNS.items():
+        cands = []
+        for run in runs:
+            lo, hi = RUN_RANGES[run]
+            grid = np.arange(lo + 10000, hi - 10000, 3600)
+            cands.append(rng.choice(grid, size=min(400, len(grid)), replace=False))
+        c = np.concatenate(cands)
+        rng.shuffle(c)
+        det_candidates[det] = c
 
     def fetch_one(det, gps):
         fs = f"{args.outdir}/{det}_{gps}_strain.npy"
@@ -55,12 +77,25 @@ def main():
             freqs_seg = np.fft.rfftfreq(n, 1.0 / SR)
             asd_seg = np.interp(freqs_seg, asd.frequencies.value, asd.value,
                                 left=asd.value[0], right=asd.value[-1])
-            w = np.fft.irfft(np.fft.rfft(x) / np.maximum(asd_seg, 1e-30), n=n)
+            wf = np.fft.rfft(x) / np.maximum(asd_seg, 1e-30)
+            # Below the 15 Hz highpass corner the numerator/ASD ratio is
+            # leakage-dominated junk that was measured to carry ~100% of the
+            # output power (and to wreck the unit-std normalization). Zero it —
+            # the analysis band starts at 20 Hz.
+            wf[freqs_seg < 18.0] = 0.0
+            w = np.fft.irfft(wf, n=n)
             w = w[SR * 2: -SR * 2]                      # trim filter/edge artifacts
             w = (w / (w.std() + 1e-30)).astype(np.float32)  # unit noise floor
             arr = w
             if len(arr) < SEG * SR // 2 or not np.isfinite(arr).all():
                 raise ValueError("bad strain")
+            # quality gate: keep mild real-noise non-stationarity, reject
+            # data artifacts (dropouts, saturations, calibration junk)
+            bs = arr[: (len(arr) // SR) * SR].reshape(-1, SR).std(axis=1)
+            kurt = float(np.mean(arr ** 4) / (np.mean(arr ** 2) ** 2 + 1e-30) - 3.0)
+            if kurt > 30.0 or bs.max() > 4.0 or not (0.7 < np.median(bs) < 1.3):
+                raise ValueError(f"failed quality gate (kurt {kurt:.0f}, "
+                                 f"maxstd {bs.max():.1f})")
             asd_i = np.interp(freqs_win, asd.frequencies.value, asd.value,
                               left=asd.value[0], right=asd.value[-1]).astype(np.float32)
             if not np.isfinite(asd_i).all() or (asd_i <= 0).any():
@@ -78,16 +113,17 @@ def main():
                   if f.startswith(f"{d}_") and f.endswith("_strain.npy"))
            for d in ("H1", "L1", "V1")}
     print("existing:", got)
-    for gps in candidates:
-        if all(v >= args.per_det for v in got.values()):
-            break
+    pos = {d: 0 for d in ("H1", "L1", "V1")}
+    while not all(got[d] >= args.per_det or pos[d] >= len(det_candidates[d])
+                  for d in ("H1", "L1", "V1")):
         for det in ("H1", "L1", "V1"):
-            if got[det] >= args.per_det:
+            if got[det] >= args.per_det or pos[det] >= len(det_candidates[det]):
                 continue
-            r = fetch_one(det, int(gps))
-            if r:
+            gps = int(det_candidates[det][pos[det]])
+            pos[det] += 1
+            if fetch_one(det, gps):
                 got[det] += 1
-                print(f"[{det}] {int(gps)} ok ({got[det]}/{args.per_det})", flush=True)
+                print(f"[{det}] {gps} ok ({got[det]}/{args.per_det})", flush=True)
     print("done:", got)
 
 

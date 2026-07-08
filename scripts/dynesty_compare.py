@@ -22,19 +22,15 @@ sys.path.insert(0, "src")
 import numpy as np
 import torch
 
-import bilby
 from ahsd.data.bilby_pipeline import (BilbyNoiseGenerator, BilbySignalInjector,
                                       BilbyPreprocessor, get_default_psd)
 from ahsd.data.parameter_sampler import ParameterSampler
 from ahsd.models.lean_npe import LeanNPE, PARAM_NAMES
+from ahsd.inference.dynesty_bridge import (GPS_REF, run_dynesty as _run_dynesty,
+                                           align_conventions)
 
 DETS = ["H1", "L1", "V1"]
 SR, DUR = 4096, 4.0
-# Injection epoch: the dataset pipeline evaluates antenna patterns at the O4
-# reference time (parameter_sampler.GPS_REF). The likelihood's interferometers
-# MUST use the same epoch or RA is rotated by an arbitrary sidereal phase
-# (measured: predicted GMST shift 5.586 rad vs observed RA offset 5.570 rad).
-GPS_REF = 1369224018.0
 
 
 def make_event(sampler, noise_gen, injector, prep, psds, seed, min_snr=8.0):
@@ -58,55 +54,9 @@ def make_event(sampler, noise_gen, injector, prep, psds, seed, min_snr=8.0):
 
 
 def run_dynesty(raw, psds, injection, outdir, label, nlive=300):
-    ifos = bilby.gw.detector.InterferometerList([])
-    for det in DETS:
-        ifo = bilby.gw.detector.get_empty_interferometer(det)
-        ifo.power_spectral_density = bilby.gw.detector.PowerSpectralDensity(
-            frequency_array=np.asarray(psds[det]["frequencies"], dtype=float),
-            psd_array=np.asarray(psds[det]["psd"], dtype=float))
-        ifo.strain_data.set_from_time_domain_strain(
-            raw[det].astype(np.float64), sampling_frequency=SR, duration=DUR,
-            start_time=GPS_REF - DUR / 2)
-        ifo.minimum_frequency = 20.0
-        ifos.append(ifo)
-
-    wfg = bilby.gw.WaveformGenerator(
-        duration=DUR, sampling_frequency=SR,
-        frequency_domain_source_model=bilby.gw.source.lal_binary_black_hole,
-        parameter_conversion=bilby.gw.conversion.convert_to_lal_binary_black_hole_parameters,
-        waveform_arguments={"waveform_approximant": "IMRPhenomXP",
-                            "reference_frequency": 50.0, "minimum_frequency": 20.0})
-
-    priors = bilby.gw.prior.BBHPriorDict()
-    # match the training prior support; aligned spins (tilts fixed at 0)
-    priors["mass_1"] = bilby.core.prior.Uniform(5, 100, "mass_1")
-    priors["mass_2"] = bilby.core.prior.Uniform(5, 100, "mass_2")
-    priors["mass_ratio"].maximum = 1.0  # overridden by component masses below
-    del priors["chirp_mass"], priors["mass_ratio"]
-    priors["luminosity_distance"] = bilby.gw.prior.UniformSourceFrame(
-        50, 2100, name="luminosity_distance")
-    priors["a_1"] = bilby.core.prior.Uniform(0, 0.99, "a_1")
-    priors["a_2"] = bilby.core.prior.Uniform(0, 0.99, "a_2")
-    priors["tilt_1"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["tilt_2"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["phi_12"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["phi_jl"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["geocent_time"] = bilby.core.prior.Uniform(
-        GPS_REF + injection["geocent_time"] - 0.2,
-        GPS_REF + injection["geocent_time"] + 0.2, "geocent_time")
-
-    like = bilby.gw.likelihood.GravitationalWaveTransient(
-        interferometers=ifos, waveform_generator=wfg, priors=priors,
-        phase_marginalization=True, distance_marginalization=True,
-        time_marginalization=True)
-
-    res = bilby.run_sampler(
-        likelihood=like, priors=priors, sampler="dynesty", nlive=nlive,
-        dlogz=0.5, sample="rwalk", walks=60, naccept=20,
-        conversion_function=bilby.gw.conversion.generate_all_bbh_parameters,
-        outdir=str(outdir), label=label, resume=False, clean=True,
-        save=True, plot=False, npool=4)
-    return res
+    # single implementation lives in ahsd.inference.dynesty_bridge
+    return _run_dynesty(raw, psds, outdir, label, center_gps=GPS_REF,
+                        trigger_offset=injection["geocent_time"], nlive=nlive)
 
 
 def main():
@@ -162,13 +112,8 @@ def main():
                        "geocent_time": "geocent_time", "a1": "a_1", "a2": "a_2"}
         comp = {"event": k, "snr": net, "truth": truth,
                 "t_leannpe_s": round(t_npe, 2), "t_dynesty_s": round(t_dyn, 1)}
-        # convention alignment before comparing:
-        #  - sort masses per draw (training/dataset enforce mass_1 >= mass_2,
-        #    the dynesty priors do not)
-        #  - dynesty geocent_time is absolute GPS; LeanNPE's is relative to GPS_REF
-        m1v, m2v = post["mass_1"].values.copy(), post["mass_2"].values.copy()
-        post["mass_1"], post["mass_2"] = np.maximum(m1v, m2v), np.minimum(m1v, m2v)
-        post["geocent_time"] = post["geocent_time"].values - GPS_REF
+        # convention alignment before comparing (mass sort + relative time)
+        post = align_conventions(post, GPS_REF)
         for j, name in enumerate(PARAM_NAMES):
             b = post[bilby_names[name]].values
             n_ = npe_samples[:, j]

@@ -1,752 +1,374 @@
-# 🌊 PosteriFlow — Adaptive Hierarchical Signal Decomposition (AHSD)
+# PosteriFlow — Neural Posterior Estimation for Overlapping Gravitational-Wave Signals
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Production-brightgreen.svg)]()
 
-> **A next-generation gravitational-wave analysis system that detects, decomposes, and characterizes overlapping signals in real-time using neural posterior estimation and adaptive signal subtraction.**
-
----
-
-## 🎯 What is PosteriFlow?
-
-PosteriFlow is a cutting-edge machine learning pipeline for gravitational-wave astronomy that solves a critical problem: **how to extract multiple overlapping signals from noisy gravitational-wave detector data**.
-
-### The Core Problem
-Modern gravitational-wave detectors (LIGO, Virgo) detect weak signals buried in noise. When **multiple sources merge simultaneously**, their signals overlap, creating a complex mixture that traditional methods cannot easily separate. PosteriFlow uses **hierarchical neural networks** to:
-
-1. **Prioritize signals** - Determine which sources to extract first
-2. **Estimate parameters** - Rapidly infer masses, distances, spins using neural inference
-3. **Subtract adaptively** - Remove extracted signals while preserving fainter ones
-4. **Quantify uncertainty** - Provide calibrated confidence intervals for all estimates
-
-### Why This Matters
-- **Multi-messenger astronomy**: Early warnings for neutron star mergers enable electromagnetic follow-up
-- **Population statistics**: Extracting overlapping events improves population constraints on compact object formation
-- **Real-time decision-making**: LIGO alert system can trigger faster with overlapping signals disentangled
-- **Scientific discovery**: Overlaps may reveal unexpected binary characteristics (precession, eccentricity)
+> Amortized, calibrated posterior estimation for overlapping compact-binary
+> coalescences in multi-detector strain — seconds per event instead of
+> minutes-to-hours, with per-signal posteriors for up to 5 overlapping sources.
 
 ---
 
-## 🏗️ Architecture Overview
+## 1. The problem
 
-### Three-Phase Pipeline
+Ground-based gravitational-wave detectors (LIGO Hanford/Livingston, Virgo)
+observe compact-binary mergers as chirping strain signals buried in colored
+noise. Parameter estimation — recovering masses, distance, sky position,
+spins from the strain — is classically done with stochastic samplers
+(dynesty, bilby-MCMC) that evaluate a waveform likelihood hundreds of
+thousands of times per event. That costs minutes to hours per event and,
+more fundamentally, assumes **one signal per analysis segment**.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│         RAW GRAVITATIONAL-WAVE DATA (H1, L1, V1)             │
-│     Detector noise + overlapping GW signals + glitches       │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-          ┌──────────────────────────────────┐
-          │  PHASE 1: NEURAL POSTERIOR       │
-          │  ESTIMATION (Neural PE)          │
-          │  ─────────────────────────────   │
-          │  • Likelihood-free inference     │
-          │  • Multi-detector coherence      │
-          │  • Uncertainty quantification    │
-          └──────────────┬───────────────────┘
-                         │
-          Parameter estimates + uncertainties
-          (mass_1, mass_2, distance, sky position, spins)
-                         │
-                         ▼
-          ┌──────────────────────────────────┐
-          │  PHASE 2: PRIORITY NET            │
-          │  Signal Ranking & Selection       │
-          │  ─────────────────────────────   │
-          │  • Temporal encoding (CNN+BiLSTM)│
-          │  • Cross-signal feature analysis  │
-          │  • Uncertainty-aware ranking      │
-          │  • Predicts extraction order      │
-          └──────────────┬───────────────────┘
-                         │
-                     Ordered list of signals
-                     (which to remove first)
-                         │
-                         ▼
-          ┌──────────────────────────────────┐
-          │  PHASE 3: ADAPTIVE SUBTRACTOR     │
-          │  Iterative Signal Removal         │
-          │  ─────────────────────────────   │
-          │  • Uncertainty-weighted subtraction
-          │  • Cross-detector coherence       │
-          │  • Bias correction               │
-          │  • Residual quality monitoring    │
-          └──────────────┬───────────────────┘
-                         │
-                         ▼
-       ┌──────────────────────────────────────────┐
-       │  EXTRACTED SIGNALS & RESIDUAL NOISE      │
-       │  • Individual source parameters          │
-       │  • Parameter uncertainties               │
-       │  • Signal-to-noise metrics               │
-       │  • Residual quality assessment           │
-       └──────────────────────────────────────────┘
-```
+As detector sensitivity improves (O4/O5, and especially next-generation
+observatories like Einstein Telescope), the in-band event rate rises until
+**signals overlap in time**. For overlapping sources the single-signal
+likelihood is simply wrong: sampling one signal while another sits in the
+data biases both. Joint N-signal sampling exists but scales combinatorially.
 
-### Key Neural Components
+**PosteriFlow's answer** is simulation-based inference: train a neural
+network on millions of simulated (signal + noise → parameters) examples so
+that, at observation time, a *single forward pass* returns the posterior.
+The network never needs an explicit likelihood, and overlap handling is
+built into the training distribution rather than bolted onto a sampler.
 
-#### **Neural PE (Parameter Estimation)**
-- Likelihood-free inference using normalizing flows
-- Simultaneous estimation of ~15 binary parameters
-- Fast inference: <100ms for 4-second segment
-- Uncertainty quantification via posterior ensemble
-- Handles contamination via data augmentation
+The estimator, **LeanNPE**, answers queries of the form:
 
-#### **PriorityNet (Signal Prioritization)**
-- Temporal CNN encoder: Multi-scale time-frequency features
-- BiLSTM encoder: Temporal dependencies in strain data
-- Cross-signal analyzer: Quantifies signal overlap and interaction
-- Output: Ranking of signals + confidence in order
-- Enables optimal extraction strategy
+> *"Given this 4 s of whitened H1/L1/V1 strain, what is the posterior over
+> the 11 parameters of the k-th loudest signal present?"*
 
-#### **Adaptive Subtractor**
-- Uses Neural PE uncertainties to weight residuals
-- Subtracts strongest signal first (per PriorityNet)
-- Bias correction: Accounts for parameter estimation errors
-- Iterative: Updates estimates after each subtraction
-- Quality monitoring: Validates residual Gaussianity
+Parameters: `mass_1, mass_2, luminosity_distance, ra, dec, theta_jn, psi,
+phase, geocent_time, a1, a2` (aligned spins; `mass_1 ≥ mass_2` convention).
+
+A separately trained **PriorityNet** ranks signals so the downstream
+extract-and-subtract pipeline (`src/ahsd/core/`) can iterate: infer loudest
+→ subtract → re-infer.
 
 ---
 
-## 💾 Data Pipeline
+## 2. How it works
 
-### Synthetic Dataset Generation
-
-PosteriFlow generates realistic synthetic gravitational-wave data for training:
+### 2.1 The model (LeanNPE, ~6M parameters)
 
 ```
-REAL LIGO/VIRGO CHARACTERISTICS
-├─ Detector network (H1, L1, V1)
-├─ Realistic PSDs from O4 sensitivity
-├─ Real glitches & contamination
-├─ Physics-accurate waveforms (IMRPhenomXAS)
-└─ Realistic source populations
-
-                    ▼
-
-PARAMETERS SAMPLED (Physics-Constrained)
-├─ Masses (BBH: 5-100 M☉, BNS: 1-2.5 M☉)
-├─ Spins (aligned & precessing)
-├─ Distance (~log-uniform, Malmquist bias)
-├─ Sky position (uniform on sphere)
-└─ Binary merger epoch
-
-                    ▼
-
-SIGNAL GENERATION
-├─ GW waveform synthesis (PyCBC)
-├─ Detector response (antenna patterns)
-├─ SNR-dependent distance scaling
-└─ Parameter-distance correlation (physics-validated)
-
-                    ▼
-
-CONTAMINATION INJECTION
-├─ Real LIGO noise (GWOSC, 10-25× speedup via caching)
-├─ Neural synthetic noise (10,000× faster than GWOSC)
-├─ Line glitches (60 Hz, harmonics)
-├─ Transient glitches (blips, scattered light)
-├─ PSD drift (multiple epochs)
-└─ Detector dropout scenarios
-
-                    ▼
-
-OVERLAP CREATION (45% realistic rate)
-├─ 2-signal overlaps (direct mergers)
-├─ Multi-signal overlaps (up to 8 signals)
-├─ Partial overlaps (different durations)
-└─ Subtle ranking (important for prioritization)
-
-                    ▼
-
-EDGE CASE SAMPLING (8% of dataset)
-├─ Physical extremes (high mass-ratio, spins)
-├─ Observational extremes (strong glitches)
-├─ Statistical extremes (multimodal posteriors)
-└─ Overlapping extremes (subtle ranking)
-
-                    ▼
-
-FINAL DATASET (25,000+ samples)
-├─ Detector strain (H1, L1, V1) + preprocessing
-├─ Ground-truth parameters
-├─ Network SNR & quality metrics
-├─ Metadata for analysis
-└─ Train/val/test splits (80/10/10)
+whitened strain [3, 16384] ──► norm-free conv stem (asinh input) ──► 61 tokens/det
+                                        │  + detector & positional embeddings
+                                        ▼
+                        3-layer pre-norm Transformer (cross-detector fusion)
+                                        │  attention pooling (8 learned queries)
+raw strain ──► per-window log-energy ───┤
+                                        ▼
+                              context vector (256) ⊕ signal-rank embedding (32)
+                                        ▼
+                    Neural Spline Flow (8 layers, 16 bins) ──► posterior samples
 ```
 
-### Data Statistics
+- **Conv stem, no normalization layers.** The strain is already whitened
+  (unit noise floor), so absolute amplitude *is* the distance/SNR cue.
+  Per-sample normalization (InstanceNorm, per-detector std division,
+  LayerNorm stacks) provably destroyed it in a previous architecture — the
+  stem instead sees `asinh`-compressed strain (amplitude-monotone, bounded),
+  and a parallel branch feeds per-window log-energies of the *raw* strain so
+  amplitude survives any internal normalization downstream.
+- **Cross-detector Transformer.** Sky position and distance/inclination
+  information lives in amplitude ratios and time delays *between* detectors;
+  self-attention across all detectors' tokens fuses it.
+- **Rank conditioning.** For overlap events, the flow's context includes an
+  embedding of the queried signal's loudness rank. Without it, one context
+  would be trained to predict *every* overlapping signal's parameters — an
+  irreducibly ambiguous (mixture) target. This single embedding turns the
+  overlap problem into a well-posed conditional.
+- **Neural Spline Flow** (rational-quadratic, autoregressive; built on
+  `nflows`) maps a standard normal to the 11-D posterior, conditioned on the
+  296-D context. Parameters are mapped to [−1, 1] by a fixed, deterministic
+  scaler (log-space for masses and distance) — no fitted statistics that can
+  drift between training and inference.
+- **Pure NLL objective.** No auxiliary losses, no diversity regularizers, no
+  posterior-width penalties. Every such term tried in this project's history
+  was measured to optimize the *statistics* of the representation rather
+  than its *information content* (see §5).
 
-```
-SIGNAL TYPE DISTRIBUTION:
-├─ Binary Black Hole (BBH):    46% → Loudest, most common
-├─ Binary Neutron Star (BNS):  32% → Rare, long duration, crucial for EW
-├─ NS-BH (NSBH):               17% → Intermediate
-└─ Noise only:                  5% → Background characterization
+### 2.2 The data engine: component storage + on-the-fly remixing
 
-OVERLAP STATISTICS:
-├─ Single signals:      55% of samples
-├─ Overlapping:         45% of samples
-│  ├─ 2-3 signals:      35%
-│  ├─ 4-5 signals:       8%
-│  └─ 6+ signals:        2%
-└─ Average: 2.25 signals per sample
+The single most important lesson from this project: **for NPE, the dataset
+design matters more than the architecture.** Two failure modes were measured
+and fixed here:
 
-SNR DISTRIBUTION (O4 REALISTIC):
-├─ Weak (10-15):        5%
-├─ Low (15-25):        35%  ← Most detections
-├─ Medium (25-40):     45%
-├─ High (40-60):       12%
-└─ Loud (60-80):        3%
+1. **Fixed noise → memorization.** If each training event stores one frozen
+   `signal + noise` sum, the network eventually memorizes the noise wiggles
+   (train NLL → −8 while validation → +8, observed). Noise must be *fresh*
+   every epoch.
+2. **One noise draw per signal → wrong widths.** Posterior width is learned
+   from seeing how much the data can vary for fixed parameters. One noise
+   realization per event under-teaches exactly the quantity calibration
+   depends on.
 
-PARAMETER RANGES:
-├─ Masses:    3-200 M☉  (detector frame)
-├─ Distances: 10-18,000 Mpc
-├─ Spins:     0-0.99
-└─ SNR:       3-100
-```
+So the generator (`src/ahsd/data/`, fully bilby-based: IMRPhenomXP /
+NRTidalv2 waveforms, design-sensitivity PSDs, matched-filter SNR accounting)
+stores every event as **separate whitened components** — the noise and each
+signal individually (float16, exact to the summed strain within float16
+rounding, verified). The training loader (`experiments/v2_remix_data.py`)
+then assembles a *different* example from the same ingredients every epoch:
 
-### Advanced Features
+| Augmentation | Mechanism | Label handling |
+|---|---|---|
+| Noise swap | any of 40k+ stored noise realizations, or real O3 crops | — |
+| Real-noise re-coloring | `irfft(rfft(sig)·ASD_design/ASD_measured)` — exact, since whitening is diagonal in frequency | — |
+| Time shift | circular roll ±0.1 s, identical across detectors (preserves inter-detector delays) | `geocent_time += δt` |
+| Distance rescale | amplitude × s (exact leading-order GR) | `d_L ÷ s` |
+| Overlaps | 2–5 signals summed; per-event loudness re-sort after rescaling | rank labels stay consistent |
+| Pre-merger | BNS/NSBH with merger 0.5–3 s *past* the window end (early-warning regime) | `--premerger` widens the time scaler |
 
-**Real Noise Integration (10-25× speedup)**
-- Pre-downloaded GWOSC segments (133 cached files)
-- Three-level fallback: cache → on-demand → synthetic
-- 10% real noise mixing for enhanced realism
+37k stored events × fresh noise pairings ≈ effectively unlimited training
+data; the memorization channel is closed by construction (verified: val NLL
+tracks train NLL ~2.7× longer and ~0.35 nats deeper than with fixed noise).
 
-**Neural Noise Generation (10,000× speedup)**
-- FMPE pre-trained models (Gaussian_network.pickle)
-- Colored Gaussian & non-Gaussian variants
-- Falls back gracefully if models unavailable
+### 2.3 Real detector noise
 
+A model trained purely on Gaussian design-PSD noise **does not transfer** to
+real O3 data — measured here as NLL 0.7 → 27 and 90% coverage 0.93 → 0.35 on
+real-noise injections. The gap is spectral (measured-PSD shape,
+non-stationarity, glitches), not an amplitude-scale artifact (normalizing
+crops recovers almost nothing).
 
-**TransformerStrainEncoder Enhancement**
-- State-of-the-art strain encoding
-- Attention-based temporal modeling
-- Outperforms CNN+BiLSTM baselines
+The remedy is built into the same loader — no separate pipeline:
 
+- `scripts/download_gwosc_noise_bank.py` fetches 64 s O3b segments per
+  detector from GWOSC, **whitens each manually with its own measured ASD**
+  (the saved ASD and the applied whitening filter are the same array, by
+  construction), and stores strain + ASD under `data/noise_bank/`.
+- `RemixDataset(real_noise_dir=…, real_noise_prob=p)` draws, per event per
+  epoch, real crops with probability *p* and Gaussian noise otherwise —
+  re-coloring the stored design-whitened signals into each segment's
+  whitening exactly. All other augmentations apply unchanged.
+- Training logs metrics on **two fixed validation sets each epoch**
+  (Gaussian and real-noise), and checkpoint selection uses their mean — so
+  robustness on real data cannot silently trade away simulated-data
+  performance, or vice versa.
+
+Mixing ratios (0 / 0.25 / 0.5 / 0.75 / 1.0) are pure configuration; no code
+changes between experiments.
 
 ---
 
-## 🚀 Quick Start
+## 3. Measured results
 
-### 1. Environment Setup
+All numbers from this repo's diagnostics on held-out validation data
+(`analysis/`), not projections.
+
+**Core performance (v2 checkpoint, Gaussian noise, 1.5–2k events):**
+
+| Metric | Value | Why it matters |
+|---|---|---|
+| Shuffle ΔNLL | **+10.1 nats** | *The* conditional-inference test: NLL degradation when contexts are shuffled across events. 0.000 = the model ignores the data entirely (the previous architecture scored exactly that). |
+| Coverage, all 11 params @ 50/68/90/95% | within ±3–5% of nominal | Posteriors are honest: a 90% interval contains the truth ~90% of the time. |
+| Distance correlation (log-median vs truth) | 0.65 | Bounded below 1 by the physical distance–inclination degeneracy. |
+| Chirp-mass error vs SNR | 43% → 8.4% (SNR 6 → 100) | Scales with loudness as it should — no plateau. |
+| Overlap severity (2–4 signals, min Δt down to <0.3 s) | no degradation vs singles | The rank-conditioned design solves the overlap task rather than degrading gracefully. |
+| Inference cost | ~5 s / 3,000 samples | vs ~7 min for dynesty on the same event (≈100×), on a laptop. |
+
+**Independent cross-check:** bilby/dynesty, fed the *unwhitened* strain +
+PSDs from this repo's own generator, recovers injected truths within ~1σ —
+externally certifying the injection/PSD/SNR bookkeeping chain
+(`scripts/dynesty_compare.py`).
+
+**Known limits (measured, not hidden):**
+
+- Distance error plateaus at ~23% above SNR ≈ 16, with mild core
+  overconfidence in the loudest bin — the model stops extracting amplitude
+  information where an optimal estimator would keep sharpening.
+- Timing σ ≈ 65 ms — the encoder's temporal stride — versus dynesty's
+  ~0.3 ms phase-coherent timing. Sky localization inherits this (RA/dec far
+  wider than dynesty): one bottleneck, two symptoms. Fixing it requires
+  phase-preserving features in the encoder; it is the top architectural
+  target for a next iteration.
+- SBC rank histograms show small systematic slopes for `mass_1` and
+  `distance` (slight underestimation) and wrap-around artifacts for circular
+  parameters; interval coverage is unaffected, but publication-grade SBC
+  would want post-hoc quantile recalibration.
+
+---
+
+## 4. Using it
+
+### Setup
 
 ```bash
-# Clone repository
-git clone https://github.com/bibinthomas123/PosteriFlow.git
-cd PosteriFlow
-
-# Initialize conda (first time only)
-conda init
-
-# Activate environment
-conda activate ahsd
-
-# Install package in development mode
+conda activate ahsd          # environment with torch (MPS/CUDA), bilby, gwpy, nflows
 pip install -e . --no-deps
 ```
 
-**Important:** The conda environment `ahsd` exists and contains all dependencies. Never recreate it.
-
-### 2. Generate Training Data
+### Generate a dataset (component storage on by default)
 
 ```bash
-# Generate 25,000 samples (default, ~1.5-2 hours)
 python src/ahsd/data/scripts/generate_dataset.py \
-    --config configs/data_config.yaml \
-    --num-samples 25000
-
-# Custom parameters
-python src/ahsd/data/scripts/generate_dataset.py \
-    --config configs/data_config.yaml \
-    --num-samples 50000 \
-    --output-dir data/dataset_custom
+    --config configs/data_config.yaml --n-samples 50000 --output-dir data/dataset
 ```
 
-### 3. Train Phase 1: Neural PE
+`configs/data_config.yaml` controls event mix (BBH/BNS/NSBH/noise), overlap
+fraction, SNR gate, pre-merger fraction, and component storage. ~2 h for 50k
+events on a laptop; ~22 GB.
+
+### Train from scratch (remix, Gaussian noise)
 
 ```bash
-# Train neural parameter estimation network
-python experiments/phase3a_neural_pe.py \
-    --config configs/enhanced_training.yaml \
-    --batch-size 32 \
-    --epochs 100
-
-# Monitor training
-tensorboard --logdir outputs/
+python -u experiments/train_lean_npe.py --data data/dataset --remix \
+    --epochs 40 --batch 128 --outdir model/lean_npe_v2
 ```
 
-### 4. Train Phase 2: PriorityNet
+First run builds a memmap cache (`data/dataset/memmap/`) so epochs stream
+from disk without holding 22 GB in RAM. ~9 min/epoch on an M-series Mac.
+
+### Download real noise & fine-tune
 
 ```bash
-# Train signal prioritization network
-python experiments/train_priority_net.py \
-    --config configs/priority_net.yaml \
-    --create-overlaps \
-    --batch-size 16
+python scripts/download_gwosc_noise_bank.py --per_det 120 --outdir data/noise_bank
 
-# Resume from checkpoint
-python experiments/train_priority_net.py \
-    --resume outputs/prioritynet_checkpoint.pth \
-    --create-overlaps
+python -u experiments/train_lean_npe.py --data data/dataset --remix \
+    --noise_bank data/noise_bank --real_noise_prob 0.5 \
+    --init_from model/lean_npe_v2/best_model.pth \
+    --lr 1e-4 --epochs 20 --outdir model/lean_npe_v3
 ```
 
-### 5. Evaluate & Validate
+### Reading the per-epoch log
+
+```
+epoch 12 | train 1.72 | val 2.00 | shufΔ +2.46 | dcorr +0.45 | dcov50/90 0.52/0.95 | gnorm 41 | 534s | REAL val 3.1 dcorr +0.31 dcov 0.44/0.86
+```
+
+| Field | Healthy | Failure signature |
+|---|---|---|
+| `shufΔ` | climbs steadily, several nats | pinned near 0 → marginal fit; stop and diagnose the encoder, don't train longer |
+| `dcorr` | lifts off 0 by ~epoch 10–15, → 0.6+ | flat while `shufΔ` grows → amplitude not being extracted |
+| `dcov50/90` | ~0.50/0.90 throughout (±0.04 noise) | steady downward drift → overconfidence creeping in |
+| `val` vs `train` | fall together | val flat/rising while train falls → memorization; the data, not the model, is the bottleneck |
+| `REAL …` block | converges toward the Gaussian block | stays far apart → increase `real_noise_prob` or bank size |
+
+Checkpoints save on best validation NLL (mean of both domains when a noise
+bank is configured), so a run left too long never loses its best model.
+
+### Certify a checkpoint
 
 ```bash
-# Full validation suite
-python experiments/phase3c_validation.py \
-    --phase3a_output outputs/phase3a_output_X/ \
-    --phase3b_output outputs/phase3b_production/ \
-    --n_samples 2000 \
-    --seeds 5
-
-# Expected output:
-# ✅ System Success Rate: 82.1%
-# ✅ Neural PE Accuracy: 0.582 ± 0.087
-# ✅ Subtraction Efficiency: 81.1%
+python scripts/lean_npe_diagnostics.py  --model model/lean_npe_v2/best_model.pth \
+    --data data/dataset --outdir analysis/diag        # SBC, PP, coverage; add --noise real for O3 variant
+python scripts/lean_npe_extended_eval.py               # error vs SNR bins, overlap severity, calib splits
+python scripts/dynesty_compare.py --n_events 30        # head-to-head vs bilby/dynesty
 ```
 
----
-
-## 📊 Performance Results
-
-### System-Level Metrics
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| **System Success Rate** | 82.1% | End-to-end detection of all signals |
-| **Average Efficiency (η)** | 81.1% | Residual energy reduction |
-| **Latency per 4s segment** | 156 ms | Dual-channel (H1, L1) |
-| **Throughput** | 25.6 seg/s | Real-time capable |
-| **Memory (8GB VRAM)** | Fits | Batch inference supported |
-
-### Phase 1: Neural PE Accuracy
-
-| Dataset | APE (mean) | APE (std) | Comments |
-|---------|-----------|----------|----------|
-| Clean (training) | 0.802 | 0.012 | Physics-perfect data |
-| Contaminated (validation) | 0.582 | 0.087 | Realistic noise |
-| After subtraction | 0.645 | 0.074 | Improved residuals |
-
-### Phase 2: PriorityNet Ranking
-
-| Metric | Value | Target |
-|--------|-------|--------|
-| Top-K Precision@1 | 96.6% | >95% |
-| Ranking Correlation | 0.605 | >0.50 |
-| Priority Accuracy | 94.6% | >90% |
-| Calibration Error | <0.05 | <0.10 |
-
-### Phase 3: Multi-Seed Verification
-
-```
-METRIC STABILITY ACROSS 5 SEEDS (200 samples each):
-├─ Neural PE Accuracy:  0.582 ± 0.004  (variation: 0.1%)
-├─ Subtraction η:       0.811 ± 0.001  (variation: <0.1%)
-├─ System Success:      0.821 ± 0.008  (variation: 1.0%)
-└─ Statistical significance: Cohen's d > 2.0
-```
-
----
-
-## 📁 Project Structure
-
-```
-PosteriFlow/
-├── 📁 src/ahsd/                    # Main package
-│   ├── 📁 core/                    # Core algorithms
-│   │   ├── priority_net.py          # Signal prioritization (PriorityNet)
-│   │   ├── adaptive_subtractor.py   # Adaptive subtraction + NeuralPE
-│   │   ├── ahsd_pipeline.py         # Full end-to-end pipeline
-│   │   └── bias_corrector.py        # Parameter bias correction
-│   ├── 📁 data/                    # Data generation & preprocessing
-│   │   ├── dataset_generator.py     # Main dataset generator
-│   │   ├── waveform_generator.py    # GW waveform synthesis (PyCBC)
-│   │   ├── noise_generator.py       # Synthetic noise + glitches
-│   │   ├── neural_noise_generator.py # FMPE neural noise (10k× speedup)
-│   │   ├── parameter_sampler.py     # Physics-constrained sampling
-│   │   ├── psd_manager.py          # Power spectral density management
-│   │   ├── gwtc_loader.py          # Real GWOSC data loading
-│   │   ├── injection.py            # Signal injection into noise
-│   │   ├── preprocessing.py        # Whitening, normalization
-│   │   └── config.py               # Config loading & validation
-│   ├── 📁 models/                  # Neural network architectures
-│   │   ├── neural_pe.py            # Neural PE normalizing flow
-│   │   ├── overlap_neuralpe.py      # Multi-signal PE variant
-│   │   ├── transformer_encoder.py   # TransformerStrainEncoder
-│   │   ├── flows.py                # Flow architectures
-│   │   └── rl_controller.py         # RL-based control (future)
-│   ├── 📁 evaluation/              # Metrics & analysis
-│   │   └── metrics.py              # APE, efficiency, ranking metrics
-│   └── 📁 utils/                   # Utilities
-│       ├── config.py               # Configuration classes
-│       ├── logging.py              # Logging setup
-│       └── data_format.py           # Data standardization
-├── 📁 experiments/                 # Training & evaluation scripts
-│   ├── phase3a_neural_pe.py        # Neural PE training
-│   ├── train_priority_net.py        # PriorityNet training
-│   ├── data_generation.py          # Dataset generation wrapper
-│   └── phase3c_validation.py        # Multi-seed validation
-├── 📁 configs/                     # Configuration files (YAML)
-│   ├── data_config.yaml            # Data generation parameters
-│   ├── enhanced_training.yaml      # Training hyperparameters
-│   ├── priority_net.yaml           # PriorityNet config
-│   └── inference.yaml              # Inference settings
-├── 📁 tests/                       # Unit & integration tests
-│   ├── test_dataset_generation.py
-│   ├── test_neural_pe.py
-│   ├── test_priority_net.py
-│   └── test_integration.py
-├── 📁 models/                      # Trained model checkpoints
-│   ├── neural_pe_best.pth
-│   └── prioritynet_checkpoint.pth
-├── 📁 data/                        # Generated datasets
-│   ├── dataset/
-│   │   ├── train.pkl
-│   │   ├── val.pkl
-│   │   └── test.pkl
-│   └── Gaussian_network.pickle     # FMPE model (neural noise)
-├── 📁 outputs/                     # Experiment results
-│   ├── phase3a_output_X/
-│   ├── phase3b_production/
-│   └── logs/
-├── 📁 gw_segments/         # Pre-cached GWOSC segments
-│   └── [133 real noise segments]
-├── 📁 notebooks/                   # Analysis & visualization
-├── 📁 docs/                        # Additional documentation
-├── pyproject.toml                  # Package metadata & dependencies
-├── setup.py                        # Package setup
-├── AGENTS.md                       # Development guidelines
-└── README.md                       # This file
-```
-
----
-
-## 🔧 Configuration System
-
-All parameters are controlled via YAML configuration files in `configs/`:
-
-### data_config.yaml - Dataset Generation
-
-```yaml
-# Core parameters
-n_samples: 25000              # Number of samples to generate
-sample_rate: 4096             # Hz (LIGO standard)
-duration: 4.0                 # seconds
-detectors: [H1, L1, V1]      # Detector network
-
-# Signal characteristics
-overlap_fraction: 0.45        # Realistic O4 rate
-edge_case_fraction: 0.08      # Physical/statistical extremes
-create_overlaps: true         # Enable multi-signal generation
-
-# Contamination
-add_glitches: true
-neural_noise_enabled: true    # 10,000× speedup
-neural_noise_prob: 0.5        # 50% neural, 50% synthetic
-use_real_noise_prob: 0.1      # 10% real GWOSC (cached)
-
-# Event distribution (realistic O4)
-event_type_distribution:
-  BBH: 0.46                   # Most common
-  BNS: 0.32                   # Rare but important
-  NSBH: 0.17                  # Intermediate
-  noise: 0.05                 # Background
-```
-
-### enhanced_training.yaml - Neural PE Training
-
-```yaml
-# Hyperparameters
-learning_rate: 0.0005
-batch_size: 32
-epochs: 100
-weight_decay: 1e-5
-
-# Loss weights
-loss_weights:
-  mse: 0.35                   # Parameter estimation
-  ranking: 0.50               # Ranking loss
-  uncertainty: 0.15           # Calibration
-
-# Data augmentation
-augment_contamination: true
-noise_augmentation_k: 1.0
-preprocess: true
-```
-
-### priority_net.yaml - Signal Prioritization
-
-```yaml
-# Architecture
-temporal_encoder_dim: 128
-hidden_dim: 256
-num_heads: 8                  # Multi-head attention
-
-# Training
-learning_rate: 0.0002
-batch_size: 16
-epochs: 80
-create_overlaps: true         # Enable multi-signal training
-```
-
----
-
-## 🧪 Testing
-
-Run the comprehensive test suite:
-
-```bash
-# All tests
-pytest
-
-# Specific test
-pytest tests/test_priority_net.py::TestPriorityNet::test_forward_pass -v
-
-# With coverage
-pytest --cov=ahsd --cov-report=html
-
-# Verbose with print statements
-pytest -v -s
-
-# Specific test file
-pytest tests/test_neural_pe.py
-```
-
-### Key Test Suites
-
-| Test | Purpose | Location |
-|------|---------|----------|
-| Neural PE | Forward pass, loss computation | `tests/test_neural_pe.py` |
-| PriorityNet | Signal ranking, feature extraction | `tests/test_priority_net.py` |
-| Dataset | Data generation, splits, validation | `tests/test_dataset_generation.py` |
-| Integration | End-to-end pipeline | `tests/test_integration.py` |
-
----
-
-## 💡 How to Use PosteriFlow
-
-### Use Case 1: Train on Custom Data
-
-1. Prepare real GW data in HDF5 format
-2. Implement data reader in `src/ahsd/data/gwtc_loader.py`
-3. Update `data_config.yaml` with real data paths
-4. Run training pipeline
-
-### Use Case 2: Parameter Estimation on New Events
+### Sample a posterior in code
 
 ```python
-from ahsd.core.adaptive_subtractor import NeuralPE
-import numpy as np
+import torch
+from ahsd.models import LeanNPE
 
-# Load strain data
-strain_data = {
-    'H1': np.load('H1_data.npy'),
-    'L1': np.load('L1_data.npy'),
-    'V1': np.load('V1_data.npy'),
-}
+ckpt = torch.load("model/lean_npe_v2/best_model.pth", map_location="cpu", weights_only=False)
+model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+model.load_state_dict(ckpt["model_state_dict"]); model.eval()
 
-# Quick estimation
-pe = NeuralPE()
-result = pe.quick_estimate(strain_data)
-
-print(f"Mass 1: {result['mass_1_mean']:.1f} M☉")
-print(f"Distance: {result['luminosity_distance_mean']:.0f} Mpc")
-print(f"SNR: {result['network_snr']:.1f}")
-```
-
-### Use Case 3: Signal Decomposition Pipeline
-
-```python
-from ahsd.core.ahsd_pipeline import AHSDPipeline
-
-# Initialize pipeline
-pipeline = AHSDPipeline(
-    neural_pe_model='models/neural_pe_best.pth',
-    priority_net_model='models/prioritynet_best.pth',
-    subtractor_model='models/subtractor_best.pth',
-)
-
-# Process 4-second segment
-result = pipeline.run(strain_data={
-    'H1': h1_strain,
-    'L1': l1_strain,
-    'V1': v1_strain,
-})
-
-# Extracted signals
-for i, signal in enumerate(result['extracted_signals']):
-    print(f"\nSignal {i+1}:")
-    print(f"  Mass 1: {signal['mass_1']:.1f} M☉")
-    print(f"  SNR: {signal['snr']:.1f}")
-    print(f"  Confidence: {signal['priority_score']:.2f}")
+strain = torch.randn(1, 3, 16384)   # whitened H1/L1/V1 @ 4096 Hz, 4 s window
+post = model.sample_posterior(strain, rank=0, n_samples=3000)   # [1, 3000, 11] physical units
+# rank=0 queries the loudest signal; rank=1 the second-loudest, etc.
 ```
 
 ---
 
-## 🔬 Scientific Details
+## 5. Why it looks like this: the evidence trail
 
-### Neural Posterior Estimation (Phase 1)
+This architecture is the survivor of a measured post-mortem, kept short here
+because the details live in `analysis/` and the git history:
 
-**Approach:** Likelihood-free inference using normalizing flows
-- **Input:** Multi-detector strain (whitened, windowed)
-- **Output:** Posterior samples of ~15 astrophysical parameters
-- **Speed:** <100ms per 4s segment
-- **Training:** On clean synthetic waveforms + augmented contamination
+- The predecessor (`OverlapNeuralPE`, 22.7M params: tokenized encoder,
+  11 per-parameter attention queries, masked-context flow, 6 auxiliary
+  losses) produced a context that was **constant across events** — shuffle
+  ΔNLL exactly 0.000, linear-probe R² < 0 for every parameter, posterior
+  essentially identical for every input. A pure marginal fit.
+- Root causes, each verified: stacked per-sample normalizations erased
+  per-event amplitude information; readout attention collapsed to uniform
+  over near-identical tokens; the training loop asked one context to predict
+  all overlapping signals with no query conditioning (a mixture target); and
+  the loss was dominated by regularizers (weights 20 and 15) that sculpted
+  statistics while a 6e-6 learning rate starved the flow.
+- Every "fix" that penalized statistics (VICReg, variance floors, diversity
+  losses, posterior-std targets) moved the statistic and left inference
+  unchanged. The fixes that worked changed **what information reaches the
+  model** (amplitude-preserving input path, rank conditioning) and **what
+  the objective rewards** (pure NLL on non-memorizable data).
 
-**Key Features:**
-- Amortized inference: Single network for all parameters
-- Uncertainty quantification: Full posterior ensemble
-- Multi-detector coherence: Combines H1, L1, V1 optimally
-- Robust to PSD variation: Data augmentation during training
-
-### Signal Prioritization (Phase 2: PriorityNet)
-
-**Approach:** Deep learning on temporal strain features
-- **Architecture:** CNN (multi-scale) + BiLSTM (temporal) + Attention (context)
-- **Input:** Whitened strain for multiple signals
-- **Output:** Ranking order (which signal to subtract first)
-- **Training:** On overlapping synthetic signals
-
-**Why Prioritization Matters:**
-- Extracting loud signal first reduces noise floor
-- Removes contamination bias on faint signals
-- Improves overall parameter estimation accuracy
-- Handles multimodal posteriors better
-
-### Adaptive Subtraction (Phase 3)
-
-**Approach:** Iterative removal with uncertainty weighting
-- **Step 1:** Identify signal with highest priority
-- **Step 2:** Subtract using Neural PE parameters + uncertainties
-- **Step 3:** Bias correction: Account for parameter errors
-- **Step 4:** Validate residual Gaussianity
-- **Step 5:** Repeat for remaining signals
-
-**Uncertainty Weighting:**
-- Larger uncertainties → weaker subtraction (preserve signal)
-- Calibrated uncertainties → correct bias
-- Cross-detector coherence check
+The forensic methodology — shuffle tests, linear probes, coverage/SBC before
+architecture opinions — is itself the reusable asset; the diagnostics
+scripts encode it.
 
 ---
 
-## 📚 References
+## 6. Project structure
 
-### Key Papers
+```
+src/ahsd/
+├── models/
+│   ├── lean_npe.py            # LeanNPE: encoder + rank embedding + NSF (the model)
+│   ├── flows.py               # Neural Spline Flow (nflows-based)
+│   ├── parameter_scalers.py   # legacy scalers (flows.py imports FLOW_NORM_BOUND)
+│   └── transformer_encoder.py # strain encoder used by PriorityNet
+├── core/                      # PriorityNet, adaptive subtractor, end-to-end pipeline
+├── data/                      # bilby-based generation: sampler, injector, whitener, PSDs
+│   └── scripts/generate_dataset.py
+└── evaluation/                # metrics
 
-1. **PyCBC Waveforms**: [arXiv:1508.01844](https://arxiv.org/abs/1508.01844)
-   - GW waveform generation and detection
+experiments/
+├── train_lean_npe.py          # trainer: remix, real-noise mixing, fine-tune, dual validation
+├── v2_remix_data.py           # memmap cache + RemixDataset (all augmentations, both noise sources)
+└── train_priority_net.py      # PriorityNet training
 
-2. **LIGO Data Conditioning**: [arXiv:2002.01606](https://arxiv.org/abs/2002.01606)
-   - Real gravitational-wave detector noise
+scripts/
+├── download_gwosc_noise_bank.py  # real O3 bank: exact-ASD whitening, strain + ASD pairs
+├── lean_npe_diagnostics.py       # SBC / PP / coverage certification (gaussian | real)
+├── lean_npe_extended_eval.py     # error vs SNR, overlap severity, calibration splits
+├── dynesty_compare.py            # convention-audited head-to-head vs bilby/dynesty
+└── real_noise_test.py            # real-noise robustness probe
 
-3. **Normalizing Flows**: [arXiv:1810.01367](https://arxiv.org/abs/1810.01367)
-   - Flexible density estimation (used in Neural PE)
-
-4. **DINGO**: [arXiv:2105.12151](https://arxiv.org/abs/2105.12151)
-   - Deep inference for GW observations (basis for neural noise models)
-
-### Data Sources
-
-- **GWOSC**: [gwosc.readthedocs.io](https://gwosc.readthedocs.io/)
-  - Public gravitational-wave detector data
-- **GWTC-3**: [arXiv:2105.15615](https://arxiv.org/abs/2105.15615)
-  - LIGO-Virgo third catalogs of GW transients
-
----
-
-## 🤝 Contributing
-
-### Development Workflow
-
-1. **Create feature branch**: `git checkout -b feature/description`
-2. **Code style**: Follow AGENTS.md guidelines
-3. **Test**: Run `pytest` before committing
-4. **Format**: `black . && isort . && flake8 .`
-5. **Commit message**: Descriptive, explain "why"
-6. **Push & PR**: Create pull request with summary
-
-### Code Standards
-
-- **Type hints:** Always (required for all functions)
-- **Docstrings:** NumPy format for classes and methods
-- **Line length:** 100 characters (black formatter)
-- **Testing:** Unit tests for new modules
-- **Coverage:** Aim for >80% for new code
-
----
-
-## 📞 Support & Resources
-
-### Documentation
-- **Docs** - Use this folder to understand the core functionality and how to run the code
-
-### Commands
-
-```bash
-# Data generation
-ahsd-generate --config configs/data_config.yaml
-
-# Validation
-ahsd-validate --dataset data/dataset/train.pkl
-
-# Analysis
-ahsd-analyze --input-data data.hdf5 --output results.pkl
-
-# Model training
-python experiments/phase3a_neural_pe.py --config configs/enhanced_training.yaml
-
-# Validation
-python experiments/phase3c_validation.py --phase3a_output outputs/phase3a_output_X/ \
-    --phase3b_output outputs/phase3b_production/ --n_samples 2000 --seeds 5
+analysis/     # measured evidence: diagnostic reports, audits, comparison outputs
+configs/      # YAML configs (data_config.yaml is the main one)
+data/         # dataset (component storage), memmap caches, noise_bank
+model/        # checkpoints (best_model.pth includes weights + args + diagnostics)
 ```
 
----
+## 7. Roadmap
 
-## 📝 License
+1. **Real-noise fine-tune** (infrastructure complete) → then inference on
+   real GWTC events with GWTC-catalog comparison.
+2. **Encoder temporal resolution** — phase-preserving features to break the
+   65 ms timing floor; unlocks sky localization and the high-SNR distance
+   plateau.
+3. Pre-merger (early-warning) training run (`--premerger`; data already in
+   the dataset).
+4. Post-hoc quantile recalibration for publication-grade SBC.
+5. End-to-end overlap pipeline evaluation: PriorityNet ranking → LeanNPE
+   posteriors → adaptive subtraction, on real-noise overlaps.
 
-MIT License - see [LICENSE](LICENSE) for details
+## References
 
----
+- Dax et al., *Real-Time Gravitational Wave Science with Neural Posterior
+  Estimation* (DINGO): [arXiv:2106.12594](https://arxiv.org/abs/2106.12594)
+- Durkan et al., *Neural Spline Flows*: [arXiv:1906.04032](https://arxiv.org/abs/1906.04032)
+- Ashton et al., *Bilby*: [arXiv:1811.02042](https://arxiv.org/abs/1811.02042)
+- Talts et al., *Simulation-Based Calibration*: [arXiv:1804.06788](https://arxiv.org/abs/1804.06788)
+- GWOSC open data: [gwosc.org](https://gwosc.org)
 
-## 👤 Author & Citation
+## License & citation
 
-**Author:** Bibin Thomas  
-**Email:** bibinthomas951@gmail.com  
-**Repository:** https://github.com/bibinthomas123/PosteriFlow
-
-### Citation
-
-If you use PosteriFlow in your research, please cite:
+MIT — see [LICENSE](LICENSE).
 
 ```bibtex
-@software{thomas2025posteriflow,
-  title={PosteriFlow: Adaptive Hierarchical Signal Decomposition 
-         for Overlapping Gravitational Waves},
-  author={Thomas, Bibin},
-  year={2025},
-  url={https://github.com/bibinthomas123/PosteriFlow}
+@software{thomas2026posteriflow,
+  title  = {PosteriFlow: Calibrated Neural Posterior Estimation
+            for Overlapping Gravitational-Wave Signals},
+  author = {Thomas, Bibin},
+  year   = {2026},
+  url    = {https://github.com/bibinthomas123/PosteriFlow}
 }
 ```
 
----
+**Author:** Bibin Thomas — bibinthomas951@gmail.com
 
-## 🌟 Acknowledgments
-
-PosteriFlow builds on foundational work from:
-- **LIGO-Virgo Collaboration** for detector design and data access
-- **PyCBC** for waveform generation
-- **Bilby** for Bayesian inference tools
-- **GWpy** for detector data handling
-- **DINGO** for neural density estimation techniques
-
----
-
-**Built for the next generation of gravitational-wave astronomy** 🌌
-
-*Last Updated: November 12, 2025*
+*Last updated: 2026-07-07*

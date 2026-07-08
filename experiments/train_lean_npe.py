@@ -184,6 +184,15 @@ def main():
                     help="per-event probability of real noise instead of Gaussian (needs --noise_bank)")
     ap.add_argument("--init_from", default=None,
                     help="checkpoint to fine-tune from (loads weights; fresh optimizer/schedule)")
+    ap.add_argument("--det_dropout", type=float, default=0.0,
+                    help="per-event probability of keeping only a random detector "
+                         "subset (dropped -> unit white noise, matching the "
+                         "inference-time fill for missing detectors)")
+    ap.add_argument("--mc_oversample", type=float, default=0.0,
+                    help="oversample events by (chirp mass)^alpha via a weighted "
+                         "sampler — rebalances the log-uniform mass population "
+                         "toward the heavy corner where twin tests show NPE "
+                         "prior-fallback bias (0 = off; try 1.0)")
     ap.add_argument("--wandb", action="store_true")
     args = ap.parse_args()
 
@@ -193,16 +202,17 @@ def main():
 
     log.info("Loading data...")
     if args.remix:
-        from v2_remix_data import RemixDataset, build_memmap_cache
+        from remix_data import RemixDataset, build_memmap_cache
         cache = Path(args.data) / "memmap" / "train"
         if not (cache / "events.json").exists():
             log.info("Building memmap cache (one-time)...")
             build_memmap_cache(args.data, "train", str(cache))
         train_ds = RemixDataset(str(cache), remix=True,
                                 real_noise_dir=args.noise_bank,
-                                real_noise_prob=args.real_noise_prob)
+                                real_noise_prob=args.real_noise_prob,
+                                det_dropout=args.det_dropout)
         log.info(f"remix train events={len(train_ds)} (noise pool={train_ds.n_noise}, "
-                 f"p_real={args.real_noise_prob})")
+                 f"p_real={args.real_noise_prob}, det_dropout={args.det_dropout})")
     else:
         tr_s, tr_p, tr_n = load_split(args.data, "train", args.limit_train)
         train_ds = EventDataset(tr_s, tr_p, tr_n)
@@ -217,7 +227,7 @@ def main():
     # per-epoch real-noise metrics are exactly comparable across epochs.
     va_real = None
     if args.noise_bank:
-        from v2_remix_data import RemixDataset as _RD, build_memmap_cache as _bc
+        from remix_data import RemixDataset as _RD, build_memmap_cache as _bc
         vcache = Path(args.data) / "memmap" / "validation"
         if not (vcache / "events.json").exists():
             _bc(args.data, "validation", str(vcache))
@@ -254,7 +264,20 @@ def main():
     # persistent_workers must stay False: workers snapshot the dataset, and
     # set_epoch() (fresh noise pairings each epoch) must reach them — workers
     # are respawned per epoch and pick up the bumped epoch counter.
-    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
+    train_sampler = None
+    if args.mc_oversample > 0:
+        assert args.remix, "--mc_oversample requires --remix"
+        starts = [e[0] for e in train_ds.events]
+        m1 = np.asarray(train_ds.params[starts, 0], dtype=np.float64)
+        m2 = np.asarray(train_ds.params[starts, 1], dtype=np.float64)
+        mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+        w = torch.from_numpy(mc ** args.mc_oversample)
+        train_sampler = torch.utils.data.WeightedRandomSampler(
+            w, num_samples=len(train_ds), replacement=True)
+        log.info(f"mc_oversample alpha={args.mc_oversample}: Mc-45 events drawn "
+                 f"{(45/10)**args.mc_oversample:.1f}x more often than Mc-10")
+    train_loader = DataLoader(train_ds, batch_size=args.batch,
+                              shuffle=(train_sampler is None), sampler=train_sampler,
                               num_workers=(args.workers if args.remix else 0))
     val_loader = DataLoader(EventDataset(va_s, va_p, va_n), batch_size=args.batch,
                             shuffle=False, num_workers=0)

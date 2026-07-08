@@ -7,7 +7,7 @@
 # ============================================================================
 /data/
 outputs/
-results/
+# results/
 models/trained/
 logs/
 cache/
@@ -147,3 +147,4 @@ htmlcov/
 test_*.py
 diagonse_*.py
 check*_.py
+paper

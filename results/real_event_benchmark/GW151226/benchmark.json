@@ -1,0 +1,153 @@
+{
+  "event": "GW151226",
+  "gps": 1135136350.6,
+  "type": "BBH",
+  "caveats": [
+    "only ['H1', 'L1'] available; NPE gets white-noise fill for the missing detector(s)"
+  ],
+  "detectors": [
+    "H1",
+    "L1"
+  ],
+  "t_fetch_s": 4.4,
+  "t_npe_s": 8.334,
+  "npe_ood_flags": [
+    "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
+  ],
+  "t_dynesty_s": 1153.0,
+  "comparison": {
+    "mass_1": {
+      "npe_med": 23.813152313232422,
+      "npe_std": 22.929790243577443,
+      "dynesty_med": 24.237990456558354,
+      "dynesty_std": 4.34690231684349,
+      "med_offset_sigma": -0.09773353810644063,
+      "width_ratio": 5.274972513059132,
+      "kl_npe_dynesty": 10.154467843613686,
+      "wasserstein": 14.439631307733052
+    },
+    "mass_2": {
+      "npe_med": 5.951864242553711,
+      "npe_std": 5.9957208140020555,
+      "dynesty_med": 5.736410606855889,
+      "dynesty_std": 1.1196008640955517,
+      "med_offset_sigma": 0.19243789676728576,
+      "width_ratio": 5.35523060130036,
+      "kl_npe_dynesty": 10.388604926420363,
+      "wasserstein": 2.8903883740375296
+    },
+    "luminosity_distance": {
+      "npe_med": 768.8647766113281,
+      "npe_std": 432.83459711700584,
+      "dynesty_med": 164.2360951782092,
+      "dynesty_std": 51.83265505556677,
+      "med_offset_sigma": 11.66501466639644,
+      "width_ratio": 8.350615970658623,
+      "kl_npe_dynesty": 15.283311297586046,
+      "wasserstein": 669.9361721689645
+    },
+    "ra": {
+      "npe_med": 3.4260374307632446,
+      "npe_std": 1.777982197140336,
+      "dynesty_med": 3.0086017043040103,
+      "dynesty_std": 1.528159929632509,
+      "med_offset_sigma": 0.2731623294732356,
+      "width_ratio": 1.1634791369018718,
+      "kl_npe_dynesty": 10.187160858349554,
+      "wasserstein": 0.9330484777737683
+    },
+    "dec": {
+      "npe_med": 0.0988120436668396,
+      "npe_std": 0.7667728577313934,
+      "dynesty_med": 0.7346259878125161,
+      "dynesty_std": 0.7871835390746207,
+      "med_offset_sigma": -0.8077073665506329,
+      "width_ratio": 0.9740712536477929,
+      "kl_npe_dynesty": 7.969608019301691,
+      "wasserstein": 0.30795800097954434
+    },
+    "theta_jn": {
+      "npe_med": 1.5824669003486633,
+      "npe_std": 0.7970787032212145,
+      "dynesty_med": 0.8416962393573986,
+      "dynesty_std": 0.9503380608202394,
+      "med_offset_sigma": 0.7794812085842614,
+      "width_ratio": 0.8387317474105183,
+      "kl_npe_dynesty": 2.069027914020039,
+      "wasserstein": 0.33680515974239694
+    },
+    "psi": {
+      "npe_med": 1.6611912846565247,
+      "npe_std": 0.8524445677000941,
+      "dynesty_med": 1.497543748462538,
+      "dynesty_std": 0.9015456090010809,
+      "med_offset_sigma": 0.18151886535589745,
+      "width_ratio": 0.9455368183746933,
+      "kl_npe_dynesty": 0.0707344237171535,
+      "wasserstein": 0.1123871793471084
+    },
+    "phase": {
+      "npe_med": 2.991986632347107,
+      "npe_std": 1.793629087341831,
+      "dynesty_med": 3.0839565160137616,
+      "dynesty_std": 1.808156992520495,
+      "med_offset_sigma": -0.050863881840032404,
+      "width_ratio": 0.9919653513324758,
+      "kl_npe_dynesty": 0.0917276554070233,
+      "wasserstein": 0.14106342972959823
+    },
+    "geocent_time": {
+      "npe_med": 0.07591187953948975,
+      "npe_std": 0.3208530377099445,
+      "dynesty_med": 0.0502166748046875,
+      "dynesty_std": 0.0051335980466173485,
+      "med_offset_sigma": 5.005300277927516,
+      "width_ratio": 62.50060333819063,
+      "kl_npe_dynesty": 7.84505800606266,
+      "wasserstein": 0.14014565105825408
+    },
+    "a1": {
+      "npe_med": 0.5166454613208771,
+      "npe_std": 0.30130923464956255,
+      "dynesty_med": 0.5274828318301666,
+      "dynesty_std": 0.2815044021311062,
+      "med_offset_sigma": -0.038498049724082765,
+      "width_ratio": 1.0703535408262603,
+      "kl_npe_dynesty": 0.1100452147196441,
+      "wasserstein": 0.02019179258088578
+    },
+    "a2": {
+      "npe_med": 0.23848173022270203,
+      "npe_std": 0.32728151053825466,
+      "dynesty_med": 0.4435018820651955,
+      "dynesty_std": 0.11787325080137188,
+      "med_offset_sigma": -1.7393271900903584,
+      "width_ratio": 2.7765545239199514,
+      "kl_npe_dynesty": 6.404535443879972,
+      "wasserstein": 0.2325523235376066
+    }
+  },
+  "truth_check": {
+    "mass_1": {
+      "published": 14.9,
+      "npe_med": 23.813152313232422,
+      "npe_in_90": true,
+      "dynesty_med": 24.237990456558354,
+      "dynesty_in_90": true
+    },
+    "mass_2": {
+      "published": 8.4,
+      "npe_med": 5.951864242553711,
+      "npe_in_90": true,
+      "dynesty_med": 5.736410606855889,
+      "dynesty_in_90": true
+    },
+    "luminosity_distance": {
+      "published": 450.0,
+      "npe_med": 768.8647766113281,
+      "npe_in_90": true,
+      "dynesty_med": 164.2360951782092,
+      "dynesty_in_90": false
+    }
+  }
+}

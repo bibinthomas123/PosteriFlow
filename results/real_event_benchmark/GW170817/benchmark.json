@@ -1,0 +1,156 @@
+{
+  "event": "GW170817",
+  "gps": 1187008882.4,
+  "type": "BNS",
+  "caveats": [
+    "BNS: f_min=60 Hz so the waveform fits the 4 s window; BNS mass/spin/distance priors"
+  ],
+  "detectors": [
+    "H1",
+    "L1",
+    "V1"
+  ],
+  "t_fetch_s": 42.6,
+  "t_npe_s": 7.487,
+  "npe_ood_flags": [
+    "L1: whitened std 6.21 far from 1 \u2014 PSD mismatch or non-stationary data (out-of-distribution)",
+    "L1: |strain| peaks at 135\u03c3 \u2014 likely glitch/saturation",
+    "L1: off-source excess kurtosis 119.6 \u2014 non-Gaussian noise (glitches) in window"
+  ],
+  "t_dynesty_s": 6066.9,
+  "comparison": {
+    "mass_1": {
+      "npe_med": 22.008015632629395,
+      "npe_std": 30.39893191202637,
+      "dynesty_med": 1.7629880323815343,
+      "dynesty_std": 0.011577528272672728,
+      "med_offset_sigma": 1748.648362136613,
+      "width_ratio": 2625.6838740005737,
+      "kl_npe_dynesty": 13.567126219579718,
+      "wasserstein": 30.017243726441063
+    },
+    "mass_2": {
+      "npe_med": 2.3740830421447754,
+      "npe_std": 16.003743674051357,
+      "dynesty_med": 1.005435739606893,
+      "dynesty_std": 0.005991449000047881,
+      "med_offset_sigma": 228.43340135141656,
+      "width_ratio": 2671.0969254393276,
+      "kl_npe_dynesty": 8.637112960387267,
+      "wasserstein": 10.63858477329362
+    },
+    "luminosity_distance": {
+      "npe_med": 693.7465209960938,
+      "npe_std": 654.7869306566307,
+      "dynesty_med": 6.091479595383328,
+      "dynesty_std": 0.2527532809102289,
+      "med_offset_sigma": 2720.6572203677524,
+      "width_ratio": 2590.616927732686,
+      "kl_npe_dynesty": 19.200740899301607,
+      "wasserstein": 896.2770588913712
+    },
+    "ra": {
+      "npe_med": 3.132067918777466,
+      "npe_std": 1.861375636981482,
+      "dynesty_med": 1.840124461548545,
+      "dynesty_std": 0.04142003019389394,
+      "med_offset_sigma": 31.19127195199642,
+      "width_ratio": 44.939020646027,
+      "kl_npe_dynesty": 17.626702853445984,
+      "wasserstein": 1.8716370347283415
+    },
+    "dec": {
+      "npe_med": 0.028317034244537354,
+      "npe_std": 0.6049430076635973,
+      "dynesty_med": -0.4296143431092033,
+      "dynesty_std": 0.03491741491825484,
+      "med_offset_sigma": 13.11469836215268,
+      "width_ratio": 17.324964971057117,
+      "kl_npe_dynesty": 15.89931826217914,
+      "wasserstein": 0.5985001105603538
+    },
+    "theta_jn": {
+      "npe_med": 1.5765442848205566,
+      "npe_std": 0.7127189875828245,
+      "dynesty_med": 1.5666982394805382,
+      "dynesty_std": 0.012561687017511525,
+      "med_offset_sigma": 0.7838154654288997,
+      "width_ratio": 56.73751701119022,
+      "kl_npe_dynesty": 18.078860327547698,
+      "wasserstein": 0.5981242291277551
+    },
+    "psi": {
+      "npe_med": 1.5583805441856384,
+      "npe_std": 0.9155538968713443,
+      "dynesty_med": 1.5709503552764974,
+      "dynesty_std": 1.0800315542990508,
+      "med_offset_sigma": -0.011638373924527146,
+      "width_ratio": 0.8477103214061515,
+      "kl_npe_dynesty": 12.371226339049912,
+      "wasserstein": 0.35274968832653497
+    },
+    "phase": {
+      "npe_med": 3.063475251197815,
+      "npe_std": 1.7910177654814659,
+      "dynesty_med": 3.136406614881494,
+      "dynesty_std": 1.8300857128559949,
+      "med_offset_sigma": -0.039851337634898364,
+      "width_ratio": 0.9786523942137044,
+      "kl_npe_dynesty": 13.78157884344831,
+      "wasserstein": 0.6086648880859199
+    },
+    "geocent_time": {
+      "npe_med": 0.05945950746536255,
+      "npe_std": 0.8367866310503935,
+      "dynesty_med": -0.15934491157531738,
+      "dynesty_std": 0.0008919122850241414,
+      "med_offset_sigma": 245.32028249221287,
+      "width_ratio": 938.1928098848133,
+      "kl_npe_dynesty": 18.60606372354237,
+      "wasserstein": 0.7256408769844457
+    },
+    "a1": {
+      "npe_med": 0.3326494097709656,
+      "npe_std": 0.3303367578023618,
+      "dynesty_med": 0.026553460977620853,
+      "dynesty_std": 0.01288420806995899,
+      "med_offset_sigma": 23.75744969142441,
+      "width_ratio": 25.638885243843166,
+      "kl_npe_dynesty": 12.606427769606881,
+      "wasserstein": 0.3556500248699862
+    },
+    "a2": {
+      "npe_med": 0.044470012187957764,
+      "npe_std": 0.27586710600510955,
+      "dynesty_med": 0.005264640492988556,
+      "dynesty_std": 0.0054556370321739225,
+      "med_offset_sigma": 7.186212036751812,
+      "width_ratio": 50.56550753151489,
+      "kl_npe_dynesty": 11.074726350810877,
+      "wasserstein": 0.21412415487102532
+    }
+  },
+  "truth_check": {
+    "mass_1": {
+      "published": 1.48,
+      "npe_med": 22.008015632629395,
+      "npe_in_90": true,
+      "dynesty_med": 1.7629880323815343,
+      "dynesty_in_90": false
+    },
+    "mass_2": {
+      "published": 1.26,
+      "npe_med": 2.3740830421447754,
+      "npe_in_90": true,
+      "dynesty_med": 1.005435739606893,
+      "dynesty_in_90": false
+    },
+    "luminosity_distance": {
+      "published": 40.0,
+      "npe_med": 693.7465209960938,
+      "npe_in_90": false,
+      "dynesty_med": 6.091479595383328,
+      "dynesty_in_90": false
+    }
+  }
+}

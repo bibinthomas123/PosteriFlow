@@ -65,6 +65,11 @@ class ParamScaler:
         "a2":                  (0.0, 1.0, False),
     }
 
+    # Parameters whose range equals one full period: wrapping in normalized
+    # space is EXACT (ra, phase: 2*pi; psi: pi). Flow samples that land past a
+    # bound belong at the other end of the circle, not clamped at the edge.
+    CIRCULAR = ("ra", "phase", "psi")
+
     def __init__(self, param_names: List[str] = PARAM_NAMES, premerger: bool = False):
         """premerger=True widens geocent_time to cover early-warning events
         whose merger lies up to ~3 s past the window end (t_c up to +5 s).
@@ -82,12 +87,21 @@ class ParamScaler:
         self.lo = torch.tensor(lo, dtype=torch.float32)
         self.hi = torch.tensor(hi, dtype=torch.float32)
         self.log_mask = torch.tensor(lg, dtype=torch.bool)
+        self.circ_mask = torch.tensor([p in self.CIRCULAR for p in param_names],
+                                      dtype=torch.bool)
 
     def to(self, device):
         self.lo = self.lo.to(device)
         self.hi = self.hi.to(device)
         self.log_mask = self.log_mask.to(device)
+        self.circ_mask = self.circ_mask.to(device)
         return self
+
+    def wrap(self, y: torch.Tensor) -> torch.Tensor:
+        """Map raw flow output into [-1, 1]: modular wrap for circular
+        parameters (exact), clamp for bounded ones."""
+        wrapped = torch.remainder(y + 1.0, 2.0) - 1.0
+        return torch.where(self.circ_mask, wrapped, y.clamp(-1.0, 1.0))
 
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
         """physical [batch, 11] -> [-1, 1]"""
@@ -253,7 +267,7 @@ class LeanNPE(nn.Module):
         ctx_rep = ctx.unsqueeze(1).expand(B, n_samples, ctx.shape[1]).reshape(B * n_samples, -1)
         z = torch.randn(B * n_samples, len(self.param_names), device=context.device)
         y, _ = self.flow.inverse(z, ctx_rep)
-        y = y.reshape(B, n_samples, -1)
+        y = self.scaler.wrap(y).reshape(B, n_samples, -1)
         return self.scaler.denormalize(y)
 
     def to(self, *args, **kwargs):

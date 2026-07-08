@@ -1143,3 +1143,55 @@ class PriorityNetTrainer:
 # Backward compatibility: alias old class names
 PriorityNet = PriorityNet
 PriorityNetTrainer = PriorityNetTrainer
+
+# ============================================================================
+# CHECKPOINT LOADER (single implementation — scripts import from here)
+# ============================================================================
+
+def load_priority_net(checkpoint_path, device: str = "cpu") -> "PriorityNet":
+    """Load a PriorityNet checkpoint, reconstructing hidden_dims from the
+    state dict when the stored config lacks them."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    p = Path(checkpoint_path)
+    if p.is_dir():
+        for fname in ("priority_net_best.pth", "checkpoint_best.pt", "model.pt"):
+            if (p / fname).exists():
+                p = p / fname
+                break
+    ckpt = torch.load(p, map_location="cpu", weights_only=False)
+    cfg_dict = dict(ckpt.get("model_config") or ckpt.get("config") or {})
+
+    if not cfg_dict.get("hidden_dims"):
+        sd = ckpt["model_state_dict"]
+        dims = []
+        w0 = sd.get("signal_encoder.input_embed.weight")
+        if w0 is not None:
+            dims.append(int(w0.shape[0]))
+        i = 0
+        while f"signal_encoder.blocks.{i}.linear.weight" in sd:
+            dims.append(int(sd[f"signal_encoder.blocks.{i}.linear.weight"].shape[0]))
+            i += 1
+        if len(dims) >= 2 and dims[0] == dims[1]:
+            dims = [dims[0]] + dims[2:]
+        cfg_dict["hidden_dims"] = dims or [512, 384, 256, 128]
+
+    cfg_dict.setdefault("dropout", 0.2)
+    cfg_dict.setdefault("use_strain", True)
+    cfg_dict.setdefault("use_edge_conditioning", True)
+    cfg_dict.setdefault("n_edge_types", 19)
+    cfg = SimpleNamespace(**cfg_dict)
+
+    model = PriorityNet(cfg, use_strain=cfg.use_strain,
+                        use_edge_conditioning=cfg.use_edge_conditioning,
+                        n_edge_types=cfg.n_edge_types).to(device).eval()
+    try:
+        model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    except Exception:
+        msd, sd = model.state_dict(), ckpt["model_state_dict"]
+        filtered = {k: v for k, v in sd.items() if k in msd and v.shape == msd[k].shape}
+        model.load_state_dict(filtered, strict=False)
+        logging.warning(f"PriorityNet loaded with filtered state dict "
+                        f"({len(filtered)}/{len(msd)} tensors)")
+    return model

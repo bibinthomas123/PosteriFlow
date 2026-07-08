@@ -1,0 +1,417 @@
+{
+ "model": "model/lean_npe_v3/best_model.pth",
+ "epoch": 20,
+ "n_post": 400,
+ "per_rank": {
+  "n1_rank0": {
+   "n": 400,
+   "cov50": {
+    "mass_1": 0.525,
+    "mass_2": 0.485,
+    "luminosity_distance": 0.5,
+    "ra": 0.427,
+    "dec": 0.495,
+    "theta_jn": 0.393,
+    "psi": 0.588,
+    "phase": 0.49,
+    "geocent_time": 0.482,
+    "a1": 0.55,
+    "a2": 0.573
+   },
+   "cov50_headline_mean": 0.486,
+   "cov90": {
+    "mass_1": 0.9,
+    "mass_2": 0.882,
+    "luminosity_distance": 0.945,
+    "ra": 0.927,
+    "dec": 0.848,
+    "theta_jn": 0.905,
+    "psi": 0.93,
+    "phase": 0.873,
+    "geocent_time": 0.922,
+    "a1": 0.927,
+    "a2": 0.907
+   },
+   "cov90_headline_mean": 0.909,
+   "mc_frac_err_median": 0.3481,
+   "dl_frac_err_median": 0.3577,
+   "tc_abs_err_median_s": 0.2688,
+   "sbc_ks_p": {
+    "mass_1": 0.0113,
+    "mass_2": 0.2126,
+    "luminosity_distance": 0.1078,
+    "ra": 0.1713,
+    "dec": 0.0,
+    "theta_jn": 0.0001,
+    "psi": 0.0041,
+    "phase": 0.1713,
+    "geocent_time": 0.3174,
+    "a1": 0.0284,
+    "a2": 0.0041
+   }
+  },
+  "n2_rank0": {
+   "n": 400,
+   "cov50": {
+    "mass_1": 0.545,
+    "mass_2": 0.455,
+    "luminosity_distance": 0.54,
+    "ra": 0.475,
+    "dec": 0.47,
+    "theta_jn": 0.547,
+    "psi": 0.54,
+    "phase": 0.532,
+    "geocent_time": 0.52,
+    "a1": 0.527,
+    "a2": 0.42
+   },
+   "cov50_headline_mean": 0.51,
+   "cov90": {
+    "mass_1": 0.905,
+    "mass_2": 0.87,
+    "luminosity_distance": 0.93,
+    "ra": 0.882,
+    "dec": 0.927,
+    "theta_jn": 0.868,
+    "psi": 0.912,
+    "phase": 0.938,
+    "geocent_time": 0.91,
+    "a1": 0.922,
+    "a2": 0.807
+   },
+   "cov90_headline_mean": 0.911,
+   "mc_frac_err_median": 0.1957,
+   "dl_frac_err_median": 0.2542,
+   "tc_abs_err_median_s": 0.03,
+   "sbc_ks_p": {
+    "mass_1": 0.1366,
+    "mass_2": 0.0,
+    "luminosity_distance": 0.0,
+    "ra": 0.4529,
+    "dec": 0.0,
+    "theta_jn": 0.0014,
+    "psi": 0.0284,
+    "phase": 0.0113,
+    "geocent_time": 0.8534,
+    "a1": 0.0002,
+    "a2": 0.0
+   }
+  },
+  "n2_rank1": {
+   "n": 400,
+   "cov50": {
+    "mass_1": 0.5,
+    "mass_2": 0.507,
+    "luminosity_distance": 0.445,
+    "ra": 0.468,
+    "dec": 0.615,
+    "theta_jn": 0.453,
+    "psi": 0.453,
+    "phase": 0.525,
+    "geocent_time": 0.532,
+    "a1": 0.42,
+    "a2": 0.61
+   },
+   "cov50_headline_mean": 0.512,
+   "cov90": {
+    "mass_1": 0.927,
+    "mass_2": 0.84,
+    "luminosity_distance": 0.943,
+    "ra": 0.88,
+    "dec": 0.895,
+    "theta_jn": 0.87,
+    "psi": 0.848,
+    "phase": 0.9,
+    "geocent_time": 0.907,
+    "a1": 0.88,
+    "a2": 0.95
+   },
+   "cov90_headline_mean": 0.911,
+   "mc_frac_err_median": 0.7493,
+   "dl_frac_err_median": 0.4955,
+   "tc_abs_err_median_s": 0.6167,
+   "sbc_ks_p": {
+    "mass_1": 0.0,
+    "mass_2": 0.0,
+    "luminosity_distance": 0.0081,
+    "ra": 0.4529,
+    "dec": 0.0211,
+    "theta_jn": 0.0041,
+    "psi": 0.0,
+    "phase": 0.0378,
+    "geocent_time": 0.3815,
+    "a1": 0.0004,
+    "a2": 0.0
+   }
+  },
+  "n3_rank0": {
+   "n": 400,
+   "cov50": {
+    "mass_1": 0.412,
+    "mass_2": 0.453,
+    "luminosity_distance": 0.49,
+    "ra": 0.49,
+    "dec": 0.453,
+    "theta_jn": 0.708,
+    "psi": 0.448,
+    "phase": 0.455,
+    "geocent_time": 0.422,
+    "a1": 0.53,
+    "a2": 0.542
+   },
+   "cov50_headline_mean": 0.454,
+   "cov90": {
+    "mass_1": 0.907,
+    "mass_2": 0.873,
+    "luminosity_distance": 0.953,
+    "ra": 0.812,
+    "dec": 0.848,
+    "theta_jn": 0.907,
+    "psi": 0.855,
+    "phase": 0.81,
+    "geocent_time": 0.853,
+    "a1": 0.92,
+    "a2": 0.905
+   },
+   "cov90_headline_mean": 0.874,
+   "mc_frac_err_median": 0.199,
+   "dl_frac_err_median": 0.2409,
+   "tc_abs_err_median_s": 0.033,
+   "sbc_ks_p": {
+    "mass_1": 0.0004,
+    "mass_2": 0.0842,
+    "luminosity_distance": 0.1078,
+    "ra": 0.0,
+    "dec": 0.0041,
+    "theta_jn": 0.0058,
+    "psi": 0.0002,
+    "phase": 0.0,
+    "geocent_time": 0.0284,
+    "a1": 0.0155,
+    "a2": 0.0113
+   }
+  },
+  "n3_rank1": {
+   "n": 400,
+   "cov50": {
+    "mass_1": 0.52,
+    "mass_2": 0.515,
+    "luminosity_distance": 0.427,
+    "ra": 0.532,
+    "dec": 0.52,
+    "theta_jn": 0.495,
+    "psi": 0.515,
+    "phase": 0.575,
+    "geocent_time": 0.562,
+    "a1": 0.557,
+    "a2": 0.497
+   },
+   "cov50_headline_mean": 0.512,
+   "cov90": {
+    "mass_1": 0.93,
+    "mass_2": 0.917,
+    "luminosity_distance": 0.92,
+    "ra": 0.855,
+    "dec": 0.875,
+    "theta_jn": 0.873,
+    "psi": 0.818,
+    "phase": 0.892,
+    "geocent_time": 0.905,
+    "a1": 0.897,
+    "a2": 0.88
+   },
+   "cov90_headline_mean": 0.897,
+   "mc_frac_err_median": 0.6138,
+   "dl_frac_err_median": 0.4535,
+   "tc_abs_err_median_s": 0.5485,
+   "sbc_ks_p": {
+    "mass_1": 0.2612,
+    "mass_2": 0.0499,
+    "luminosity_distance": 0.0651,
+    "ra": 0.2126,
+    "dec": 0.0006,
+    "theta_jn": 0.0499,
+    "psi": 0.0,
+    "phase": 0.0211,
+    "geocent_time": 0.0651,
+    "a1": 0.0,
+    "a2": 0.1078
+   }
+  },
+  "n3_rank2": {
+   "n": 400,
+   "cov50": {
+    "mass_1": 0.475,
+    "mass_2": 0.54,
+    "luminosity_distance": 0.512,
+    "ra": 0.463,
+    "dec": 0.54,
+    "theta_jn": 0.542,
+    "psi": 0.45,
+    "phase": 0.59,
+    "geocent_time": 0.547,
+    "a1": 0.507,
+    "a2": 0.448
+   },
+   "cov50_headline_mean": 0.508,
+   "cov90": {
+    "mass_1": 0.915,
+    "mass_2": 0.882,
+    "luminosity_distance": 0.948,
+    "ra": 0.9,
+    "dec": 0.938,
+    "theta_jn": 0.96,
+    "psi": 0.815,
+    "phase": 0.877,
+    "geocent_time": 0.897,
+    "a1": 0.902,
+    "a2": 0.877
+   },
+   "cov90_headline_mean": 0.919,
+   "mc_frac_err_median": 0.5236,
+   "dl_frac_err_median": 0.4433,
+   "tc_abs_err_median_s": 0.6208,
+   "sbc_ks_p": {
+    "mass_1": 0.1713,
+    "mass_2": 0.3174,
+    "luminosity_distance": 0.4529,
+    "ra": 0.0211,
+    "dec": 0.0029,
+    "theta_jn": 0.0009,
+    "psi": 0.0081,
+    "phase": 0.0009,
+    "geocent_time": 0.3174,
+    "a1": 0.0842,
+    "a2": 0.1366
+   }
+  }
+ },
+ "dt_bins": [
+  {
+   "dt_lo": 0.0,
+   "dt_hi": 0.25,
+   "n": 90,
+   "rank0": {
+    "cov90_headline": 0.953,
+    "mc_frac_err": 0.1118,
+    "dl_frac_err": 0.1664
+   },
+   "rank1": {
+    "cov90_headline": 0.909,
+    "mc_frac_err": 0.4357,
+    "dl_frac_err": 0.42
+   }
+  },
+  {
+   "dt_lo": 0.25,
+   "dt_hi": 0.5,
+   "n": 50,
+   "rank0": {
+    "cov90_headline": 0.792,
+    "mc_frac_err": 0.179,
+    "dl_frac_err": 0.2638
+   },
+   "rank1": {
+    "cov90_headline": 0.872,
+    "mc_frac_err": 0.4507,
+    "dl_frac_err": 0.4121
+   }
+  },
+  {
+   "dt_lo": 0.5,
+   "dt_hi": 1.0,
+   "n": 125,
+   "rank0": {
+    "cov90_headline": 0.931,
+    "mc_frac_err": 0.1933,
+    "dl_frac_err": 0.3095
+   },
+   "rank1": {
+    "cov90_headline": 0.926,
+    "mc_frac_err": 0.874,
+    "dl_frac_err": 0.7407
+   }
+  },
+  {
+   "dt_lo": 1.0,
+   "dt_hi": 2.0,
+   "n": 95,
+   "rank0": {
+    "cov90_headline": 0.922,
+    "mc_frac_err": 0.311,
+    "dl_frac_err": 0.2606
+   },
+   "rank1": {
+    "cov90_headline": 0.895,
+    "mc_frac_err": 0.7684,
+    "dl_frac_err": 0.4736
+   }
+  },
+  {
+   "dt_lo": 2.0,
+   "dt_hi": 3.2,
+   "n": 40,
+   "rank0": {
+    "cov90_headline": 0.875,
+    "mc_frac_err": 0.337,
+    "dl_frac_err": 0.1898
+   },
+   "rank1": {
+    "cov90_headline": 0.95,
+    "mc_frac_err": 1.0567,
+    "dl_frac_err": 0.6038
+   }
+  }
+ ],
+ "ranking": {
+  "n": 400,
+  "top1_accuracy": 0.412,
+  "kendall_tau_mean": -0.175,
+  "top1_by_dt": [
+   {
+    "dt_lo": 0.0,
+    "dt_hi": 0.25,
+    "top1": 0.433,
+    "n": 90
+   },
+   {
+    "dt_lo": 0.25,
+    "dt_hi": 0.5,
+    "top1": 0.4,
+    "n": 50
+   },
+   {
+    "dt_lo": 0.5,
+    "dt_hi": 1.0,
+    "top1": 0.48,
+    "n": 125
+   },
+   {
+    "dt_lo": 1.0,
+    "dt_hi": 2.0,
+    "top1": 0.379,
+    "n": 95
+   },
+   {
+    "dt_lo": 2.0,
+    "dt_hi": 3.2,
+    "top1": 0.25,
+    "n": 40
+   }
+  ],
+  "followup_n300": {
+   "rank_assignment_accuracy": 0.733,
+   "npe_implicit_loudness_ordering": 0.993,
+   "prioritynet_top1_truth_inputs": 0.333,
+   "prioritynet_top1_npe_inputs": 0.453,
+   "verdict": "PriorityNet ranking is unreliable (anti-correlated with loudness even on truth inputs); the NPE's own rank conditioning provides the ordering: 99.3% self-consistent, 73.3% correct assignment to the true loudest signal"
+  }
+ },
+ "runtime": {
+  "npe_all_ranks_s_per_event_n1": 0.381,
+  "npe_all_ranks_s_per_event_n2": 1.02,
+  "npe_all_ranks_s_per_event_n3": 1.553,
+  "dynesty_single_signal_median_s": 418.7,
+  "note": "sequential baseline = k x single-signal dynesty (median over the real-event benchmark BBHs); a joint 11k-dimensional sampler or hierarchical subtraction would be slower still"
+ }
+}

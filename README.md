@@ -1,303 +1,317 @@
 # PosteriFlow — Neural Posterior Estimation for Overlapping Gravitational-Wave Signals
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-> Amortized, calibrated posterior estimation for overlapping compact-binary
-> coalescences in multi-detector strain — seconds per event instead of
-> minutes-to-hours, with per-signal posteriors for up to 5 overlapping sources.
+> Amortized, calibration-audited posterior estimation for compact-binary
+> coalescences in whitened 3-detector strain — seconds per event instead of
+> minutes-to-hours, with per-signal posteriors for time-overlapping sources.
 
 ---
 
 ## 1. The problem
 
-Ground-based gravitational-wave detectors (LIGO Hanford/Livingston, Virgo)
-observe compact-binary mergers as chirping strain signals buried in colored
-noise. Parameter estimation — recovering masses, distance, sky position,
-spins from the strain — is classically done with stochastic samplers
-(dynesty, bilby-MCMC) that evaluate a waveform likelihood hundreds of
-thousands of times per event. That costs minutes to hours per event and,
-more fundamentally, assumes **one signal per analysis segment**.
+Ground-based detectors (LIGO Hanford/Livingston, Virgo) observe compact-binary
+mergers as chirping strain buried in colored noise. Parameter estimation —
+recovering masses, distance, sky position, spins — is classically done with
+stochastic samplers (dynesty, bilby-MCMC) that evaluate a waveform likelihood
+hundreds of thousands of times per event. That costs minutes to hours per
+event and, more fundamentally, assumes **one signal per analysis segment**. As
+sensitivity improves (O4/O5, Einstein Telescope), the in-band rate rises until
+**signals overlap in time**, where the single-signal likelihood is simply
+wrong.
 
-As detector sensitivity improves (O4/O5, and especially next-generation
-observatories like Einstein Telescope), the in-band event rate rises until
-**signals overlap in time**. For overlapping sources the single-signal
-likelihood is simply wrong: sampling one signal while another sits in the
-data biases both. Joint N-signal sampling exists but scales combinatorially.
+**PosteriFlow's answer** is simulation-based inference: train a neural network
+on millions of simulated `(signal + noise → parameters)` examples so that, at
+observation time, a *single forward pass* returns the posterior. No explicit
+likelihood; overlap handling is built into the training distribution rather
+than bolted onto a sampler.
 
-**PosteriFlow's answer** is simulation-based inference: train a neural
-network on millions of simulated (signal + noise → parameters) examples so
-that, at observation time, a *single forward pass* returns the posterior.
-The network never needs an explicit likelihood, and overlap handling is
-built into the training distribution rather than bolted onto a sampler.
+The estimator, **LeanNPE**, answers:
 
-The estimator, **LeanNPE**, answers queries of the form:
+> *"Given this 4 s of whitened H1/L1/V1 strain, what is the posterior over the
+> 11 parameters of the k-th loudest signal present?"*
 
-> *"Given this 4 s of whitened H1/L1/V1 strain, what is the posterior over
-> the 11 parameters of the k-th loudest signal present?"*
-
-Parameters: `mass_1, mass_2, luminosity_distance, ra, dec, theta_jn, psi,
-phase, geocent_time, a1, a2` (aligned spins; `mass_1 ≥ mass_2` convention).
-
-A separately trained **PriorityNet** ranks signals so the downstream
-extract-and-subtract pipeline (`src/ahsd/core/`) can iterate: infer loudest
-→ subtract → re-infer.
+Parameters (fixed order): `mass_1, mass_2, luminosity_distance, ra, dec,
+theta_jn, psi, phase, geocent_time, a1, a2` (aligned spins; `mass_1 ≥ mass_2`
+convention). Overlaps are handled by **rank conditioning** — query rank 0 for
+the loudest signal, rank 1 for the second-loudest, etc.
 
 ---
 
 ## 2. How it works
 
-### 2.1 The model (LeanNPE, ~6M parameters)
+### 2.1 The model (`src/ahsd/models/lean_npe.py`, ~6M parameters)
 
 ```
-whitened strain [3, 16384] ──► norm-free conv stem (asinh input) ──► 61 tokens/det
-                                        │  + detector & positional embeddings
-                                        ▼
-                        3-layer pre-norm Transformer (cross-detector fusion)
-                                        │  attention pooling (8 learned queries)
-raw strain ──► per-window log-energy ───┤
-                                        ▼
-                              context vector (256) ⊕ signal-rank embedding (32)
-                                        ▼
-                    Neural Spline Flow (8 layers, 16 bins) ──► posterior samples
+whitened strain [3, 16384] ─┬─► norm-free conv stem (asinh input) ─► tokens/det
+                            │        + detector & positional embeddings
+                            │   ┌──────────────────────────────────────────┐
+   geometry branch ─────────┼──►│  power-weighted coherence |γ|, phase;     │
+   (CoherentEncoder)        │   │  GCC arrival-time Δt  →  geometry tokens   │
+                            │   └──────────────────────────────────────────┘
+                            ▼        injected INTO the transformer
+              3-layer pre-norm Transformer (cross-detector fusion)
+                            │        attention pooling (learned queries)
+   raw strain ─► log-energy branch  (amplitude survives any LayerNorm)
+   ASD summary ─► psd_cond branch    (whitened amplitude → physical SNR)
+                            ▼
+              context (256) ⊕ signal-rank embedding (32)  =  288-D
+                            ▼
+        Neural Spline Flow (10 layers, 16 bins, tail_bound 5) ─► posterior
 ```
 
-- **Conv stem, no normalization layers.** The strain is already whitened
-  (unit noise floor), so absolute amplitude *is* the distance/SNR cue.
-  Per-sample normalization (InstanceNorm, per-detector std division,
-  LayerNorm stacks) provably destroyed it in a previous architecture — the
-  stem instead sees `asinh`-compressed strain (amplitude-monotone, bounded),
-  and a parallel branch feeds per-window log-energies of the *raw* strain so
-  amplitude survives any internal normalization downstream.
-- **Cross-detector Transformer.** Sky position and distance/inclination
-  information lives in amplitude ratios and time delays *between* detectors;
-  self-attention across all detectors' tokens fuses it.
-- **Rank conditioning.** For overlap events, the flow's context includes an
-  embedding of the queried signal's loudness rank. Without it, one context
-  would be trained to predict *every* overlapping signal's parameters — an
-  irreducibly ambiguous (mixture) target. This single embedding turns the
-  overlap problem into a well-posed conditional.
-- **Neural Spline Flow** (rational-quadratic, autoregressive; built on
-  `nflows`) maps a standard normal to the 11-D posterior, conditioned on the
-  296-D context. Parameters are mapped to [−1, 1] by a fixed, deterministic
-  scaler (log-space for masses and distance) — no fitted statistics that can
-  drift between training and inference.
-- **Pure NLL objective.** No auxiliary losses, no diversity regularizers, no
-  posterior-width penalties. Every such term tried in this project's history
-  was measured to optimize the *statistics* of the representation rather
-  than its *information content* (see §5).
+Three design invariants — each reverses a **measured** failure of the
+predecessor (`OverlapNeuralPE`); see §5 — and should not be changed casually:
 
-### 2.2 The data engine: component storage + on-the-fly remixing
+- **No normalization on the amplitude path.** The strain is whitened (unit
+  noise floor), so absolute amplitude *is* the distance/SNR cue. The stem sees
+  `asinh`-compressed strain; a parallel branch feeds per-window log-energies of
+  the *raw* strain so amplitude survives any downstream LayerNorm.
+- **Rank conditioning.** The flow's context includes a 32-D embedding of the
+  queried signal's loudness rank (ordered by `Mc^(5/6)/d_L`). This turns the
+  ill-posed "predict every overlapping signal" mixture target into a well-posed
+  conditional.
+- **Pure-NLL objective.** No auxiliary/diversity/width-penalty losses — every
+  such term tried here was measured to move representation *statistics* without
+  changing *information content*.
 
-The single most important lesson from this project: **for NPE, the dataset
-design matters more than the architecture.** Two failure modes were measured
-and fixed here:
+**Encoder variants.** `encoder_type="conv"` is the norm-free base
+(`LeanStrainEncoder`); `encoder_type="coherent"` (`CoherentEncoder`, the
+production choice) adds the geometry branch — power-weighted complex coherence
+`γ_ij`, its magnitude/phase, and GCC arrival-time delays — injected as
+conditioning tokens *into* the transformer, making the convolutional
+representation geometry-aware. This is what lifted distance correlation off the
+floor (see §5).
 
-1. **Fixed noise → memorization.** If each training event stores one frozen
-   `signal + noise` sum, the network eventually memorizes the noise wiggles
-   (train NLL → −8 while validation → +8, observed). Noise must be *fresh*
-   every epoch.
-2. **One noise draw per signal → wrong widths.** Posterior width is learned
-   from seeing how much the data can vary for fixed parameters. One noise
-   realization per event under-teaches exactly the quantity calibration
-   depends on.
+**PSD conditioning** (`psd_cond=True`). Whitened amplitude = distance ×
+detector-sensitivity; without knowing the sensitivity the model reads a
+quiet/near source and a loud/far source identically (and mis-estimates
+distance for less-sensitive O1/O2 events). The `psd_cond` branch conditions on
+a per-detector log-ASD-vs-design band summary (`asd_bands`) so the model can
+convert whitened amplitude → physical SNR → distance. Design-whitened
+(simulated) data passes zeros; real events compute it via
+`preprocessing.compute_asd_bands`.
 
-So the generator (`src/ahsd/data/`, fully bilby-based: IMRPhenomXP /
-NRTidalv2 waveforms, design-sensitivity PSDs, matched-filter SNR accounting)
-stores every event as **separate whitened components** — the noise and each
-signal individually (float16, exact to the summed strain within float16
-rounding, verified). The training loader (`experiments/v2_remix_data.py`)
-then assembles a *different* example from the same ingredients every epoch:
+**Parameter handling.** `ParamScaler` is a *fixed, deterministic* invertible
+map physical ↔ [−1, 1] (log-space for masses/distance, linear otherwise) — no
+fitted statistics that drift between train and eval. Circular params (`ra`,
+`phase`, `psi`) wrap exactly at sampling.
+
+### 2.2 The data engine — component storage + on-the-fly remixing
+
+**The biggest lesson in this project: for NPE the dataset matters more than the
+architecture.** Two measured failure modes are fixed by construction:
+
+1. **Fixed noise → memorization** (train NLL diverges from val).
+2. **One noise draw per signal → wrong posterior widths.**
+
+The generator (`src/ahsd/data/`, fully bilby-based) stores every event as
+**separate whitened components** — noise and each signal individually (float16).
+`RemixDataset` (`experiments/remix_data.py`) then assembles a *different*
+example every epoch:
 
 | Augmentation | Mechanism | Label handling |
 |---|---|---|
-| Noise swap | any of 40k+ stored noise realizations, or real O3 crops | — |
-| Real-noise re-coloring | `irfft(rfft(sig)·ASD_design/ASD_measured)` — exact, since whitening is diagonal in frequency | — |
-| Time shift | circular roll ±0.1 s, identical across detectors (preserves inter-detector delays) | `geocent_time += δt` |
+| Noise swap | any stored Gaussian realization, or a real O3 crop | — |
+| Real-noise re-coloring | `irfft(rfft(sig)·ASD_design/ASD_measured)` — exact (whitening is diagonal in frequency) | — |
+| Time shift | circular roll ±0.1 s, identical across detectors | `geocent_time += δt` |
 | Distance rescale | amplitude × s (exact leading-order GR) | `d_L ÷ s` |
 | Overlaps | 2–5 signals summed; per-event loudness re-sort after rescaling | rank labels stay consistent |
-| Pre-merger | BNS/NSBH with merger 0.5–3 s *past* the window end (early-warning regime) | `--premerger` widens the time scaler |
+| Detector dropout | keep a random detector subset (dropped → unit white noise) | matches the inference-time fill for missing detectors |
+| Pre-merger | merger up to ~3 s past the window end (early-warning) | `--premerger` widens the time scaler |
 
-37k stored events × fresh noise pairings ≈ effectively unlimited training
-data; the memorization channel is closed by construction (verified: val NLL
-tracks train NLL ~2.7× longer and ~0.35 nats deeper than with fixed noise).
+`persistent_workers` stays **False** so `set_epoch()` reaches workers for fresh
+pairings each epoch. The network SNR of a whitened example is exactly the L2
+norm of its summed whitened signal, so it stays correct under every
+augmentation with no stored SNR.
 
 ### 2.3 Real detector noise
 
-A model trained purely on Gaussian design-PSD noise **does not transfer** to
-real O3 data — measured here as NLL 0.7 → 27 and 90% coverage 0.93 → 0.35 on
-real-noise injections. The gap is spectral (measured-PSD shape,
-non-stationarity, glitches), not an amplitude-scale artifact (normalizing
-crops recovers almost nothing).
+A model trained purely on Gaussian design-PSD noise does not transfer to real
+O3 data (the gap is spectral — measured-PSD shape, non-stationarity, glitches).
+The remedy is built into the same loader:
 
-The remedy is built into the same loader — no separate pipeline:
-
-- `scripts/download_gwosc_noise_bank.py` fetches 64 s O3b segments per
-  detector from GWOSC, **whitens each manually with its own measured ASD**
-  (the saved ASD and the applied whitening filter are the same array, by
-  construction), and stores strain + ASD under `data/noise_bank/`.
+- `scripts/download_gwosc_noise_bank.py` fetches O3 segments per detector from
+  GWOSC, whitens each with its **own measured ASD**, and stores strain + ASD
+  under `data/noise_bank/`.
 - `RemixDataset(real_noise_dir=…, real_noise_prob=p)` draws, per event per
-  epoch, real crops with probability *p* and Gaussian noise otherwise —
-  re-coloring the stored design-whitened signals into each segment's
-  whitening exactly. All other augmentations apply unchanged.
-- Training logs metrics on **two fixed validation sets each epoch**
-  (Gaussian and real-noise), and checkpoint selection uses their mean — so
-  robustness on real data cannot silently trade away simulated-data
-  performance, or vice versa.
-
-Mixing ratios (0 / 0.25 / 0.5 / 0.75 / 1.0) are pure configuration; no code
-changes between experiments.
+  epoch, real crops with probability *p* — re-coloring the design-whitened
+  signals into each segment's whitening exactly, and (for `psd_cond`) emitting
+  the matching `asd_bands` sensitivity summary.
+- Training reports metrics on **two fixed validation sets each epoch**
+  (Gaussian and real-noise); checkpoint selection uses their mean so robustness
+  on real data cannot silently trade away simulated-data performance.
 
 ---
 
-## 3. Measured results
+## 3. Calibration-gated checkpoint selection
 
-All numbers from this repo's diagnostics on held-out validation data
-(`analysis/`), not projections.
+Selecting the checkpoint on **best validation NLL alone is unsafe** — and this
+is measured, not hypothetical. Maximum-likelihood training of a conditional
+flow keeps lowering NLL by *over-sharpening* the posterior long after the model
+stops improving: NLL rewards density *at the truth* and is blind to probability
+mass piled at the parameter prior boundaries. In this project a run that was
+well-calibrated at epoch ~18 (spurious railing ~6%, coverage ~0.90) had, two
+epochs later, a **lower** val NLL but ~90% spurious railing and high-SNR
+coverage collapsed to ~0.49 — the "best val NLL" criterion actively selects the
+overconfident checkpoint. Full study: `analysis/divergence_localization/`.
 
-**Core performance (v2 checkpoint, Gaussian noise, 1.5–2k events):**
+The trainer therefore reports, **every epoch**, the calibration metrics NLL is
+blind to, and gates checkpoint selection on them:
 
-| Metric | Value | Why it matters |
-|---|---|---|
-| Shuffle ΔNLL | **+10.1 nats** | *The* conditional-inference test: NLL degradation when contexts are shuffled across events. 0.000 = the model ignores the data entirely (the previous architecture scored exactly that). |
-| Coverage, all 11 params @ 50/68/90/95% | within ±3–5% of nominal | Posteriors are honest: a 90% interval contains the truth ~90% of the time. |
-| Distance correlation (log-median vs truth) | 0.65 | Bounded below 1 by the physical distance–inclination degeneracy. |
-| Chirp-mass error vs SNR | 43% → 8.4% (SNR 6 → 100) | Scales with loudness as it should — no plateau. |
-| Overlap severity (2–4 signals, min Δt down to <0.3 s) | no degradation vs singles | The rank-conditioned design solves the overlap task rather than degrading gracefully. |
-| Inference cost | ~5 s / 3,000 samples | vs ~7 min for dynesty on the same event (≈100×), on a laptop. |
+- `spurious_railing` — fraction of posterior samples pinned at a prior boundary
+  in a dimension whose truth is not near that boundary (the overconfidence
+  signature).
+- `base_conc` = E‖z‖²/D — base-space concentration of the truth; **1.0 =
+  calibrated**, >1 = overconfident (posteriors too narrow for where the truth
+  sits).
+- `sci_cov90` / `sci_cov90_highsnr` — mass/distance 90% coverage, all events and
+  the high-SNR subset (where overconfidence bites first).
+- `sbc_pass_frac` — fraction of parameters passing an SBC uniformity test.
 
-**Independent cross-check:** bilby/dynesty, fed the *unwhitened* strain +
-PSDs from this repo's own generator, recovers injected truths within ~1σ —
-externally certifying the injection/PSD/SNR bookkeeping chain
-(`scripts/dynesty_compare.py`).
-
-**Known limits (measured, not hidden):**
-
-- Distance error plateaus at ~23% above SNR ≈ 16, with mild core
-  overconfidence in the loudest bin — the model stops extracting amplitude
-  information where an optimal estimator would keep sharpening.
-- Timing σ ≈ 65 ms — the encoder's temporal stride — versus dynesty's
-  ~0.3 ms phase-coherent timing. Sky localization inherits this (RA/dec far
-  wider than dynesty): one bottleneck, two symptoms. Fixing it requires
-  phase-preserving features in the encoder; it is the top architectural
-  target for a next iteration.
-- SBC rank histograms show small systematic slopes for `mass_1` and
-  `distance` (slight underestimation) and wrap-around artifacts for circular
-  parameters; interval coverage is unaffected, but publication-grade SBC
-  would want post-hoc quantile recalibration.
+`best_model.pth` is the **lowest-val-NLL epoch that still passes the gate**
+(`spurious_railing ≤ --max_spurious_railing`, default 0.10; optional
+`--min_highsnr_cov90`). Until the first calibrated epoch appears it falls back
+to best-NLL so a run never ends with no checkpoint; once a calibrated epoch
+claims `best_model.pth`, a later overconfident epoch cannot reclaim it. The run
+also writes `last_model.pth` every epoch and `epoch_XXXX.pth` every
+`--ckpt_every` epochs, so a good state is never unrecoverable.
 
 ---
 
 ## 4. Using it
 
+All commands run in the conda env **`ahsd` (Python 3.10)**, which has an
+editable install pointing at `src/`. Prefix with `conda run -n ahsd` (or
+activate it) — do **not** run under a bare system Python, where a stale
+installed `ahsd` can shadow `src/`.
+
 ### Setup
 
 ```bash
-conda activate ahsd          # environment with torch (MPS/CUDA), bilby, gwpy, nflows
-pip install -e . --no-deps
+conda activate ahsd          # torch (MPS/CUDA), bilby, gwpy, nflows
+pip install -e .             # editable install into the env
 ```
 
-### Generate a dataset (component storage on by default)
+### Generate a dataset (component storage)
 
 ```bash
-python src/ahsd/data/scripts/generate_dataset.py \
+conda run -n ahsd python src/ahsd/data/scripts/generate_dataset.py \
     --config configs/data_config.yaml --n-samples 50000 --output-dir data/dataset
 ```
 
-`configs/data_config.yaml` controls event mix (BBH/BNS/NSBH/noise), overlap
-fraction, SNR gate, pre-merger fraction, and component storage. ~2 h for 50k
-events on a laptop; ~22 GB.
+~2 h for 50k events on a laptop; ~22 GB. `configs/data_config.yaml` controls
+event mix, overlap fraction, SNR gate, and pre-merger fraction.
 
-### Train from scratch (remix, Gaussian noise)
-
-```bash
-python -u experiments/train_lean_npe.py --data data/dataset --remix \
-    --epochs 40 --batch 128 --outdir model/lean_npe_v2
-```
-
-First run builds a memmap cache (`data/dataset/memmap/`) so epochs stream
-from disk without holding 22 GB in RAM. ~9 min/epoch on an M-series Mac.
-
-### Download real noise & fine-tune
+### Download the real-noise bank
 
 ```bash
-python scripts/download_gwosc_noise_bank.py --per_det 120 --outdir data/noise_bank
-
-python -u experiments/train_lean_npe.py --data data/dataset --remix \
-    --noise_bank data/noise_bank --real_noise_prob 0.5 \
-    --init_from model/lean_npe_v2/best_model.pth \
-    --lr 1e-4 --epochs 20 --outdir model/lean_npe_v3
+conda run -n ahsd python scripts/download_gwosc_noise_bank.py \
+    --per_det 120 --outdir data/noise_bank
 ```
+
+### Train (production config: coherent encoder + PSD conditioning + real noise)
+
+```bash
+conda run -n ahsd python -u experiments/train_lean_npe.py \
+    --data data/dataset --remix \
+    --epochs 40 --batch 128 --lr 3e-4 \
+    --encoder_type coherent --psd_cond --psd_bands 16 \
+    --noise_bank data/noise_bank --real_noise_prob 0.9 --det_dropout 0.2 \
+    --ckpt_every 2 --max_spurious_railing 0.10 \
+    --outdir model/lean_npe
+```
+
+The first run builds a memmap cache (`data/dataset/memmap/`) so epochs stream
+from disk. Fine-tune from a checkpoint with `--init_from <ckpt>` (fresh
+optimizer/schedule).
 
 ### Reading the per-epoch log
 
 ```
-epoch 12 | train 1.72 | val 2.00 | shufΔ +2.46 | dcorr +0.45 | dcov50/90 0.52/0.95 | gnorm 41 | 534s | REAL val 3.1 dcorr +0.31 dcov 0.44/0.86
+epoch 18 | train 1.32 | val 0.94 | shufΔ +10.97 | dcorr +0.78 | dcov50/90 0.47/0.91 |
+          rail 0.058 zc 1.05 covHi 0.88 sbc 0.55 | gnorm 40 | 250s | REAL val 0.02 …
+  ✓ calibrated (rail 0.058) -> best_model.pth (select 0.94)
 ```
 
 | Field | Healthy | Failure signature |
 |---|---|---|
-| `shufΔ` | climbs steadily, several nats | pinned near 0 → marginal fit; stop and diagnose the encoder, don't train longer |
-| `dcorr` | lifts off 0 by ~epoch 10–15, → 0.6+ | flat while `shufΔ` grows → amplitude not being extracted |
-| `dcov50/90` | ~0.50/0.90 throughout (±0.04 noise) | steady downward drift → overconfidence creeping in |
-| `val` vs `train` | fall together | val flat/rising while train falls → memorization; the data, not the model, is the bottleneck |
-| `REAL …` block | converges toward the Gaussian block | stays far apart → increase `real_noise_prob` or bank size |
+| `shufΔ` | climbs several nats | pinned near 0 → marginal fit; diagnose the encoder, don't train longer |
+| `dcorr` | lifts off 0 by ~epoch 10–15, → 0.7+ | flat while `shufΔ` grows → amplitude not extracted |
+| `rail` (spurious railing) | ≤ ~0.06 | climbing → overconfidence; epoch is **rejected** for `best_model` |
+| `zc` (‖z‖²/D) | ≈ 1.0 | > ~1.5 → posteriors too narrow (overconfident) |
+| `covHi` (high-SNR coverage) | ≈ 0.90 | dropping → high-SNR under-coverage |
+| `val` vs `train` | fall together | val flat/rising while train falls → memorization |
+| `REAL …` block | converges toward Gaussian | stays far apart → raise `real_noise_prob` / bank size |
 
-Checkpoints save on best validation NLL (mean of both domains when a noise
-bank is configured), so a run left too long never loses its best model.
-
-### Certify a checkpoint
+### Certify a checkpoint (SBC / coverage / railing + GWTC real-event smoke tests → HTML)
 
 ```bash
-python scripts/lean_npe_diagnostics.py  --model model/lean_npe_v2/best_model.pth \
-    --data data/dataset --outdir analysis/diag        # SBC, PP, coverage; add --noise real for O3 variant
-python scripts/lean_npe_extended_eval.py               # error vs SNR bins, overlap severity, calib splits
-python scripts/dynesty_compare.py --n_events 30        # head-to-head vs bilby/dynesty
+conda run -n ahsd python scripts/validate_checkpoint.py --model model/lean_npe/best_model.pth
+```
+
+Other benchmarks: `scripts/benchmark_real_events.py` (vs dynesty),
+`scripts/overlap_benchmark.py`, `scripts/twin_grid.py` (twin-injection bias).
+
+### Inference CLI (real GWOSC event / local strain / fresh injection)
+
+```bash
+conda run -n ahsd python infer.py --event GW150914 --samples 10000 --output results/GW150914
 ```
 
 ### Sample a posterior in code
 
 ```python
 import torch
-from ahsd.models import LeanNPE
+from ahsd.models.lean_npe import LeanNPE
 
-ckpt = torch.load("model/lean_npe_v2/best_model.pth", map_location="cpu", weights_only=False)
-model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+ckpt = torch.load("model/lean_npe/best_model.pth", map_location="cpu", weights_only=False)
+a = ckpt["args"]
+model = LeanNPE(premerger=a.get("premerger", False),
+                psd_cond=a.get("psd_cond", False) or False,
+                psd_bands=a.get("psd_bands", 16),
+                encoder_type=a.get("encoder_type", "conv"))
 model.load_state_dict(ckpt["model_state_dict"]); model.eval()
 
-strain = torch.randn(1, 3, 16384)   # whitened H1/L1/V1 @ 4096 Hz, 4 s window
-post = model.sample_posterior(strain, rank=0, n_samples=3000)   # [1, 3000, 11] physical units
-# rank=0 queries the loudest signal; rank=1 the second-loudest, etc.
+strain = torch.randn(1, 3, 16384)   # whitened H1/L1/V1 @ 4096 Hz, 4 s
+post = model.sample_posterior(strain, rank=0, n_samples=3000)   # [1, 3000, 11] physical
+# rank=0 = loudest signal; rank=1 = second-loudest, etc.
 ```
+
+Production inference should go through `ahsd.inference.infer` / `infer.py`,
+which add preprocessing, OOD/confidence gating, and importance reweighting.
 
 ---
 
 ## 5. Why it looks like this: the evidence trail
 
-This architecture is the survivor of a measured post-mortem, kept short here
-because the details live in `analysis/` and the git history:
+The architecture and training are the survivors of a measured post-mortem;
+details live in `analysis/` and the git history. Validate changes that touch
+encoder representation or the data pipeline against these diagnostics, **not
+just NLL** — NLL and real-event accuracy have been measured to decouple.
 
-- The predecessor (`OverlapNeuralPE`, 22.7M params: tokenized encoder,
-  11 per-parameter attention queries, masked-context flow, 6 auxiliary
-  losses) produced a context that was **constant across events** — shuffle
-  ΔNLL exactly 0.000, linear-probe R² < 0 for every parameter, posterior
-  essentially identical for every input. A pure marginal fit.
-- Root causes, each verified: stacked per-sample normalizations erased
-  per-event amplitude information; readout attention collapsed to uniform
-  over near-identical tokens; the training loop asked one context to predict
-  all overlapping signals with no query conditioning (a mixture target); and
-  the loss was dominated by regularizers (weights 20 and 15) that sculpted
-  statistics while a 6e-6 learning rate starved the flow.
-- Every "fix" that penalized statistics (VICReg, variance floors, diversity
-  losses, posterior-std targets) moved the statistic and left inference
-  unchanged. The fixes that worked changed **what information reaches the
-  model** (amplitude-preserving input path, rank conditioning) and **what
-  the objective rewards** (pure NLL on non-memorizable data).
-
-The forensic methodology — shuffle tests, linear probes, coverage/SBC before
-architecture opinions — is itself the reusable asset; the diagnostics
-scripts encode it.
+- **Context collapse (the predecessor).** `OverlapNeuralPE` (22.7M params)
+  produced a context that was *constant across events* — shuffle ΔNLL exactly
+  0, linear-probe R² < 0 for every parameter. Root causes: stacked per-sample
+  normalizations erased amplitude, readout attention collapsed to uniform, one
+  context was asked to predict all overlapping signals (a mixture target), and
+  regularizers dominated the loss. LeanNPE reverses each.
+- **The dataset, not the model.** Fixed noise memorizes; one noise draw per
+  signal under-teaches width. Component storage + remixing closes both.
+- **Geometry-aware encoder.** On a corrected dataset, adding the coherence /
+  arrival-time geometry branch (`CoherentEncoder`) lifted distance correlation
+  from ~0.04 (flat) to ~0.43 (genuine amplitude → distance) — both the encoder
+  branch and the dataset fix were required.
+- **PSD conditioning** closes the distance bias where quieter (O1/O2) events
+  were read as farther.
+- **Overconfidence in late training** (the reason for §3). With a pure-NLL
+  objective the flow keeps sharpening past the calibrated point; the collapse
+  is domain-independent, worst at high SNR, and invisible to val NLL. It is
+  fixed by calibration-gated selection, not by more data — controlling for SNR,
+  local training density has ~zero effect on the per-event bias
+  (`analysis/divergence_localization/`).
 
 ---
 
@@ -306,50 +320,56 @@ scripts encode it.
 ```
 src/ahsd/
 ├── models/
-│   ├── lean_npe.py            # LeanNPE: encoder + rank embedding + NSF (the model)
-│   ├── flows.py               # Neural Spline Flow (nflows-based)
-│   ├── parameter_scalers.py   # legacy scalers (flows.py imports FLOW_NORM_BOUND)
-│   └── transformer_encoder.py # strain encoder used by PriorityNet
-├── core/                      # PriorityNet, adaptive subtractor, end-to-end pipeline
-├── data/                      # bilby-based generation: sampler, injector, whitener, PSDs
+│   ├── lean_npe.py            # LeanNPE: encoder + rank embedding + NSF (the model) + ParamScaler
+│   ├── coherent_encoder.py    # CoherentEncoder: geometry branch (coherence, GCC Δt) → tokens
+│   ├── flows.py               # NSFPosteriorFlow (nflows-based)
+│   └── parameter_scalers.py   # FLOW_NORM_BOUND and legacy scalers
+├── inference/                 # pipeline.infer(), preprocessing, OOD gating, dynesty bridge
+├── core/                      # PriorityNet, adaptive subtractor, end-to-end overlap pipeline
+├── data/                      # bilby-based generation: sampler, injector, whitener, PSDs, snr_utils
 │   └── scripts/generate_dataset.py
 └── evaluation/                # metrics
 
 experiments/
-├── train_lean_npe.py          # trainer: remix, real-noise mixing, fine-tune, dual validation
-├── v2_remix_data.py           # memmap cache + RemixDataset (all augmentations, both noise sources)
+├── train_lean_npe.py          # trainer: remix, real-noise, calibration-gated selection, dual validation
+├── remix_data.py              # memmap cache + RemixDataset (all augmentations, both noise sources)
 └── train_priority_net.py      # PriorityNet training
 
 scripts/
-├── download_gwosc_noise_bank.py  # real O3 bank: exact-ASD whitening, strain + ASD pairs
-├── lean_npe_diagnostics.py       # SBC / PP / coverage certification (gaussian | real)
-├── lean_npe_extended_eval.py     # error vs SNR, overlap severity, calibration splits
-├── dynesty_compare.py            # convention-audited head-to-head vs bilby/dynesty
-└── real_noise_test.py            # real-noise robustness probe
+├── validate_checkpoint.py     # CI: SBC / coverage / railing + 6 GWTC real-event smoke tests → HTML
+├── benchmark_real_events.py   # real-event benchmark vs bilby/dynesty
+├── overlap_benchmark.py       # overlapping-signal benchmark
+├── twin_grid.py               # twin-injection bias grid
+├── download_gwosc_noise_bank.py
+└── dynesty_compare.py
 
-analysis/     # measured evidence: diagnostic reports, audits, comparison outputs
-configs/      # YAML configs (data_config.yaml is the main one)
-data/         # dataset (component storage), memmap caches, noise_bank
-model/        # checkpoints (best_model.pth includes weights + args + diagnostics)
+infer.py       # inference CLI (real GWOSC event / local strain / fresh injection)
+analysis/      # measured evidence: diagnostic reports, audits, comparison outputs (the paper's evidence)
+configs/       # YAML configs (data_config.yaml is the main one)
+data/          # dataset (component storage), memmap caches, noise_bank  (git-ignored)
+model/         # checkpoints (best_model.pth bundles weights + args + diagnostics)
 ```
+
+> Note: the model's flow size (`flow_layers`, `flow_hidden`, `flow_bins`) is a
+> hardcoded `LeanNPE` default, not stored in `args`. A checkpoint loads
+> `strict=True` only if the current defaults match the generation it was trained
+> with; reconcile a size mismatch against the checkpoint before assuming a bug.
+> Note: `./build/` is a git-ignored setuptools artifact — never on `sys.path`.
 
 ## 7. Roadmap
 
-1. **Real-noise fine-tune** (infrastructure complete) → then inference on
-   real GWTC events with GWTC-catalog comparison.
-2. **Encoder temporal resolution** — phase-preserving features to break the
-   65 ms timing floor; unlocks sky localization and the high-SNR distance
-   plateau.
-3. Pre-merger (early-warning) training run (`--premerger`; data already in
-   the dataset).
-4. Post-hoc quantile recalibration for publication-grade SBC.
-5. End-to-end overlap pipeline evaluation: PriorityNet ranking → LeanNPE
-   posteriors → adaptive subtraction, on real-noise overlaps.
+1. Re-run the production config under calibration-gated selection; benchmark the
+   selected checkpoint on GWTC events vs dynesty.
+2. Investigate the residual near-equal-mass (`m1 ≈ m2`) bias — a mass-pair
+   reparameterization (`(chirp_mass, mass_ratio)`) is the smallest candidate.
+3. Encoder temporal resolution — phase-preserving features to tighten timing
+   and sky localization.
+4. Pre-merger (early-warning) training run (`--premerger`).
+5. End-to-end overlap pipeline on real-noise overlaps.
 
 ## References
 
-- Dax et al., *Real-Time Gravitational Wave Science with Neural Posterior
-  Estimation* (DINGO): [arXiv:2106.12594](https://arxiv.org/abs/2106.12594)
+- Dax et al., *DINGO — Real-Time GW Science with NPE*: [arXiv:2106.12594](https://arxiv.org/abs/2106.12594)
 - Durkan et al., *Neural Spline Flows*: [arXiv:1906.04032](https://arxiv.org/abs/1906.04032)
 - Ashton et al., *Bilby*: [arXiv:1811.02042](https://arxiv.org/abs/1811.02042)
 - Talts et al., *Simulation-Based Calibration*: [arXiv:1804.06788](https://arxiv.org/abs/1804.06788)
@@ -370,5 +390,395 @@ MIT — see [LICENSE](LICENSE).
 ```
 
 **Author:** Bibin Thomas — bibinthomas951@gmail.com
+# PosteriFlow — Neural Posterior Estimation for Overlapping Gravitational-Wave Signals
 
-*Last updated: 2026-07-07*
+[![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+> Amortized, calibration-audited posterior estimation for compact-binary
+> coalescences in whitened 3-detector strain — seconds per event instead of
+> minutes-to-hours, with per-signal posteriors for time-overlapping sources.
+
+---
+
+## 1. The problem
+
+Ground-based detectors (LIGO Hanford/Livingston, Virgo) observe compact-binary
+mergers as chirping strain buried in colored noise. Parameter estimation —
+recovering masses, distance, sky position, spins — is classically done with
+stochastic samplers (dynesty, bilby-MCMC) that evaluate a waveform likelihood
+hundreds of thousands of times per event. That costs minutes to hours per
+event and, more fundamentally, assumes **one signal per analysis segment**. As
+sensitivity improves (O4/O5, Einstein Telescope), the in-band rate rises until
+**signals overlap in time**, where the single-signal likelihood is simply
+wrong.
+
+**PosteriFlow's answer** is simulation-based inference: train a neural network
+on millions of simulated `(signal + noise → parameters)` examples so that, at
+observation time, a *single forward pass* returns the posterior. No explicit
+likelihood; overlap handling is built into the training distribution rather
+than bolted onto a sampler.
+
+The estimator, **LeanNPE**, answers:
+
+> *"Given this 4 s of whitened H1/L1/V1 strain, what is the posterior over the
+> 11 parameters of the k-th loudest signal present?"*
+
+Parameters (fixed order): `mass_1, mass_2, luminosity_distance, ra, dec,
+theta_jn, psi, phase, geocent_time, a1, a2` (aligned spins; `mass_1 ≥ mass_2`
+convention). Overlaps are handled by **rank conditioning** — query rank 0 for
+the loudest signal, rank 1 for the second-loudest, etc.
+
+---
+
+## 2. How it works
+
+### 2.1 The model (`src/ahsd/models/lean_npe.py`, ~6M parameters)
+
+```
+whitened strain [3, 16384] ─┬─► norm-free conv stem (asinh input) ─► tokens/det
+                            │        + detector & positional embeddings
+                            │   ┌──────────────────────────────────────────┐
+   geometry branch ─────────┼──►│  power-weighted coherence |γ|, phase;     │
+   (CoherentEncoder)        │   │  GCC arrival-time Δt  →  geometry tokens   │
+                            │   └──────────────────────────────────────────┘
+                            ▼        injected INTO the transformer
+              3-layer pre-norm Transformer (cross-detector fusion)
+                            │        attention pooling (learned queries)
+   raw strain ─► log-energy branch  (amplitude survives any LayerNorm)
+   ASD summary ─► psd_cond branch    (whitened amplitude → physical SNR)
+                            ▼
+              context (256) ⊕ signal-rank embedding (32)  =  288-D
+                            ▼
+        Neural Spline Flow (10 layers, 16 bins, tail_bound 5) ─► posterior
+```
+
+Three design invariants — each reverses a **measured** failure of the
+predecessor (`OverlapNeuralPE`); see §5 — and should not be changed casually:
+
+- **No normalization on the amplitude path.** The strain is whitened (unit
+  noise floor), so absolute amplitude *is* the distance/SNR cue. The stem sees
+  `asinh`-compressed strain; a parallel branch feeds per-window log-energies of
+  the *raw* strain so amplitude survives any downstream LayerNorm.
+- **Rank conditioning.** The flow's context includes a 32-D embedding of the
+  queried signal's loudness rank (ordered by `Mc^(5/6)/d_L`). This turns the
+  ill-posed "predict every overlapping signal" mixture target into a well-posed
+  conditional.
+- **Pure-NLL objective.** No auxiliary/diversity/width-penalty losses — every
+  such term tried here was measured to move representation *statistics* without
+  changing *information content*.
+
+**Encoder variants.** `encoder_type="conv"` is the norm-free base
+(`LeanStrainEncoder`); `encoder_type="coherent"` (`CoherentEncoder`, the
+production choice) adds the geometry branch — power-weighted complex coherence
+`γ_ij`, its magnitude/phase, and GCC arrival-time delays — injected as
+conditioning tokens *into* the transformer, making the convolutional
+representation geometry-aware. This is what lifted distance correlation off the
+floor (see §5).
+
+**PSD conditioning** (`psd_cond=True`). Whitened amplitude = distance ×
+detector-sensitivity; without knowing the sensitivity the model reads a
+quiet/near source and a loud/far source identically (and mis-estimates
+distance for less-sensitive O1/O2 events). The `psd_cond` branch conditions on
+a per-detector log-ASD-vs-design band summary (`asd_bands`) so the model can
+convert whitened amplitude → physical SNR → distance. Design-whitened
+(simulated) data passes zeros; real events compute it via
+`preprocessing.compute_asd_bands`.
+
+**Parameter handling.** `ParamScaler` is a *fixed, deterministic* invertible
+map physical ↔ [−1, 1] (log-space for masses/distance, linear otherwise) — no
+fitted statistics that drift between train and eval. Circular params (`ra`,
+`phase`, `psi`) wrap exactly at sampling.
+
+### 2.2 The data engine — component storage + on-the-fly remixing
+
+**The biggest lesson in this project: for NPE the dataset matters more than the
+architecture.** Two measured failure modes are fixed by construction:
+
+1. **Fixed noise → memorization** (train NLL diverges from val).
+2. **One noise draw per signal → wrong posterior widths.**
+
+The generator (`src/ahsd/data/`, fully bilby-based) stores every event as
+**separate whitened components** — noise and each signal individually (float16).
+`RemixDataset` (`experiments/remix_data.py`) then assembles a *different*
+example every epoch:
+
+| Augmentation | Mechanism | Label handling |
+|---|---|---|
+| Noise swap | any stored Gaussian realization, or a real O3 crop | — |
+| Real-noise re-coloring | `irfft(rfft(sig)·ASD_design/ASD_measured)` — exact (whitening is diagonal in frequency) | — |
+| Time shift | circular roll ±0.1 s, identical across detectors | `geocent_time += δt` |
+| Distance rescale | amplitude × s (exact leading-order GR) | `d_L ÷ s` |
+| Overlaps | 2–5 signals summed; per-event loudness re-sort after rescaling | rank labels stay consistent |
+| Detector dropout | keep a random detector subset (dropped → unit white noise) | matches the inference-time fill for missing detectors |
+| Pre-merger | merger up to ~3 s past the window end (early-warning) | `--premerger` widens the time scaler |
+
+`persistent_workers` stays **False** so `set_epoch()` reaches workers for fresh
+pairings each epoch. The network SNR of a whitened example is exactly the L2
+norm of its summed whitened signal, so it stays correct under every
+augmentation with no stored SNR.
+
+### 2.3 Real detector noise
+
+A model trained purely on Gaussian design-PSD noise does not transfer to real
+O3 data (the gap is spectral — measured-PSD shape, non-stationarity, glitches).
+The remedy is built into the same loader:
+
+- `scripts/download_gwosc_noise_bank.py` fetches O3 segments per detector from
+  GWOSC, whitens each with its **own measured ASD**, and stores strain + ASD
+  under `data/noise_bank/`.
+- `RemixDataset(real_noise_dir=…, real_noise_prob=p)` draws, per event per
+  epoch, real crops with probability *p* — re-coloring the design-whitened
+  signals into each segment's whitening exactly, and (for `psd_cond`) emitting
+  the matching `asd_bands` sensitivity summary.
+- Training reports metrics on **two fixed validation sets each epoch**
+  (Gaussian and real-noise); checkpoint selection uses their mean so robustness
+  on real data cannot silently trade away simulated-data performance.
+
+---
+
+## 3. Calibration-gated checkpoint selection
+
+Selecting the checkpoint on **best validation NLL alone is unsafe** — and this
+is measured, not hypothetical. Maximum-likelihood training of a conditional
+flow keeps lowering NLL by *over-sharpening* the posterior long after the model
+stops improving: NLL rewards density *at the truth* and is blind to probability
+mass piled at the parameter prior boundaries. In this project a run that was
+well-calibrated at epoch ~18 (spurious railing ~6%, coverage ~0.90) had, two
+epochs later, a **lower** val NLL but ~90% spurious railing and high-SNR
+coverage collapsed to ~0.49 — the "best val NLL" criterion actively selects the
+overconfident checkpoint. Full study: `analysis/divergence_localization/`.
+
+The trainer therefore reports, **every epoch**, the calibration metrics NLL is
+blind to, and gates checkpoint selection on them:
+
+- `spurious_railing` — fraction of posterior samples pinned at a prior boundary
+  in a dimension whose truth is not near that boundary (the overconfidence
+  signature).
+- `base_conc` = E‖z‖²/D — base-space concentration of the truth; **1.0 =
+  calibrated**, >1 = overconfident (posteriors too narrow for where the truth
+  sits).
+- `sci_cov90` / `sci_cov90_highsnr` — mass/distance 90% coverage, all events and
+  the high-SNR subset (where overconfidence bites first).
+- `sbc_pass_frac` — fraction of parameters passing an SBC uniformity test.
+
+`best_model.pth` is the **lowest-val-NLL epoch that still passes the gate**
+(`spurious_railing ≤ --max_spurious_railing`, default 0.10; optional
+`--min_highsnr_cov90`). Until the first calibrated epoch appears it falls back
+to best-NLL so a run never ends with no checkpoint; once a calibrated epoch
+claims `best_model.pth`, a later overconfident epoch cannot reclaim it. The run
+also writes `last_model.pth` every epoch and `epoch_XXXX.pth` every
+`--ckpt_every` epochs, so a good state is never unrecoverable.
+
+---
+
+## 4. Using it
+
+All commands run in the conda env **`ahsd` (Python 3.10)**, which has an
+editable install pointing at `src/`. Prefix with `conda run -n ahsd` (or
+activate it) — do **not** run under a bare system Python, where a stale
+installed `ahsd` can shadow `src/`.
+
+### Setup
+
+```bash
+conda activate ahsd          # torch (MPS/CUDA), bilby, gwpy, nflows
+pip install -e .             # editable install into the env
+```
+
+### Generate a dataset (component storage)
+
+```bash
+conda run -n ahsd python src/ahsd/data/scripts/generate_dataset.py \
+    --config configs/data_config.yaml --n-samples 50000 --output-dir data/dataset
+```
+
+~2 h for 50k events on a laptop; ~22 GB. `configs/data_config.yaml` controls
+event mix, overlap fraction, SNR gate, and pre-merger fraction.
+
+### Download the real-noise bank
+
+```bash
+conda run -n ahsd python scripts/download_gwosc_noise_bank.py \
+    --per_det 120 --outdir data/noise_bank
+```
+
+### Train (production config: coherent encoder + PSD conditioning + real noise)
+
+```bash
+conda run -n ahsd python -u experiments/train_lean_npe.py \
+    --data data/dataset --remix \
+    --epochs 40 --batch 128 --lr 3e-4 \
+    --encoder_type coherent --psd_cond --psd_bands 16 \
+    --noise_bank data/noise_bank --real_noise_prob 0.9 --det_dropout 0.2 \
+    --ckpt_every 2 --max_spurious_railing 0.10 \
+    --outdir model/lean_npe
+```
+
+The first run builds a memmap cache (`data/dataset/memmap/`) so epochs stream
+from disk. Fine-tune from a checkpoint with `--init_from <ckpt>` (fresh
+optimizer/schedule).
+
+### Reading the per-epoch log
+
+```
+epoch 18 | train 1.32 | val 0.94 | shufΔ +10.97 | dcorr +0.78 | dcov50/90 0.47/0.91 |
+          rail 0.058 zc 1.05 covHi 0.88 sbc 0.55 | gnorm 40 | 250s | REAL val 0.02 …
+  ✓ calibrated (rail 0.058) -> best_model.pth (select 0.94)
+```
+
+| Field | Healthy | Failure signature |
+|---|---|---|
+| `shufΔ` | climbs several nats | pinned near 0 → marginal fit; diagnose the encoder, don't train longer |
+| `dcorr` | lifts off 0 by ~epoch 10–15, → 0.7+ | flat while `shufΔ` grows → amplitude not extracted |
+| `rail` (spurious railing) | ≤ ~0.06 | climbing → overconfidence; epoch is **rejected** for `best_model` |
+| `zc` (‖z‖²/D) | ≈ 1.0 | > ~1.5 → posteriors too narrow (overconfident) |
+| `covHi` (high-SNR coverage) | ≈ 0.90 | dropping → high-SNR under-coverage |
+| `val` vs `train` | fall together | val flat/rising while train falls → memorization |
+| `REAL …` block | converges toward Gaussian | stays far apart → raise `real_noise_prob` / bank size |
+
+### Certify a checkpoint (SBC / coverage / railing + GWTC real-event smoke tests → HTML)
+
+```bash
+conda run -n ahsd python scripts/validate_checkpoint.py --model model/lean_npe/best_model.pth
+```
+
+Other benchmarks: `scripts/benchmark_real_events.py` (vs dynesty),
+`scripts/overlap_benchmark.py`, `scripts/twin_grid.py` (twin-injection bias).
+
+### Inference CLI (real GWOSC event / local strain / fresh injection)
+
+```bash
+conda run -n ahsd python infer.py --event GW150914 --samples 10000 --output results/GW150914
+```
+
+### Sample a posterior in code
+
+```python
+import torch
+from ahsd.models.lean_npe import LeanNPE
+
+ckpt = torch.load("model/lean_npe/best_model.pth", map_location="cpu", weights_only=False)
+a = ckpt["args"]
+model = LeanNPE(premerger=a.get("premerger", False),
+                psd_cond=a.get("psd_cond", False) or False,
+                psd_bands=a.get("psd_bands", 16),
+                encoder_type=a.get("encoder_type", "conv"))
+model.load_state_dict(ckpt["model_state_dict"]); model.eval()
+
+strain = torch.randn(1, 3, 16384)   # whitened H1/L1/V1 @ 4096 Hz, 4 s
+post = model.sample_posterior(strain, rank=0, n_samples=3000)   # [1, 3000, 11] physical
+# rank=0 = loudest signal; rank=1 = second-loudest, etc.
+```
+
+Production inference should go through `ahsd.inference.infer` / `infer.py`,
+which add preprocessing, OOD/confidence gating, and importance reweighting.
+
+---
+
+## 5. Why it looks like this: the evidence trail
+
+The architecture and training are the survivors of a measured post-mortem;
+details live in `analysis/` and the git history. Validate changes that touch
+encoder representation or the data pipeline against these diagnostics, **not
+just NLL** — NLL and real-event accuracy have been measured to decouple.
+
+- **Context collapse (the predecessor).** `OverlapNeuralPE` (22.7M params)
+  produced a context that was *constant across events* — shuffle ΔNLL exactly
+  0, linear-probe R² < 0 for every parameter. Root causes: stacked per-sample
+  normalizations erased amplitude, readout attention collapsed to uniform, one
+  context was asked to predict all overlapping signals (a mixture target), and
+  regularizers dominated the loss. LeanNPE reverses each.
+- **The dataset, not the model.** Fixed noise memorizes; one noise draw per
+  signal under-teaches width. Component storage + remixing closes both.
+- **Geometry-aware encoder.** On a corrected dataset, adding the coherence /
+  arrival-time geometry branch (`CoherentEncoder`) lifted distance correlation
+  from ~0.04 (flat) to ~0.43 (genuine amplitude → distance) — both the encoder
+  branch and the dataset fix were required.
+- **PSD conditioning** closes the distance bias where quieter (O1/O2) events
+  were read as farther.
+- **Overconfidence in late training** (the reason for §3). With a pure-NLL
+  objective the flow keeps sharpening past the calibrated point; the collapse
+  is domain-independent, worst at high SNR, and invisible to val NLL. It is
+  fixed by calibration-gated selection, not by more data — controlling for SNR,
+  local training density has ~zero effect on the per-event bias
+  (`analysis/divergence_localization/`).
+
+---
+
+## 6. Project structure
+
+```
+src/ahsd/
+├── models/
+│   ├── lean_npe.py            # LeanNPE: encoder + rank embedding + NSF (the model) + ParamScaler
+│   ├── coherent_encoder.py    # CoherentEncoder: geometry branch (coherence, GCC Δt) → tokens
+│   ├── flows.py               # NSFPosteriorFlow (nflows-based)
+│   └── parameter_scalers.py   # FLOW_NORM_BOUND and legacy scalers
+├── inference/                 # pipeline.infer(), preprocessing, OOD gating, dynesty bridge
+├── core/                      # PriorityNet, adaptive subtractor, end-to-end overlap pipeline
+├── data/                      # bilby-based generation: sampler, injector, whitener, PSDs, snr_utils
+│   └── scripts/generate_dataset.py
+└── evaluation/                # metrics
+
+experiments/
+├── train_lean_npe.py          # trainer: remix, real-noise, calibration-gated selection, dual validation
+├── remix_data.py              # memmap cache + RemixDataset (all augmentations, both noise sources)
+└── train_priority_net.py      # PriorityNet training
+
+scripts/
+├── validate_checkpoint.py     # CI: SBC / coverage / railing + 6 GWTC real-event smoke tests → HTML
+├── benchmark_real_events.py   # real-event benchmark vs bilby/dynesty
+├── overlap_benchmark.py       # overlapping-signal benchmark
+├── twin_grid.py               # twin-injection bias grid
+├── download_gwosc_noise_bank.py
+└── dynesty_compare.py
+
+infer.py       # inference CLI (real GWOSC event / local strain / fresh injection)
+analysis/      # measured evidence: diagnostic reports, audits, comparison outputs (the paper's evidence)
+configs/       # YAML configs (data_config.yaml is the main one)
+data/          # dataset (component storage), memmap caches, noise_bank  (git-ignored)
+model/         # checkpoints (best_model.pth bundles weights + args + diagnostics)
+```
+
+> Note: the model's flow size (`flow_layers`, `flow_hidden`, `flow_bins`) is a
+> hardcoded `LeanNPE` default, not stored in `args`. A checkpoint loads
+> `strict=True` only if the current defaults match the generation it was trained
+> with; reconcile a size mismatch against the checkpoint before assuming a bug.
+> Note: `./build/` is a git-ignored setuptools artifact — never on `sys.path`.
+
+## 7. Roadmap
+
+1. Re-run the production config under calibration-gated selection; benchmark the
+   selected checkpoint on GWTC events vs dynesty.
+2. Investigate the residual near-equal-mass (`m1 ≈ m2`) bias — a mass-pair
+   reparameterization (`(chirp_mass, mass_ratio)`) is the smallest candidate.
+3. Encoder temporal resolution — phase-preserving features to tighten timing
+   and sky localization.
+4. Pre-merger (early-warning) training run (`--premerger`).
+5. End-to-end overlap pipeline on real-noise overlaps.
+
+## References
+
+- Dax et al., *DINGO — Real-Time GW Science with NPE*: [arXiv:2106.12594](https://arxiv.org/abs/2106.12594)
+- Durkan et al., *Neural Spline Flows*: [arXiv:1906.04032](https://arxiv.org/abs/1906.04032)
+- Ashton et al., *Bilby*: [arXiv:1811.02042](https://arxiv.org/abs/1811.02042)
+- Talts et al., *Simulation-Based Calibration*: [arXiv:1804.06788](https://arxiv.org/abs/1804.06788)
+- GWOSC open data: [gwosc.org](https://gwosc.org)
+
+## License & citation
+
+MIT — see [LICENSE](LICENSE).
+
+```bibtex
+@software{thomas2026posteriflow,
+  title  = {PosteriFlow: Calibrated Neural Posterior Estimation
+            for Overlapping Gravitational-Wave Signals},
+  author = {Thomas, Bibin},
+  year   = {2026},
+  url    = {https://github.com/bibinthomas123/PosteriFlow}
+}
+```
+
+**Author:** Bibin Thomas — bibinthomas951@gmail.com

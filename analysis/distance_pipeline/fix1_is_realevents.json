@@ -1,0 +1,22 @@
+{
+  "GW150914": {
+    "npe_med": 1115.0095825195312,
+    "npe_ci90": [
+      759.359716796875,
+      1909.8833496093748
+    ],
+    "railed": 0.43366666666666664,
+    "published_dL": 440.0,
+    "is_error": "RuntimeError: tempering did not reach beta=1 within 25 stages (ladder: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007, 0.0008, 0.0009, 0.001, 0.0011, 0.0012, 0.0013, 0.0014, 0.0015, 0.0016, 0.0017, 0.0018, 0.0019, 0.002, 0.0021, 0.0022, 0.0023, 0.0024, 0.0025]) \u2014 proposal cannot bridge this likelihood; treat NPE result as final"
+  },
+  "GW170608": {
+    "npe_med": 1083.5614013671875,
+    "npe_ci90": [
+      229.2082084655762,
+      1884.6714782714844
+    ],
+    "railed": 0.04033333333333333,
+    "published_dL": 320.0,
+    "is_error": "RuntimeError: tempering did not reach beta=1 within 25 stages (ladder: [0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007, 0.0008, 0.0009, 0.001, 0.0011, 0.0012, 0.0013, 0.0014, 0.0015, 0.0016, 0.0017, 0.0018, 0.0019, 0.002, 0.0021, 0.0022, 0.0023, 0.0024, 0.0025]) \u2014 proposal cannot bridge this likelihood; treat NPE result as final"
+  }
+}

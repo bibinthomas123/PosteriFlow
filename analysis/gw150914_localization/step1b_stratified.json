@@ -1,0 +1,42 @@
+{
+  "extrinsic_info": {
+    "context_R2": {
+      "theta_jn": 0.253,
+      "ra": 0.26,
+      "dec": 0.235,
+      "psi": 0.287,
+      "luminosity_distance": 0.447,
+      "mass_1": 0.412
+    }
+  },
+  "mc_stratified": {
+    "light": {
+      "n": 830,
+      "mc_range": [
+        0.9,
+        6.6
+      ],
+      "ctx_to_logSNR_r2": 0.755,
+      "ctx_to_logdL_r2": 0.235
+    },
+    "medium": {
+      "n": 835,
+      "mc_range": [
+        6.6,
+        19.7
+      ],
+      "ctx_to_logSNR_r2": 0.844,
+      "ctx_to_logdL_r2": 0.605
+    },
+    "heavy": {
+      "n": 835,
+      "mc_range": [
+        19.9,
+        81.0
+      ],
+      "ctx_to_logSNR_r2": 0.924,
+      "ctx_to_logdL_r2": 0.773
+    }
+  },
+  "note": "extrinsic R2 ~0 => degeneracy unbreakable; dL R2 drop in heavy bin => source-class"
+}

@@ -1,0 +1,40 @@
+{
+  "dL_grid": [
+    250,
+    350,
+    440,
+    600,
+    850,
+    1200,
+    1700,
+    2100
+  ],
+  "M": 24,
+  "snr_by_dL": {
+    "250": 172.5,
+    "350": 123.2,
+    "440": 98.0,
+    "600": 71.9,
+    "850": 50.7,
+    "1200": 35.9,
+    "1700": 25.4,
+    "2100": 20.5
+  },
+  "flow_dLmed_by_dL": {
+    "250": 759.0,
+    "350": 730.0,
+    "440": 744.0,
+    "600": 708.0,
+    "850": 685.0,
+    "1200": 610.0,
+    "1700": 672.0,
+    "2100": 617.0
+  },
+  "encoder_amplitude_context_movement": 0.54,
+  "typical_within_noise_scatter": 0.54,
+  "movement_to_noise_ratio": 0.99,
+  "eta2_context_variance_from_dL": 0.103,
+  "proj_on_amp_dir_vs_logdL_pearson": -0.96,
+  "context_to_logdL_ridge_R2_on_sweep": 0.813,
+  "flow_dLmed_vs_truedL_spearman": -0.905
+}

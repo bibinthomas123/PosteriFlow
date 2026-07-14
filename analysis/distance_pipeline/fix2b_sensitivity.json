@@ -1,0 +1,30 @@
+[
+  {
+    "amp_factor": 1.0,
+    "approx_snr": 100.6,
+    "dl_med": 366.0,
+    "dl_ratio": 0.83,
+    "note": "design sensitivity"
+  },
+  {
+    "amp_factor": 0.5,
+    "approx_snr": 50.3,
+    "dl_med": 789.0,
+    "dl_ratio": 1.79,
+    "note": "2x less sensitive"
+  },
+  {
+    "amp_factor": 0.33,
+    "approx_snr": 33.2,
+    "dl_med": 981.0,
+    "dl_ratio": 2.23,
+    "note": "~O3 sensitivity"
+  },
+  {
+    "amp_factor": 0.25,
+    "approx_snr": 25.1,
+    "dl_med": 1175.0,
+    "dl_ratio": 2.67,
+    "note": "~O1 (GW150914)"
+  }
+]

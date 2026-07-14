@@ -1,0 +1,46 @@
+# Fixed CBC dataset (all types) — removes the chirp-mass -> distance SHORTCUT
+# while keeping LeanNPE a general BBH/BNS/NSBH estimator.
+#
+# See analysis/gw150914_localization/AUDIT_mcdl.md. The audited Mc<->dL R2=0.81
+# had two parts:
+#   (1) within-type Malmquist selection (heavier DETECTED sources farther) —
+#       PHYSICALLY REAL; minimised here with a UNIFORM distance prior (reweight
+#       to d^2 at inference). THIS is the lever that decoupled mass<->distance.
+#   (2) event-type mixing (per-type distance ranges differ) — PARTLY REAL
+#       (detected BNS genuinely are nearby: they're intrinsically quiet). Not
+#       removed by dropping types; the coherent encoder + the model's mass
+#       conditioning learn the correct per-type relationship.
+# => keep all types; the fix is `distance_prior: uniform`.
+
+n_samples: 50000
+sample_rate: 4096
+duration: 4.0
+detectors: ["H1", "L1", "V1"]
+output_dir: "data/dataset"
+output_format: "pkl"
+save_batch_size: 100
+
+# ── the fix ───────────────────────────────────────────────────────────────
+distance_prior: "uniform"          # flat in d per type (decouples mass<->distance)
+event_type_distribution:
+  BBH: 0.65
+  BNS: 0.15
+  NSBH: 0.15
+  noise: 0.05
+distance_ranges:                   # physically-motivated detectable ranges per type
+  BBH: [150.0, 2000.0]
+  BNS: [10.0, 300.0]
+  NSBH: [20.0, 800.0]
+min_snr: 6.0
+
+# ── standard pipeline ───────────────────────────────────────────────────────
+overlap_fraction: 0.3
+edge_case_fraction: 0.05
+add_glitches: false
+preprocess: true                    # whiten with design PSD (component storage)
+store_components: true              # RemixDataset needs separate noise+signal
+validate_output: true
+create_splits: true
+train_frac: 0.8
+val_frac: 0.1
+test_frac: 0.1

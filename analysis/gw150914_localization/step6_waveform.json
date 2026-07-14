@@ -1,0 +1,18 @@
+{
+  "IMRPhenomXP": {
+    "n": 150,
+    "mean_snr": 16.6,
+    "median_dL_ratio": 0.834,
+    "mean_abs_log_ratio": 0.409,
+    "spearman_pred_vs_true": 0.117,
+    "coverage90": 0.94
+  },
+  "IMRPhenomXPHM": {
+    "n": 150,
+    "mean_snr": 16.8,
+    "median_dL_ratio": 0.808,
+    "mean_abs_log_ratio": 0.415,
+    "spearman_pred_vs_true": 0.154,
+    "coverage90": 0.927
+  }
+}

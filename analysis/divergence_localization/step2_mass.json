@@ -1,0 +1,99 @@
+{
+  "n_train": 60306,
+  "training_ranges": {
+    "chirp_mass": [
+      0.87,
+      86.7,
+      62.03
+    ],
+    "total_mass": [
+      2.0,
+      199.18,
+      146.22
+    ],
+    "mass_ratio": [
+      0.01,
+      1.0,
+      1.0
+    ],
+    "network_snr": [
+      0.29,
+      933.93,
+      169.9
+    ],
+    "luminosity_distance": [
+      10.06,
+      1999.86,
+      1965.07
+    ]
+  },
+  "note_ranges": "[min, max, p99]",
+  "events": {
+    "GW150914": {
+      "marginal_pctile": {
+        "chirp_mass": 90.1,
+        "total_mass": 82.2,
+        "mass_ratio": 79.6,
+        "network_snr": 70.2,
+        "luminosity_distance": 37.8
+      },
+      "n_train_in_McSNR_box(\u00b115%Mc,\u00b120%SNR)": 811,
+      "n_train_in_Mtot_q_box(\u00b115%Mtot,\u00b10.1q)": 541
+    },
+    "GW151226": {
+      "marginal_pctile": {
+        "chirp_mass": 49.8,
+        "total_mass": 41.9,
+        "mass_ratio": 51.0,
+        "network_snr": 44.6,
+        "luminosity_distance": 37.8
+      },
+      "n_train_in_McSNR_box(\u00b115%Mc,\u00b120%SNR)": 1376,
+      "n_train_in_Mtot_q_box(\u00b115%Mtot,\u00b10.1q)": 1405
+    },
+    "GW170104": {
+      "marginal_pctile": {
+        "chirp_mass": 79.6,
+        "total_mass": 69.3,
+        "mass_ratio": 58.6,
+        "network_snr": 44.2,
+        "luminosity_distance": 65.2
+      },
+      "n_train_in_McSNR_box(\u00b115%Mc,\u00b120%SNR)": 1138,
+      "n_train_in_Mtot_q_box(\u00b115%Mtot,\u00b10.1q)": 767
+    },
+    "GW170608": {
+      "marginal_pctile": {
+        "chirp_mass": 45.5,
+        "total_mass": 38.2,
+        "mass_ratio": 52.9,
+        "network_snr": 52.2,
+        "luminosity_distance": 30.3
+      },
+      "n_train_in_McSNR_box(\u00b115%Mc,\u00b120%SNR)": 1225,
+      "n_train_in_Mtot_q_box(\u00b115%Mtot,\u00b10.1q)": 1492
+    },
+    "GW170729": {
+      "marginal_pctile": {
+        "chirp_mass": 92.9,
+        "total_mass": 87.6,
+        "mass_ratio": 61.4,
+        "network_snr": 35.2,
+        "luminosity_distance": 100.0
+      },
+      "n_train_in_McSNR_box(\u00b115%Mc,\u00b120%SNR)": 324,
+      "n_train_in_Mtot_q_box(\u00b115%Mtot,\u00b10.1q)": 670
+    },
+    "GW170814": {
+      "marginal_pctile": {
+        "chirp_mass": 82.5,
+        "total_mass": 72.2,
+        "mass_ratio": 75.8,
+        "network_snr": 53.5,
+        "luminosity_distance": 47.5
+      },
+      "n_train_in_McSNR_box(\u00b115%Mc,\u00b120%SNR)": 1002,
+      "n_train_in_Mtot_q_box(\u00b115%Mtot,\u00b10.1q)": 580
+    }
+  }
+}

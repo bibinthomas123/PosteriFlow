@@ -141,11 +141,18 @@ class LeanStrainEncoder(nn.Module):
     def __init__(self, n_detectors: int = 3, d_model: int = 192,
                  n_layers: int = 3, n_heads: int = 6, n_pool_queries: int = 8,
                  n_energy_windows: int = 16, context_dim: int = 256,
-                 dropout: float = 0.05):
+                 dropout: float = 0.05, psd_bands: int = 0):
         super().__init__()
         self.n_detectors = n_detectors
         self.n_energy_windows = n_energy_windows
         self.context_dim = context_dim
+        # PSD-conditioning branch (psd_bands>0): per-detector log-ASD band
+        # summary of the whitening filter relative to design. Whitened
+        # amplitude = distance x detector-sensitivity; without this the model
+        # cannot separate a loud/near source from a loud/sensitive detector and
+        # reads quieter (less-sensitive, e.g. O1/O2) events as farther. Feeding
+        # the sensitivity lets it convert whitened amplitude -> physical SNR.
+        self.psd_bands = psd_bands
 
         # Norm-free stem (shared across detectors). 16384 -> 61 tokens.
         self.stem = nn.Sequential(
@@ -176,13 +183,26 @@ class LeanStrainEncoder(nn.Module):
             nn.Linear(64, 64), nn.GELU(),
         )
 
+        noise_dim = 0
+        if psd_bands > 0:
+            self.noise_mlp = nn.Sequential(
+                nn.Linear(n_detectors * psd_bands, 64), nn.GELU(),
+                nn.Linear(64, 32), nn.GELU(),
+            )
+            noise_dim = 32
+
         self.out_proj = nn.Sequential(
-            nn.Linear(n_pool_queries * d_model + 64, 512), nn.GELU(),
+            nn.Linear(n_pool_queries * d_model + 64 + noise_dim, 512), nn.GELU(),
             nn.Linear(512, context_dim),
         )
 
-    def forward(self, strain: torch.Tensor) -> torch.Tensor:
-        """strain: [B, n_det, T] raw whitened -> context [B, context_dim]"""
+    def _compute_feats(self, strain: torch.Tensor,
+                       asd_bands: Optional[torch.Tensor] = None,
+                       extra_tokens: Optional[torch.Tensor] = None):
+        """Concatenated pre-projection features [B, feat_dim] + the nan-cleaned
+        strain (so subclasses can add branches without recomputing cleanup).
+        extra_tokens [B, n, d_model] are prepended to the transformer input so a
+        subclass can make the fused representation geometry-aware before pooling."""
         B, D, T = strain.shape
         strain = torch.nan_to_num(strain, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
 
@@ -202,13 +222,34 @@ class LeanStrainEncoder(nn.Module):
         tokens = tokens + self.detector_embed(det_ids)[None, :, None, :]
         tokens = tokens.reshape(B, D * L, -1)
 
+        # geometry-aware conditioning: prepend extra tokens so self-attention
+        # fuses them with the conv tokens BEFORE pooling.
+        if extra_tokens is not None:
+            tokens = torch.cat([extra_tokens, tokens], dim=1)
+
         tokens = self.fusion(tokens)
 
         q = self.pool_queries.unsqueeze(0).expand(B, -1, -1)
         pooled, _ = self.pool_attn(q, tokens, tokens)  # [B, nq, d_model]
 
-        context = self.out_proj(torch.cat([pooled.reshape(B, -1), energy_feat], dim=1))
-        return context
+        feats = [pooled.reshape(B, -1), energy_feat]
+        if self.psd_bands > 0:
+            # Default to zeros = design-sensitivity reference when not supplied.
+            # Correct for design-whitened data (simulated/Gaussian domains);
+            # real-noise paths MUST pass measured asd_bands to get distance right.
+            if asd_bands is None:
+                asd_bands = strain.new_zeros(B, self.n_detectors, self.psd_bands)
+            feats.append(self.noise_mlp(asd_bands.reshape(B, -1)))
+        return torch.cat(feats, dim=1), strain
+
+    def forward(self, strain: torch.Tensor,
+                asd_bands: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """strain: [B, n_det, T] raw whitened -> context [B, context_dim].
+        asd_bands: [B, n_det, psd_bands] log-ASD-vs-design summary of the
+        whitening filter (required iff psd_bands>0; ~0 for design-whitened
+        data, negative where the detector is less sensitive than design)."""
+        feats, _ = self._compute_feats(strain, asd_bands)
+        return self.out_proj(feats)
 
 
 class LeanNPE(nn.Module):
@@ -216,14 +257,29 @@ class LeanNPE(nn.Module):
 
     def __init__(self, param_names: List[str] = PARAM_NAMES,
                  context_dim: int = 256, rank_dim: int = 32, max_signals: int = 5,
-                 flow_layers: int = 8, flow_hidden: int = 192, flow_bins: int = 16,
-                 encoder_kwargs: Optional[dict] = None, premerger: bool = False):
+                 flow_layers: int = 10, flow_hidden: int = 256, flow_bins: int = 16,
+                 encoder_kwargs: Optional[dict] = None, premerger: bool = False,
+                 psd_cond: bool = False, psd_bands: int = 16,
+                 encoder_type: str = "conv"):
         super().__init__()
         self.param_names = param_names
         self.max_signals = max_signals
+        self.context_dim = context_dim
+        self.encoder_type = encoder_type
+        # the coherent encoder always ingests asd_bands (phase-coherent geometry
+        # front-end); treat it as psd-conditioned regardless of the flag.
+        self.psd_cond = psd_cond or (encoder_type == "coherent")
         self.scaler = ParamScaler(param_names, premerger=premerger)
 
-        self.encoder = LeanStrainEncoder(context_dim=context_dim, **(encoder_kwargs or {}))
+        enc_kw = dict(encoder_kwargs or {})
+        if encoder_type == "coherent":
+            from ahsd.models.coherent_encoder import CoherentEncoder
+            self.encoder = CoherentEncoder(context_dim=context_dim, psd_bands=psd_bands,
+                                           **enc_kw)
+        else:
+            if psd_cond:
+                enc_kw["psd_bands"] = psd_bands
+            self.encoder = LeanStrainEncoder(context_dim=context_dim, **enc_kw)
         self.rank_embed = nn.Embedding(max_signals, rank_dim)
 
         self.flow = NSFPosteriorFlow(
@@ -232,7 +288,7 @@ class LeanNPE(nn.Module):
             hidden_features=flow_hidden,
             num_layers=flow_layers,
             num_bins=flow_bins,
-            tail_bound=3.0,
+            tail_bound=5.0,
             dropout=0.0,
             temperature_scale=1.0,
             use_masked_context=False,
@@ -243,14 +299,17 @@ class LeanNPE(nn.Module):
     def _full_context(self, context: torch.Tensor, rank: torch.Tensor) -> torch.Tensor:
         return torch.cat([context, self.rank_embed(rank)], dim=1)
 
-    def encode(self, strain: torch.Tensor) -> torch.Tensor:
-        return self.encoder(strain)
+    def encode(self, strain: torch.Tensor,
+               asd_bands: Optional[torch.Tensor] = None) -> torch.Tensor:
+        return self.encoder(strain, asd_bands) if self.psd_cond else self.encoder(strain)
 
     def nll(self, strain: torch.Tensor, params_phys: torch.Tensor,
-            rank: torch.Tensor, context: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """params_phys: [B, 11] physical units; rank: [B] long. Returns [B]."""
+            rank: torch.Tensor, context: Optional[torch.Tensor] = None,
+            asd_bands: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """params_phys: [B, 11] physical units; rank: [B] long. Returns [B].
+        asd_bands: [B, n_det, psd_bands] required when psd_cond=True."""
         if context is None:
-            context = self.encoder(strain)
+            context = self.encode(strain, asd_bands)
         ctx = self._full_context(context, rank)
         y = self.scaler.normalize(params_phys)
         log_sigma = torch.zeros_like(y)
@@ -258,9 +317,11 @@ class LeanNPE(nn.Module):
 
     @torch.no_grad()
     def sample_posterior(self, strain: torch.Tensor, rank: int = 0,
-                         n_samples: int = 256) -> torch.Tensor:
-        """strain: [B, 3, T] -> samples [B, n_samples, 11] in PHYSICAL units."""
-        context = self.encoder(strain)
+                         n_samples: int = 256,
+                         asd_bands: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """strain: [B, 3, T] -> samples [B, n_samples, 11] in PHYSICAL units.
+        asd_bands: [B, n_det, psd_bands] required when psd_cond=True."""
+        context = self.encode(strain, asd_bands)
         B = context.shape[0]
         r = torch.full((B,), rank, dtype=torch.long, device=context.device)
         ctx = self._full_context(context, r)

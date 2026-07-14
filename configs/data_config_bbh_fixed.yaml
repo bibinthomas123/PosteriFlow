@@ -1,0 +1,35 @@
+# Fixed BBH dataset — removes the chirp-mass -> distance shortcut.
+# See analysis/gw150914_localization/AUDIT_mcdl.md: the pooled Mc<->dL R2=0.81
+# was event-type mixing + SNR-gate Malmquist. This config:
+#   - BBH-only  -> no event-type mixing
+#   - uniform distance prior -> minimises the SNR-gate Malmquist correlation
+#     (reweight to d^2 at inference via PosteriorResult reweighting)
+# Wires through validate_config -> DatasetGenerator(config) -> ParameterSampler.
+
+n_samples: 50000
+sample_rate: 4096
+duration: 4.0
+detectors: ["H1", "L1", "V1"]
+output_dir: "data/dataset_bbh_fixed_full"
+output_format: "pkl"
+save_batch_size: 100
+
+# ── the fix ───────────────────────────────────────────────────────────────
+event_type_distribution:
+  BBH: 1.0
+distance_prior: "uniform"          # flat in d (decouples mass<->distance)
+distance_ranges:
+  BBH: [150.0, 2000.0]
+min_snr: 6.0
+
+# ── standard pipeline ───────────────────────────────────────────────────────
+overlap_fraction: 0.2
+edge_case_fraction: 0.05
+add_glitches: false
+preprocess: true                    # whiten with design PSD (component storage)
+store_components: true              # RemixDataset needs separate noise+signal
+validate_output: false
+create_splits: true
+train_frac: 0.8
+val_frac: 0.1
+test_frac: 0.1

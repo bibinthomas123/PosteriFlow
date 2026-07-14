@@ -1,0 +1,23 @@
+{
+  "final_distance_r2": {
+    "lean": 0.3889840245246887,
+    "experimental": 0.38741809129714966,
+    "delta": -0.0015659332275390625
+  },
+  "final_chirp_mass_r2": {
+    "lean": 0.6029233932495117,
+    "experimental": 0.6012427806854248,
+    "delta": -0.001680612564086914
+  },
+  "final_network_snr_r2": {
+    "lean": 0.8884672522544861,
+    "experimental": 0.8892739415168762,
+    "delta": 0.0008066892623901367
+  },
+  "experimental_unstable": true,
+  "lean_unstable": true,
+  "distance_improved_meaningfully": false,
+  "mass_preserved": true,
+  "snr_preserved": true,
+  "RECOMMEND_FULL_TRAINING": false
+}

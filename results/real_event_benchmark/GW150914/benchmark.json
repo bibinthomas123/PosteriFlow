@@ -9,144 +9,145 @@
     "H1",
     "L1"
   ],
-  "t_fetch_s": 5.4,
-  "t_npe_s": 4.739,
+  "t_fetch_s": 9.5,
+  "t_npe_s": 12.116,
   "npe_ood_flags": [
-    "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
+    "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)",
+    "13.7% of samples rail at the parameter bounds \u2014 the event may lie outside the training prior (out-of-distribution)"
   ],
-  "t_dynesty_s": 250.3,
+  "t_dynesty_s": 405.8,
   "comparison": {
     "mass_1": {
-      "npe_med": 65.85020446777344,
-      "npe_std": 14.770783578579024,
-      "dynesty_med": 40.02930223464465,
-      "dynesty_std": 1.9374549935987813,
-      "med_offset_sigma": 13.327226854358965,
-      "width_ratio": 7.623807324431729,
-      "kl_npe_dynesty": 19.324803841225613,
-      "wasserstein": 28.020806031527627
+      "npe_med": 30.49295711517334,
+      "npe_std": 27.946543029805124,
+      "dynesty_med": 39.75607491058087,
+      "dynesty_std": 2.1051987914813584,
+      "med_offset_sigma": -4.400115480063176,
+      "width_ratio": 13.275013803739197,
+      "kl_npe_dynesty": 17.253036714613888,
+      "wasserstein": 22.336279808592217
     },
     "mass_2": {
-      "npe_med": 38.26689910888672,
-      "npe_std": 10.513610614836425,
-      "dynesty_med": 35.40745035583346,
-      "dynesty_std": 1.924558691464129,
-      "med_offset_sigma": 1.4857685370936295,
-      "width_ratio": 5.4628682700111435,
-      "kl_npe_dynesty": 11.140100037423172,
-      "wasserstein": 6.996721652872157
+      "npe_med": 10.866604804992676,
+      "npe_std": 15.600996357558785,
+      "dynesty_med": 35.491319035087706,
+      "dynesty_std": 2.0081297845817656,
+      "med_offset_sigma": -12.262511321179932,
+      "width_ratio": 7.768918358550762,
+      "kl_npe_dynesty": 16.797279461961548,
+      "wasserstein": 21.784786770790546
     },
     "luminosity_distance": {
-      "npe_med": 1529.0701904296875,
-      "npe_std": 349.397209400361,
-      "dynesty_med": 465.84726618853045,
-      "dynesty_std": 113.62608528275747,
-      "med_offset_sigma": 9.357208088142606,
-      "width_ratio": 3.0749735725543506,
-      "kl_npe_dynesty": 19.132156104350972,
-      "wasserstein": 1029.5838025305293
+      "npe_med": 399.644287109375,
+      "npe_std": 396.4858886343224,
+      "dynesty_med": 438.3216960488146,
+      "dynesty_std": 114.07480972510378,
+      "med_offset_sigma": -0.33905302171710777,
+      "width_ratio": 3.4756655705698223,
+      "kl_npe_dynesty": 10.514757782821118,
+      "wasserstein": 221.5663516644871
     },
     "ra": {
-      "npe_med": 3.8805915117263794,
-      "npe_std": 1.746738361114306,
-      "dynesty_med": 1.5172837959617098,
-      "dynesty_std": 0.46921216849143893,
-      "med_offset_sigma": 5.036757077989192,
-      "width_ratio": 3.722704726536672,
-      "kl_npe_dynesty": 12.308724347739915,
-      "wasserstein": 1.6697342484192776
+      "npe_med": 1.4452853798866272,
+      "npe_std": 2.591799105828293,
+      "dynesty_med": 1.4107723373126164,
+      "dynesty_std": 0.4916223114496065,
+      "med_offset_sigma": 0.07020235188684305,
+      "width_ratio": 5.27193139976527,
+      "kl_npe_dynesty": 15.782595858374064,
+      "wasserstein": 1.951868999745451
     },
     "dec": {
-      "npe_med": 0.0962797999382019,
-      "npe_std": 0.8325532760064002,
-      "dynesty_med": -1.226422193102356,
-      "dynesty_std": 0.08208768979624961,
-      "med_offset_sigma": 16.113280568747452,
-      "width_ratio": 10.142242617993556,
-      "kl_npe_dynesty": 16.106995673426646,
-      "wasserstein": 1.3245252047152625
+      "npe_med": -0.3184903860092163,
+      "npe_std": 0.5201691386712668,
+      "dynesty_med": -1.2147222860518792,
+      "dynesty_std": 0.08762044030734643,
+      "med_offset_sigma": 10.22857094383887,
+      "width_ratio": 5.93661856651313,
+      "kl_npe_dynesty": 15.649194424120342,
+      "wasserstein": 0.8480879814145821
     },
     "theta_jn": {
-      "npe_med": 1.3824728727340698,
-      "npe_std": 0.7471715178229115,
-      "dynesty_med": 2.484357193232317,
-      "dynesty_std": 0.35473545927701755,
-      "med_offset_sigma": -3.1062141902525653,
-      "width_ratio": 2.1062780620788106,
-      "kl_npe_dynesty": 7.479523081375439,
-      "wasserstein": 0.8799419119230062
+      "npe_med": 1.3151916861534119,
+      "npe_std": 0.8390330512899373,
+      "dynesty_med": 2.489113507468746,
+      "dynesty_std": 0.3410037739121884,
+      "med_offset_sigma": -3.442547876831069,
+      "width_ratio": 2.460480243967962,
+      "kl_npe_dynesty": 10.120197874040437,
+      "wasserstein": 1.0837545788074068
     },
     "psi": {
-      "npe_med": 1.6726915836334229,
-      "npe_std": 0.890737706450712,
-      "dynesty_med": 1.592649384596526,
-      "dynesty_std": 0.9334224979405658,
-      "med_offset_sigma": 0.08575130675309925,
-      "width_ratio": 0.9542706624938858,
-      "kl_npe_dynesty": 0.06824555092339013,
-      "wasserstein": 0.057631149689309574
+      "npe_med": 1.60429048538208,
+      "npe_std": 0.9952220713205908,
+      "dynesty_med": 1.5769946348971042,
+      "dynesty_std": 0.9040134904124413,
+      "med_offset_sigma": 0.03019407425250755,
+      "width_ratio": 1.1008929410618022,
+      "kl_npe_dynesty": 0.1235128690697316,
+      "wasserstein": 0.08805077760957605
     },
     "phase": {
-      "npe_med": 4.131897687911987,
-      "npe_std": 1.859216211268487,
-      "dynesty_med": 3.2177993320759453,
-      "dynesty_std": 1.8635619271187793,
-      "med_offset_sigma": 0.49051139221265494,
-      "width_ratio": 0.9976680587939036,
-      "kl_npe_dynesty": 0.2004923685133444,
-      "wasserstein": 0.6990087491190631
+      "npe_med": 3.080603241920471,
+      "npe_std": 1.9860814148114618,
+      "dynesty_med": 3.1990406839016825,
+      "dynesty_std": 1.8067782601230644,
+      "med_offset_sigma": -0.06555173068530971,
+      "width_ratio": 1.0992391582002683,
+      "kl_npe_dynesty": 0.11007430468785581,
+      "wasserstein": 0.1836762932498057
     },
     "geocent_time": {
-      "npe_med": 0.028953373432159424,
-      "npe_std": 0.10388905498640591,
-      "dynesty_med": 0.010654926300048828,
-      "dynesty_std": 0.003009237443252055,
-      "med_offset_sigma": 6.080756801822471,
-      "width_ratio": 34.52337092774012,
-      "kl_npe_dynesty": 1.053814356931223,
-      "wasserstein": 0.026027992513126215
+      "npe_med": 0.06559771299362183,
+      "npe_std": 0.5922330786928502,
+      "dynesty_med": 0.01104879379272461,
+      "dynesty_std": 0.003245331056297573,
+      "med_offset_sigma": 16.808424609446337,
+      "width_ratio": 182.48766795484636,
+      "kl_npe_dynesty": 17.782982270441295,
+      "wasserstein": 0.4574384720552368
     },
     "a1": {
-      "npe_med": 0.6226410865783691,
-      "npe_std": 0.21905970352619672,
-      "dynesty_med": 0.044257947372728645,
-      "dynesty_std": 0.04191858104100128,
-      "med_offset_sigma": 13.797774424714891,
-      "width_ratio": 5.225837632387725,
-      "kl_npe_dynesty": 17.993223832993504,
-      "wasserstein": 0.544817102176739
+      "npe_med": 0.41447913646698,
+      "npe_std": 0.32791926284624573,
+      "dynesty_med": 0.04114282968602555,
+      "dynesty_std": 0.0431836899729295,
+      "med_offset_sigma": 8.645307947738585,
+      "width_ratio": 7.593590437922688,
+      "kl_npe_dynesty": 11.74406486972981,
+      "wasserstein": 0.3728546384125553
     },
     "a2": {
-      "npe_med": 0.5371136367321014,
-      "npe_std": 0.261075900444784,
-      "dynesty_med": 0.039185234153121425,
-      "dynesty_std": 0.04523875300267437,
-      "med_offset_sigma": 11.006678091742847,
-      "width_ratio": 5.771067444283502,
-      "kl_npe_dynesty": 15.864278284123237,
-      "wasserstein": 0.4752417605341626
+      "npe_med": 0.20440523326396942,
+      "npe_std": 0.3220164510078847,
+      "dynesty_med": 0.03724325093230673,
+      "dynesty_std": 0.04255648723610999,
+      "med_offset_sigma": 3.928002268519482,
+      "width_ratio": 7.5668003718090535,
+      "kl_npe_dynesty": 8.464503324033013,
+      "wasserstein": 0.2737288318611337
     }
   },
   "truth_check": {
     "mass_1": {
       "published": 38.8,
-      "npe_med": 65.85020446777344,
-      "npe_in_90": false,
-      "dynesty_med": 40.02930223464465,
+      "npe_med": 30.49295711517334,
+      "npe_in_90": true,
+      "dynesty_med": 39.75607491058087,
       "dynesty_in_90": true
     },
     "mass_2": {
       "published": 33.4,
-      "npe_med": 38.26689910888672,
+      "npe_med": 10.866604804992676,
       "npe_in_90": true,
-      "dynesty_med": 35.40745035583346,
+      "dynesty_med": 35.491319035087706,
       "dynesty_in_90": true
     },
     "luminosity_distance": {
       "published": 440.0,
-      "npe_med": 1529.0701904296875,
-      "npe_in_90": false,
-      "dynesty_med": 465.84726618853045,
+      "npe_med": 399.644287109375,
+      "npe_in_90": true,
+      "dynesty_med": 438.3216960488146,
       "dynesty_in_90": true
     }
   }

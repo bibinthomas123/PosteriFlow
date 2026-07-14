@@ -10,912 +10,146 @@
       "H1",
       "L1"
     ],
-    "t_fetch_s": 5.4,
-    "t_npe_s": 4.739,
+    "t_fetch_s": 9.5,
+    "t_npe_s": 12.116,
     "npe_ood_flags": [
-      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
+      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)",
+      "13.7% of samples rail at the parameter bounds \u2014 the event may lie outside the training prior (out-of-distribution)"
     ],
-    "t_dynesty_s": 250.3,
+    "t_dynesty_s": 405.8,
     "comparison": {
       "mass_1": {
-        "npe_med": 65.85020446777344,
-        "npe_std": 14.770783578579024,
-        "dynesty_med": 40.02930223464465,
-        "dynesty_std": 1.9374549935987813,
-        "med_offset_sigma": 13.327226854358965,
-        "width_ratio": 7.623807324431729,
-        "kl_npe_dynesty": 19.324803841225613,
-        "wasserstein": 28.020806031527627
+        "npe_med": 30.49295711517334,
+        "npe_std": 27.946543029805124,
+        "dynesty_med": 39.75607491058087,
+        "dynesty_std": 2.1051987914813584,
+        "med_offset_sigma": -4.400115480063176,
+        "width_ratio": 13.275013803739197,
+        "kl_npe_dynesty": 17.253036714613888,
+        "wasserstein": 22.336279808592217
       },
       "mass_2": {
-        "npe_med": 38.26689910888672,
-        "npe_std": 10.513610614836425,
-        "dynesty_med": 35.40745035583346,
-        "dynesty_std": 1.924558691464129,
-        "med_offset_sigma": 1.4857685370936295,
-        "width_ratio": 5.4628682700111435,
-        "kl_npe_dynesty": 11.140100037423172,
-        "wasserstein": 6.996721652872157
+        "npe_med": 10.866604804992676,
+        "npe_std": 15.600996357558785,
+        "dynesty_med": 35.491319035087706,
+        "dynesty_std": 2.0081297845817656,
+        "med_offset_sigma": -12.262511321179932,
+        "width_ratio": 7.768918358550762,
+        "kl_npe_dynesty": 16.797279461961548,
+        "wasserstein": 21.784786770790546
       },
       "luminosity_distance": {
-        "npe_med": 1529.0701904296875,
-        "npe_std": 349.397209400361,
-        "dynesty_med": 465.84726618853045,
-        "dynesty_std": 113.62608528275747,
-        "med_offset_sigma": 9.357208088142606,
-        "width_ratio": 3.0749735725543506,
-        "kl_npe_dynesty": 19.132156104350972,
-        "wasserstein": 1029.5838025305293
+        "npe_med": 399.644287109375,
+        "npe_std": 396.4858886343224,
+        "dynesty_med": 438.3216960488146,
+        "dynesty_std": 114.07480972510378,
+        "med_offset_sigma": -0.33905302171710777,
+        "width_ratio": 3.4756655705698223,
+        "kl_npe_dynesty": 10.514757782821118,
+        "wasserstein": 221.5663516644871
       },
       "ra": {
-        "npe_med": 3.8805915117263794,
-        "npe_std": 1.746738361114306,
-        "dynesty_med": 1.5172837959617098,
-        "dynesty_std": 0.46921216849143893,
-        "med_offset_sigma": 5.036757077989192,
-        "width_ratio": 3.722704726536672,
-        "kl_npe_dynesty": 12.308724347739915,
-        "wasserstein": 1.6697342484192776
+        "npe_med": 1.4452853798866272,
+        "npe_std": 2.591799105828293,
+        "dynesty_med": 1.4107723373126164,
+        "dynesty_std": 0.4916223114496065,
+        "med_offset_sigma": 0.07020235188684305,
+        "width_ratio": 5.27193139976527,
+        "kl_npe_dynesty": 15.782595858374064,
+        "wasserstein": 1.951868999745451
       },
       "dec": {
-        "npe_med": 0.0962797999382019,
-        "npe_std": 0.8325532760064002,
-        "dynesty_med": -1.226422193102356,
-        "dynesty_std": 0.08208768979624961,
-        "med_offset_sigma": 16.113280568747452,
-        "width_ratio": 10.142242617993556,
-        "kl_npe_dynesty": 16.106995673426646,
-        "wasserstein": 1.3245252047152625
+        "npe_med": -0.3184903860092163,
+        "npe_std": 0.5201691386712668,
+        "dynesty_med": -1.2147222860518792,
+        "dynesty_std": 0.08762044030734643,
+        "med_offset_sigma": 10.22857094383887,
+        "width_ratio": 5.93661856651313,
+        "kl_npe_dynesty": 15.649194424120342,
+        "wasserstein": 0.8480879814145821
       },
       "theta_jn": {
-        "npe_med": 1.3824728727340698,
-        "npe_std": 0.7471715178229115,
-        "dynesty_med": 2.484357193232317,
-        "dynesty_std": 0.35473545927701755,
-        "med_offset_sigma": -3.1062141902525653,
-        "width_ratio": 2.1062780620788106,
-        "kl_npe_dynesty": 7.479523081375439,
-        "wasserstein": 0.8799419119230062
+        "npe_med": 1.3151916861534119,
+        "npe_std": 0.8390330512899373,
+        "dynesty_med": 2.489113507468746,
+        "dynesty_std": 0.3410037739121884,
+        "med_offset_sigma": -3.442547876831069,
+        "width_ratio": 2.460480243967962,
+        "kl_npe_dynesty": 10.120197874040437,
+        "wasserstein": 1.0837545788074068
       },
       "psi": {
-        "npe_med": 1.6726915836334229,
-        "npe_std": 0.890737706450712,
-        "dynesty_med": 1.592649384596526,
-        "dynesty_std": 0.9334224979405658,
-        "med_offset_sigma": 0.08575130675309925,
-        "width_ratio": 0.9542706624938858,
-        "kl_npe_dynesty": 0.06824555092339013,
-        "wasserstein": 0.057631149689309574
+        "npe_med": 1.60429048538208,
+        "npe_std": 0.9952220713205908,
+        "dynesty_med": 1.5769946348971042,
+        "dynesty_std": 0.9040134904124413,
+        "med_offset_sigma": 0.03019407425250755,
+        "width_ratio": 1.1008929410618022,
+        "kl_npe_dynesty": 0.1235128690697316,
+        "wasserstein": 0.08805077760957605
       },
       "phase": {
-        "npe_med": 4.131897687911987,
-        "npe_std": 1.859216211268487,
-        "dynesty_med": 3.2177993320759453,
-        "dynesty_std": 1.8635619271187793,
-        "med_offset_sigma": 0.49051139221265494,
-        "width_ratio": 0.9976680587939036,
-        "kl_npe_dynesty": 0.2004923685133444,
-        "wasserstein": 0.6990087491190631
+        "npe_med": 3.080603241920471,
+        "npe_std": 1.9860814148114618,
+        "dynesty_med": 3.1990406839016825,
+        "dynesty_std": 1.8067782601230644,
+        "med_offset_sigma": -0.06555173068530971,
+        "width_ratio": 1.0992391582002683,
+        "kl_npe_dynesty": 0.11007430468785581,
+        "wasserstein": 0.1836762932498057
       },
       "geocent_time": {
-        "npe_med": 0.028953373432159424,
-        "npe_std": 0.10388905498640591,
-        "dynesty_med": 0.010654926300048828,
-        "dynesty_std": 0.003009237443252055,
-        "med_offset_sigma": 6.080756801822471,
-        "width_ratio": 34.52337092774012,
-        "kl_npe_dynesty": 1.053814356931223,
-        "wasserstein": 0.026027992513126215
+        "npe_med": 0.06559771299362183,
+        "npe_std": 0.5922330786928502,
+        "dynesty_med": 0.01104879379272461,
+        "dynesty_std": 0.003245331056297573,
+        "med_offset_sigma": 16.808424609446337,
+        "width_ratio": 182.48766795484636,
+        "kl_npe_dynesty": 17.782982270441295,
+        "wasserstein": 0.4574384720552368
       },
       "a1": {
-        "npe_med": 0.6226410865783691,
-        "npe_std": 0.21905970352619672,
-        "dynesty_med": 0.044257947372728645,
-        "dynesty_std": 0.04191858104100128,
-        "med_offset_sigma": 13.797774424714891,
-        "width_ratio": 5.225837632387725,
-        "kl_npe_dynesty": 17.993223832993504,
-        "wasserstein": 0.544817102176739
+        "npe_med": 0.41447913646698,
+        "npe_std": 0.32791926284624573,
+        "dynesty_med": 0.04114282968602555,
+        "dynesty_std": 0.0431836899729295,
+        "med_offset_sigma": 8.645307947738585,
+        "width_ratio": 7.593590437922688,
+        "kl_npe_dynesty": 11.74406486972981,
+        "wasserstein": 0.3728546384125553
       },
       "a2": {
-        "npe_med": 0.5371136367321014,
-        "npe_std": 0.261075900444784,
-        "dynesty_med": 0.039185234153121425,
-        "dynesty_std": 0.04523875300267437,
-        "med_offset_sigma": 11.006678091742847,
-        "width_ratio": 5.771067444283502,
-        "kl_npe_dynesty": 15.864278284123237,
-        "wasserstein": 0.4752417605341626
+        "npe_med": 0.20440523326396942,
+        "npe_std": 0.3220164510078847,
+        "dynesty_med": 0.03724325093230673,
+        "dynesty_std": 0.04255648723610999,
+        "med_offset_sigma": 3.928002268519482,
+        "width_ratio": 7.5668003718090535,
+        "kl_npe_dynesty": 8.464503324033013,
+        "wasserstein": 0.2737288318611337
       }
     },
     "truth_check": {
       "mass_1": {
         "published": 38.8,
-        "npe_med": 65.85020446777344,
-        "npe_in_90": false,
-        "dynesty_med": 40.02930223464465,
+        "npe_med": 30.49295711517334,
+        "npe_in_90": true,
+        "dynesty_med": 39.75607491058087,
         "dynesty_in_90": true
       },
       "mass_2": {
         "published": 33.4,
-        "npe_med": 38.26689910888672,
+        "npe_med": 10.866604804992676,
         "npe_in_90": true,
-        "dynesty_med": 35.40745035583346,
+        "dynesty_med": 35.491319035087706,
         "dynesty_in_90": true
       },
       "luminosity_distance": {
         "published": 440.0,
-        "npe_med": 1529.0701904296875,
-        "npe_in_90": false,
-        "dynesty_med": 465.84726618853045,
+        "npe_med": 399.644287109375,
+        "npe_in_90": true,
+        "dynesty_med": 438.3216960488146,
         "dynesty_in_90": true
-      }
-    }
-  },
-  {
-    "event": "GW151226",
-    "gps": 1135136350.6,
-    "type": "BBH",
-    "caveats": [
-      "only ['H1', 'L1'] available; NPE gets white-noise fill for the missing detector(s)"
-    ],
-    "detectors": [
-      "H1",
-      "L1"
-    ],
-    "t_fetch_s": 4.4,
-    "t_npe_s": 8.334,
-    "npe_ood_flags": [
-      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
-    ],
-    "t_dynesty_s": 1153.0,
-    "comparison": {
-      "mass_1": {
-        "npe_med": 23.813152313232422,
-        "npe_std": 22.929790243577443,
-        "dynesty_med": 24.237990456558354,
-        "dynesty_std": 4.34690231684349,
-        "med_offset_sigma": -0.09773353810644063,
-        "width_ratio": 5.274972513059132,
-        "kl_npe_dynesty": 10.154467843613686,
-        "wasserstein": 14.439631307733052
-      },
-      "mass_2": {
-        "npe_med": 5.951864242553711,
-        "npe_std": 5.9957208140020555,
-        "dynesty_med": 5.736410606855889,
-        "dynesty_std": 1.1196008640955517,
-        "med_offset_sigma": 0.19243789676728576,
-        "width_ratio": 5.35523060130036,
-        "kl_npe_dynesty": 10.388604926420363,
-        "wasserstein": 2.8903883740375296
-      },
-      "luminosity_distance": {
-        "npe_med": 768.8647766113281,
-        "npe_std": 432.83459711700584,
-        "dynesty_med": 164.2360951782092,
-        "dynesty_std": 51.83265505556677,
-        "med_offset_sigma": 11.66501466639644,
-        "width_ratio": 8.350615970658623,
-        "kl_npe_dynesty": 15.283311297586046,
-        "wasserstein": 669.9361721689645
-      },
-      "ra": {
-        "npe_med": 3.4260374307632446,
-        "npe_std": 1.777982197140336,
-        "dynesty_med": 3.0086017043040103,
-        "dynesty_std": 1.528159929632509,
-        "med_offset_sigma": 0.2731623294732356,
-        "width_ratio": 1.1634791369018718,
-        "kl_npe_dynesty": 10.187160858349554,
-        "wasserstein": 0.9330484777737683
-      },
-      "dec": {
-        "npe_med": 0.0988120436668396,
-        "npe_std": 0.7667728577313934,
-        "dynesty_med": 0.7346259878125161,
-        "dynesty_std": 0.7871835390746207,
-        "med_offset_sigma": -0.8077073665506329,
-        "width_ratio": 0.9740712536477929,
-        "kl_npe_dynesty": 7.969608019301691,
-        "wasserstein": 0.30795800097954434
-      },
-      "theta_jn": {
-        "npe_med": 1.5824669003486633,
-        "npe_std": 0.7970787032212145,
-        "dynesty_med": 0.8416962393573986,
-        "dynesty_std": 0.9503380608202394,
-        "med_offset_sigma": 0.7794812085842614,
-        "width_ratio": 0.8387317474105183,
-        "kl_npe_dynesty": 2.069027914020039,
-        "wasserstein": 0.33680515974239694
-      },
-      "psi": {
-        "npe_med": 1.6611912846565247,
-        "npe_std": 0.8524445677000941,
-        "dynesty_med": 1.497543748462538,
-        "dynesty_std": 0.9015456090010809,
-        "med_offset_sigma": 0.18151886535589745,
-        "width_ratio": 0.9455368183746933,
-        "kl_npe_dynesty": 0.0707344237171535,
-        "wasserstein": 0.1123871793471084
-      },
-      "phase": {
-        "npe_med": 2.991986632347107,
-        "npe_std": 1.793629087341831,
-        "dynesty_med": 3.0839565160137616,
-        "dynesty_std": 1.808156992520495,
-        "med_offset_sigma": -0.050863881840032404,
-        "width_ratio": 0.9919653513324758,
-        "kl_npe_dynesty": 0.0917276554070233,
-        "wasserstein": 0.14106342972959823
-      },
-      "geocent_time": {
-        "npe_med": 0.07591187953948975,
-        "npe_std": 0.3208530377099445,
-        "dynesty_med": 0.0502166748046875,
-        "dynesty_std": 0.0051335980466173485,
-        "med_offset_sigma": 5.005300277927516,
-        "width_ratio": 62.50060333819063,
-        "kl_npe_dynesty": 7.84505800606266,
-        "wasserstein": 0.14014565105825408
-      },
-      "a1": {
-        "npe_med": 0.5166454613208771,
-        "npe_std": 0.30130923464956255,
-        "dynesty_med": 0.5274828318301666,
-        "dynesty_std": 0.2815044021311062,
-        "med_offset_sigma": -0.038498049724082765,
-        "width_ratio": 1.0703535408262603,
-        "kl_npe_dynesty": 0.1100452147196441,
-        "wasserstein": 0.02019179258088578
-      },
-      "a2": {
-        "npe_med": 0.23848173022270203,
-        "npe_std": 0.32728151053825466,
-        "dynesty_med": 0.4435018820651955,
-        "dynesty_std": 0.11787325080137188,
-        "med_offset_sigma": -1.7393271900903584,
-        "width_ratio": 2.7765545239199514,
-        "kl_npe_dynesty": 6.404535443879972,
-        "wasserstein": 0.2325523235376066
-      }
-    },
-    "truth_check": {
-      "mass_1": {
-        "published": 14.9,
-        "npe_med": 23.813152313232422,
-        "npe_in_90": true,
-        "dynesty_med": 24.237990456558354,
-        "dynesty_in_90": true
-      },
-      "mass_2": {
-        "published": 8.4,
-        "npe_med": 5.951864242553711,
-        "npe_in_90": true,
-        "dynesty_med": 5.736410606855889,
-        "dynesty_in_90": true
-      },
-      "luminosity_distance": {
-        "published": 450.0,
-        "npe_med": 768.8647766113281,
-        "npe_in_90": true,
-        "dynesty_med": 164.2360951782092,
-        "dynesty_in_90": false
-      }
-    }
-  },
-  {
-    "event": "GW170104",
-    "gps": 1167559936.6,
-    "type": "BBH",
-    "caveats": [
-      "only ['H1', 'L1'] available; NPE gets white-noise fill for the missing detector(s)"
-    ],
-    "detectors": [
-      "H1",
-      "L1"
-    ],
-    "t_fetch_s": 30.8,
-    "t_npe_s": 3.639,
-    "npe_ood_flags": [
-      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
-    ],
-    "t_dynesty_s": 418.7,
-    "comparison": {
-      "mass_1": {
-        "npe_med": 59.97470283508301,
-        "npe_std": 18.47599634073256,
-        "dynesty_med": 40.71638792692292,
-        "dynesty_std": 5.344268720195214,
-        "med_offset_sigma": 3.6035453890599047,
-        "width_ratio": 3.457160802460643,
-        "kl_npe_dynesty": 11.207674556138906,
-        "wasserstein": 22.634299812380185
-      },
-      "mass_2": {
-        "npe_med": 25.069756507873535,
-        "npe_std": 11.397617968332993,
-        "dynesty_med": 23.00448866724162,
-        "dynesty_std": 3.8261232294635765,
-        "med_offset_sigma": 0.5397807953983973,
-        "width_ratio": 2.978894636112399,
-        "kl_npe_dynesty": 6.6357277542309365,
-        "wasserstein": 5.911804159532936
-      },
-      "luminosity_distance": {
-        "npe_med": 1571.5355224609375,
-        "npe_std": 376.0542101306971,
-        "dynesty_med": 1206.7445817156201,
-        "dynesty_std": 309.95550203579853,
-        "med_offset_sigma": 1.1769139065065175,
-        "width_ratio": 1.2132522496279197,
-        "kl_npe_dynesty": 2.2967588206812963,
-        "wasserstein": 327.31315782596
-      },
-      "ra": {
-        "npe_med": 3.46390438079834,
-        "npe_std": 1.763012373300628,
-        "dynesty_med": 2.2562780071746484,
-        "dynesty_std": 0.5931495215741545,
-        "med_offset_sigma": 2.03595607458778,
-        "width_ratio": 2.9722899643406855,
-        "kl_npe_dynesty": 8.250288878104804,
-        "wasserstein": 1.4805855895966151
-      },
-      "dec": {
-        "npe_med": -0.009386122226715088,
-        "npe_std": 0.7663634182678796,
-        "dynesty_med": 0.7815740717600818,
-        "dynesty_std": 0.3820328208113426,
-        "med_offset_sigma": -2.0703985333945805,
-        "width_ratio": 2.00601460009195,
-        "kl_npe_dynesty": 4.327066218236994,
-        "wasserstein": 0.681177885355808
-      },
-      "theta_jn": {
-        "npe_med": 1.4799655079841614,
-        "npe_std": 0.5973003458570941,
-        "dynesty_med": 1.3178001393546797,
-        "dynesty_std": 0.900681559730972,
-        "med_offset_sigma": 0.1800473948837946,
-        "width_ratio": 0.6631648430465693,
-        "kl_npe_dynesty": 0.5296239082530443,
-        "wasserstein": 0.32268522756528
-      },
-      "psi": {
-        "npe_med": 1.8758158683776855,
-        "npe_std": 0.8515367937046132,
-        "dynesty_med": 1.6328247047801994,
-        "dynesty_std": 0.9198153709707503,
-        "med_offset_sigma": 0.2641738451020508,
-        "width_ratio": 0.9257692572370836,
-        "kl_npe_dynesty": 0.09619681589922251,
-        "wasserstein": 0.20725245569249376
-      },
-      "phase": {
-        "npe_med": 3.396846652030945,
-        "npe_std": 1.8689342739585024,
-        "dynesty_med": 3.170154381734386,
-        "dynesty_std": 1.8272014184510477,
-        "med_offset_sigma": 0.12406528797720873,
-        "width_ratio": 1.0228397669042928,
-        "kl_npe_dynesty": 0.07793247383684293,
-        "wasserstein": 0.1271416428863424
-      },
-      "geocent_time": {
-        "npe_med": -0.0037090182304382324,
-        "npe_std": 0.13720227221716555,
-        "dynesty_med": 0.013665437698364258,
-        "dynesty_std": 0.006045307183010238,
-        "med_offset_sigma": -2.8740397350844313,
-        "width_ratio": 22.695662167027223,
-        "kl_npe_dynesty": 1.8644200025200637,
-        "wasserstein": 0.034180696258577725
-      },
-      "a1": {
-        "npe_med": 0.4770028591156006,
-        "npe_std": 0.273698974374295,
-        "dynesty_med": 0.06407766297903485,
-        "dynesty_std": 0.10820982053334836,
-        "med_offset_sigma": 3.8159678140612168,
-        "width_ratio": 2.5293357894499975,
-        "kl_npe_dynesty": 7.617002217225545,
-        "wasserstein": 0.37986655628566374
-      },
-      "a2": {
-        "npe_med": 0.3856378495693207,
-        "npe_std": 0.2769092264296454,
-        "dynesty_med": 0.06861515815766667,
-        "dynesty_std": 0.10633268554316345,
-        "med_offset_sigma": 2.9814227564255655,
-        "width_ratio": 2.6041778443850383,
-        "kl_npe_dynesty": 6.111950583544725,
-        "wasserstein": 0.31855490866983593
-      }
-    },
-    "truth_check": {
-      "mass_1": {
-        "published": 37.3,
-        "npe_med": 59.97470283508301,
-        "npe_in_90": false,
-        "dynesty_med": 40.71638792692292,
-        "dynesty_in_90": true
-      },
-      "mass_2": {
-        "published": 24.2,
-        "npe_med": 25.069756507873535,
-        "npe_in_90": true,
-        "dynesty_med": 23.00448866724162,
-        "dynesty_in_90": true
-      },
-      "luminosity_distance": {
-        "published": 990.0,
-        "npe_med": 1571.5355224609375,
-        "npe_in_90": true,
-        "dynesty_med": 1206.7445817156201,
-        "dynesty_in_90": true
-      }
-    }
-  },
-  {
-    "event": "GW170608",
-    "gps": 1180922494.5,
-    "type": "BBH",
-    "caveats": [
-      "only ['H1', 'L1'] available; NPE gets white-noise fill for the missing detector(s)"
-    ],
-    "detectors": [
-      "H1",
-      "L1"
-    ],
-    "t_fetch_s": 28.5,
-    "t_npe_s": 3.532,
-    "npe_ood_flags": [
-      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
-    ],
-    "t_dynesty_s": 774.2,
-    "comparison": {
-      "mass_1": {
-        "npe_med": 25.633464813232422,
-        "npe_std": 21.48249905244749,
-        "dynesty_med": 17.993630044855493,
-        "dynesty_std": 2.4897833602828,
-        "med_offset_sigma": 3.068473702242387,
-        "width_ratio": 8.628260348474317,
-        "kl_npe_dynesty": 10.738603263569377,
-        "wasserstein": 16.359965397610807
-      },
-      "mass_2": {
-        "npe_med": 6.8341004848480225,
-        "npe_std": 5.467675067222733,
-        "dynesty_med": 5.8371247538664415,
-        "dynesty_std": 0.7933445660170698,
-        "med_offset_sigma": 1.2566743032351664,
-        "width_ratio": 6.891929805205421,
-        "kl_npe_dynesty": 9.014532409352832,
-        "wasserstein": 2.89367005133535
-      },
-      "luminosity_distance": {
-        "npe_med": 837.3433227539062,
-        "npe_std": 391.1954994249362,
-        "dynesty_med": 298.71874138105073,
-        "dynesty_std": 55.96681668426496,
-        "med_offset_sigma": 9.623998884944006,
-        "width_ratio": 6.989775774185328,
-        "kl_npe_dynesty": 17.013335452725016,
-        "wasserstein": 595.2094241407681
-      },
-      "ra": {
-        "npe_med": 3.730644941329956,
-        "npe_std": 1.743865576322528,
-        "dynesty_med": 2.0038757436193153,
-        "dynesty_std": 0.07160231473610852,
-        "med_offset_sigma": 24.11610825653567,
-        "width_ratio": 24.354876771717446,
-        "kl_npe_dynesty": 17.48849763563636,
-        "wasserstein": 1.9725497211492096
-      },
-      "dec": {
-        "npe_med": 0.18502849340438843,
-        "npe_std": 0.760384500279567,
-        "dynesty_med": 0.26063801151064475,
-        "dynesty_std": 0.08577476946897143,
-        "med_offset_sigma": -0.8814890170252063,
-        "width_ratio": 8.864896940232933,
-        "kl_npe_dynesty": 13.731698143815969,
-        "wasserstein": 0.5930886480702442
-      },
-      "theta_jn": {
-        "npe_med": 1.7464465498924255,
-        "npe_std": 0.8328531956861462,
-        "dynesty_med": 2.5342215068127456,
-        "dynesty_std": 0.26158164081799057,
-        "med_offset_sigma": -3.0115835019815975,
-        "width_ratio": 3.183913021945356,
-        "kl_npe_dynesty": 9.382035350373352,
-        "wasserstein": 0.8865651746881071
-      },
-      "psi": {
-        "npe_med": 1.7066691517829895,
-        "npe_std": 0.8489389873440613,
-        "dynesty_med": 1.5009641884917961,
-        "dynesty_std": 0.9212388811191231,
-        "med_offset_sigma": 0.22329166439220505,
-        "width_ratio": 0.9215188414445225,
-        "kl_npe_dynesty": 0.08966882906192396,
-        "wasserstein": 0.17877275490224975
-      },
-      "phase": {
-        "npe_med": 2.8994312286376953,
-        "npe_std": 1.819833102355425,
-        "dynesty_med": 3.343561910478785,
-        "dynesty_std": 1.8221768937856102,
-        "med_offset_sigma": -0.2437363151250715,
-        "width_ratio": 0.9987137404513842,
-        "kl_npe_dynesty": 0.08597863956112804,
-        "wasserstein": 0.27870703741284586
-      },
-      "geocent_time": {
-        "npe_med": -0.0032202601432800293,
-        "npe_std": 0.20467303513589427,
-        "dynesty_med": -0.0033838748931884766,
-        "dynesty_std": 0.0018743601050647944,
-        "med_offset_sigma": 0.08729094381351415,
-        "width_ratio": 109.19616000504821,
-        "kl_npe_dynesty": 3.047573106644074,
-        "wasserstein": 0.06517533911305012
-      },
-      "a1": {
-        "npe_med": 0.5918512940406799,
-        "npe_std": 0.2830051383521636,
-        "dynesty_med": 0.23231345001423817,
-        "dynesty_std": 0.10193581759666807,
-        "med_offset_sigma": 3.527100179074775,
-        "width_ratio": 2.776307114106151,
-        "kl_npe_dynesty": 11.57974233802667,
-        "wasserstein": 0.31921905727524935
-      },
-      "a2": {
-        "npe_med": 0.33556319773197174,
-        "npe_std": 0.32179319353532965,
-        "dynesty_med": 0.6578027460590248,
-        "dynesty_std": 0.27179699677013086,
-        "med_offset_sigma": -1.185589064525221,
-        "width_ratio": 1.1839468286087635,
-        "kl_npe_dynesty": 0.5808026289702465,
-        "wasserstein": 0.21961946625968362
-      }
-    },
-    "truth_check": {
-      "mass_1": {
-        "published": 11.8,
-        "npe_med": 25.633464813232422,
-        "npe_in_90": true,
-        "dynesty_med": 17.993630044855493,
-        "dynesty_in_90": false
-      },
-      "mass_2": {
-        "published": 8.1,
-        "npe_med": 6.8341004848480225,
-        "npe_in_90": true,
-        "dynesty_med": 5.8371247538664415,
-        "dynesty_in_90": false
-      },
-      "luminosity_distance": {
-        "published": 320.0,
-        "npe_med": 837.3433227539062,
-        "npe_in_90": false,
-        "dynesty_med": 298.71874138105073,
-        "dynesty_in_90": true
-      }
-    }
-  },
-  {
-    "event": "GW170814",
-    "gps": 1186741861.5,
-    "type": "BBH",
-    "caveats": [],
-    "detectors": [
-      "H1",
-      "L1",
-      "V1"
-    ],
-    "t_fetch_s": 49.0,
-    "t_npe_s": 6.706,
-    "npe_ood_flags": [
-      "10.7% of samples rail at the parameter bounds \u2014 the event may lie outside the training prior (out-of-distribution)"
-    ],
-    "t_dynesty_s": 256.0,
-    "comparison": {
-      "mass_1": {
-        "npe_med": 51.194305419921875,
-        "npe_std": 17.882222374599696,
-        "dynesty_med": 34.169546100486386,
-        "dynesty_std": 2.8246824642770694,
-        "med_offset_sigma": 6.027140936624022,
-        "width_ratio": 6.330701802563727,
-        "kl_npe_dynesty": 13.96917210815294,
-        "wasserstein": 20.09112932387459
-      },
-      "mass_2": {
-        "npe_med": 25.3173828125,
-        "npe_std": 8.680918110134584,
-        "dynesty_med": 28.1012982967973,
-        "dynesty_std": 2.2533972501090704,
-        "med_offset_sigma": -1.2354304075444842,
-        "width_ratio": 3.852369175413716,
-        "kl_npe_dynesty": 8.470152883924177,
-        "wasserstein": 5.174548309997592
-      },
-      "luminosity_distance": {
-        "npe_med": 1529.0855712890625,
-        "npe_std": 350.50959303474207,
-        "dynesty_med": 593.2273314059659,
-        "dynesty_std": 93.26364865614106,
-        "med_offset_sigma": 10.03454457720746,
-        "width_ratio": 3.758265927631645,
-        "kl_npe_dynesty": 18.978129675167487,
-        "wasserstein": 921.3983063374881
-      },
-      "ra": {
-        "npe_med": 3.449408769607544,
-        "npe_std": 2.03413872832619,
-        "dynesty_med": 0.7944314265365106,
-        "dynesty_std": 0.022308350768307283,
-        "med_offset_sigma": 119.01270746693486,
-        "width_ratio": 91.18283365138709,
-        "kl_npe_dynesty": 19.101397029657647,
-        "wasserstein": 2.94295663392863
-      },
-      "dec": {
-        "npe_med": 4.5299530029296875e-06,
-        "npe_std": 0.545837679737302,
-        "dynesty_med": -0.8161233238334381,
-        "dynesty_std": 0.03458355738048205,
-        "med_offset_sigma": 23.59872413380804,
-        "width_ratio": 15.78315550216362,
-        "kl_npe_dynesty": 18.71750871104116,
-        "wasserstein": 0.8927886936394046
-      },
-      "theta_jn": {
-        "npe_med": 1.2506436109542847,
-        "npe_std": 0.7647396572605553,
-        "dynesty_med": 0.5713385511285971,
-        "dynesty_std": 0.2708924340548988,
-        "med_offset_sigma": 2.5076560727434862,
-        "width_ratio": 2.823038070832704,
-        "kl_npe_dynesty": 9.153618019566506,
-        "wasserstein": 0.7957053189656232
-      },
-      "psi": {
-        "npe_med": 1.952231228351593,
-        "npe_std": 0.950036262998606,
-        "dynesty_med": 1.6041690045282497,
-        "dynesty_std": 0.8846675900967002,
-        "med_offset_sigma": 0.3934384251511455,
-        "width_ratio": 1.0738906596780267,
-        "kl_npe_dynesty": 0.19891231784840283,
-        "wasserstein": 0.19192819620936763
-      },
-      "phase": {
-        "npe_med": 2.9034504890441895,
-        "npe_std": 1.9687028000932059,
-        "dynesty_med": 3.3171389302029852,
-        "dynesty_std": 1.8044186988207807,
-        "med_offset_sigma": -0.22926410660667854,
-        "width_ratio": 1.091045443216002,
-        "kl_npe_dynesty": 0.14343413455778636,
-        "wasserstein": 0.2570273060653899
-      },
-      "geocent_time": {
-        "npe_med": 0.03593045473098755,
-        "npe_std": 0.1266332385557578,
-        "dynesty_med": 0.02729332447052002,
-        "dynesty_std": 0.0006594796141860393,
-        "med_offset_sigma": 13.096867557096981,
-        "width_ratio": 192.0196527869955,
-        "kl_npe_dynesty": 1.2515998278062406,
-        "wasserstein": 0.028114591458271134
-      },
-      "a1": {
-        "npe_med": 0.42553427815437317,
-        "npe_std": 0.2816977401861174,
-        "dynesty_med": 0.07512067740091427,
-        "dynesty_std": 0.07698480689378805,
-        "med_offset_sigma": 4.551724039331324,
-        "width_ratio": 3.6591341576738254,
-        "kl_npe_dynesty": 9.899306739796263,
-        "wasserstein": 0.33910914365506706
-      },
-      "a2": {
-        "npe_med": 0.3320786654949188,
-        "npe_std": 0.28615218060286696,
-        "dynesty_med": 0.0750050401212462,
-        "dynesty_std": 0.07157837047936302,
-        "med_offset_sigma": 3.5914986616842812,
-        "width_ratio": 3.997746451738824,
-        "kl_npe_dynesty": 8.593401817265258,
-        "wasserstein": 0.28786679148514355
-      }
-    },
-    "truth_check": {
-      "mass_1": {
-        "published": 34.3,
-        "npe_med": 51.194305419921875,
-        "npe_in_90": true,
-        "dynesty_med": 34.169546100486386,
-        "dynesty_in_90": true
-      },
-      "mass_2": {
-        "published": 28.2,
-        "npe_med": 25.3173828125,
-        "npe_in_90": true,
-        "dynesty_med": 28.1012982967973,
-        "dynesty_in_90": true
-      },
-      "luminosity_distance": {
-        "published": 580.0,
-        "npe_med": 1529.0855712890625,
-        "npe_in_90": false,
-        "dynesty_med": 593.2273314059659,
-        "dynesty_in_90": true
-      }
-    }
-  },
-  {
-    "event": "GW170817",
-    "gps": 1187008882.4,
-    "type": "BNS",
-    "caveats": [
-      "BNS: f_min=60 Hz so the waveform fits the 4 s window; BNS mass/spin/distance priors"
-    ],
-    "detectors": [
-      "H1",
-      "L1",
-      "V1"
-    ],
-    "t_fetch_s": 42.6,
-    "t_npe_s": 7.487,
-    "npe_ood_flags": [
-      "L1: whitened std 6.21 far from 1 \u2014 PSD mismatch or non-stationary data (out-of-distribution)",
-      "L1: |strain| peaks at 135\u03c3 \u2014 likely glitch/saturation",
-      "L1: off-source excess kurtosis 119.6 \u2014 non-Gaussian noise (glitches) in window"
-    ],
-    "t_dynesty_s": 6066.9,
-    "comparison": {
-      "mass_1": {
-        "npe_med": 22.008015632629395,
-        "npe_std": 30.39893191202637,
-        "dynesty_med": 1.7629880323815343,
-        "dynesty_std": 0.011577528272672728,
-        "med_offset_sigma": 1748.648362136613,
-        "width_ratio": 2625.6838740005737,
-        "kl_npe_dynesty": 13.567126219579718,
-        "wasserstein": 30.017243726441063
-      },
-      "mass_2": {
-        "npe_med": 2.3740830421447754,
-        "npe_std": 16.003743674051357,
-        "dynesty_med": 1.005435739606893,
-        "dynesty_std": 0.005991449000047881,
-        "med_offset_sigma": 228.43340135141656,
-        "width_ratio": 2671.0969254393276,
-        "kl_npe_dynesty": 8.637112960387267,
-        "wasserstein": 10.63858477329362
-      },
-      "luminosity_distance": {
-        "npe_med": 693.7465209960938,
-        "npe_std": 654.7869306566307,
-        "dynesty_med": 6.091479595383328,
-        "dynesty_std": 0.2527532809102289,
-        "med_offset_sigma": 2720.6572203677524,
-        "width_ratio": 2590.616927732686,
-        "kl_npe_dynesty": 19.200740899301607,
-        "wasserstein": 896.2770588913712
-      },
-      "ra": {
-        "npe_med": 3.132067918777466,
-        "npe_std": 1.861375636981482,
-        "dynesty_med": 1.840124461548545,
-        "dynesty_std": 0.04142003019389394,
-        "med_offset_sigma": 31.19127195199642,
-        "width_ratio": 44.939020646027,
-        "kl_npe_dynesty": 17.626702853445984,
-        "wasserstein": 1.8716370347283415
-      },
-      "dec": {
-        "npe_med": 0.028317034244537354,
-        "npe_std": 0.6049430076635973,
-        "dynesty_med": -0.4296143431092033,
-        "dynesty_std": 0.03491741491825484,
-        "med_offset_sigma": 13.11469836215268,
-        "width_ratio": 17.324964971057117,
-        "kl_npe_dynesty": 15.89931826217914,
-        "wasserstein": 0.5985001105603538
-      },
-      "theta_jn": {
-        "npe_med": 1.5765442848205566,
-        "npe_std": 0.7127189875828245,
-        "dynesty_med": 1.5666982394805382,
-        "dynesty_std": 0.012561687017511525,
-        "med_offset_sigma": 0.7838154654288997,
-        "width_ratio": 56.73751701119022,
-        "kl_npe_dynesty": 18.078860327547698,
-        "wasserstein": 0.5981242291277551
-      },
-      "psi": {
-        "npe_med": 1.5583805441856384,
-        "npe_std": 0.9155538968713443,
-        "dynesty_med": 1.5709503552764974,
-        "dynesty_std": 1.0800315542990508,
-        "med_offset_sigma": -0.011638373924527146,
-        "width_ratio": 0.8477103214061515,
-        "kl_npe_dynesty": 12.371226339049912,
-        "wasserstein": 0.35274968832653497
-      },
-      "phase": {
-        "npe_med": 3.063475251197815,
-        "npe_std": 1.7910177654814659,
-        "dynesty_med": 3.136406614881494,
-        "dynesty_std": 1.8300857128559949,
-        "med_offset_sigma": -0.039851337634898364,
-        "width_ratio": 0.9786523942137044,
-        "kl_npe_dynesty": 13.78157884344831,
-        "wasserstein": 0.6086648880859199
-      },
-      "geocent_time": {
-        "npe_med": 0.05945950746536255,
-        "npe_std": 0.8367866310503935,
-        "dynesty_med": -0.15934491157531738,
-        "dynesty_std": 0.0008919122850241414,
-        "med_offset_sigma": 245.32028249221287,
-        "width_ratio": 938.1928098848133,
-        "kl_npe_dynesty": 18.60606372354237,
-        "wasserstein": 0.7256408769844457
-      },
-      "a1": {
-        "npe_med": 0.3326494097709656,
-        "npe_std": 0.3303367578023618,
-        "dynesty_med": 0.026553460977620853,
-        "dynesty_std": 0.01288420806995899,
-        "med_offset_sigma": 23.75744969142441,
-        "width_ratio": 25.638885243843166,
-        "kl_npe_dynesty": 12.606427769606881,
-        "wasserstein": 0.3556500248699862
-      },
-      "a2": {
-        "npe_med": 0.044470012187957764,
-        "npe_std": 0.27586710600510955,
-        "dynesty_med": 0.005264640492988556,
-        "dynesty_std": 0.0054556370321739225,
-        "med_offset_sigma": 7.186212036751812,
-        "width_ratio": 50.56550753151489,
-        "kl_npe_dynesty": 11.074726350810877,
-        "wasserstein": 0.21412415487102532
-      }
-    },
-    "truth_check": {
-      "mass_1": {
-        "published": 1.48,
-        "npe_med": 22.008015632629395,
-        "npe_in_90": true,
-        "dynesty_med": 1.7629880323815343,
-        "dynesty_in_90": false
-      },
-      "mass_2": {
-        "published": 1.26,
-        "npe_med": 2.3740830421447754,
-        "npe_in_90": true,
-        "dynesty_med": 1.005435739606893,
-        "dynesty_in_90": false
-      },
-      "luminosity_distance": {
-        "published": 40.0,
-        "npe_med": 693.7465209960938,
-        "npe_in_90": false,
-        "dynesty_med": 6.091479595383328,
-        "dynesty_in_90": false
       }
     }
   }

@@ -11,7 +11,7 @@ from ahsd.data.bilby_pipeline import (BilbySignalInjector, BilbyPreprocessor,
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "model/lean_npe_v3/best_model.pth"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "analysis/twin_grid.json"
 ckpt = torch.load(MODEL, map_location="cpu", weights_only=False)
-model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
 model.load_state_dict(ckpt["model_state_dict"]); model.eval()
 print(f"grid on {MODEL} (epoch {ckpt['epoch']})", flush=True)
 

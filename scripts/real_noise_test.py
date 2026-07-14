@@ -46,7 +46,7 @@ def main():
     print({d: len(v) for d, v in segs.items()}, "segments")
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
     model.load_state_dict(ckpt["model_state_dict"]); model.to(device).eval()
 
     sampler = ParameterSampler()

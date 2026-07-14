@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -209,6 +210,43 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
                         source="real", warnings=warnings,
                         timings={"preprocess_s": round(time.time() - t0, 3)},
                         quality=quality)
+
+
+_DESIGN_ASD_CACHE: Dict[tuple, np.ndarray] = {}
+
+
+def _design_asd(det: str, design_asd_dir: str) -> Optional[np.ndarray]:
+    key = (det, design_asd_dir)
+    if key not in _DESIGN_ASD_CACHE:
+        p = Path(design_asd_dir) / f"design_asd_{det}.npy"
+        _DESIGN_ASD_CACHE[key] = np.load(p).astype(np.float64) if p.exists() else None
+    return _DESIGN_ASD_CACHE[key]
+
+
+def compute_asd_bands(prepared: PreparedData, psd_bands: int = 16,
+                      design_asd_dir: str = "data/noise_bank",
+                      clamp: float = 50.0) -> np.ndarray:
+    """Per-detector sensitivity summary for a PSD-conditioned LeanNPE, matching
+    the training definition (RemixDataset._asd_bands): band-mean of
+    log(clip(design_ASD / measured_ASD)). 0 for design-whitened / missing
+    detectors. Returns [3, psd_bands] float32."""
+    freqs = np.fft.rfftfreq(T_LEN, 1.0 / SAMPLE_RATE)
+    edges = np.geomspace(20.0, SAMPLE_RATE / 2.0, psd_bands + 1)
+    slices = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        idx = np.where((freqs >= lo) & (freqs < hi))[0]
+        slices.append(idx if len(idx) else np.array([int(np.argmin(np.abs(freqs - lo)))]))
+    ab = np.zeros((3, psd_bands), dtype=np.float32)
+    for i, det in enumerate(DETECTORS):
+        design = _design_asd(det, design_asd_dir)
+        if det not in prepared.asds or design is None:
+            continue  # white-fill / no design ASD -> design-like (0)
+        meas = np.asarray(prepared.asds[det], dtype=np.float64)
+        n = min(len(design), len(meas))
+        ratio = np.clip(design[:n] / np.maximum(meas[:n], 1e-30), 1.0 / clamp, clamp)
+        logr = np.log(ratio)
+        ab[i] = [float(logr[s[s < n]].mean()) if (s < n).any() else 0.0 for s in slices]
+    return ab
 
 
 def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,

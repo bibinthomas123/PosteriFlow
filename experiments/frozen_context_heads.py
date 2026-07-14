@@ -51,7 +51,7 @@ REAL_EVENTS = [("GW150914", {"m1": 38.8, "m2": 33.4, "dL": 440}),
 
 def load_frozen():
     ckpt = torch.load(ENCODER_CKPT, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(DEV).eval()
     for p in model.parameters():

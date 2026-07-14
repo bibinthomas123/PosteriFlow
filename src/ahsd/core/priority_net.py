@@ -714,26 +714,36 @@ class PriorityNet(nn.Module):
         "a_1", "a_2", "tilt_1", "tilt_2", "phi_12", "phi_jl",
         "network_snr",
     ]
+    # network_snr default is a RAW SNR (index 15 is normalized below), so use
+    # the population median (~10), not a pre-normalized fraction.
     _PARAM_DEFAULTS = [
         35.0, 30.0, 500.0, 1.0, 0.0, 0.0,
         np.pi / 2, 0.0, 0.0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.43,
+        10.0,
     ]
+    # Ranges MUST match the current dataset-generation priors (ParamScaler:
+    # distance 40-2200 Mpc). The pre-rewrite ranges (distance 50-800) clipped
+    # every far event to the boundary — see the PriorityNet compatibility audit.
     _PARAM_MIN = [
-        5.0, 5.0, 50.0, 0.0, -np.pi/2, -0.1,
+        5.0, 5.0, 40.0, 0.0, -np.pi/2, -0.1,
         0.0, 0.0, 0.0,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         0.0,
     ]
     _PARAM_MAX = [
-        100.0, 100.0, 800.0, 2*np.pi, np.pi/2, 0.1,
+        100.0, 100.0, 2200.0, 2*np.pi, np.pi/2, 0.1,
         np.pi, np.pi, 2*np.pi,
         0.99, 0.99, np.pi, np.pi, 2*np.pi, 2*np.pi,
         1.0,
     ]
-    _LOG_DIST_MIN = float(np.log10(50.0))
-    _LOG_DIST_MAX = float(np.log10(800.0))
+    _LOG_DIST_MIN = float(np.log10(40.0))
+    _LOG_DIST_MAX = float(np.log10(2200.0))
+    # Upper bound for network_snr normalization. The current population spans
+    # ~6-58 (p99 47); the old bound of 25 saturated everything above p90 to
+    # 1.0, collapsing the SNR pathway across all candidates. 60 keeps the whole
+    # population distinguishable.
+    _SNR_NORM = 60.0
 
     def _detections_to_tensor(self, detections: List[Dict]) -> torch.Tensor:
         """
@@ -767,8 +777,8 @@ class PriorityNet(nn.Module):
         t[:, 2] = ((torch.log10(d) - self._LOG_DIST_MIN)
                    / (self._LOG_DIST_MAX - self._LOG_DIST_MIN)).clamp(0.0, 1.0)
 
-        # network_snr: tight upper bound of 25 (index 15)
-        t[:, 15] = (t[:, 15].clamp(max=25.0) / 25.0).clamp(0.0, 1.0)
+        # network_snr: normalize over [0, _SNR_NORM] (index 15). Feed RAW SNR.
+        t[:, 15] = (t[:, 15].clamp(max=self._SNR_NORM) / self._SNR_NORM).clamp(0.0, 1.0)
 
         # Normalise all other columns linearly
         lo = torch.tensor(self._PARAM_MIN,  dtype=torch.float32)   # [16]

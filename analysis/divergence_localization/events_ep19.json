@@ -1,0 +1,81 @@
+{
+  "GW150914": {
+    "m1": 63.53037643432617,
+    "m2": 37.26191329956055,
+    "Mc": 42.05935287475586,
+    "q": 0.5865212082862854,
+    "dL": 666.8026123046875,
+    "rail": 0.9907,
+    "ood_pct": 99.8,
+    "ood_maha": 17.95,
+    "source_warnings": [
+      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
+    ]
+  },
+  "GW151226": {
+    "m1": 21.278297424316406,
+    "m2": 7.134560585021973,
+    "Mc": 10.42508316040039,
+    "q": 0.33529752492904663,
+    "dL": 1266.973388671875,
+    "rail": 0.719,
+    "ood_pct": 99.5,
+    "ood_maha": 15.95,
+    "source_warnings": [
+      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
+    ]
+  },
+  "GW170104": {
+    "m1": 84.80547332763672,
+    "m2": 56.47705841064453,
+    "Mc": 60.00120544433594,
+    "q": 0.6659600734710693,
+    "dL": 2200.00048828125,
+    "rail": 0.998,
+    "ood_pct": 99.8,
+    "ood_maha": 18.93,
+    "source_warnings": [
+      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
+    ]
+  },
+  "GW170608": {
+    "m1": 25.743938446044922,
+    "m2": 10.47712230682373,
+    "Mc": 14.020322799682617,
+    "q": 0.40697434544563293,
+    "dL": 1350.43701171875,
+    "rail": 0.6423,
+    "ood_pct": 99.6,
+    "ood_maha": 16.53,
+    "source_warnings": [
+      "V1: no data \u2014 filled with unit white noise (posterior uses remaining detectors only)"
+    ]
+  },
+  "GW170729": {
+    "m1": 87.6756362915039,
+    "m2": 60.80467987060547,
+    "Mc": 63.35134506225586,
+    "q": 0.6935185194015503,
+    "dL": 2200.00048828125,
+    "rail": 0.9957,
+    "ood_pct": 100.0,
+    "ood_maha": 20.21,
+    "source_warnings": []
+  },
+  "GW170814": {
+    "m1": 35.63217544555664,
+    "m2": 24.5001277923584,
+    "Mc": 25.63214111328125,
+    "q": 0.687584400177002,
+    "dL": 214.51284790039062,
+    "rail": 0.9973,
+    "ood_pct": 99.6,
+    "ood_maha": 16.67,
+    "source_warnings": []
+  },
+  "_meta": {
+    "epoch": 19,
+    "val_nll": 0.8636391920012396,
+    "n_samples": 3000
+  }
+}

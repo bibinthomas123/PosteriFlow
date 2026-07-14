@@ -125,6 +125,14 @@ def validate_config(config: Dict) -> Dict:
         "store_components": config.get("store_components", True),
         "max_overlapping_signals": config.get("max_overlapping_signals", 4),
         "min_snr": config.get("min_snr", 6.0),
+        # ParameterSampler controls (previously NOT whitelisted, so these yaml
+        # keys never reached the sampler): event-type mix, per-type distance
+        # ranges, and distance-prior shape. Passed straight to ParameterSampler
+        # via DatasetGenerator(config=...). See analysis/gw150914_localization/.
+        "event_type_distribution": config.get("event_type_distribution",
+                                              config.get("event_distribution")),
+        "distance_ranges": config.get("distance_ranges"),
+        "distance_prior": config.get("distance_prior"),
     }
 
     # Validate ranges

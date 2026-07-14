@@ -1,0 +1,12 @@
+{
+  "fixed_sensitivity(f=1)": {
+    "ctx->logd": 0.3999726176261902,
+    "ctx+logf->logd": 0.4688074588775635,
+    "ctx->logMc(ref)": 0.9397726655006409
+  },
+  "mixed_sensitivity": {
+    "ctx->logd": 0.43671858310699463,
+    "ctx+logf->logd": 0.43839406967163086,
+    "ctx->logMc(ref)": 0.76479172706604
+  }
+}

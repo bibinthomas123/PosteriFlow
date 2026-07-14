@@ -60,12 +60,16 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
     items = [ds[i] for i in range(n)]
     strain = torch.stack([x[0] for x in items])
     theta = torch.stack([x[1][0] for x in items]).to(device)
+    # PSD-conditioned models: use the domain's per-event sensitivity summary
+    # (nonzero for the real-noise domain, ~0 for Gaussian/design).
+    asd = torch.stack([x[4] for x in items]) if len(items[0]) > 4 else None
     N, P = n, len(PARAM_NAMES)
 
     ctx = []
     with torch.no_grad():
         for i in range(0, N, 64):
-            ctx.append(model.encoder(strain[i:i + 64].to(device).float()))
+            ab = asd[i:i + 64].to(device).float() if asd is not None else None
+            ctx.append(model.encode(strain[i:i + 64].to(device).float(), ab))
     ctx = torch.cat(ctx)
     rank0 = torch.zeros(N, dtype=torch.long, device=device)
     with torch.no_grad():
@@ -239,7 +243,7 @@ run: {meta['timestamp']} | device {meta['device']} | wall {meta['wall_s']:.0f}s<
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
-    ap.add_argument("--data", default="data/dataset")
+    ap.add_argument("--data", required=True, help="path to remix_data/ directory")
     ap.add_argument("--noise_bank", default="data/noise_bank")
     ap.add_argument("--outdir", default=None,
                     help="default: analysis/ci/<checkpoint dir name>")
@@ -257,7 +261,10 @@ def main():
     torch.manual_seed(0)
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False),
+                    psd_cond=ckpt["args"].get("psd_cond", False) or False,
+                    psd_bands=ckpt["args"].get("psd_bands", 16),
+                    encoder_type=ckpt["args"].get("encoder_type", "conv"))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"checkpoint: epoch {ckpt['epoch']}, val NLL {ckpt['val_nll']:.4f}")
@@ -268,7 +275,9 @@ def main():
         build_memmap_cache(args.data, "validation", str(vcache))
 
     print("Gaussian validation ...")
-    ds_g = RemixDataset(str(vcache), remix=False, seed=1234)
+    ds_g = RemixDataset(str(vcache), remix=False, seed=1234,
+                        return_asd_bands=model.psd_cond,
+                        psd_bands=model.encoder.psd_bands if model.psd_cond else 16)
     gaus, gfigs = evaluate_domain(model, ds_g, args.n_events, args.n_post, device,
                                   "Gaussian")
 
@@ -277,7 +286,9 @@ def main():
         try:
             print("Real-noise validation ...")
             ds_r = RemixDataset(str(vcache), remix=False, seed=1234,
-                                real_noise_dir=args.noise_bank, real_noise_prob=1.0)
+                                real_noise_dir=args.noise_bank, real_noise_prob=1.0,
+                                return_asd_bands=model.psd_cond,
+                                psd_bands=model.encoder.psd_bands if model.psd_cond else 16)
             real, rfigs = evaluate_domain(model, ds_r, args.n_events, args.n_post,
                                           device, "Real noise")
         except Exception as e:

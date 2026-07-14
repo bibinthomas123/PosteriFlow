@@ -1,0 +1,129 @@
+
+
+
+{
+  "light_sym  Mc~9  q1.0": {
+    "points": [
+      {
+        "true_dL": 200,
+        "snr": 88.2,
+        "dL_med": 253.0
+      },
+      {
+        "true_dL": 350,
+        "snr": 50.4,
+        "dL_med": 186.0
+      },
+      {
+        "true_dL": 500,
+        "snr": 35.3,
+        "dL_med": 174.0
+      },
+      {
+        "true_dL": 700,
+        "snr": 25.2,
+        "dL_med": 248.0
+      },
+      {
+        "true_dL": 900,
+        "snr": 19.6,
+        "dL_med": 227.0
+      }
+    ],
+    "slope": 0.108,
+    "spearman": 0.6
+  },
+  "light_asym Mc~8  q0.35": {
+    "points": [
+      {
+        "true_dL": 150,
+        "snr": 105.1,
+        "dL_med": 296.0
+      },
+      {
+        "true_dL": 250,
+        "snr": 63.0,
+        "dL_med": 173.0
+      },
+      {
+        "true_dL": 350,
+        "snr": 45.0,
+        "dL_med": 157.0
+      },
+      {
+        "true_dL": 500,
+        "snr": 31.5,
+        "dL_med": 188.0
+      },
+      {
+        "true_dL": 650,
+        "snr": 24.2,
+        "dL_med": 206.0
+      }
+    ],
+    "slope": 0.163,
+    "spearman": 1.0
+  },
+  "moderate   Mc~17 q0.8": {
+    "points": [
+      {
+        "true_dL": 400,
+        "snr": 68.7,
+        "dL_med": 496.0
+      },
+      {
+        "true_dL": 700,
+        "snr": 39.3,
+        "dL_med": 436.0
+      },
+      {
+        "true_dL": 1000,
+        "snr": 27.5,
+        "dL_med": 548.0
+      },
+      {
+        "true_dL": 1400,
+        "snr": 19.6,
+        "dL_med": 566.0
+      },
+      {
+        "true_dL": 1800,
+        "snr": 15.3,
+        "dL_med": 503.0
+      }
+    ],
+    "slope": 0.052,
+    "spearman": 0.4
+  },
+  "heavy_GW150914 Mc~29": {
+    "points": [
+      {
+        "true_dL": 800,
+        "snr": 53.9,
+        "dL_med": 730.0
+      },
+      {
+        "true_dL": 1100,
+        "snr": 39.2,
+        "dL_med": 722.0
+      },
+      {
+        "true_dL": 1500,
+        "snr": 28.8,
+        "dL_med": 638.0
+      },
+      {
+        "true_dL": 1900,
+        "snr": 22.7,
+        "dL_med": 678.0
+      },
+      {
+        "true_dL": 2100,
+        "snr": 20.5,
+        "dL_med": 668.0
+      }
+    ],
+    "slope": -0.051,
+    "spearman": -0.7
+  }
+}

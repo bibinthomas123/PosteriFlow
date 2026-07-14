@@ -92,6 +92,7 @@ def calib_block(samples, truth):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="model/lean_npe_v3/best_model.pth")
+    ap.add_argument("--dataset ", default="data/dataset/memmap/validation")
     ap.add_argument("--per_group", type=int, default=400,
                     help="events per multiplicity group (1,2,3+)")
     ap.add_argument("--n_post", type=int, default=400)
@@ -101,12 +102,12 @@ def main():
     device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"model: {args.model} (epoch {ckpt['epoch']})")
 
-    ds = RemixDataset("data/dataset/memmap/validation", remix=False, seed=1234)
+    ds = RemixDataset(args.dataset, remix=False, seed=1234)
     groups = {1: [], 2: [], 3: []}   # 3 == "3+"
     for i in range(len(ds)):
         _, nsig = ds.events[i]

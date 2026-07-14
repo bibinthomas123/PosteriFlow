@@ -10,8 +10,6 @@ import logging
 from ..utils.data_format import standardize_strain_data
 
 
-
-
 class UncertaintyAwareSubtractor:
     """ physics-based subtractor"""
     

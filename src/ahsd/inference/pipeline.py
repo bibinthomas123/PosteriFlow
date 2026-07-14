@@ -38,12 +38,17 @@ def load_model(path: str, device: Optional[str] = None):
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False))
+    a = ckpt["args"]
+    model = LeanNPE(premerger=a.get("premerger", False),
+                    psd_cond=a.get("psd_cond", False) or False,
+                    psd_bands=a.get("psd_bands", 16),
+                    encoder_type=a.get("encoder_type", "conv"))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     meta = {"model_path": str(path), "model_epoch": int(ckpt.get("epoch", -1)),
             "model_val_nll": float(ckpt.get("val_nll", float("nan"))),
-            "premerger": bool(ckpt["args"].get("premerger", False)),
+            "premerger": bool(a.get("premerger", False)),
+            "psd_cond": bool(model.psd_cond),
             "device": device}
     _MODEL_CACHE[key] = (model, meta)
     return model, meta
@@ -138,8 +143,19 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
     # ---- encode + sample + log-prob ----
     t0 = time.time()
     st = torch.from_numpy(prepared.strain).unsqueeze(0).to(dev).float()
+    asd_bands = None
+    if net.psd_cond:
+        # design-whitened (simulated) data has unit sensitivity -> 0; real data
+        # gets log(design/measured) bands so the model can convert whitened
+        # amplitude to physical SNR (correct distance for quieter detectors).
+        if prepared.source == "real":
+            from ahsd.inference.preprocessing import compute_asd_bands
+            bands = compute_asd_bands(prepared, psd_bands=net.encoder.psd_bands)
+        else:
+            bands = np.zeros((3, net.encoder.psd_bands), dtype=np.float32)
+        asd_bands = torch.from_numpy(bands).unsqueeze(0).to(dev).float()
     with torch.no_grad():
-        ctx = net.encoder(st)
+        ctx = net.encode(st, asd_bands)
     encode_s = time.time() - t0
 
     t0 = time.time()

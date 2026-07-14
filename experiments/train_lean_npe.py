@@ -36,9 +36,11 @@ T_LEN = 16384
 
 
 def load_split(data_dir: str, split: str, limit: int | None = None):
-    """Load a split into compact tensors: strain fp16, params, n_signals."""
+    """Load a split into compact tensors: strain fp16, params, n_signals,
+    network SNR (for the fixed non-remix path the stored SNR is exact; the
+    remix path recomputes SNR on the fly since it rescales/re-colors)."""
     files = sorted(glob.glob(f"{data_dir}/{split}/batch_*.pkl"))
-    strains, params, nsigs = [], [], []
+    strains, params, nsigs, snrs = [], [], [], []
     for fp in files:
         with open(fp, "rb") as fh:
             b = pickle.load(fh)
@@ -79,29 +81,38 @@ def load_split(data_dir: str, split: str, limit: int | None = None):
             strains.append(torch.from_numpy(st).to(torch.float16))
             params.append(torch.from_numpy(pv))
             nsigs.append(n)
+            snrs.append(float(s.get("network_snr", 0.0)))
             if limit and len(strains) >= limit:
                 break
         if limit and len(strains) >= limit:
             break
-    return torch.stack(strains), torch.stack(params), torch.tensor(nsigs, dtype=torch.long)
+    return (torch.stack(strains), torch.stack(params),
+            torch.tensor(nsigs, dtype=torch.long),
+            torch.tensor(snrs, dtype=torch.float32))
 
 
 class EventDataset(Dataset):
-    def __init__(self, strain, params, nsig):
+    def __init__(self, strain, params, nsig, snr=None):
         self.strain, self.params, self.nsig = strain, params, nsig
+        # 4th element kept for tuple-shape parity with RemixDataset (net_snr);
+        # unused by the pure-NLL loss.
+        self.snr = snr if snr is not None else torch.zeros(len(nsig))
 
     def __len__(self):
         return self.strain.shape[0]
 
     def __getitem__(self, i):
-        return self.strain[i], self.params[i], self.nsig[i]
+        return self.strain[i], self.params[i], self.nsig[i], self.snr[i]
 
 
-def batch_nll(model, strain, params, nsig):
+def batch_nll(model, strain, params, nsig, asd_bands=None):
     """Mean per-signal NLL for a batch of events. Encoder runs ONCE per event;
-    the flow is queried once per signal rank present in the batch."""
-    context = model.encoder(strain)
-    total, count = 0.0, 0
+    the flow is queried once per signal rank present in the batch.
+
+    asd_bands: [B, n_det, psd_bands] sensitivity summary, required when the
+    model is PSD-conditioned (ignored otherwise)."""
+    context = model.encode(strain, asd_bands)
+    count = 0
     losses = []
     max_n = int(nsig.max().item())
     for r in range(max_n):
@@ -117,17 +128,21 @@ def batch_nll(model, strain, params, nsig):
 
 
 @torch.no_grad()
-def run_diagnostics(model, strain, params, nsig, device, n_events=256, n_post=128):
-    """Conditional-inference metrics on validation events (rank 0 / primary)."""
+def run_diagnostics(model, strain, params, nsig, device, n_events=256, n_post=128,
+                    asd_bands=None):
+    """Conditional-inference metrics on validation events (rank 0 / primary).
+    asd_bands: [N, n_det, psd_bands] sensitivity summary for PSD-conditioned
+    models (None otherwise)."""
     model.eval()
     n = min(n_events, strain.shape[0])
     sub = strain[:n].to(device).float()
+    ab = asd_bands[:n].to(device).float() if asd_bands is not None else None
     p0 = params[:n, 0, :].to(device)
     rank0 = torch.zeros(n, dtype=torch.long, device=device)
 
     ctx = []
     for i in range(0, n, 64):
-        ctx.append(model.encoder(sub[i:i + 64]))
+        ctx.append(model.encode(sub[i:i + 64], ab[i:i + 64] if ab is not None else None))
     ctx = torch.cat(ctx)
 
     nll_true = model.nll(None, p0, rank0, context=ctx)
@@ -170,7 +185,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--warmup_steps", type=int, default=300)
+    ap.add_argument("--warmup_steps", type=int, default=500)
     ap.add_argument("--limit_train", type=int, default=None, help="cap train events (smoke tests)")
     ap.add_argument("--premerger", action="store_true",
                     help="widen geocent_time range for pre-merger (early-warning) datasets")
@@ -193,12 +208,33 @@ def main():
                          "sampler — rebalances the log-uniform mass population "
                          "toward the heavy corner where twin tests show NPE "
                          "prior-fallback bias (0 = off; try 1.0)")
+    ap.add_argument("--psd_cond", action="store_true",
+                    help="condition the encoder on a per-detector log-ASD-vs-"
+                         "design summary so whitened amplitude can be converted "
+                         "to physical SNR->distance. Fixes the distance bias where "
+                         "quieter (less-sensitive, e.g. O1/O2) real events are read "
+                         "as farther. Requires --noise_bank (design-vs-real "
+                         "sensitivity variation is what the branch learns from).")
+    ap.add_argument("--psd_bands", type=int, default=16,
+                    help="number of log-spaced ASD bands per detector for --psd_cond")
+    ap.add_argument("--encoder_type", default="conv",
+                    help="'conv' (LeanStrainEncoder) or 'coherent' (FD+SVD+relative-features)")
     ap.add_argument("--wandb", action="store_true")
     args = ap.parse_args()
+    if args.encoder_type == "coherent":
+        # the coherent encoder always ingests asd_bands; activate the plumbing.
+        args.psd_cond = True
+    if args.psd_cond and not args.noise_bank:
+        log.warning("--psd_cond without --noise_bank: all training events are "
+                    "design-whitened (asd_bands=0), so the noise branch sees no "
+                    "sensitivity variation and cannot learn. Add --noise_bank.")
 
     device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
     outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
+    if outdir.exists() and any(outdir.iterdir()):
+        log.warning(f"outdir {outdir} exists and is not empty; will overwrite files")
+    else:
+        outdir.mkdir(parents=True, exist_ok=True)
 
     log.info("Loading data...")
     if args.remix:
@@ -210,15 +246,17 @@ def main():
         train_ds = RemixDataset(str(cache), remix=True,
                                 real_noise_dir=args.noise_bank,
                                 real_noise_prob=args.real_noise_prob,
-                                det_dropout=args.det_dropout)
+                                det_dropout=args.det_dropout,
+                                return_asd_bands=args.psd_cond,
+                                psd_bands=args.psd_bands)
         log.info(f"remix train events={len(train_ds)} (noise pool={train_ds.n_noise}, "
                  f"p_real={args.real_noise_prob}, det_dropout={args.det_dropout})")
     else:
-        tr_s, tr_p, tr_n = load_split(args.data, "train", args.limit_train)
-        train_ds = EventDataset(tr_s, tr_p, tr_n)
+        tr_s, tr_p, tr_n, tr_snr = load_split(args.data, "train", args.limit_train)
+        train_ds = EventDataset(tr_s, tr_p, tr_n, tr_snr)
         log.info(f"train events={len(train_ds)}")
     # validation is always FIXED (stored strain, no remixing) for comparability
-    va_s, va_p, va_n = load_split(args.data, "validation")
+    va_s, va_p, va_n, va_snr = load_split(args.data, "validation")
     log.info(f"val events={va_s.shape[0]}")
 
     # Fixed REAL-NOISE validation variant: same validation events, noise
@@ -226,24 +264,35 @@ def main():
     # signals re-colored to each crop's whitening. Materialized once so the
     # per-epoch real-noise metrics are exactly comparable across epochs.
     va_real = None
+    va_real_asd = None
     if args.noise_bank:
         from remix_data import RemixDataset as _RD, build_memmap_cache as _bc
         vcache = Path(args.data) / "memmap" / "validation"
         if not (vcache / "events.json").exists():
             _bc(args.data, "validation", str(vcache))
         vds = _RD(str(vcache), remix=False, seed=1234,
-                  real_noise_dir=args.noise_bank, real_noise_prob=1.0)
-        vs, vp, vn = [], [], []
+                  real_noise_dir=args.noise_bank, real_noise_prob=1.0,
+                  return_asd_bands=args.psd_cond, psd_bands=args.psd_bands)
+        vs, vp, vn, vab = [], [], [], []
         for i in range(len(vds)):
-            s, p, n = vds[i]
+            item = vds[i]
+            s, p, n = item[:3]  # (strain, params, nsig, snr[, asd_bands])
             vs.append(s.to(torch.float16)); vp.append(p); vn.append(n)
+            if args.psd_cond:
+                vab.append(item[4])
         va_real = (torch.stack(vs), torch.stack(vp), torch.stack(vn))
+        va_real_asd = torch.stack(vab) if args.psd_cond else None
         log.info(f"real-noise validation materialized: {len(vds)} events")
 
-    model = LeanNPE(premerger=args.premerger).to(device)
+    model = LeanNPE(premerger=args.premerger,
+                    psd_cond=args.psd_cond, psd_bands=args.psd_bands,
+                    encoder_type=args.encoder_type).to(device)
     if args.init_from:
         init = torch.load(args.init_from, map_location="cpu", weights_only=False)
-        model.load_state_dict(init["model_state_dict"])
+        missing, unexpected = model.load_state_dict(init["model_state_dict"], strict=False)
+        assert not unexpected, f"unexpected keys loading {args.init_from}: {unexpected}"
+        if missing:
+            log.info(f"freshly initialized (absent from checkpoint): {missing}")
         log.info(f"fine-tuning from {args.init_from} "
                  f"(epoch {init.get('epoch')}, val_nll {init.get('val_nll'):.4f})")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -279,7 +328,7 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=args.batch,
                               shuffle=(train_sampler is None), sampler=train_sampler,
                               num_workers=(args.workers if args.remix else 0))
-    val_loader = DataLoader(EventDataset(va_s, va_p, va_n), batch_size=args.batch,
+    val_loader = DataLoader(EventDataset(va_s, va_p, va_n, va_snr), batch_size=args.batch,
                             shuffle=False, num_workers=0)
 
     use_wandb = False
@@ -305,11 +354,13 @@ def main():
             train_iter = tqdm(train_loader, desc=f"epoch {epoch}", leave=False)
         except ImportError:
             train_iter = train_loader
-        for strain, params, nsig in train_iter:
+        for batch in train_iter:
+            strain, params, nsig = batch[:3]
+            asd = batch[4].to(device).float() if args.psd_cond else None
             strain = strain.to(device).float()
             params = params.to(device)
             nsig = nsig.to(device)
-            loss = batch_nll(model, strain, params, nsig)
+            loss = batch_nll(model, strain, params, nsig, asd_bands=asd)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             gn = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -324,15 +375,21 @@ def main():
         model.eval()
         va_losses = []
         with torch.no_grad():
-            for strain, params, nsig in val_loader:
+            for strain, params, nsig, _snr in val_loader:
                 strain = strain.to(device).float()
-                va_losses.append(batch_nll(model, strain, params.to(device), nsig.to(device)).item())
+                # Gaussian val is design-whitened -> sensitivity summary is 0.
+                asd = (torch.zeros(strain.shape[0], 3, args.psd_bands, device=device)
+                       if args.psd_cond else None)
+                va_losses.append(batch_nll(model, strain, params.to(device),
+                                           nsig.to(device), asd_bands=asd).item())
         val_nll = float(np.mean(va_losses))
 
-        diag = run_diagnostics(model, va_s, va_p, va_n, device)
+        va_asd_diag = (torch.zeros(min(256, va_s.shape[0]), 3, args.psd_bands)
+                       if args.psd_cond else None)
+        diag = run_diagnostics(model, va_s, va_p, va_n, device, asd_bands=va_asd_diag)
         diag_real = {}
         if va_real is not None:
-            dr = run_diagnostics(model, *va_real, device)
+            dr = run_diagnostics(model, *va_real, device, asd_bands=va_real_asd)
             diag_real = {f"real_{k}": v for k, v in dr.items() if not isinstance(v, dict)}
         dt = time.time() - t0
         rec = {

@@ -1,0 +1,46 @@
+{
+  "design_snr_sweep": [
+    {
+      "true_dL": 440,
+      "snr": 98.0,
+      "dL_med": 934.0,
+      "ratio": 2.12,
+      "ratio_sd": 0.77
+    },
+    {
+      "true_dL": 700,
+      "snr": 61.6,
+      "dL_med": 653.0,
+      "ratio": 0.93,
+      "ratio_sd": 0.11
+    },
+    {
+      "true_dL": 1000,
+      "snr": 43.1,
+      "dL_med": 695.0,
+      "ratio": 0.7,
+      "ratio_sd": 0.07
+    },
+    {
+      "true_dL": 1400,
+      "snr": 30.8,
+      "dL_med": 728.0,
+      "ratio": 0.52,
+      "ratio_sd": 0.14
+    },
+    {
+      "true_dL": 1800,
+      "snr": 24.0,
+      "dL_med": 752.0,
+      "ratio": 0.42,
+      "ratio_sd": 0.12
+    },
+    {
+      "true_dL": 2100,
+      "snr": 20.5,
+      "dL_med": 822.0,
+      "ratio": 0.39,
+      "ratio_sd": 0.14
+    }
+  ]
+}

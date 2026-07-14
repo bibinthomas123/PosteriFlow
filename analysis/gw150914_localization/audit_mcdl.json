@@ -1,0 +1,101 @@
+{
+  "A_raw_sampler_unfiltered": {
+    "pearson_log": 0.001,
+    "r2_log": 0.0,
+    "spearman": 0.0,
+    "pearson_linear": 0.001,
+    "n": 60000
+  },
+  "B_injector_snr_range": [
+    0.7,
+    200.7
+  ],
+  "B_unfiltered_subset": {
+    "pearson_log": -0.022,
+    "r2_log": 0.0,
+    "spearman": -0.019,
+    "pearson_linear": -0.022,
+    "n": 3000
+  },
+  "B_after_SNRgate_ge6": {
+    "pearson_log": 0.147,
+    "r2_log": 0.022,
+    "spearman": 0.149,
+    "pearson_linear": 0.111,
+    "n": 1954,
+    "frac_kept": 0.651
+  },
+  "B_after_SNRgate_ge8": {
+    "pearson_log": 0.224,
+    "r2_log": 0.05,
+    "spearman": 0.227,
+    "pearson_linear": 0.178,
+    "n": 1532,
+    "frac_kept": 0.511
+  },
+  "B_after_SNRgate_ge12": {
+    "pearson_log": 0.341,
+    "r2_log": 0.116,
+    "spearman": 0.305,
+    "pearson_linear": 0.263,
+    "n": 943,
+    "frac_kept": 0.314
+  },
+  "B_after_SNRgate_ge20": {
+    "pearson_log": 0.526,
+    "r2_log": 0.277,
+    "spearman": 0.468,
+    "pearson_linear": 0.448,
+    "n": 384,
+    "frac_kept": 0.128
+  },
+  "C_stored_val_snr_floor": 1.3,
+  "C_stored_val_snr_range": [
+    0.8,
+    115.5
+  ],
+  "C_stored_val_full": {
+    "pearson_log": 0.812,
+    "r2_log": 0.66,
+    "spearman": 0.75,
+    "pearson_linear": 0.553,
+    "n": 9400
+  },
+  "C_stored_val_SNRgt20": {
+    "pearson_log": 0.902,
+    "r2_log": 0.814,
+    "spearman": 0.8,
+    "pearson_linear": 0.744,
+    "n": 1430
+  },
+  "C_stored_val_snr_binned": {
+    "6-10": {
+      "pearson_log": 0.904,
+      "r2_log": 0.817,
+      "spearman": 0.864,
+      "pearson_linear": 0.735,
+      "n": 3245
+    },
+    "10-15": {
+      "pearson_log": 0.926,
+      "r2_log": 0.858,
+      "spearman": 0.889,
+      "pearson_linear": 0.779,
+      "n": 2295
+    },
+    "15-25": {
+      "pearson_log": 0.924,
+      "r2_log": 0.854,
+      "spearman": 0.886,
+      "pearson_linear": 0.801,
+      "n": 1440
+    },
+    "25-200": {
+      "pearson_log": 0.919,
+      "r2_log": 0.845,
+      "spearman": 0.8,
+      "pearson_linear": 0.782,
+      "n": 960
+    }
+  }
+}

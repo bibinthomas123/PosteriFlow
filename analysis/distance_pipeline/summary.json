@@ -1,0 +1,151 @@
+{
+  "step1_scaler": {
+    "max_abs_error": 0.00146484375,
+    "max_rel_error": 0.011953156441450119,
+    "mean_error": 8.940735085616325e-08,
+    "distance": {
+      "max_abs_error": 0.00146484375,
+      "max_rel_error": 7.147403948692954e-07,
+      "mean_error": 1.071052565748687e-06
+    },
+    "mass_1": {
+      "max_abs_error": 2.288818359375e-05,
+      "max_rel_error": 4.1851100718304224e-07,
+      "mean_error": -3.0722617339051794e-08
+    },
+    "mass_2": {
+      "max_abs_error": 2.288818359375e-05,
+      "max_rel_error": 4.2113686049560783e-07,
+      "mean_error": -5.584716689099878e-08
+    }
+  },
+  "step2_normalization": {
+    "40_Mpc_normalized": -1.0,
+    "2200_Mpc_normalized": 1.0,
+    "min": -1.0,
+    "max": 1.0
+  },
+  "step3_posterior_stats": {
+    "n_events": 256,
+    "map_bias_mean": -311.4703063964844,
+    "median_bias_mean": -177.04608154296875,
+    "mean_bias_mean": -90.62290954589844,
+    "median_abs_error": 328.8494873046875,
+    "map_vs_median_corr": 0.39996591282375266
+  },
+  "step4_boundary_analysis": {
+    "within_5pct": 0.0333251953125,
+    "within_2pct": 0.009490966796875,
+    "within_1pct": 0.007080078125
+  },
+  "step5_residual_analysis": {
+    "covariates": [
+      "true_distance",
+      "total_mass",
+      "chirp_mass",
+      "snr",
+      "mass_ratio",
+      "posterior_std",
+      "nsig"
+    ],
+    "residual_stats": {
+      "mean": -177.04608154296875,
+      "median": -105.513427734375,
+      "std": 522.4579467773438
+    }
+  },
+  "step6_calibration": {
+    "pit_mean": 0.5514196157455444,
+    "pit_std": 0.2877492606639862,
+    "pit_hist": [
+      0.08984375,
+      0.09765625,
+      0.0546875,
+      0.08203125,
+      0.0546875,
+      0.12109375,
+      0.125,
+      0.140625,
+      0.109375,
+      0.125
+    ],
+    "coverage_50": 0.47265625,
+    "coverage_90": 0.91015625,
+    "reliability_curve": {
+      "q": [
+        0.05,
+        0.1,
+        0.15,
+        0.2,
+        0.25,
+        0.3,
+        0.35,
+        0.39999999999999997,
+        0.44999999999999996,
+        0.49999999999999994,
+        0.5499999999999999,
+        0.6,
+        0.65,
+        0.7,
+        0.75,
+        0.7999999999999999,
+        0.85,
+        0.9,
+        0.95
+      ],
+      "coverage": [
+        0.0390625,
+        0.09375,
+        0.125,
+        0.17578125,
+        0.23046875,
+        0.2734375,
+        0.35546875,
+        0.3828125,
+        0.42578125,
+        0.47265625,
+        0.5078125,
+        0.56640625,
+        0.625,
+        0.6796875,
+        0.71484375,
+        0.77734375,
+        0.859375,
+        0.91015625,
+        0.96875
+      ]
+    }
+  },
+  "step7_validation_vs_real": {
+    "GW150914": {
+      "target_distance": 410.0,
+      "nearest_validation_distance": 492.0047607421875,
+      "predicted_median_distance": 731.4522094726562,
+      "abs_error": 321.45220947265625
+    },
+    "GW170104": {
+      "target_distance": 880.0,
+      "nearest_validation_distance": 851.5850219726562,
+      "predicted_median_distance": 815.7303466796875,
+      "abs_error": 64.2696533203125
+    },
+    "GW170814": {
+      "target_distance": 540.0,
+      "nearest_validation_distance": 492.0047607421875,
+      "predicted_median_distance": 731.4522094726562,
+      "abs_error": 191.45220947265625
+    }
+  },
+  "step8_encoder_info": {
+    "distance": {
+      "r2": 0.6755335329999522,
+      "mae": 261.4221978318868,
+      "corr": 0.8219084706889643
+    },
+    "chirp_mass": {
+      "r2": 0.9224792776727522,
+      "mae": 2.8276354321136914,
+      "corr": 0.9604578473766316
+    }
+  }
+}

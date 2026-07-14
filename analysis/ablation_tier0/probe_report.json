@@ -1,0 +1,16 @@
+{
+  "log_luminosity_distance": {
+    "test_r2": 0.35657060146331787,
+    "train_r2": 0.3731426000595093,
+    "alpha": 1.0,
+    "n_train": 4000,
+    "n_test": 1000
+  },
+  "log_chirp_mass": {
+    "test_r2": 0.5794023275375366,
+    "train_r2": 0.5856375694274902,
+    "alpha": 0.1,
+    "n_train": 4000,
+    "n_test": 1000
+  }
+}

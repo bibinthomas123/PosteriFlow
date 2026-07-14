@@ -1,0 +1,193 @@
+{
+  "events": {
+    "GW150914": {
+      "energy": {
+        "rmsz": 0.58,
+        "pct": 47.38
+      },
+      "coherence": {
+        "rmsz": 0.92,
+        "pct": 26.97
+      },
+      "arrival_time": {
+        "rmsz": 0.67,
+        "pct": 14.6
+      },
+      "ampratio": {
+        "rmsz": 0.4,
+        "pct": 61.38
+      },
+      "geom_embed": {
+        "rmsz": 0.76,
+        "pct": 41.88
+      },
+      "context_full": {
+        "rmsz": 1.06,
+        "pct": 65.0
+      },
+      "psd": {
+        "rmsz": 1.84,
+        "pct": 98.47
+      }
+    },
+    "GW151226": {
+      "energy": {
+        "rmsz": 0.59,
+        "pct": 48.93
+      },
+      "coherence": {
+        "rmsz": 0.9,
+        "pct": 9.7
+      },
+      "arrival_time": {
+        "rmsz": 0.71,
+        "pct": 19.0
+      },
+      "ampratio": {
+        "rmsz": 0.26,
+        "pct": 48.02
+      },
+      "geom_embed": {
+        "rmsz": 0.78,
+        "pct": 45.0
+      },
+      "context_full": {
+        "rmsz": 0.88,
+        "pct": 43.65
+      },
+      "psd": {
+        "rmsz": 1.91,
+        "pct": 99.12
+      }
+    },
+    "GW170104": {
+      "energy": {
+        "rmsz": 0.57,
+        "pct": 43.6
+      },
+      "coherence": {
+        "rmsz": 0.93,
+        "pct": 46.38
+      },
+      "arrival_time": {
+        "rmsz": 0.74,
+        "pct": 22.6
+      },
+      "ampratio": {
+        "rmsz": 0.11,
+        "pct": 15.57
+      },
+      "geom_embed": {
+        "rmsz": 0.88,
+        "pct": 62.0
+      },
+      "context_full": {
+        "rmsz": 1.17,
+        "pct": 76.02
+      },
+      "psd": {
+        "rmsz": 1.4,
+        "pct": 88.75
+      }
+    },
+    "GW170608": {
+      "energy": {
+        "rmsz": 1.02,
+        "pct": 80.38
+      },
+      "coherence": {
+        "rmsz": 0.93,
+        "pct": 38.05
+      },
+      "arrival_time": {
+        "rmsz": 1.01,
+        "pct": 64.6
+      },
+      "ampratio": {
+        "rmsz": 1.45,
+        "pct": 88.72
+      },
+      "geom_embed": {
+        "rmsz": 0.72,
+        "pct": 31.82
+      },
+      "context_full": {
+        "rmsz": 1.0,
+        "pct": 57.27
+      },
+      "psd": {
+        "rmsz": 1.32,
+        "pct": 85.2
+      }
+    },
+    "GW170729": {
+      "energy": {
+        "rmsz": 1.75,
+        "pct": 94.23
+      },
+      "coherence": {
+        "rmsz": 0.92,
+        "pct": 25.0
+      },
+      "arrival_time": {
+        "rmsz": 1.08,
+        "pct": 72.92
+      },
+      "ampratio": {
+        "rmsz": 2.15,
+        "pct": 94.88
+      },
+      "geom_embed": {
+        "rmsz": 0.83,
+        "pct": 54.2
+      },
+      "context_full": {
+        "rmsz": 1.25,
+        "pct": 83.12
+      },
+      "psd": {
+        "rmsz": 3.08,
+        "pct": 99.95
+      }
+    },
+    "GW170814": {
+      "energy": {
+        "rmsz": 1.24,
+        "pct": 86.48
+      },
+      "coherence": {
+        "rmsz": 0.91,
+        "pct": 12.9
+      },
+      "arrival_time": {
+        "rmsz": 1.13,
+        "pct": 79.17
+      },
+      "ampratio": {
+        "rmsz": 0.49,
+        "pct": 66.2
+      },
+      "geom_embed": {
+        "rmsz": 0.73,
+        "pct": 33.38
+      },
+      "context_full": {
+        "rmsz": 1.03,
+        "pct": 61.6
+      },
+      "psd": {
+        "rmsz": 2.96,
+        "pct": 99.88
+      }
+    }
+  },
+  "ref_rmsz_p99": {
+    "energy": 3.283792495727539,
+    "coherence": 1.8305408954620361,
+    "arrival_time": 2.088573932647705,
+    "ampratio": 3.782029628753662,
+    "geom_embed": 2.5291993618011475,
+    "context_full": 1.7591990232467651,
+    "psd": 1.888197898864746
+  }
+}

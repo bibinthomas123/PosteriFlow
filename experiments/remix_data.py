@@ -129,7 +129,8 @@ class RemixDataset(Dataset):
                  dist_scale_range: tuple = (0.75, 1.33), sample_rate: int = 4096,
                  remix: bool = True, seed: int = 0,
                  real_noise_dir: str | None = None, real_noise_prob: float = 0.0,
-                 recolor_clamp: float = 50.0, det_dropout: float = 0.0):
+                 recolor_clamp: float = 50.0, det_dropout: float = 0.0,
+                 return_asd_bands: bool = False, psd_bands: int = 16):
         cache = Path(cache_dir)
         self.noise = np.load(cache / "noise.npy", mmap_mode="r")
         self.signals = np.load(cache / "signals.npy", mmap_mode="r")
@@ -151,6 +152,22 @@ class RemixDataset(Dataset):
         self.det_dropout = float(det_dropout)
         # non-empty proper subsets of (H1, L1, V1) to KEEP
         self._keep_configs = [(0,), (1,), (2,), (0, 1), (0, 2), (1, 2)]
+
+        # ---- optional PSD-conditioning feature (sensitivity summary) ----
+        # asd_bands[d, b] = band-mean of log(design_ASD / whitening_ASD) for
+        # detector d: 0 for design-whitened events, negative where the detector
+        # is less sensitive than design (the recolor filter = design/measured).
+        # Lets a psd_cond model convert whitened amplitude -> physical SNR.
+        self.return_asd_bands = bool(return_asd_bands)
+        self.psd_bands = int(psd_bands)
+        if self.return_asd_bands:
+            freqs = np.fft.rfftfreq(T_LEN, 1.0 / sample_rate)      # [T_LEN//2+1]
+            edges = np.geomspace(20.0, sample_rate / 2.0, self.psd_bands + 1)
+            self._band_slices = []
+            for lo, hi in zip(edges[:-1], edges[1:]):
+                idx = np.where((freqs >= lo) & (freqs < hi))[0]
+                self._band_slices.append(idx if len(idx) else
+                                         np.array([np.argmin(np.abs(freqs - lo))]))
 
         # ---- optional real-noise bank ----
         self.real_noise_prob = float(real_noise_prob)
@@ -241,11 +258,13 @@ class RemixDataset(Dataset):
                 sig_sum[di] = np.fft.irfft(np.fft.rfft(sig_sum[di]) * recolor_filts[di],n=T_LEN).astype(np.float32)
         strain += sig_sum
 
+        kept_dets = [0, 1, 2]
         if self.remix and self.det_dropout > 0.0 and rng.uniform() < self.det_dropout:
             keep = self._keep_configs[int(rng.integers(len(self._keep_configs)))]
+            kept_dets = list(keep)
             for di in range(3):
                 if di not in keep:
-                    if use_real:                                                        
+                    if use_real:
                         det_name = ("H1", "L1", "V1")[di]
                         # replace with another real-noise crop from this detector
                         k = int(rng.integers(len(self.real_bank[det_name])))
@@ -258,11 +277,35 @@ class RemixDataset(Dataset):
                     else:
                         strain[di] = rng.standard_normal(T_LEN).astype(np.float32)
 
+        # Network SNR of the (rescaled/shifted/re-colored/summed) whitened
+        # injection: for unit-variance whitened data the optimal matched-filter
+        # SNR is exactly the L2 norm of the whitened signal, so this stays
+        # correct under every augmentation above WITHOUT any stored SNR (which
+        # would be stale after distance rescaling and real-noise re-coloring).
+        # Sum only over KEPT detectors — a dropped detector's signal is gone.
+        net_snr = float(np.sqrt((sig_sum[kept_dets] ** 2).sum()))
+
         # re-sort by loudness AFTER rescaling so rank labels stay consistent
         entries.sort(key=lambda p: _loudness(p[0], p[1], p[IDX_DIST]), reverse=True)
         for k, par in enumerate(entries):
             pv[k] = par
 
-        return (torch.from_numpy(strain),
-                torch.from_numpy(pv),
-                torch.tensor(nsig, dtype=torch.long))
+        out = (torch.from_numpy(strain),
+               torch.from_numpy(pv),
+               torch.tensor(nsig, dtype=torch.long),
+               torch.tensor(net_snr, dtype=torch.float32))
+        if self.return_asd_bands:
+            out = out + (self._asd_bands(recolor_filts, kept_dets),)
+        return out
+
+    def _asd_bands(self, recolor_filts, kept_dets):
+        """[3, psd_bands] sensitivity summary. 0 for design-whitened / dropped
+        detectors; band-mean log(design/measured)=log(recolor) for real ones."""
+        ab = np.zeros((3, self.psd_bands), dtype=np.float32)
+        if recolor_filts is not None:
+            for di in range(3):
+                if di not in kept_dets:
+                    continue
+                logf = np.log(np.maximum(recolor_filts[di], 1e-30))
+                ab[di] = [float(logf[s].mean()) for s in self._band_slices]
+        return torch.from_numpy(ab)

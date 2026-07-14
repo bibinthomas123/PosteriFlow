@@ -23,6 +23,9 @@ WIN_N = 16384     # 4 s window the training pipeline uses
 O3B_START, O3B_END = 1256655618, 1269363618
 O1_START, O1_END = 1126623617, 1136649617
 O2_START, O2_END = 1164556817, 1187733618
+O4A_START, O4A_END = 1368979218, 1389456018
+O4B_START, O4B_END = 1396796418, 1422118818
+
 # Observing-run GPS ranges for the multi-era bank. Real-event inference spans
 # O1-O3, so the noise/texture family must too (measured: O3b-only training
 # gives +1-1.5 sigma distance bias on O1/O2 events). Virgo only observed from
@@ -31,10 +34,14 @@ RUN_RANGES = {
     "O1":  (O1_START, O1_END),
     "O2":  (O2_START, O2_END),
     "O3b": (O3B_START, O3B_END),
+    "O4a": (O4A_START, O4A_END),
+    "O4b":  (O4B_START, O4B_END),
 }
-DET_RUNS = {"H1": ("O1", "O2", "O3b"), "L1": ("O1", "O2", "O3b"),
-            "V1": ("O3b",)}   # V1's late-O2 stretch is short; O3b suffices
-
+DET_RUNS = {
+    "H1": ("O1", "O2", "O3b", "O4a", "O4b"),
+    "L1": ("O1", "O2", "O3b", "O4a", "O4b"),
+    "V1": ("O2", "O3b", "O4a", "O4b"),
+}
 
 def main():
     ap = argparse.ArgumentParser()
@@ -54,7 +61,15 @@ def main():
         for run in runs:
             lo, hi = RUN_RANGES[run]
             grid = np.arange(lo + 10000, hi - 10000, 3600)
-            cands.append(rng.choice(grid, size=min(400, len(grid)), replace=False))
+            CANDIDATES_PER_RUN = 1500
+
+            cands.append(
+                rng.choice(
+                    grid,
+                    size=min(CANDIDATES_PER_RUN, len(grid)),
+                    replace=False,
+                )
+            )
         c = np.concatenate(cands)
         rng.shuffle(c)
         det_candidates[det] = c
@@ -67,6 +82,16 @@ def main():
             ts = TimeSeries.fetch_open_data(det, gps, gps + SEG, sample_rate=SR, cache=False)
             ts = ts.highpass(15)
             asd = ts.asd(fftlength=8, overlap=4)  # measured ASD of this segment
+            asd_freq = asd.frequencies.value
+            asd_val = asd.value
+
+            if (
+                len(asd_freq) == 0
+                or len(asd_val) == 0
+                or not np.isfinite(asd_val).all()
+                or np.any(asd_val <= 0)
+            ):
+                raise ValueError("invalid ASD")
             # Whiten MANUALLY with that exact ASD (freq division + unit-std
             # normalization) instead of gwpy .whiten(): guarantees the noise's
             # whitening filter and the training loader's signal re-coloring
@@ -75,8 +100,19 @@ def main():
             x = ts.value.astype(np.float64)
             n = len(x)
             freqs_seg = np.fft.rfftfreq(n, 1.0 / SR)
-            asd_seg = np.interp(freqs_seg, asd.frequencies.value, asd.value,
-                                left=asd.value[0], right=asd.value[-1])
+            asd_seg = np.interp(
+                freqs_seg,
+                asd_freq,
+                asd_val,
+                left=asd_val[0],
+                right=asd_val[-1],
+            )
+
+            if (
+                not np.isfinite(asd_seg).all()
+                or np.any(asd_seg <= 0)
+            ):
+                raise ValueError("bad interpolated ASD")
             wf = np.fft.rfft(x) / np.maximum(asd_seg, 1e-30)
             # Below the 15 Hz highpass corner the numerator/ASD ratio is
             # leakage-dominated junk that was measured to carry ~100% of the
@@ -94,8 +130,12 @@ def main():
             bs = arr[: (len(arr) // SR) * SR].reshape(-1, SR).std(axis=1)
             kurt = float(np.mean(arr ** 4) / (np.mean(arr ** 2) ** 2 + 1e-30) - 3.0)
             if kurt > 30.0 or bs.max() > 4.0 or not (0.7 < np.median(bs) < 1.3):
-                raise ValueError(f"failed quality gate (kurt {kurt:.0f}, "
-                                 f"maxstd {bs.max():.1f})")
+                raise ValueError(
+                    f"failed quality gate "
+                    f"(kurt={kurt:.1f}, "
+                    f"maxstd={bs.max():.2f}, "
+                    f"medianstd={np.median(bs):.2f})"
+                )
             asd_i = np.interp(freqs_win, asd.frequencies.value, asd.value,
                               left=asd.value[0], right=asd.value[-1]).astype(np.float32)
             if not np.isfinite(asd_i).all() or (asd_i <= 0).any():

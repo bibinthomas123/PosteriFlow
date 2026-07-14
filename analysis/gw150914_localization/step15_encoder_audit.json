@@ -1,0 +1,47 @@
+{
+  "A_ctx_to_logdL_r2": 0.40540591528265635,
+  "B_mc_to_logdL_r2": 0.8141738595168189,
+  "C_ctx_to_logdL_given_mc": 0.4095535967509465,
+  "D_ctx_to_logSNR_r2": 0.8815680758711442,
+  "E_ctx_to_logSNR_given_mc": 0.6503914923459011,
+  "ctx_to_logMc_r2": 0.5999673892309632,
+  "frac_logdL_var_from_mc": 0.8141738595168189,
+  "probe_and_geometry": {
+    "REAL_GW150914": {
+      "true_dL": 440,
+      "true_mf_snr": 23.3,
+      "probe_pred_SNR": 44.2,
+      "probe_pred_dL": 1179.0,
+      "cos_to_GW150914": 1.0,
+      "euc_to_GW150914": 0.0
+    },
+    "matched_O1_dL440": {
+      "true_dL": 440,
+      "true_mf_snr": 31.3,
+      "probe_pred_SNR": 50.6,
+      "probe_pred_dL": 1172.0,
+      "cos_to_GW150914": 0.95,
+      "euc_to_GW150914": 0.66
+    },
+    "matched_design_dL1800": {
+      "true_dL": 1800,
+      "true_mf_snr": 24.0,
+      "probe_pred_SNR": 7.8,
+      "probe_pred_dL": 757.0,
+      "cos_to_GW150914": -0.095,
+      "euc_to_GW150914": 2.44
+    },
+    "matched_design_dL440": {
+      "true_dL": 440,
+      "true_mf_snr": 98.0,
+      "probe_pred_SNR": 11.6,
+      "probe_pred_dL": 625.0,
+      "cos_to_GW150914": -0.146,
+      "euc_to_GW150914": 2.4
+    }
+  },
+  "population_ref": {
+    "median_cos": 0.096,
+    "median_euc": 2.95
+  }
+}

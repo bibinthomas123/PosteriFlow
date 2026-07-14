@@ -61,13 +61,16 @@ class ParameterSampler:
         seed = cfg.get("random_seed", None)
         self.rng = np.random.default_rng(seed)
 
-        raw_fracs = cfg.get("event_type_distribution", _DEFAULT_FRACTIONS)
+        # accept either key ("event_type_distribution" preferred; "event_distribution"
+        # is the generate_dataset.py alias); None/empty -> defaults.
+        raw_fracs = (cfg.get("event_type_distribution")
+                     or cfg.get("event_distribution") or _DEFAULT_FRACTIONS)
         total = sum(raw_fracs.values()) or 1.0
         self._types = list(raw_fracs)
         self._probs = np.array([raw_fracs[t] / total for t in self._types])
 
         # Allow config to override distance bounds
-        dist_cfg = cfg.get("distance_ranges", {})
+        dist_cfg = cfg.get("distance_ranges") or {}
         self._dist_min = {
             "BBH": dist_cfg.get("BBH", [_DIST_MIN["BBH"]])[0],
             "BNS": dist_cfg.get("BNS", [_DIST_MIN["BNS"]])[0],
@@ -78,6 +81,12 @@ class ParameterSampler:
             "BNS": dist_cfg.get("BNS", [None, _DIST_MAX["BNS"]])[-1],
             "NSBH": dist_cfg.get("NSBH", [None, _DIST_MAX["NSBH"]])[-1],
         }
+        # Distance prior shape: "comoving_d2" (P(d)∝d², default/physical) or
+        # "uniform" (flat in d). Uniform decouples the detected mass<->distance
+        # Malmquist correlation more strongly (reweight to d² at inference); use
+        # it to remove the chirp-mass->distance shortcut. See analysis/
+        # gw150914_localization/AUDIT_mcdl.md.
+        self._dist_prior = str(cfg.get("distance_prior") or "comoving_d2").lower()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -122,11 +131,13 @@ class ParameterSampler:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _sample_distance(self, event_type: str) -> float:
-        """P(d) ∝ d² (uniform in comoving volume at low z)."""
+        """P(d) ∝ d² (comoving-volume, default) or uniform in d (config)."""
         d_min = self._dist_min.get(event_type, 50.0)
         d_max = self._dist_max.get(event_type, 5000.0)
-        # Inverse-CDF of d² prior: d = (d_min³ + u*(d_max³-d_min³))^(1/3)
         u = self.rng.uniform(0.0, 1.0)
+        if self._dist_prior == "uniform":
+            return float(d_min + u * (d_max - d_min))
+        # Inverse-CDF of d² prior: d = (d_min³ + u*(d_max³-d_min³))^(1/3)
         d3 = d_min ** 3 + u * (d_max ** 3 - d_min ** 3)
         return float(d3 ** (1.0 / 3.0))
 

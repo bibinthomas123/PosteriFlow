@@ -1,0 +1,150 @@
+{
+  "lean": [
+    {
+      "epoch": 0,
+      "train_nll_mean": 1.4397522667621045,
+      "grad_norm_mean": 83.23830283956325,
+      "grad_norm_max": 383.16754150390625,
+      "n_nan_batches": 0,
+      "epoch_seconds": 94.93732190132141,
+      "val_nll_diag": 0.6022587418556213,
+      "shuffle_delta_nll": 5.907325267791748,
+      "dist_corr": 0.5686197876930237,
+      "dist_cov50": 0.5,
+      "dist_cov90": 0.9137499928474426,
+      "probe_r2": {
+        "distance": 0.3803255558013916,
+        "chirp_mass": 0.5972840785980225,
+        "network_snr": 0.8846642374992371
+      }
+    },
+    {
+      "epoch": 1,
+      "train_nll_mean": 0.4632918284611499,
+      "grad_norm_mean": 94.89455348887343,
+      "grad_norm_max": 253.60838317871094,
+      "n_nan_batches": 0,
+      "epoch_seconds": 90.53887581825256,
+      "val_nll_diag": 0.3704533278942108,
+      "shuffle_delta_nll": 6.6149468421936035,
+      "dist_corr": 0.5765308737754822,
+      "dist_cov50": 0.4962500035762787,
+      "dist_cov90": 0.9399999976158142,
+      "probe_r2": {
+        "distance": 0.3840181827545166,
+        "chirp_mass": 0.5994640588760376,
+        "network_snr": 0.8864853382110596
+      }
+    },
+    {
+      "epoch": 2,
+      "train_nll_mean": 0.1866954767165032,
+      "grad_norm_mean": 103.12303518741689,
+      "grad_norm_max": 368.0214538574219,
+      "n_nan_batches": 0,
+      "epoch_seconds": 99.47671389579773,
+      "val_nll_diag": 0.42920953035354614,
+      "shuffle_delta_nll": 6.2362236976623535,
+      "dist_corr": 0.5892201662063599,
+      "dist_cov50": 0.48124998807907104,
+      "dist_cov90": 0.9300000071525574,
+      "probe_r2": {
+        "distance": 0.38623327016830444,
+        "chirp_mass": 0.6012306213378906,
+        "network_snr": 0.8876461386680603
+      }
+    },
+    {
+      "epoch": 3,
+      "train_nll_mean": 0.014691670395513164,
+      "grad_norm_mean": 90.57897592098155,
+      "grad_norm_max": 283.9686584472656,
+      "n_nan_batches": 0,
+      "epoch_seconds": 96.7716178894043,
+      "val_nll_diag": 0.5969533324241638,
+      "shuffle_delta_nll": 6.396996974945068,
+      "dist_corr": 0.5907928347587585,
+      "dist_cov50": 0.4675000011920929,
+      "dist_cov90": 0.9012500047683716,
+      "probe_r2": {
+        "distance": 0.3889840245246887,
+        "chirp_mass": 0.6029233932495117,
+        "network_snr": 0.8884672522544861
+      }
+    }
+  ],
+  "experimental": [
+    {
+      "epoch": 0,
+      "train_nll_mean": 1.4318721525846643,
+      "grad_norm_mean": 87.93568842461768,
+      "grad_norm_max": 662.1591186523438,
+      "n_nan_batches": 0,
+      "epoch_seconds": 102.00967311859131,
+      "val_nll_diag": 0.5473617315292358,
+      "shuffle_delta_nll": 5.755175590515137,
+      "dist_corr": 0.5696358680725098,
+      "dist_cov50": 0.4937500059604645,
+      "dist_cov90": 0.9275000095367432,
+      "probe_r2": {
+        "distance": 0.3760104179382324,
+        "chirp_mass": 0.5942121744155884,
+        "network_snr": 0.8846505284309387
+      }
+    },
+    {
+      "epoch": 1,
+      "train_nll_mean": 0.6379109394360096,
+      "grad_norm_mean": 99.63331141370408,
+      "grad_norm_max": 388.95770263671875,
+      "n_nan_batches": 0,
+      "epoch_seconds": 99.44754314422607,
+      "val_nll_diag": 0.643280029296875,
+      "shuffle_delta_nll": 6.075058460235596,
+      "dist_corr": 0.5755935311317444,
+      "dist_cov50": 0.48875001072883606,
+      "dist_cov90": 0.9100000262260437,
+      "probe_r2": {
+        "distance": 0.3829084634780884,
+        "chirp_mass": 0.5996954441070557,
+        "network_snr": 0.8868535757064819
+      }
+    },
+    {
+      "epoch": 2,
+      "train_nll_mean": 0.1657839435489571,
+      "grad_norm_mean": 82.85577449392765,
+      "grad_norm_max": 127.65735626220703,
+      "n_nan_batches": 0,
+      "epoch_seconds": 104.44677805900574,
+      "val_nll_diag": 0.3405088186264038,
+      "shuffle_delta_nll": 6.535319805145264,
+      "dist_corr": 0.5830051302909851,
+      "dist_cov50": 0.4650000035762787,
+      "dist_cov90": 0.9200000166893005,
+      "probe_r2": {
+        "distance": 0.38695067167282104,
+        "chirp_mass": 0.6017230153083801,
+        "network_snr": 0.8872053027153015
+      }
+    },
+    {
+      "epoch": 3,
+      "train_nll_mean": -0.001444028195072996,
+      "grad_norm_mean": 87.566868234188,
+      "grad_norm_max": 148.3629913330078,
+      "n_nan_batches": 0,
+      "epoch_seconds": 109.5392689704895,
+      "val_nll_diag": 0.4895186722278595,
+      "shuffle_delta_nll": 6.205514430999756,
+      "dist_corr": 0.6001177430152893,
+      "dist_cov50": 0.48124998807907104,
+      "dist_cov90": 0.9125000238418579,
+      "probe_r2": {
+        "distance": 0.38741809129714966,
+        "chirp_mass": 0.6012427806854248,
+        "network_snr": 0.8892739415168762
+      }
+    }
+  ]
+}

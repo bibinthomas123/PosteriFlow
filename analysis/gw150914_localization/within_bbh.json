@@ -1,0 +1,19 @@
+{
+  "within_bbh_probes": {
+    "mc_to_dL_BBH": 0.3730508737819692,
+    "ctx_to_dL_BBH": 0.624616013014744,
+    "ctx_to_dL_given_mc_BBH": 0.5262735834076743,
+    "ctx_to_SNR_BBH": 0.9172739664175599,
+    "ctx_to_SNR_given_mc_BBH": 0.6314224917590712,
+    "ctx_to_mc_BBH": 0.729443029541059
+  },
+  "end_to_end_bbh": {
+    "n_bbh": 700,
+    "spearman_predmed_vs_TRUEdL": 0.307,
+    "spearman_predmed_vs_TRUEsnr": 0.309,
+    "spearman_predmed_vs_chirpmass": 0.681,
+    "median_pred_dL": 1106.0,
+    "median_true_dL": 1464.0
+  },
+  "note": "within BBH: is distance tracked from amplitude(SNR/true dL) or chirp mass?"
+}

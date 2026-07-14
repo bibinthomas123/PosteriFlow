@@ -39,8 +39,8 @@ import gc
 import math
 from torch.utils.data import WeightedRandomSampler
 
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from ahsd.core.priority_net import PriorityNet, PriorityNetTrainer
 from ahsd.utils.config_loader import (
@@ -165,91 +165,46 @@ def encode_edge_type(dets):
 # PRIORITY CALCULATION  (CPU / numpy — no device dependency)
 # ============================================================================
 
+def loudness_proxy(signal: Dict[str, Any]) -> float:
+    """Per-signal loudness = leading-order amplitude scaling Mc^(5/6)/d_L.
+
+    This is EXACTLY the ordering LeanNPE's rank-conditioning uses (see
+    load_split in train_lean_npe.py), so PriorityNet and the NPE share one
+    loudness definition. Unlike the event-level network_snr (identical for
+    every signal in an overlap, hence useless for ordering them), this is
+    distinct per signal and available from the stored parameters."""
+    m1 = float(signal.get("mass_1", 1.0))
+    m2 = float(signal.get("mass_2", 1.0))
+    dl = float(signal.get("luminosity_distance", 1e9))
+    mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+    return mc ** (5.0 / 6.0) / max(dl, 1.0)
+
+
 def calculate_priority(
     signal: Dict[str, Any], is_overlap: bool = False, time_lag_ms: float = 0.0
 ) -> float:
-    """Enhanced priority calculation with SNR sensitivity boost."""
-    target_snr = signal.get("target_snr", 0.0)
-    if target_snr == 0.0:
-        target_snr = signal.get("network_snr", 0.0)
-    if target_snr == 0.0:
-        h1_data = signal.get("H1", {})
-        l1_data = signal.get("L1", {})
-        if isinstance(h1_data, dict) and isinstance(l1_data, dict):
-            h1_snr = float(h1_data.get("optimal_snr", 0.0))
-            l1_snr = float(l1_data.get("optimal_snr", 0.0))
-            target_snr = np.sqrt(h1_snr ** 2 + l1_snr ** 2)
-    target_snr = float(target_snr)
-    if target_snr < 8.0:
-        return 0.0
+    """Training target = LOUDNESS ORDER (per-signal Mc^(5/6)/d_L).
 
-    if target_snr < 12.0:
-        base_priority = target_snr ** 0.9
-    elif target_snr < 20.0:
-        base_priority = target_snr ** 1.15
-    elif target_snr < 35.0:
-        base_priority = target_snr ** 1.25
-    else:
-        base_priority = target_snr ** 1.1
+    The previous target was a hand-crafted "extraction priority" heuristic
+    (SNR^0.9..1.25 with kinks, plus edge bonuses for extreme q / high spin /
+    eccentricity, an overlap penalty, and a near-distance bonus). That made
+    the ordering of near-equal-loudness pairs depend on spin/mass-ratio
+    bonuses rather than on which signal is louder, so the network could never
+    answer "which is loudest" — the question the overlap audit asks. Ranking
+    the NPE's per-rank candidates is a LOUDNESS-ordering task, so the target
+    is now the per-signal loudness proxy (monotone in loudness, matching the
+    NPE convention).
 
-    edge_bonus = 0.0
-    snr_context = np.clip(target_snr / 30.0, 0.0, 1.0)
+    `is_overlap`/`time_lag_ms` are accepted for call-site compatibility but no
+    longer alter the target — loudness order is independent of separation.
 
-    try:
-        mass_1 = float(signal.get("mass_1", 10.0))
-        mass_2 = float(signal.get("mass_2", 10.0))
-        if mass_1 > 0 and mass_2 > 0:
-            q = max(mass_1, mass_2) / min(mass_1, mass_2)
-            if q > 8.0:
-                edge_bonus += 0.10 * snr_context
-            elif q > 4.0:
-                edge_bonus += 0.05 * snr_context
-    except Exception:
-        pass
-
-    try:
-        a1 = abs(float(signal.get("a1", signal.get("a_1", 0.0))))
-        a2 = abs(float(signal.get("a2", signal.get("a_2", 0.0))))
-        a_max = max(a1, a2)
-        if a_max > 0.8:
-            edge_bonus += 0.12 * snr_context
-        elif a_max > 0.5:
-            edge_bonus += 0.06 * snr_context
-    except Exception:
-        pass
-
-    try:
-        eccentricity = float(signal.get("eccentricity", 0.0))
-        if eccentricity > 0.1:
-            edge_bonus += 0.15 * snr_context
-    except Exception:
-        pass
-
-    edge_bonus = min(edge_bonus, 0.40)
-
-    if is_overlap:
-        if time_lag_ms < 500:
-            overlap_penalty = 0.70
-        elif time_lag_ms < 1000:
-            overlap_penalty = 0.82
-        else:
-            overlap_penalty = 0.95
-    else:
-        overlap_penalty = 1.0
-
-    distance_bonus = 1.0
-    try:
-        luminosity_distance = float(signal.get("luminosity_distance", 500.0))
-        if luminosity_distance < 100:
-            distance_bonus = 1.18
-        elif luminosity_distance < 200:
-            distance_bonus = 1.10
-        elif luminosity_distance < 400:
-            distance_bonus = 1.04
-    except Exception:
-        pass
-
-    return float(base_priority * (1.0 + edge_bonus) * overlap_penalty * distance_bonus)
+    Returned as 10 + log10(proxy): a MONOTONE transform of the raw loudness
+    (so the order the audit checks is unchanged) that is positive and evenly
+    spread (~6.5-10), which keeps _normalize_priorities on its min-max branch
+    instead of the [0,1] clamp that would collapse the tiny raw proxies into
+    ties.
+    """
+    return 10.0 + math.log10(max(loudness_proxy(signal), 1e-12))
 
 
 def estimate_scenario_difficulty(priorities: np.ndarray) -> float:
@@ -523,23 +478,17 @@ class ChunkedGWDataLoader:
     def _extract_priorities_from_dataset(
         self, sample: Dict, signal_params: List[Dict]
     ) -> Optional[List[float]]:
-        p = sample.get("priorities")
-        if isinstance(p, (int, float, np.floating)):
-            p = [float(p)]
-        if isinstance(p, list) and all(isinstance(v, (int, float, np.floating)) for v in p):
-            if len(p) == len(signal_params):
-                return [float(v) for v in p]
-            if len(signal_params) == 1 and len(p) >= 1:
-                return [float(p[0])]
-        keys = ["priority", "target_priority", "label_priority", "priority_score"]
+        # Compute the LOUDNESS-order target directly from each signal's
+        # parameters. We deliberately ignore any stored `priorities`/`priority`
+        # fields: on pre-rewrite data those hold the old extraction-priority
+        # heuristic (not loudness), and the current dataset stores none — so
+        # recomputing here is the single source of truth for the target and
+        # keeps it identical across all dataset variants.
         vals = []
         for par in signal_params:
             if not isinstance(par, dict):
                 return None
-            v = next((par[k] for k in keys if k in par), None)
-            if not isinstance(v, (int, float, np.floating)):
-                return None
-            vals.append(float(v))
+            vals.append(calculate_priority(par))
         return vals if len(vals) == len(signal_params) else None
 
     def _resolve_edge_type(self, sample: Dict) -> tuple:

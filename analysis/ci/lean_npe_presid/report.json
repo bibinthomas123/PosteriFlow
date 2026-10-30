@@ -1,0 +1,297 @@
+{
+  "meta": {
+    "model": "model/lean_npe_presid/best_model.pth",
+    "epoch": 15,
+    "val_nll": -1.6039245442764178,
+    "device": "mps",
+    "timestamp": "2026-07-18 19:29:57",
+    "wall_s": 528.2426602840424
+  },
+  "gaussian": {
+    "n_events": 2000,
+    "n_post": 400,
+    "nll": -3.4232547283172607,
+    "shuffle_delta_nll": 17.937469482421875,
+    "dist_corr": 0.8093489702973838,
+    "coverage": {
+      "mass_1": {
+        "50": 0.4755,
+        "68": 0.6425,
+        "90": 0.875,
+        "95": 0.9295
+      },
+      "mass_2": {
+        "50": 0.473,
+        "68": 0.637,
+        "90": 0.878,
+        "95": 0.935
+      },
+      "luminosity_distance": {
+        "50": 0.4715,
+        "68": 0.644,
+        "90": 0.864,
+        "95": 0.9115
+      },
+      "ra": {
+        "50": 0.528,
+        "68": 0.698,
+        "90": 0.9025,
+        "95": 0.9515
+      },
+      "dec": {
+        "50": 0.511,
+        "68": 0.6915,
+        "90": 0.897,
+        "95": 0.9445
+      },
+      "theta_jn": {
+        "50": 0.515,
+        "68": 0.6805,
+        "90": 0.89,
+        "95": 0.9425
+      },
+      "psi": {
+        "50": 0.505,
+        "68": 0.6845,
+        "90": 0.8845,
+        "95": 0.936
+      },
+      "phase": {
+        "50": 0.4985,
+        "68": 0.6745,
+        "90": 0.896,
+        "95": 0.943
+      },
+      "geocent_time": {
+        "50": 0.5065,
+        "68": 0.6805,
+        "90": 0.901,
+        "95": 0.9465
+      },
+      "a1": {
+        "50": 0.479,
+        "68": 0.6595,
+        "90": 0.881,
+        "95": 0.933
+      },
+      "a2": {
+        "50": 0.5045,
+        "68": 0.6785,
+        "90": 0.8865,
+        "95": 0.9325
+      }
+    },
+    "sbc_ks_p": {
+      "mass_1": 0.1613603193355435,
+      "mass_2": 0.012621169095654416,
+      "luminosity_distance": 0.0007030062474394184,
+      "ra": 0.07614339604012677,
+      "dec": 0.6790323676029378,
+      "theta_jn": 0.39531336268920336,
+      "psi": 0.04742716805053304,
+      "phase": 0.46015810655753997,
+      "geocent_time": 0.10633572928547408,
+      "a1": 0.016712624230856923,
+      "a2": 0.6413349061089245
+    },
+    "railing_frac": 0.0183175
+  },
+  "real": {
+    "n_events": 2000,
+    "n_post": 400,
+    "nll": -2.5489580631256104,
+    "shuffle_delta_nll": 15.710000038146973,
+    "dist_corr": 0.7886975126108423,
+    "coverage": {
+      "mass_1": {
+        "50": 0.473,
+        "68": 0.648,
+        "90": 0.8755,
+        "95": 0.932
+      },
+      "mass_2": {
+        "50": 0.4775,
+        "68": 0.643,
+        "90": 0.8785,
+        "95": 0.931
+      },
+      "luminosity_distance": {
+        "50": 0.4685,
+        "68": 0.6405,
+        "90": 0.871,
+        "95": 0.915
+      },
+      "ra": {
+        "50": 0.4945,
+        "68": 0.6665,
+        "90": 0.894,
+        "95": 0.9405
+      },
+      "dec": {
+        "50": 0.5125,
+        "68": 0.682,
+        "90": 0.896,
+        "95": 0.944
+      },
+      "theta_jn": {
+        "50": 0.5095,
+        "68": 0.684,
+        "90": 0.8885,
+        "95": 0.94
+      },
+      "psi": {
+        "50": 0.5055,
+        "68": 0.687,
+        "90": 0.8855,
+        "95": 0.938
+      },
+      "phase": {
+        "50": 0.5055,
+        "68": 0.671,
+        "90": 0.895,
+        "95": 0.944
+      },
+      "geocent_time": {
+        "50": 0.4875,
+        "68": 0.6735,
+        "90": 0.8995,
+        "95": 0.947
+      },
+      "a1": {
+        "50": 0.4845,
+        "68": 0.641,
+        "90": 0.8795,
+        "95": 0.926
+      },
+      "a2": {
+        "50": 0.496,
+        "68": 0.6755,
+        "90": 0.889,
+        "95": 0.9395
+      }
+    },
+    "sbc_ks_p": {
+      "mass_1": 0.13152241010051657,
+      "mass_2": 0.0603353270345246,
+      "luminosity_distance": 0.00233448158612601,
+      "ra": 0.3091569463694006,
+      "dec": 0.7531526992658663,
+      "theta_jn": 0.566555434087519,
+      "psi": 0.00945528634404189,
+      "phase": 0.33633147684559006,
+      "geocent_time": 0.1458278074968764,
+      "a1": 0.0010005427041272674,
+      "a2": 0.6413349061089195
+    },
+    "railing_frac": 0.01795125
+  },
+  "gw150914": {
+    "GW150914": "m1 31.2 (pub 38.8) | m2 31.0 (pub 33.4) | dL 704 (pub 440) | t_c +0.032s | rail 51.7% | conf LOW | gate: REFINE",
+    "GW151226": "m1 17.9 (pub 13.7) | m2 8.2 (pub 7.7) | dL 633 (pub 440) | t_c +0.052s | rail 0.9% | conf HIGH | gate: REFINE (mass_1,mass_2)",
+    "GW170104": "m1 59.3 (pub 31.0) | m2 26.8 (pub 20.1) | dL 1374 (pub 960) | t_c -0.006s | rail 2.2% | conf HIGH | gate: REFINE (mass_1,mass_2)",
+    "GW170608": "m1 15.3 (pub 12.0) | m2 7.0 (pub 7.0) | dL 421 (pub 320) | t_c -0.016s | rail 0.5% | conf HIGH | gate: REFINE (mass_1,mass_2)",
+    "GW170729": "m1 77.5 (pub 50.6) | m2 43.2 (pub 34.3) | dL 1594 (pub 2750) | t_c +0.010s | rail 2.3% | conf HIGH | gate: REFINE (mass_1,mass_2)",
+    "GW170814": "m1 30.0 (pub 30.7) | m2 29.8 (pub 25.3) | dL 1070 (pub 600) | t_c +0.042s | rail 58.5% | conf LOW | gate: REFINE"
+  },
+  "basin_probe": [
+    {
+      "label": "basin snr85",
+      "q_med": 0.265,
+      "frac_q_gt95": 0.156,
+      "rail": 0.145,
+      "mc_rel_err": -0.121
+    },
+    {
+      "label": "basin snr24",
+      "q_med": 0.999,
+      "frac_q_gt95": 0.707,
+      "rail": 0.703,
+      "mc_rel_err": -0.142
+    },
+    {
+      "label": "basin q.65",
+      "q_med": 0.362,
+      "frac_q_gt95": 0.086,
+      "rail": 0.062,
+      "mc_rel_err": -0.008
+    },
+    {
+      "label": "basin edgeon",
+      "q_med": 0.999,
+      "frac_q_gt95": 0.559,
+      "rail": 0.547,
+      "mc_rel_err": -0.144
+    },
+    {
+      "label": "ctrl tau-7",
+      "q_med": 0.311,
+      "frac_q_gt95": 0.035,
+      "rail": 0.0,
+      "mc_rel_err": -0.055
+    },
+    {
+      "label": "ctrl tau0",
+      "q_med": 0.36,
+      "frac_q_gt95": 0.055,
+      "rail": 0.02,
+      "mc_rel_err": -0.043
+    }
+  ],
+  "gates": [
+    {
+      "gate": "gaussian shuffle \u0394NLL > 5 nats",
+      "pass": true,
+      "detail": "17.94"
+    },
+    {
+      "gate": "gaussian 50% coverage within \u00b10.07 (\u22642 exceptions)",
+      "pass": true,
+      "detail": "violations: none"
+    },
+    {
+      "gate": "gaussian 90% coverage within \u00b10.05 (\u22642 exceptions)",
+      "pass": true,
+      "detail": "violations: none"
+    },
+    {
+      "gate": "gaussian SBC KS p>1e-3 for \u22659/11 params",
+      "pass": true,
+      "detail": "10/11"
+    },
+    {
+      "gate": "gaussian spurious railing < 5%",
+      "pass": true,
+      "detail": "1.83%"
+    },
+    {
+      "gate": "distance correlation > 0.5",
+      "pass": true,
+      "detail": "0.809"
+    },
+    {
+      "gate": "real-noise shuffle \u0394NLL > 5 nats",
+      "pass": true,
+      "detail": "15.71"
+    },
+    {
+      "gate": "real-noise 90% coverage within \u00b10.07 (\u22642 exceptions)",
+      "pass": true,
+      "detail": "violations: none"
+    },
+    {
+      "gate": "real vs gaussian NLL gap < 3 nats",
+      "pass": true,
+      "detail": "gaussian -3.42 vs real -2.55"
+    },
+    {
+      "gate": "real-event smoke tests (6 GWTC events, |t_c|<0.1s)",
+      "pass": true,
+      "detail": "all 6 events ran, |t_c|<0.1s"
+    },
+    {
+      "gate": "basin probe (\u03c4\u2248+7ms heavy cell): q>0.95 < 0.30 & rail < 0.20",
+      "pass": false,
+      "detail": "worst basin snr24: q>0.95 0.71 rail 0.70"
+    }
+  ]
+}

@@ -48,7 +48,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
+graphify-out/
 # ============================================================================
 # PyTorch & ML Model Files
 # ============================================================================
@@ -148,3 +148,20 @@ test_*.py
 diagonse_*.py
 check*_.py
 paper
+# ============================================================================
+# Claude Code
+# ============================================================================
+.claude/
+CLAUDE.md
+
+# ============================================================================
+# Regenerable run outputs
+# ============================================================================
+# dynesty/bilby sampler checkpoints and posterior caches
+*.pickle
+# per-checkpoint CI dumps (regenerate with scripts/validate_checkpoint.py);
+# only each run's report summary is kept
+analysis/ci/**
+!analysis/ci/*/
+!analysis/ci/*/report.json
+!analysis/ci/*/report.html

@@ -517,7 +517,18 @@ class ChunkedGWDataLoader:
     def _convert_single_sample_to_scenario(self, sample: Dict) -> Optional[Dict]:
         if not isinstance(sample, dict):
             return None
-        sample_type = sample.get("type", "unknown")
+        # The current generator (src/ahsd/data/scripts/generate_dataset.py)
+        # labels samples with "event_type" (BBH/NSBH/BNS/noise), not the
+        # older "type" field this loader originally targeted. Checking only
+        # "type" here was silently broken against current-schema data: noise
+        # samples still carry a PLACEHOLDER signal in "parameters"
+        # (mass_1=30, mass_2=30, luminosity_distance=1000 -- confirmed by
+        # inspecting data/dataset/train/batch_*.pkl), so without this fix
+        # every noise segment was being treated as a real (30,30)@1000Mpc
+        # loud signal and leaking into PriorityNet's loudness-ranking
+        # training set. Check both field names for compatibility with older
+        # (pre-rewrite) dataset generations that used "type" instead.
+        sample_type = sample.get("type") or sample.get("event_type", "unknown")
         if hasattr(sample_type, "item"):
             sample_type = sample_type.item()
         sample_type = str(sample_type)

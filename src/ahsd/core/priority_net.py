@@ -24,6 +24,7 @@ import logging
 # ============================================================================
 
 def _get_model_device(model: nn.Module) -> torch.device:
+    """Return the device of a model's first parameter."""
     return next(model.parameters()).device
 
 
@@ -73,6 +74,7 @@ class TemporalStrainEncoder(nn.Module):
         )
 
     def _conv_block(self, in_channels, out_channels, kernel_size, stride):
+        """Build one Conv1d -> BatchNorm -> GELU -> Dropout temporal block."""
         return nn.Sequential(
             nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding=kernel_size // 2),
             nn.BatchNorm1d(out_channels),
@@ -81,6 +83,8 @@ class TemporalStrainEncoder(nn.Module):
         )
 
     def forward(self, strain_segments: torch.Tensor) -> torch.Tensor:
+        """Encode raw strain segments through the conv stack -> BiLSTM ->
+        self-attention into a temporal feature vector per signal."""
         x = strain_segments.float()           # enforce float32
 
         for conv_block in self.conv_blocks:
@@ -194,6 +198,9 @@ class CrossSignalAnalyzer(nn.Module):
 # ============================================================================
 
 class ResidualBlock(nn.Module):
+    """Pre-norm residual MLP block (LayerNorm -> Linear -> GELU -> Dropout) with
+    a linear skip projection when in/out dims differ."""
+
     def __init__(self, in_dim: int, out_dim: int, dropout: float = 0.15):
         super().__init__()
         self.norm   = nn.LayerNorm(in_dim)
@@ -203,6 +210,7 @@ class ResidualBlock(nn.Module):
         self.skip   = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Residual forward: norm -> linear -> act -> dropout, plus the skip."""
         identity = x
         x = self.norm(x)
         x = self.linear(x)
@@ -216,10 +224,15 @@ class ResidualBlock(nn.Module):
 # ============================================================================
 
 class SignalFeatureExtractor(nn.Module):
+    """Encode per-signal detection metadata into a 96-D feature vector: a
+    residual-MLP network branch plus a physics-informed branch."""
+
     def __init__(self, input_dim: int = 16, config=None):
         super().__init__()
 
         def _get(cfg, key, default):
+            """Read `key` from a dict/namespace config, falling back to its
+            `priority_net` sub-config and then `default`."""
             if cfg is None:
                 return default
             if isinstance(cfg, dict):
@@ -250,6 +263,8 @@ class SignalFeatureExtractor(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Embed the input, pass it through the residual blocks, and concatenate
+        the network features with the physics features -> [N, 96]."""
         features = self.input_embed(x)
         for block in self.blocks:
             features = block(features)
@@ -258,6 +273,8 @@ class SignalFeatureExtractor(nn.Module):
         return torch.cat([net_feat, phys_feat], dim=1)   # [N, 96]
 
     def _physics(self, params: torch.Tensor) -> torch.Tensor:
+        """Derive physics-informed features (masses, distance, and derived
+        quantities) from the normalized parameter vector."""
         device = params.device
         B = params.shape[0]
         out = torch.zeros(B, 8, device=device, dtype=torch.float32)
@@ -306,6 +323,9 @@ class SignalFeatureExtractor(nn.Module):
 # ============================================================================
 
 class MultiModalFusion(nn.Module):
+    """Fuse the metadata / cross-signal-overlap / temporal / edge modalities via
+    a projection, optional self-attention, and a feed-forward block."""
+
     def __init__(
         self,
         metadata_dim:  int   = 96,
@@ -339,6 +359,8 @@ class MultiModalFusion(nn.Module):
         self.ffn_norm = nn.LayerNorm(output_dim)
 
     def forward(self, metadata, overlap, temporal, edge):
+        """Concatenate the four modality vectors, project, optionally
+        self-attend, and apply the feed-forward block -> fused [N, D]."""
         combined = torch.cat([metadata, overlap, temporal, edge], dim=-1)
         x = self.input_norm(self.input_proj(combined))
         x = x.unsqueeze(1)                              # [N, 1, D]
@@ -373,6 +395,8 @@ class AdaptiveRankingLoss(nn.Module):
         snr_weights:   Optional[torch.Tensor] = None,
         margin_scale:  float = 1.0,
     ) -> torch.Tensor:
+        """Vectorized pairwise margin-ranking loss over all signal pairs
+        (optionally SNR-weighted), computed in a single [n, n] kernel."""
         n = predictions.shape[0]
         if n < 2:
             return predictions.new_tensor(0.0)
@@ -412,6 +436,9 @@ class AdaptiveRankingLoss(nn.Module):
 # ============================================================================
 
 class PriorityLoss(nn.Module):
+    """Composite PriorityNet training loss: pairwise ranking + MSE + uncertainty
+    calibration terms, with optional SNR weighting and label smoothing."""
+
     def __init__(
         self,
         ranking_weight:          float = 0.4,
@@ -449,7 +476,8 @@ class PriorityLoss(nn.Module):
         uncertainties: torch.Tensor,
         snr_values:    Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-
+        """Compute the weighted sum of the ranking / MSE / uncertainty /
+        calibration terms; returns a dict of the total and component losses."""
         if self.label_smoothing > 0:
             smoothed = targets * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
         else:
@@ -558,6 +586,8 @@ class PSDModulationBlock(nn.Module):
             self.psd_mlp[-1].bias[latent_dim:].fill_(0.0)
 
     def forward(self, h: torch.Tensor, psd_features: torch.Tensor) -> torch.Tensor:
+        """FiLM-style PSD conditioning: modulate features as gamma*h + beta,
+        where (gamma, beta) are predicted from the (detached) PSD features."""
         mod  = self.psd_mlp(psd_features.detach())
         gamma = torch.clamp(mod[:, :self.latent_dim], 0.5, 2.0)
         beta  = mod[:, self.latent_dim:]
@@ -585,6 +615,8 @@ class PriorityNet(nn.Module):
         self.config = config if config is not None else self._default_config()
 
         def cfg(key, default):
+            """Read `key` from the model config (dict or namespace), falling back
+            to its `priority_net` sub-config and then `default`."""
             c = self.config
             if isinstance(c, dict):
                 v = c.get(key)
@@ -687,6 +719,7 @@ class PriorityNet(nn.Module):
     # ------------------------------------------------------------------ helpers
 
     def _default_config(self):
+        """Return the built-in default PriorityNet config object."""
         return type("Config", (), {
             "hidden_dims": [640, 512, 384, 256], "dropout": 0.25,
             "use_strain": True, "use_edge_conditioning": True, "n_edge_types": 19,
@@ -796,6 +829,8 @@ class PriorityNet(nn.Module):
     # ------------------------------------------------------------------ PSD helpers
 
     def _extract_psd_features(self, detector_data: Optional[Dict]) -> Optional[torch.Tensor]:
+        """Extract the per-detector PSD-sensitivity features used for FiLM
+        conditioning, or None when detector data is unavailable."""
         if not detector_data:
             return None
         feats = []
@@ -838,7 +873,9 @@ class PriorityNet(nn.Module):
         detector_dropout_prob: float = 0.1,
         detector_data:        Optional[Dict] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-
+        """Score a list of detections: extract per-signal + cross-signal
+        features, fuse the modalities, and return (priority scores,
+        uncertainties). Empty tensors when there are no detections."""
         if not detections:
             return torch.empty(0), torch.empty(0)
 
@@ -929,6 +966,8 @@ class PriorityNet(nn.Module):
         detections:      List[Dict],
         strain_segments: Optional[torch.Tensor] = None,
     ) -> List[int]:
+        """Return detection indices ordered from highest to lowest predicted
+        priority (falls back to SNR ordering if scoring fails)."""
         if not detections:
             return []
         try:
@@ -944,6 +983,8 @@ class PriorityNet(nn.Module):
             return self._snr_fallback_ranking(detections)
 
     def _snr_fallback_ranking(self, detections: List[Dict]) -> List[int]:
+        """Rank detections by network SNR (highest first) as a fallback when the
+        learned scorer is unavailable or errors."""
         try:
             scores = []
             for i, d in enumerate(detections):
@@ -961,6 +1002,8 @@ class PriorityNet(nn.Module):
         detector_data:   Dict,
         strain_segments: Optional[torch.Tensor] = None,
     ) -> float:
+        """Compute a scalar PSD-sensitivity summary for the given detections and
+        detector data (used for the FiLM conditioning branch)."""
         with torch.no_grad():
             p_orig, _ = self(detections, strain_segments, detector_data=detector_data)
             idx = torch.randperm(len(detections))
@@ -978,11 +1021,15 @@ class PriorityNet(nn.Module):
 # ============================================================================
 
 class PriorityNetTrainer:
+    """Training harness for PriorityNet: owns the optimizer, the PriorityLoss,
+    and the per-step forward/backward/update logic."""
+
     def __init__(self, model: PriorityNet, config=None):
         self.model  = model
         self.config = config
 
         def gcfg(key, default):
+            """Read a training-config value with a default fallback."""
             if config is None:
                 return default
             if hasattr(config, "get"):
@@ -1052,6 +1099,8 @@ class PriorityNetTrainer:
         base_lr:      Optional[float] = None,
         weight_decay: Optional[float] = None,
     ):
+        """Enable/disable the affine output calibration head and (re)configure
+        its optimizer learning rate and weight decay."""
         for p in self.model.parameters():
             p.requires_grad = not enable
         self.model.prio_gain.requires_grad = True
@@ -1080,6 +1129,8 @@ class PriorityNetTrainer:
         edge_type_ids_batch:  Optional[List[torch.Tensor]] = None,
         snr_values_batch:     Optional[List[torch.Tensor]] = None,
     ) -> Dict[str, float]:
+        """Run one training step over a batch of events (forward, PriorityLoss,
+        backward, optimizer step); returns the scalar loss components."""
 
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)

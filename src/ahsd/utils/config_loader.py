@@ -95,6 +95,8 @@ def create_config_object(config_dict: Dict[str, Any]) -> ConfigDict:
     Allows config.key and config['key'] access patterns.
     """
     def _convert(obj):
+        """Recursively convert nested dicts to ConfigDict (attribute access) and
+        recurse into lists, leaving scalars unchanged."""
         if isinstance(obj, dict):
             return ConfigDict({k: _convert(v) for k, v in obj.items()})
         elif isinstance(obj, list):

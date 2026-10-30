@@ -19,6 +19,8 @@ armed for every validated checkpoint.
 
 Exit code 0 = all gates pass, 1 = at least one FAIL (CI-friendly).
 """
+import logging
+logging.getLogger("bilby").setLevel(logging.WARNING)  # waveform-generator INFO spam
 import argparse
 import base64
 import io
@@ -48,10 +50,184 @@ plt.rcParams.update({"axes.edgecolor": GRAY, "axes.labelcolor": INK,
 
 
 def fig_to_b64(fig) -> str:
+    """Encode a matplotlib figure as a base64 PNG data URI for embedding in the
+    HTML report."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
     plt.close(fig)
     return base64.b64encode(buf.getvalue()).decode()
+
+
+# Parameters whose natural scale is multiplicative — width is measured in log.
+_LOG_PARAMS = {"mass_1", "mass_2", "luminosity_distance", "chirp_mass"}
+# Periodic parameters and their period — measured with a circular statistic, not
+# a linear std (see sharpness_metrics). Matches ParamScaler.CIRCULAR.
+_CIRCULAR = {"ra": 2 * np.pi, "phase": 2 * np.pi, "psi": np.pi}
+_SNR_BINS = ((0, 12), (12, 20), (20, 35), (35, 60), (60, 10000))
+
+# Informativeness (posterior std / prior std) ACHIEVED BY DYNESTY on identical
+# strain — the physical optimum, not a guess. Measured 2026-07-21 over 12
+# simulated events, SNR ladder 12/18/25/40, Mc 6-40, q 0.18-0.91:
+# analysis/posterior_bias_audit/eH_dynesty/summary.json. dynesty's median 90%
+# widths (Mc 0.31% fractional, q 0.169) converted to std via the Gaussian factor
+# 3.2897 and divided by the validation-split prior stds (log Mc 1.1447, q 0.3082).
+#
+# This replaces the hand-set thresholds these gates shipped with. The basin
+# report made exactly this criticism of its own gate ("set by eyeballing
+# collapsed-vs-healthy runs, not by physics"); anchoring to a measured reference
+# is the fix. When the reference is re-measured (e.g. with realistic spins),
+# update here and the gates move with it.
+#
+# SPIN SENSITIVITY (measured 2026-07-21, eH_spin/, n=4 with a1,a2 ~ U[0,0.9]):
+# the 12-event sweep above used ZERO-SPIN injections while the training prior
+# draws spins. Controlling for mass (Mc<13), dynesty's achievable q width nearly
+# triples with realistic spins, 0.120 -> 0.292 — the q-chi_eff degeneracy is real
+# — while its Mc width does NOT loosen. So `mass_ratio` below uses the SPIN-
+# INCLUSIVE optimum (0.292/3.2897/0.3082 = 0.288); holding the model to the
+# zero-spin 0.167 would demand better-than-achievable on the actual training
+# distribution. `chirp_mass` keeps the 12-event value, which is the LOOSER of the
+# two measurements (the spin draw's low-mass events gave a tighter 0.0012).
+# Both choices are deliberately conservative. The q reference rests on only 4
+# events — re-measure with ~12 spinning events before treating it as settled.
+_DYNESTY_REF = {"chirp_mass": 0.00276, "mass_ratio": 0.2880}
+# An amortized estimator within this factor of a reference sampler's width is
+# doing well (DINGO reports near-parity). Generous, and still fails the current
+# generation by ~52x on Mc and ~1.8x on q.
+_SHARPNESS_TOL = 3.0
+
+
+def _mc_q(m1, m2):
+    """Chirp mass and mass ratio from component masses (any array shape).
+
+    Floors both components at a positive value first: the fractional powers are
+    NaN for non-positive input, and a single NaN would silently poison a whole
+    informativeness statistic (and, worse, slip past a `v > threshold` gate,
+    since NaN compares False against everything)."""
+    m1 = np.maximum(np.asarray(m1, dtype=float), 1e-9)
+    m2 = np.maximum(np.asarray(m2, dtype=float), 1e-9)
+    return (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2, np.clip(m2 / m1, 1e-6, 1.0)
+
+
+def sharpness_metrics(samples, truth, ctx, snr):
+    """Diagnostics that measure how INFORMATIVE the posterior is.
+
+    Coverage, SBC and PP are all invariant to posterior WIDTH: an estimator that
+    returns the prior for a parameter passes every one of them exactly. The
+    2026-07-21 audit (analysis/posterior_bias_audit/REPORT.md) measured a model
+    with textbook-clean calibration (90% coverage 0.901) whose q posterior was
+    89% as wide as the prior and whose Mc was ~20x wider than a dynesty reference
+    on the same strain. Nothing in this suite could see that. These three
+    statistics can:
+
+      informativeness  mean posterior std / prior std, per parameter. ~1 means
+                       the parameter is UNMEASURED (posterior == prior); ->0 means
+                       sharply measured. Reported for the 11 sampled parameters
+                       plus derived (chirp_mass, mass_ratio), which is where the
+                       mass information actually lives.
+
+      snr_scaling      sigma_theta * SNR across SNR bins. A matched-filter-limited
+                       estimator holds this ~constant (sigma ~ 1/SNR). If it RISES
+                       with SNR the encoder is saturating — extracting a fixed
+                       amount of information no matter how much the data carries.
+                       Reported as `ratio` = (last bin)/(first bin); ~1 is healthy.
+
+      flow_vs_encoder  mean posterior std / residual of a ridge probe ctx->truth.
+                       ~1 means the flow faithfully reports the information in its
+                       conditioning vector, so posterior width is set by the
+                       ENCODER and a bigger flow cannot help. >>1 would mean the
+                       flow is broadening beyond what the context supports.
+    """
+    from sklearn.linear_model import RidgeCV
+    from sklearn.model_selection import cross_val_predict
+    from sklearn.preprocessing import StandardScaler
+
+    out = {"informativeness": {}, "snr_scaling": {}, "flow_vs_encoder": {}}
+
+    # per-parameter series: (name, posterior samples [N,K], truth [N])
+    series = [(nm, samples[:, :, j], truth[:, j]) for j, nm in enumerate(PARAM_NAMES)]
+    mc_s, q_s = _mc_q(samples[:, :, 0], samples[:, :, 1])
+    mc_t, q_t = _mc_q(truth[:, 0], truth[:, 1])
+    series += [("chirp_mass", mc_s, mc_t), ("mass_ratio", q_s, q_t)]
+
+    ctx_np = ctx.detach().cpu().numpy() if hasattr(ctx, "detach") else np.asarray(ctx)
+    Xs = StandardScaler().fit_transform(ctx_np)
+
+    for nm, s, t in series:
+        if nm in _CIRCULAR:
+            # A plain std ratio is WRONG for a periodic parameter: a sharp but
+            # bimodal sky/polarization posterior (the physically expected shape —
+            # e.g. the antipodal sky degeneracy) has a large linear std while
+            # being highly informative, so it would be mislabelled "unmeasured".
+            # Use the mean resultant length R instead: R->1 concentrated, R->0
+            # uniform. Report 1-R so the scale matches the linear case (1.0 =
+            # uninformative), and flag it as a different statistic.
+            per = _CIRCULAR[nm]
+            R = np.abs(np.exp(2j * np.pi * s / per).mean(axis=1))   # [N]
+            out["informativeness"][nm] = float(1.0 - R.mean())
+            out.setdefault("circular_params", []).append(nm)
+            continue
+        if nm in _LOG_PARAMS:
+            s, t = np.log(np.maximum(s, 1e-9)), np.log(np.maximum(t, 1e-9))
+        post_sd = s.std(axis=1)                      # [N]
+        prior_sd = float(t.std())
+        if not np.isfinite(prior_sd) or prior_sd <= 0:
+            continue
+        out["informativeness"][nm] = float(post_sd.mean() / prior_sd)
+
+        # encoder-vs-flow attribution (ridge is deliberately weak: it lower-bounds
+        # the context's information, so the ratio is an UPPER bound on flow slack)
+        try:
+            pred = cross_val_predict(RidgeCV(alphas=np.logspace(-3, 4, 20)), Xs, t, cv=5)
+            res = float(np.std(t - pred))
+            if res > 1e-9:
+                out["flow_vs_encoder"][nm] = float(post_sd.mean() / res)
+        except Exception:
+            pass
+
+        if nm in ("chirp_mass", "luminosity_distance", "mass_ratio"):
+            bins = []
+            for lo, hi in _SNR_BINS:
+                m = (snr >= lo) & (snr < hi)
+                if m.sum() < 15:
+                    continue
+                bins.append({"lo": lo, "hi": hi, "n": int(m.sum()),
+                             "med_snr": float(np.median(snr[m])),
+                             "sigma": float(post_sd[m].mean()),
+                             "sigma_x_snr": float(post_sd[m].mean() * np.median(snr[m]))})
+            if len(bins) >= 2:
+                out["snr_scaling"][nm] = {
+                    "bins": bins,
+                    "ratio": float(bins[-1]["sigma_x_snr"] / max(bins[0]["sigma_x_snr"], 1e-9))}
+    return out
+
+
+def sharpness_figure(sh, tag):
+    """Two-panel figure: informativeness bars + sigma*SNR trend."""
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 3.8))
+    names = list(sh["informativeness"].keys())
+    vals = [sh["informativeness"][n] for n in names]
+    cols = [BLUE if v < 0.5 else GRAY for v in vals]
+    a1.bar(np.arange(len(names)), vals, color=cols, width=0.62)
+    a1.axhline(1.0, color=INK, lw=1, ls="--")
+    a1.axhline(0.5, color=INK, lw=0.8, ls=":")
+    a1.set_xticks(np.arange(len(names)))
+    a1.set_xticklabels(names, rotation=60, ha="right", fontsize=7)
+    a1.set_ylabel("posterior std / prior std")
+    a1.set_ylim(0, 1.15)
+    a1.set_title("informativeness (1.0 = parameter unmeasured)")
+    for nm, d in sh["snr_scaling"].items():
+        xs = [b["med_snr"] for b in d["bins"]]
+        ys = [b["sigma_x_snr"] for b in d["bins"]]
+        a2.plot(xs, np.array(ys) / max(ys[0], 1e-9), marker="o", lw=1.4, label=nm)
+    a2.axhline(1.0, color=INK, lw=1, ls="--")
+    a2.set_xscale("log")
+    a2.set_xlabel("network SNR")
+    a2.set_ylabel("σ×SNR  (normalized to first bin)")
+    a2.set_title("SNR scaling (flat = matched-filter-limited)")
+    a2.legend(fontsize=7)
+    fig.suptitle(f"{tag}: posterior sharpness")
+    fig.tight_layout()
+    return fig_to_b64(fig)
 
 
 def evaluate_domain(model, ds, n_events, n_post, device, tag):
@@ -63,6 +239,9 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
     # PSD-conditioned models: use the domain's per-event sensitivity summary
     # (nonzero for the real-noise domain, ~0 for Gaussian/design).
     asd = torch.stack([x[4] for x in items]) if len(items[0]) > 4 else None
+    # net SNR per event — needed by the sharpness diagnostics to resolve posterior
+    # width against the information actually present in the data.
+    snr = torch.stack([x[3] for x in items]).numpy().astype(float)
     N, P = n, len(PARAM_NAMES)
 
     ctx = []
@@ -122,9 +301,13 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
         "nll": float(nll_t.mean()),
         "shuffle_delta_nll": float(nll_s.mean() - nll_t.mean()),
         "dist_corr": float(np.corrcoef(np.log(d_med), np.log(truth[:, jd]))[0, 1]),
+        "distance_by_type": distance_by_type(samples[:, :, jd], truth, model),
         "coverage": coverage,
         "sbc_ks_p": {k: float(v.pvalue) for k, v in ks.items()},
         "railing_frac": float(railed.mean()),
+        # Width diagnostics — the only metrics here that are NOT invariant to
+        # posterior sharpness (see sharpness_metrics).
+        "sharpness": sharpness_metrics(samples, truth, ctx, snr),
     }
 
     figs = {}
@@ -163,14 +346,50 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
     ax.set_ylabel("empirical")
     ax.set_title(f"{tag}: PP calibration")
     figs["pp"] = fig_to_b64(fig)
+    figs["sharpness"] = sharpness_figure(metrics["sharpness"], tag)
     return metrics, figs
 
 
 def gate(name, ok, detail):
+    """Build one pass/fail gate record {name, pass, detail}."""
     return {"gate": name, "pass": bool(ok), "detail": detail}
 
 
-def run_gates(gaus, real, gw_ok, gw_summary):
+def distance_by_type(d_samp, truth, model):
+    """Distance calibration per source class, conditioned on the PREDICTION.
+
+    The pooled metrics (dist_corr, coverage) average BBH/NSBH/BNS together, and
+    BBH dominates: on mf_scratch they read green while BNS distances were 2.3x
+    too far with 65% cov90 (measured 2026-10-30). Conditioning on the truth
+    instead (bias per true-distance bin) is NOT a calibration test — a correct
+    posterior is pulled toward the prior there — so bias is measured as
+    E[log d_true - log d_hat_median], which is 0 for a calibrated posterior.
+    """
+    d_true = truth[:, PARAM_NAMES.index("luminosity_distance")]
+    m1, m2 = truth[:, 0], truth[:, 1]
+    lo, hi = (float(v) for v in model.dist_range.tolist())
+    out = {}
+    for name, sel in (("BBH", m2 >= 3.0), ("NSBH", (m2 < 3.0) & (m1 >= 3.0)),
+                      ("BNS", m1 < 3.0)):
+        n = int(sel.sum())
+        if n == 0:
+            continue
+        ds, dt = d_samp[sel], d_true[sel]
+        rank = (ds < dt[:, None]).mean(axis=1)
+        out[name] = {
+            "n": n,
+            "true_over_pred": float(np.exp(np.mean(np.log(dt) - np.log(np.median(ds, axis=1))))),
+            "sbc_rank_mean": float(rank.mean()),
+            "cov90": float(((rank > 0.05) & (rank < 0.95)).mean()),
+            # truths the model cannot represent at all (clamped at its support)
+            "outside_support_frac": float(((dt < lo) | (dt > hi)).mean()),
+        }
+    return out
+
+
+def run_gates(gaus, real, gw_ok, gw_summary, basin=None):
+    """Evaluate all CI acceptance gates over the Gaussian/real-domain metrics
+    and the GWTC real-event results; returns the list of gate records."""
     gates = []
     gates.append(gate("gaussian shuffle ΔNLL > 5 nats",
                       gaus["shuffle_delta_nll"] > 5, f"{gaus['shuffle_delta_nll']:.2f}"))
@@ -186,6 +405,51 @@ def run_gates(gaus, real, gw_ok, gw_summary):
                       gaus["railing_frac"] < 0.05, f"{gaus['railing_frac']:.2%}"))
     gates.append(gate("distance correlation > 0.5",
                       gaus["dist_corr"] > 0.5, f"{gaus['dist_corr']:.3f}"))
+    bt = {k: v for k, v in (gaus.get("distance_by_type") or {}).items() if v["n"] >= 30}
+    if bt:
+        bad = [f"{k} x{v['true_over_pred']:.2f} cov90 {v['cov90']:.2f}"
+               for k, v in bt.items()
+               if not (0.8 < v["true_over_pred"] < 1.25 and v["cov90"] > 0.80)]
+        gates.append(gate("distance unbiased per source type (|bias| < 25%, cov90 > 0.80; n>=30)",
+                          not bad, "; ".join(bad) or ", ".join(
+                              f"{k} x{v['true_over_pred']:.2f}" for k, v in bt.items())))
+
+    # ---- sharpness gates (2026-07-21 audit) --------------------------------
+    # Every gate above is invariant to posterior WIDTH. These are not. They are
+    # expected to FAIL on the current generation of checkpoints — that is the
+    # point: the failure they describe is real, was invisible to this suite, and
+    # is the open work item (REPORT.md ranks 1-2). Do not relax them to green.
+    sh = gaus.get("sharpness") or {}
+    inf = sh.get("informativeness", {})
+    for nm, label in (("chirp_mass", "chirp-mass"), ("mass_ratio", "mass-ratio")):
+        if nm not in inf:
+            continue
+        ref = _DYNESTY_REF[nm]
+        thr = ref * _SHARPNESS_TOL
+        v = inf[nm]
+        ratio = v / ref if np.isfinite(v) and ref > 0 else float("nan")
+        gates.append(gate(
+            f"{label} informativeness within {_SHARPNESS_TOL:g}x dynesty ({thr:.4f})",
+            np.isfinite(v) and v < thr,
+            f"{v:.4f} vs dynesty-achievable {ref:.4f} -> {ratio:.1f}x the optimum "
+            f"(1.0 = parameter unmeasured)"))
+    # non-finite counts as unmeasured: NaN compares False against any threshold,
+    # so an unguarded `v > 0.85` would let a degenerate parameter through.
+    uninformative = [k for k, v in inf.items() if not np.isfinite(v) or v > 0.85]
+    gates.append(gate("no parameter is effectively unmeasured (post/prior > 0.85)",
+                      not uninformative, f"unmeasured: {uninformative or 'none'}"))
+    mc_scale = sh.get("snr_scaling", {}).get("chirp_mass")
+    if mc_scale:
+        gates.append(gate("Mc σ×SNR flat in SNR (ratio < 2.0; rising = encoder saturating)",
+                          mc_scale["ratio"] < 2.0,
+                          " → ".join(f"{b['sigma_x_snr']:.1f}" for b in mc_scale["bins"])
+                          + f"  (ratio {mc_scale['ratio']:.2f})"))
+    fve = sh.get("flow_vs_encoder", {})
+    if "chirp_mass" in fve:
+        gates.append(gate("[diagnostic] Mc post-width / encoder-probe residual",
+                          True,
+                          f"{fve['chirp_mass']:.2f} — ≈1 means ENCODER-limited "
+                          f"(a larger flow cannot help); ≫1 would implicate the flow"))
     if real is not None:
         gates.append(gate("real-noise shuffle ΔNLL > 5 nats",
                           real["shuffle_delta_nll"] > 5, f"{real['shuffle_delta_nll']:.2f}"))
@@ -196,22 +460,39 @@ def run_gates(gaus, real, gw_ok, gw_summary):
                           abs(real["nll"] - gaus["nll"]) < 3,
                           f"gaussian {gaus['nll']:.2f} vs real {real['nll']:.2f}"))
     gates.append(gate("real-event smoke tests (6 GWTC events, |t_c|<0.1s)", gw_ok, gw_summary))
+    if basin is not None:
+        from ahsd.evaluation.basin_probe import basin_gate
+        b_ok, b_detail = basin_gate(basin)
+        gates.append(gate("basin probe (τ≈+7ms heavy cell): q>0.95 < 0.30 & rail < 0.20",
+                          b_ok, b_detail))
     return gates
 
 
 def html_report(out_path, meta, gaus, gfigs, real, rfigs, gw, gates):
+    """Render the full validation HTML report (per-domain metrics, figures, and
+    the gate summary) to `out_path`."""
     ok = all(g["pass"] for g in gates)
     rows = "".join(
         f"<tr class={'pass' if g['pass'] else 'fail'}><td>{'PASS' if g['pass'] else 'FAIL'}</td>"
         f"<td>{g['gate']}</td><td>{g['detail']}</td></tr>" for g in gates)
 
     def domain_html(tag, m, figs):
+        """Render the HTML block for one validation domain (metrics table +
+        figures)."""
         if m is None:
             return f"<h2>{tag}</h2><p>skipped (no noise bank)</p>"
+        inf = (m.get("sharpness") or {}).get("informativeness", {})
+        sharp = ""
+        if inf:
+            sharp = ("<p>informativeness (posterior/prior width, 1.0 = unmeasured): "
+                     + " | ".join(f"{k} <b>{inf[k]:.2f}</b>"
+                                  for k in ("chirp_mass", "mass_ratio", "luminosity_distance")
+                                  if k in inf) + "</p>")
         return (f"<h2>{tag}</h2>"
                 f"<p>NLL {m['nll']:.3f} | shuffle Δ {m['shuffle_delta_nll']:.2f} | "
                 f"dist corr {m['dist_corr']:.3f} | railing {m['railing_frac']:.2%} | "
                 f"{m['n_events']} events × {m['n_post']} draws</p>"
+                + sharp
                 + "".join(f'<img src="data:image/png;base64,{b}"/>' for b in figs.values()))
 
     gw_html = "<p>skipped</p>"
@@ -241,6 +522,9 @@ run: {meta['timestamp']} | device {meta['device']} | wall {meta['wall_s']:.0f}s<
 
 
 def main():
+    """CLI: load a checkpoint, run the SBC/coverage/railing diagnostics on both
+    validation domains plus the 6 GWTC real-event smoke tests, and write the
+    HTML validation report."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--data", required=True, help="path to remix_data/ directory")
@@ -248,7 +532,7 @@ def main():
     ap.add_argument("--outdir", default=None,
                     help="default: analysis/ci/<checkpoint dir name>")
     ap.add_argument("--n_events", type=int, default=2000,
-                    help="validation events per domain (5000 available; 2000 gives coverage MC error ~1.1% at the 50% level vs 1.8% at 768)")
+                    help="validation events per domain (5000 available; 2000 gives coverage MC error ~1.1%% at the 50%% level vs 1.8%% at 768)")
     ap.add_argument("--n_post", type=int, default=400)
     ap.add_argument("--skip_gw150914", action="store_true")
     ap.add_argument("--device", default=None)
@@ -264,7 +548,10 @@ def main():
     model = LeanNPE(premerger=ckpt["args"].get("premerger", False),
                     psd_cond=ckpt["args"].get("psd_cond", False) or False,
                     psd_bands=ckpt["args"].get("psd_bands", 16),
-                    encoder_type=ckpt["args"].get("encoder_type", "conv"))
+                    encoder_type=ckpt["args"].get("encoder_type", "conv"),
+                    mass_param=ckpt["args"].get("mass_param", "m1m2"),
+                    geom_phase_residual=ckpt["args"].get("geom_phase_residual", False),
+                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"checkpoint: epoch {ckpt['epoch']}, val NLL {ckpt['val_nll']:.4f}")
@@ -346,15 +633,22 @@ def main():
         gw_summary = (f"all {len(REAL_EVENTS)} events ran, |t_c|<0.1s"
                       if gw_ok else "; ".join(fails)[:200])
 
+    basin_rows = None
+    try:
+        from ahsd.evaluation.basin_probe import build_bank, evaluate_bank
+        basin_rows = evaluate_bank(model, build_bank(), device)
+    except Exception as e:
+        print(f"basin probe failed ({type(e).__name__}: {e})")
+
     meta = {"model": args.model, "epoch": ckpt["epoch"], "val_nll": ckpt["val_nll"],
             "device": device, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "wall_s": time.time() - t_start}
-    gates = run_gates(gaus, real, gw_ok, gw_summary)
+    gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows)
     ok = html_report(out / "report.html", meta, gaus, gfigs, real, rfigs, gw, gates)
 
     with open(out / "report.json", "w") as f:
         json.dump({"meta": meta, "gaussian": gaus, "real": real, "gw150914": gw,
-                   "gates": gates}, f, indent=2, default=float)
+                   "basin_probe": basin_rows, "gates": gates}, f, indent=2, default=float)
     for g in gates:
         print(f"  {'PASS' if g['pass'] else 'FAIL'}  {g['gate']}  ({g['detail']})")
     print(f"report -> {out}/report.html  |  overall: {'PASS' if ok else 'FAIL'}")

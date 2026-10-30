@@ -44,6 +44,8 @@ DET_RUNS = {
 }
 
 def main():
+    """CLI: download O3 GWOSC segments per detector, whiten each with its
+    measured ASD, and save the noise bank under the output directory."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--per_det", type=int, default=120)
     ap.add_argument("--outdir", default="gw_noise_bank")
@@ -75,6 +77,8 @@ def main():
         det_candidates[det] = c
 
     def fetch_one(det, gps):
+        """Fetch one GWOSC segment for a detector at `gps`, whiten it with its
+        own measured ASD, and return the (strain, ASD) pair."""
         fs = f"{args.outdir}/{det}_{gps}_strain.npy"
         if os.path.exists(fs):
             return None  # already have it

@@ -27,10 +27,14 @@ event_type_distribution:
   BNS: 0.15
   NSBH: 0.15
   noise: 0.05
+# Train with `--dist_range 8 6000`: the model's distance support must cover
+# these ranges divided by RemixDataset's rescale factor (0.75-1.33), or labels
+# are clamped (the legacy 40-2200 Mpc support turned every BNS < 40 Mpc into
+# "40 Mpc" and made GW170729's 2750 Mpc unreachable; measured 2026-10-30).
 distance_ranges:                   # physically-motivated detectable ranges per type
-  BBH: [150.0, 2000.0]
-  BNS: [10.0, 300.0]
-  NSBH: [20.0, 800.0]
+  BBH: [100.0, 4000.0]             # was 2000: GW170729 is at ~2750 Mpc
+  BNS: [10.0, 400.0]
+  NSBH: [20.0, 1200.0]
 min_snr: 6.0
 
 # ── standard pipeline ───────────────────────────────────────────────────────

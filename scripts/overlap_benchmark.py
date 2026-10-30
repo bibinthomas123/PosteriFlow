@@ -36,6 +36,7 @@ HEADLINE = ["mass_1", "luminosity_distance", "geocent_time", "ra", "dec"]
 
 
 def mchirp(m1, m2):
+    """Chirp mass Mc = (m1*m2)^(3/5) / (m1+m2)^(1/5)."""
     return (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
 
 
@@ -90,6 +91,8 @@ def calib_block(samples, truth):
 
 
 def main():
+    """CLI: benchmark posterior recovery on overlapping-signal events across
+    separation / SNR-ratio configurations."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="model/lean_npe_v3/best_model.pth")
     ap.add_argument("--dataset ", default="data/dataset/memmap/validation")
@@ -102,7 +105,7 @@ def main():
     device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"), mass_param=ckpt["args"].get("mass_param", "m1m2"), geom_phase_residual=ckpt["args"].get("geom_phase_residual", False), mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"model: {args.model} (epoch {ckpt['epoch']})")

@@ -23,6 +23,8 @@ F_LO, F_HI = 20.0, 1024.0
 
 
 def main():
+    """CLI: generate a bank of waveforms and build/save a truncated SVD basis
+    (used as an optional reduced-order front-end for the encoder)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--n_waveforms", type=int, default=800)
     ap.add_argument("--n_basis", type=int, default=256)

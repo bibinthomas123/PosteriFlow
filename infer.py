@@ -90,6 +90,8 @@ def make_injection(seed: int, min_snr: float = 8.0):
 
 
 def main():
+    """CLI entry point: parse arguments, run LeanNPE inference on the requested
+    GWOSC event / local strain / fresh injection, and save the PosteriorResult."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     src_grp = ap.add_mutually_exclusive_group(required=True)

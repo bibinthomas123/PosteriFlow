@@ -20,6 +20,8 @@ _PN_CACHE: dict = {}
 
 
 def _get_pn(path: str, device: str):
+    """Load (and process-cache) the PriorityNet ranking model for `path` on
+    `device`, so repeated inference calls reuse one instance."""
     key = (path, device)
     if key not in _PN_CACHE:
         from ahsd.core.priority_net import load_priority_net

@@ -216,6 +216,9 @@ _DESIGN_ASD_CACHE: Dict[tuple, np.ndarray] = {}
 
 
 def _design_asd(det: str, design_asd_dir: str) -> Optional[np.ndarray]:
+    """Load (and cache) detector `det`'s design ASD from `design_asd_dir`, used
+    as the reference in the design-vs-measured sensitivity summary. None if
+    missing."""
     key = (det, design_asd_dir)
     if key not in _DESIGN_ASD_CACHE:
         p = Path(design_asd_dir) / f"design_asd_{det}.npy"

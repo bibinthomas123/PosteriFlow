@@ -109,257 +109,6 @@ class PSDScaledNormal(nn.Module):
         return eps  # [batch, num_samples, dim] from N(0, I)
 
 
-class MaskedContextLinear(nn.Module):
-    """
-    Masked linear layer for CONTEXT injection into a MADE conditioner.
-
-    Problem this fixes: nflows' default context injection is a single dense
-    `nn.Linear(context_features, hidden_features)` whose output is added
-    identically into ONE shared hidden representation before any
-    position-specific masking happens -- so even if the incoming context is
-    built from 11 distinguishable per-parameter blocks (see
-    `TokenizedContextEncoder`), the dense weight matrix is completely free to
-    mix all of them into every hidden unit. Flattening those blocks into one
-    vector therefore provides no structural guarantee that autoregressive
-    position g's conditioner actually uses "its own" block.
-
-    Fix: context block i (1-indexed by autoregressive position) is given an
-    artificial in-degree of (i-1) -- one less than its natural position --
-    and masked using the SAME convention nflows already uses for masking x
-    (`hidden_degree >= in_degree`). Composed with the existing OUTPUT mask
-    (`out_degree > hidden_degree`, unchanged, still governs x/bijectivity),
-    this yields exactly: autoregressive position g's output can depend on
-    context block i if and only if i <= g -- position g sees its OWN block
-    and every earlier position's block, and is PROVABLY blocked from every
-    later position's block.
-
-    Does not affect bijectivity/invertibility at all: masking here only
-    constrains context (external conditioning, not part of the transformed
-    variable). Getting this mask slightly wrong could only mean a position
-    sees more or fewer context blocks than intended -- never an incorrect
-    density or a broken inverse, since x's own masking (in the wrapped
-    MADE's initial_layer/blocks/final_layer) is completely untouched and
-    identical to nflows' own implementation.
-    """
-
-    def __init__(self, n_blocks: int, block_dim: int, hidden_degrees: torch.Tensor, full_context: bool = True):
-        super().__init__()
-        self.n_blocks = n_blocks
-        self.block_dim = block_dim
-        hidden_features = hidden_degrees.shape[0]
-
-        self.weight = nn.Parameter(torch.empty(hidden_features, n_blocks * block_dim))
-        self.bias = nn.Parameter(torch.zeros(hidden_features))
-        nn.init.kaiming_uniform_(self.weight, a=5 ** 0.5)
-
-        if full_context:
-            # Every autoregressive position sees every context block.
-            # Context is side information, not the autoregressive variable
-            # itself -- bijectivity/log-det only require MASKING x, not
-            # context. The original per-position context restriction
-            # (block i visible only to position >= i) was a defensive
-            # measure against an encoder that produced near-identical
-            # blocks regardless of query identity; now that attn_diversity_loss
-            # + token_diversity_loss fix that at the encoder level, the
-            # restriction only does damage: whichever parameter is placed
-            # FIRST in the autoregressive order (luminosity_distance, moved
-            # there specifically to stop it free-riding on mass via x) ends
-            # up seeing just 1 of 11 context blocks while later positions see
-            # up to all 11 -- confirmed empirically via live training logs:
-            # distance had the lowest per_param_std of all 11 parameters in
-            # every single logged snapshot, alongside a large systematic
-            # ~-900 Mpc bias, while attention/token diagnostics for its own
-            # block looked healthy. An information-starved position, not a
-            # collapsed one.
-            context_in_degrees = torch.full((n_blocks * block_dim,), -1, dtype=torch.long)
-        else:
-            # Block i (0-indexed) "belongs" to autoregressive position i+1;
-            # give it in-degree i (one less than its natural 1-indexed position).
-            context_in_degrees = torch.arange(n_blocks).repeat_interleave(block_dim)  # [n_blocks*block_dim]
-        mask = (hidden_degrees[:, None] >= context_in_degrees[None, :]).float()
-        self.register_buffer("mask", mask)  # [hidden_features, n_blocks*block_dim]
-
-    def forward(self, context_flat: torch.Tensor) -> torch.Tensor:
-        return nn.functional.linear(context_flat, self.weight * self.mask, self.bias)
-
-
-class MaskedContextResidualBlock(nn.Module):
-    """Same as nflows' MaskedResidualBlock, except the context injection uses
-    MaskedContextLinear instead of a plain nn.Linear -- see that class for
-    the masking derivation. The x-pathway (both MaskedLinear layers, the
-    residual skip) is identical to nflows' own implementation."""
-
-    def __init__(
-        self,
-        in_degrees: torch.Tensor,
-        autoregressive_features: int,
-        n_context_blocks: int,
-        context_block_dim: int,
-        activation=nn.functional.relu,
-        dropout_probability: float = 0.0,
-        zero_initialization: bool = True,
-    ):
-        super().__init__()
-        from nflows.transforms.made import MaskedLinear
-
-        features = len(in_degrees)
-        self.context_layer = MaskedContextLinear(n_context_blocks, context_block_dim, in_degrees)
-
-        linear_0 = MaskedLinear(
-            in_degrees=in_degrees, out_features=features,
-            autoregressive_features=autoregressive_features, random_mask=False, is_output=False,
-        )
-        linear_1 = MaskedLinear(
-            in_degrees=linear_0.degrees, out_features=features,
-            autoregressive_features=autoregressive_features, random_mask=False, is_output=False,
-        )
-        self.linear_layers = nn.ModuleList([linear_0, linear_1])
-        self.degrees = linear_1.degrees
-        self.activation = activation
-        self.dropout = nn.Dropout(p=dropout_probability)
-
-        if zero_initialization:
-            nn.init.uniform_(self.linear_layers[-1].weight, a=-1e-3, b=1e-3)
-            nn.init.uniform_(self.linear_layers[-1].bias, a=-1e-3, b=1e-3)
-
-    def forward(self, inputs: torch.Tensor, context: torch.Tensor = None) -> torch.Tensor:
-        temps = inputs
-        temps = self.activation(temps)
-        temps = self.linear_layers[0](temps)
-        if context is not None:
-            temps = temps + self.context_layer(context)
-        temps = self.activation(temps)
-        temps = self.dropout(temps)
-        temps = self.linear_layers[1](temps)
-        return inputs + temps
-
-
-class MADEWithMaskedContext(nn.Module):
-    """
-    Drop-in replacement for nflows' MADE (same `.forward(inputs, context) ->
-    autoregressive_params` interface) whose context injection is masked per
-    autoregressive position -- see MaskedContextLinear. The x-pathway
-    (initial_layer, blocks' MaskedLinear layers, final_layer) is identical to
-    nflows' own MADE, byte-for-byte the same masking/degree logic.
-    """
-
-    def __init__(
-        self,
-        features: int,
-        hidden_features: int,
-        n_context_blocks: int,
-        context_block_dim: int,
-        num_blocks: int = 2,
-        output_multiplier: int = 1,
-        activation=nn.functional.relu,
-        dropout_probability: float = 0.0,
-    ):
-        super().__init__()
-        from nflows.transforms.made import MaskedLinear, _get_input_degrees
-
-        self.initial_layer = MaskedLinear(
-            in_degrees=_get_input_degrees(features),
-            out_features=hidden_features,
-            autoregressive_features=features,
-            random_mask=False,
-            is_output=False,
-        )
-        hidden_degrees = self.initial_layer.degrees  # consistent throughout the stack (deterministic, non-random masking)
-
-        self.context_layer = MaskedContextLinear(n_context_blocks, context_block_dim, hidden_degrees)
-        self.activation = activation
-
-        blocks = []
-        prev_out_degrees = self.initial_layer.degrees
-        for _ in range(num_blocks):
-            blocks.append(
-                MaskedContextResidualBlock(
-                    in_degrees=prev_out_degrees,
-                    autoregressive_features=features,
-                    n_context_blocks=n_context_blocks,
-                    context_block_dim=context_block_dim,
-                    activation=activation,
-                    dropout_probability=dropout_probability,
-                )
-            )
-            prev_out_degrees = blocks[-1].degrees
-        self.blocks = nn.ModuleList(blocks)
-
-        self.final_layer = MaskedLinear(
-            in_degrees=prev_out_degrees,
-            out_features=features * output_multiplier,
-            autoregressive_features=features,
-            random_mask=False,
-            is_output=True,
-        )
-
-    def forward(self, inputs: torch.Tensor, context: torch.Tensor = None) -> torch.Tensor:
-        temps = self.initial_layer(inputs)
-        if context is not None:
-            temps = temps + self.activation(self.context_layer(context))
-        for block in self.blocks:
-            temps = block(temps, context)
-        outputs = self.final_layer(temps)
-        return outputs
-
-
-class MaskedContextPiecewiseRQAutoregressiveTransform(MaskedPiecewiseRationalQuadraticAutoregressiveTransform):
-    """
-    Same as nflows' MaskedPiecewiseRationalQuadraticAutoregressiveTransform
-    (identical spline math, identical x-masking/bijectivity), except the
-    conditioner is MADEWithMaskedContext instead of plain MADE -- routing one
-    context block per parameter (from a per-parameter query readout) instead
-    of flattening context into one undifferentiated vector. Every position
-    sees every context block (MaskedContextLinear's full_context=True
-    default) -- restricting context by position was tried and reverted after
-    it was found to starve whichever parameter is ordered first in the
-    autoregressive order (see MaskedContextLinear's docstring/comments).
-
-    `context_features` must equal `n_context_blocks * context_block_dim`.
-    """
-
-    def __init__(
-        self,
-        features: int,
-        hidden_features: int,
-        n_context_blocks: int,
-        context_block_dim: int,
-        num_bins: int = 10,
-        tails: Optional[str] = None,
-        tail_bound: float = 1.0,
-        num_blocks: int = 2,
-        activation=nn.functional.relu,
-        dropout_probability: float = 0.0,
-        min_bin_width: float = None,
-        min_bin_height: float = None,
-        min_derivative: float = None,
-    ):
-        from nflows.transforms.autoregressive import AutoregressiveTransform
-        from nflows.transforms.splines import rational_quadratic
-
-        self.num_bins = num_bins
-        self.min_bin_width = min_bin_width if min_bin_width is not None else rational_quadratic.DEFAULT_MIN_BIN_WIDTH
-        self.min_bin_height = min_bin_height if min_bin_height is not None else rational_quadratic.DEFAULT_MIN_BIN_HEIGHT
-        self.min_derivative = min_derivative if min_derivative is not None else rational_quadratic.DEFAULT_MIN_DERIVATIVE
-        self.tails = tails
-        self.tail_bound = tail_bound
-
-        autoregressive_net = MADEWithMaskedContext(
-            features=features,
-            hidden_features=hidden_features,
-            n_context_blocks=n_context_blocks,
-            context_block_dim=context_block_dim,
-            num_blocks=num_blocks,
-            output_multiplier=self._output_dim_multiplier(),
-            activation=activation,
-            dropout_probability=dropout_probability,
-        )
-        # Bypass MaskedPiecewiseRationalQuadraticAutoregressiveTransform's own
-        # __init__ (which would build a plain-context MADE) and go straight
-        # to AutoregressiveTransform.__init__ with our masked-context net.
-        AutoregressiveTransform.__init__(self, autoregressive_net)
-
-
 class NSFPosteriorFlow(nn.Module):
     """
     Neural Spline Flow using the nflows library.
@@ -379,7 +128,7 @@ class NSFPosteriorFlow(nn.Module):
     def __init__(self, features: int, context_features: int = 0, hidden_features: int = 256,
                  num_layers: int = 12, num_bins: int = 16, tail_bound: Union[float, Dict[int, float]] = FLOW_NORM_BOUND,
                  max_overlaps: int = 6, dropout: float = 0.0, temperature_scale: float = 1.5,
-                 use_masked_context: Optional[bool] = None, **kwargs):
+                 **kwargs):
         super().__init__()
 
         self.features = features
@@ -388,38 +137,6 @@ class NSFPosteriorFlow(nn.Module):
         self.max_overlaps = max_overlaps
         self.logger = logging.getLogger(__name__)
 
-        # Block-structured context conditioner: routes one context block per
-        # parameter (e.g. TokenizedContextEncoder's per-parameter query
-        # output) through MADEWithMaskedContext instead of flattening
-        # everything into one undifferentiated vector -- see
-        # MaskedContextLinear. Every autoregressive position sees every
-        # context block (full_context=True, MaskedContextLinear's default):
-        # an earlier version restricted position g to context blocks 1..g,
-        # which silently starved whichever parameter is ordered FIRST
-        # (luminosity_distance, moved to position 0 to stop it free-riding
-        # on mass via x) of all but 1 of the n_context_blocks -- confirmed
-        # empirically via a live training run's per-parameter diagnostics.
-        # Context isn't the autoregressive variable, so restricting it by
-        # position was never required for bijectivity, only a defensive
-        # measure against encoder collapse that's now handled at the encoder
-        # level (attn_diversity_loss, token_diversity_loss).
-        # Auto-enabled when context_features divides evenly by features (a
-        # strong signal the caller built exactly that), can be forced on/off
-        # explicitly via use_masked_context.
-        if use_masked_context is None:
-            use_masked_context = context_features > 0 and features > 0 and context_features % features == 0
-        self.use_masked_context = use_masked_context
-        if self.use_masked_context:
-            self.n_context_blocks = features
-            self.context_block_dim = context_features // features
-            self.logger.info(
-                f"Block-structured context conditioner ENABLED: {self.n_context_blocks} blocks "
-                f"of {self.context_block_dim} dims each -- every position sees every block."
-            )
-        else:
-            self.n_context_blocks = None
-            self.context_block_dim = None
-        
         # tail_bound may be a single float (global) or a dict mapping feature
         # index -> tail_bound (per-parameter)
         if isinstance(tail_bound, dict):
@@ -434,50 +151,31 @@ class NSFPosteriorFlow(nn.Module):
             self.per_param_tail_bounds = None
             self.tail_bounds_list = [tail_bound] * features
 
-        # Learnable base-distribution temperature: higher T -> wider base N(0, T^2 I)
-        # -> more spread-out posterior samples, preventing collapse to a delta function.
-        # Starts at 1.5 for exploratory sampling; can anneal to 1.0 during training.
-        self.temperature = nn.Parameter(torch.tensor(temperature_scale, dtype=torch.float32))
+        # Base-distribution temperature: higher T -> wider base N(0, T^2 I) ->
+        # more spread-out posterior samples, preventing collapse to a delta
+        # function. A non-trainable buffer, not an nn.Parameter: it was
+        # originally learnable but every caller (LeanNPE included) freezes it
+        # immediately after construction, so making it a buffer removes the
+        # dead "trainable-looking but never trained" parameter from
+        # model.parameters()/the optimizer without changing the checkpoint's
+        # state_dict key or shape (existing checkpoints still load unchanged).
+        # log_prob()/sample() still accept an explicit `temperature` override
+        # per call -- only the LEARNED-default mechanism is gone.
+        self.register_buffer("temperature", torch.tensor(temperature_scale, dtype=torch.float32))
         self.temperature_scale_init = temperature_scale
 
         # PSD-conditioned base distribution (not StandardNormal): z ~ N(0, Sigma_psd)
         self.base_dist = PSDScaledNormal(shape=[features])
-        
+
         # Build spline transform layers
         transforms = []
         self._ar_transforms = []  # kept for re-patching tail_bounds if the autoregressive order changes
         for layer_idx in range(num_layers):
-            # Permutation for better mixing -- SKIPPED when using the masked-
-            # context conditioner: ReversePermutation reshuffles x's column
-            # order every layer, which would misalign "context block i" with
-            # "autoregressive position i" after the first layer (the masked-
-            # context guarantee is derived assuming a FIXED position<->block
-            # correspondence throughout the stack). Context is already
-            # position-specific and rich per layer in this mode, so the extra
-            # x-reshuffling-for-mixing is less necessary than it was for the
-            # old flat/shared-context design.
-            if not self.use_masked_context:
-                transforms.append(ReversePermutation(features=features))
+            transforms.append(ReversePermutation(features=features))
 
-            if self.use_masked_context:
-                transforms.append(
-                    MaskedContextPiecewiseRQAutoregressiveTransform(
-                        features=features,
-                        hidden_features=hidden_features,
-                        n_context_blocks=self.n_context_blocks,
-                        context_block_dim=self.context_block_dim,
-                        num_bins=num_bins,
-                        tails='linear',
-                        tail_bound=(tail_bound if isinstance(tail_bound, float) else FLOW_NORM_BOUND),
-                        num_blocks=2,
-                        activation=nn.functional.relu,
-                        dropout_probability=dropout,
-                    )
-                )
-                self._ar_transforms.append(transforms[-1])
             # Use per-parameter tail_bounds if available
             # For each layer, create individual transforms per feature with custom tail_bounds
-            elif self.per_param_tail_bounds:
+            if self.per_param_tail_bounds:
                 # Build autoregressive transform with per-feature tail bounds
                 transforms.append(
                     MaskedPiecewiseRationalQuadraticAutoregressiveTransform(
@@ -541,6 +239,15 @@ class NSFPosteriorFlow(nn.Module):
         self.register_buffer("_ar_perm", torch.arange(features, dtype=torch.long))
         self.register_buffer("_ar_inv_perm", torch.arange(features, dtype=torch.long))
 
+        # Output clamp for inverse(). MUST track this flow's OWN spline domain,
+        # not the module-level FLOW_NORM_BOUND default: LeanNPE constructs this
+        # class with tail_bound=5.0 while FLOW_NORM_BOUND is 3.0, so a fixed
+        # clamp silently truncated the outer 40% of the spline's support. Only
+        # latent today (LeanNPE's targets live in [-1,1] and ParamScaler.wrap()
+        # clamps there anyway), but it made the three bounds in this path --
+        # normalize()'s [-1,1], tail_bound, and FLOW_NORM_BOUND -- disagree.
+        self._out_clamp = float(max(self.tail_bounds_list))
+
         self.logger.info(
             f"NSFPosteriorFlow initialized: {features} features, "
             f"{context_features} context dims, {num_layers} layers, "
@@ -587,31 +294,10 @@ class NSFPosteriorFlow(nn.Module):
 
         self.logger.info(f"Autoregressive order set: position -> original feature index = {order}")
 
-    def _permute_context_blocks(self, context: torch.Tensor) -> torch.Tensor:
-        """
-        When using the masked-context conditioner, context block i must stay
-        aligned with WHATEVER physical parameter now occupies autoregressive
-        position i -- the same permutation set_autoregressive_order() applies
-        to x. Without this, e.g. after moving distance to position 0,
-        position 0 would only be able to see block 0 (still mass_1's own
-        context under the model's original semantic ordering), and
-        distance's own dedicated context would be invisible to distance's
-        own position -- silently defeating the point of per-parameter
-        queries. No-op (identity permutation) when the order hasn't been
-        changed from default, or when not using the masked-context mode.
-        """
-        if not self.use_masked_context:
-            return context
-        batch = context.shape[0]
-        blocks = context.view(batch, self.n_context_blocks, self.context_block_dim)
-        blocks = blocks[:, self._ar_perm, :]
-        return blocks.reshape(batch, self.n_context_blocks * self.context_block_dim)
-
     def forward(self, x: torch.Tensor, context: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward: x (params) → z (base distribution)"""
         x = x[:, self._ar_perm]
         if self.context_features > 0 and context is not None:
-            context = self._permute_context_blocks(context)
             z, log_det = self.transform(x, context=context)
         else:
             z, log_det = self.transform(x)
@@ -633,7 +319,6 @@ class NSFPosteriorFlow(nn.Module):
 
         if self.context_features > 0 and context is not None:
             try:
-                context = self._permute_context_blocks(context)
                 x, log_det = self.transform.inverse(z, context=context)
             except AssertionError as e:
                 # NSF spline assertion failed - likely due to numerical instability
@@ -650,8 +335,9 @@ class NSFPosteriorFlow(nn.Module):
         if torch.isnan(x).any() or torch.isinf(x).any():
             x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        # Clamp to ±FLOW_NORM_BOUND — matches tail_bound and normalize_batch output range
-        x = torch.clamp(x, -FLOW_NORM_BOUND, FLOW_NORM_BOUND)
+        # Clamp to this flow's own spline domain (max tail_bound), not the
+        # module-level FLOW_NORM_BOUND — see _out_clamp in __init__.
+        x = torch.clamp(x, -self._out_clamp, self._out_clamp)
         return x, log_det
     
     def log_prob(self, x: torch.Tensor, context: torch.Tensor = None, temperature: Optional[float] = None) -> torch.Tensor:

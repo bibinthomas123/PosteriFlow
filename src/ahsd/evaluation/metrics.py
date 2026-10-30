@@ -27,7 +27,7 @@ import torch
 from typing import Dict, List, Tuple, Any, Optional
 import logging
 from scipy.stats import ks_2samp, anderson_ksamp
-from scipy.spatial.distance import wasserstein_distance
+from scipy.stats import wasserstein_distance
 
 class BiasMetrics:
     """Bias metrics with comprehensive statistical analysis"""

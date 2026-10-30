@@ -26,15 +26,18 @@ def calculate_redshift(luminosity_distance: float) -> Optional[float]:
         from scipy.optimize import brentq
         
         def E(z):
+            """Dimensionless Hubble parameter E(z)=sqrt(Ω_m(1+z)^3+Ω_Λ)."""
             return np.sqrt(COSMO_OMEGA_M * (1 + z)**3 + COSMO_OMEGA_LAMBDA)
-        
+
         def d_L_calc(z):
+            """Luminosity distance (Mpc) for redshift z in flat ΛCDM."""
             if z <= 0:
                 return 0.0
             integral, _ = quad(lambda zp: 1.0 / E(zp), 0, z)
             return (1 + z) * (299792.458 / COSMO_H0) * integral
-        
+
         def residual(z):
+            """Root-finding residual d_L(z) − target for inverting z(d_L)."""
             return d_L_calc(z) - luminosity_distance
         
         # Find redshift
@@ -53,6 +56,7 @@ def calculate_comoving_distance(z: float) -> float:
         from scipy.integrate import quad
         
         def E(zp):
+            """Dimensionless Hubble parameter E(z)=sqrt(Ω_m(1+z)^3+Ω_Λ)."""
             return np.sqrt(COSMO_OMEGA_M * (1 + zp)**3 + COSMO_OMEGA_LAMBDA)
         
         integral, _ = quad(lambda zp: 1.0 / E(zp), 0, z)

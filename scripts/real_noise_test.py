@@ -28,6 +28,8 @@ JD = PARAM_NAMES.index("luminosity_distance")
 
 
 def main():
+    """CLI: probe real-noise robustness by injecting signals into real O3 crops
+    and comparing recovery against the Gaussian-noise baseline."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="model/lean_npe_v2/best_model.pth")
     ap.add_argument("--segments", default="gw_segments")
@@ -46,7 +48,7 @@ def main():
     print({d: len(v) for d, v in segs.items()}, "segments")
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"), mass_param=ckpt["args"].get("mass_param", "m1m2"), geom_phase_residual=ckpt["args"].get("geom_phase_residual", False), mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"]); model.to(device).eval()
 
     sampler = ParameterSampler()
@@ -55,6 +57,7 @@ def main():
     psds = {d: get_default_psd(d) for d in DETS}
 
     def real_crop(det):
+        """Return a random real-noise crop for detector `det` from the bank."""
         s = segs[det][rng.integers(len(segs[det]))]
         i0 = rng.integers(0, len(s) - T)
         c = s[i0:i0 + T].copy()

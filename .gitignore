@@ -175,5 +175,5 @@ analysis/**/*_checkpoint_*.png
 # ============================================================================
 # Model checkpoints and run folders (never pushed)
 # ============================================================================
-model/
-models/
+/model/
+/models/

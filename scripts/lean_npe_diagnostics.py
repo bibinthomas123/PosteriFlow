@@ -35,6 +35,7 @@ CI_LEVELS = [0.50, 0.68, 0.90, 0.95]
 
 
 def load_val(data_dir, n):
+    """Load up to `n` validation events (strain, params) from the dataset."""
     evs = []
     for fp in sorted(glob.glob(f"{data_dir}/validation/batch_*.pkl")):
         with open(fp, "rb") as fh:
@@ -64,6 +65,8 @@ def load_val(data_dir, n):
 
 
 def main():
+    """CLI: SBC / PP / coverage certification for a checkpoint on the Gaussian
+    or real-noise validation domain."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="model/lean_npe_v2/best_model.pth")
     ap.add_argument("--data", default="data/dataset_v2")
@@ -80,7 +83,7 @@ def main():
     torch.manual_seed(0)
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"), mass_param=ckpt["args"].get("mass_param", "m1m2"), geom_phase_residual=ckpt["args"].get("geom_phase_residual", False), mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"checkpoint: epoch={ckpt['epoch']} val_nll={ckpt['val_nll']:.4f}")

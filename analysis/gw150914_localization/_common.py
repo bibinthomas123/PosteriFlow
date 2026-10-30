@@ -36,7 +36,11 @@ def load_model(path=CANON, device=DEVICE):
     model = LeanNPE(premerger=a.get("premerger", False),
                     psd_cond=a.get("psd_cond", False) or False,
                     psd_bands=a.get("psd_bands", 16),
-                    encoder_type=a.get("encoder_type", "conv"))
+                    encoder_type=a.get("encoder_type", "conv"),
+                    mass_param=a.get("mass_param", "m1m2"),
+                    geom_phase_residual=a.get("geom_phase_residual", False),
+                    mf_tokens=a.get("mf_tokens", False),
+                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), q_embed_dim=a.get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"], strict=True)
     model.to(device).eval()
     model._ckpt_meta = dict(epoch=ckpt.get("epoch"), val_nll=ckpt.get("val_nll"),
@@ -121,8 +125,16 @@ def whiten_like_pipeline(raw_win, asd_win):
 def raw_projected_signal(params, gps_epoch, approximant="IMRPhenomXP", f_min=20.0,
                          detectors=("H1", "L1")):
     """Raw (unwhitened) detector strain [T_LEN] per detector for an IMRPhenomXP
-    source at `params`, projected at GPS epoch `gps_epoch`, merger at window
-    centre. Reusable for injections and matched-filter templates."""
+    source at `params`, projected at GPS epoch `gps_epoch`: merger at window
+    centre plus each detector's geocentric time delay. Reusable for injections
+    and matched-filter templates.
+
+    NOTE (2026-07-16): until the attractor-basin study this omitted the
+    per-detector time delay, so every injection had tau_ij = 0 between
+    detectors — geometrically impossible signals that cannot probe
+    geometry-conditional behavior (analysis/attractor_basin/REPORT.md).
+    Conclusions drawn from injections built before this fix (e.g.
+    step4_semireal) are suspect where inter-detector geometry matters."""
     import bilby
     wfg = bilby.gw.WaveformGenerator(
         duration=DUR, sampling_frequency=SR,
@@ -146,7 +158,8 @@ def raw_projected_signal(params, gps_epoch, approximant="IMRPhenomXP", f_min=20.
             resp = ifo.antenna_response(inj["ra"], inj["dec"], inj["geocent_time"],
                                         inj["psi"], m)
             h = h + resp * pol[m]
-        sig[det] = np.roll(h, T_LEN // 2)   # merger at window centre
+        dt = ifo.time_delay_from_geocenter(inj["ra"], inj["dec"], inj["geocent_time"])
+        sig[det] = np.roll(h, T_LEN // 2 + int(round(dt * SR)))
     return sig
 
 

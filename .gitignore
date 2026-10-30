@@ -165,3 +165,9 @@ analysis/ci/**
 !analysis/ci/*/
 !analysis/ci/*/report.json
 !analysis/ci/*/report.html
+# analysis write-ups are evidence for the paper: track them despite *.md above
+!analysis/**/*.md
+# bilby/dynesty reference posteriors (~100 MB; kept on disk, regenerable)
+analysis/posterior_bias_audit/**/*_result.json
+# bilby's auto-generated sampler diagnostics (checkpoint trace/run/stats plots)
+analysis/**/*_checkpoint_*.png

@@ -61,6 +61,7 @@ def kl_1d(p_samples: np.ndarray, q_samples: np.ndarray) -> float:
 
 
 def overlay_corner(npe, dyn, names, labels, save):
+    """Overlay the LeanNPE and dynesty posteriors on a shared corner plot."""
     try:
         import corner as _corner
         import matplotlib.pyplot as plt
@@ -78,6 +79,8 @@ def overlay_corner(npe, dyn, names, labels, save):
 
 
 def run_event(name: str, meta: dict, args, out: Path) -> dict:
+    """Benchmark one real event: preprocess, run LeanNPE and a dynesty
+    reference, compare against published medians; returns the result record."""
     from ahsd.inference import infer, prepare_real, fetch_gwosc
     from ahsd.inference.dynesty_bridge import (run_dynesty, align_conventions,
                                                BILBY_NAMES)
@@ -166,6 +169,8 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
 
 
 def print_summary(records):
+    """Print the per-event benchmark summary table (LeanNPE vs dynesty vs
+    published)."""
     print("\n" + "=" * 100)
     print(f"{'event':<11}{'dets':>6}{'t_NPE':>8}{'t_dyn':>9}{'speedup':>9}"
           f"{'KL(Mc-ish m1)':>14}{'W1(dL)':>10}{'|Δmed| m1(σ)':>13}{'pub. in NPE 90%':>17}")
@@ -191,6 +196,8 @@ def print_summary(records):
 
 
 def main():
+    """CLI: benchmark LeanNPE against bilby/dynesty on the requested GWTC
+    events and print/save the comparison."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--events", nargs="+", default=list(EVENTS),

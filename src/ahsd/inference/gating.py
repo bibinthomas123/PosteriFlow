@@ -34,6 +34,9 @@ _GRID_CACHE: Optional[list] = None
 
 
 def _twin_grid():
+    """Load (and cache) the twin-injection bias grid from
+    `analysis/twin_grid_v3.json`, used by the refinement/confidence gate to
+    flag the known mass-ratio collapse regions. Returns [] if absent."""
     global _GRID_CACHE
     if _GRID_CACHE is None:
         p = Path(__file__).resolve().parents[3] / "analysis" / "twin_grid_v3.json"

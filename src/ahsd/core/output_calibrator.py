@@ -30,6 +30,8 @@ class OutputCalibrator(nn.Module):
         self.clamp = clamp
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the learned affine calibration y = gain*x + bias (optionally
+        clamped to [0, 1])."""
         y = self.gain * x + self.bias
         if self.clamp:
             y = torch.clamp(y, 0.0, 1.0)
@@ -170,6 +172,8 @@ def calibrate_predictions(
         opt = torch.optim.LBFGS(calibrator.parameters(), lr=0.1, max_iter=100)
 
         def closure():
+            """Optimizer closure: recompute the calibration MSE loss and its
+            gradient (for the LBFGS fit of the affine calibration)."""
             opt.zero_grad()
             cal_preds = calibrator(pred_train)
             loss = torch.nn.functional.mse_loss(cal_preds, targ_train)

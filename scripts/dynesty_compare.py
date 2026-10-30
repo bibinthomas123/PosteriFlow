@@ -54,12 +54,16 @@ def make_event(sampler, noise_gen, injector, prep, psds, seed, min_snr=8.0):
 
 
 def run_dynesty(raw, psds, injection, outdir, label, nlive=300):
+    """Run a bilby/dynesty nested-sampling run on one injection and return its
+    posterior samples (the reference for the LeanNPE comparison)."""
     # single implementation lives in ahsd.inference.dynesty_bridge
     return _run_dynesty(raw, psds, outdir, label, center_gps=GPS_REF,
                         trigger_offset=injection["geocent_time"], nlive=nlive)
 
 
 def main():
+    """CLI: convention-audited head-to-head comparison of LeanNPE vs
+    bilby/dynesty on fresh injections."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="model/lean_npe_v2/best_model.pth")
     ap.add_argument("--outdir", default="analysis/dynesty_compare")
@@ -71,7 +75,7 @@ def main():
     device = "mps" if torch.backends.mps.is_available() else "cpu"
 
     ckpt = torch.load(args.model, map_location="cpu", weights_only=False)
-    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"))
+    model = LeanNPE(premerger=ckpt["args"].get("premerger", False), psd_cond=ckpt["args"].get("psd_cond", False) or False, psd_bands=ckpt["args"].get("psd_bands", 16), encoder_type=ckpt["args"].get("encoder_type", "conv"), mass_param=ckpt["args"].get("mass_param", "m1m2"), geom_phase_residual=ckpt["args"].get("geom_phase_residual", False), mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"]); model.to(device).eval()
 
     sampler = ParameterSampler()

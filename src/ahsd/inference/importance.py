@@ -101,6 +101,9 @@ _WORKER = {}
 
 
 def _init_worker(raw, psds, center_gps, f_min, approximant):
+    """Multiprocessing pool initializer: build the bilby GW likelihood once per
+    worker (phase- and time-marginalized analytically) and cache it + the noise
+    log-likelihood in the module-level `_WORKER` dict for `_eval_chunk`."""
     import bilby
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
@@ -140,6 +143,8 @@ def _init_worker(raw, psds, center_gps, f_min, approximant):
 
 
 def _eval_chunk(rows):
+    """Worker task: return the noise-subtracted log-likelihood for a chunk of
+    parameter rows using the cached marginalized likelihood (-inf on failure)."""
     like = _WORKER["like"]
     out = np.empty(len(rows))
     for k, th in enumerate(rows):
@@ -217,11 +222,15 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     LOGD = np.array([True, True, True, False, False, False, False, False, False])
 
     def to_slow(th):
+        """Map physical params to the 9-D "slow" IS space (masses/distance in
+        log), dropping the analytically-marginalized phase and time."""
         x = th[:, sj].astype(np.float64).copy()
         x[:, LOGD] = np.log(x[:, LOGD])
         return x
 
     def from_slow(x, tc_pool, ph_pool, rng):
+        """Inverse of `to_slow`: exponentiate log-dims, enforce m1 >= m2, and
+        re-attach time/phase by resampling the marginalized pools."""
         th = np.zeros((len(x), len(PARAM_NAMES)))
         xx = x.copy()
         xx[:, LOGD] = np.exp(xx[:, LOGD])
@@ -235,6 +244,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         return th
 
     def gm_logpdf_sym(gm, x):
+        """Gaussian-mixture log-density symmetrized under the m1<->m2 label
+        swap (the mixture is fit in slow space where mass ordering is enforced)."""
         xs = x.copy()
         xs[:, [0, 1]] = x[:, [1, 0]]
         return np.logaddexp(gm.score_samples(x), gm.score_samples(xs))
@@ -248,6 +259,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                     initargs=(raw_strain, psds, center_gps, f_min, approximant))
 
     def eval_ll(th):
+        """Evaluate the log-likelihood for all rows of `th` in parallel across
+        the worker pool."""
         return np.concatenate(pool.map(_eval_chunk,
                                        np.array_split(th, max(npool * 8, 8))))
 
@@ -256,6 +269,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         t0 = original flow proposal and t1 = L * pi. Largest b with
         ESS >= target under the current stage proposal g_s."""
         def ess_at(b):
+            """Fractional effective sample size of the tempered weights at
+            inverse-temperature `b` under the current stage proposal."""
             lw = (1 - b) * log_t0 + b * log_t1 - log_g_s
             m = np.isfinite(lw)
             if m.sum() < 10:

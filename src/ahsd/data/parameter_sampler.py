@@ -126,6 +126,8 @@ class ParameterSampler:
         return p
 
     def sample_batch(self, n: int, event_type: Optional[str] = None) -> List[Dict]:
+        """Sample `n` independent parameter dicts (optionally forcing an event
+        type; otherwise drawn from the configured population mix)."""
         return [self.sample_parameters(event_type) for _ in range(n)]
 
     # ── Internal ──────────────────────────────────────────────────────────────
@@ -142,6 +144,8 @@ class ParameterSampler:
         return float(d3 ** (1.0 / 3.0))
 
     def _sample_masses(self, event_type: str) -> Dict:
+        """Sample component masses for the event type (log-flat for BBH / the BH
+        of NSBH, uniform for NS components), returned with mass_1 >= mass_2."""
         et = event_type.upper()
         if et == "BBH":
             lo, hi = _MASS_BBH
@@ -164,6 +168,8 @@ class ParameterSampler:
         return {"mass_1": max(m1, m2), "mass_2": min(m1, m2)}
 
     def _sample_spins(self, event_type: str) -> Dict:
+        """Sample aligned-spin magnitudes a1/a2 from the per-event-type ranges
+        (BH vs NS components differ for NSBH)."""
         et = event_type.upper()
         if et == "BNS":
             a1 = float(self.rng.uniform(*_SPIN_BNS))

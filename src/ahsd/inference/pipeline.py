@@ -42,13 +42,21 @@ def load_model(path: str, device: Optional[str] = None):
     model = LeanNPE(premerger=a.get("premerger", False),
                     psd_cond=a.get("psd_cond", False) or False,
                     psd_bands=a.get("psd_bands", 16),
-                    encoder_type=a.get("encoder_type", "conv"))
+                    encoder_type=a.get("encoder_type", "conv"),
+                    mass_param=a.get("mass_param", "m1m2"),
+                    geom_phase_residual=a.get("geom_phase_residual", False),
+                    mf_tokens=a.get("mf_tokens", False),
+                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), q_embed_dim=a.get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     meta = {"model_path": str(path), "model_epoch": int(ckpt.get("epoch", -1)),
             "model_val_nll": float(ckpt.get("val_nll", float("nan"))),
             "premerger": bool(a.get("premerger", False)),
             "psd_cond": bool(model.psd_cond),
+            # the distance prior the model learned (None = unrecorded, i.e. a
+            # checkpoint trained before dataset provenance) and its support
+            "train_distance_prior": a.get("dataset_distance_prior"),
+            "dist_range": [float(v) for v in model.dist_range.tolist()],
             "device": device}
     _MODEL_CACHE[key] = (model, meta)
     return model, meta
@@ -77,6 +85,8 @@ def _log_prob_physical(model: LeanNPE, y_norm: torch.Tensor,
 
 
 def _memory_mb() -> dict:
+    """Return a peak-memory snapshot (process RSS, and MPS allocation when
+    available) for the inference diagnostics block."""
     m = {"rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6, 1)}
     if torch.backends.mps.is_available():
         try:

@@ -1,3 +1,7 @@
+"""Config dataclasses for the AHSD overlap pipeline (detectors, waveform,
+PriorityNet, adaptive subtractor, bias corrector) plus their YAML loader.
+Note: LeanNPE training is configured via argparse in experiments/train_lean_npe.py,
+not these classes."""
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import yaml
@@ -5,13 +9,15 @@ import numpy as np
 
 @dataclass
 class DetectorConfig:
+    """Detector settings: name, optional PSD file, sampling rate, segment duration."""
     name: str
     psd_file: Optional[str] = None
     sampling_rate: int = 4096
     duration: float = 8.0  
 
-@dataclass 
+@dataclass
 class WaveformConfig:
+    """Waveform-generation settings: approximant, low/reference frequency, duration."""
     approximant: str = "IMRPhenomPv2"
     f_lower: float = 20.0
     f_ref: float = 20.0
@@ -19,13 +25,17 @@ class WaveformConfig:
 
 @dataclass
 class PriorityNetConfig:
-    hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128, 64])  
+    """PriorityNet architecture/training hyperparameters (layer widths, dropout,
+    learning rate, batch size)."""
+    hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128, 64])
     dropout: float = 0.25  
     learning_rate: float = 0.0005  
     batch_size: int = 16  
 
 @dataclass
 class AdaptiveSubtractorConfig:
+    """Adaptive-subtractor settings: neural-PE flow config and the number of
+    uncertainty realizations drawn during subtraction."""
     neural_pe: Dict = field(default_factory=lambda: {
         'flow_layers': 8,
         'hidden_features': 256,  
@@ -36,11 +46,14 @@ class AdaptiveSubtractorConfig:
 
 @dataclass
 class BiasCorrectorConfig:
-    hidden_dims: List[int] = field(default_factory=lambda: [256, 128, 64])  
+    """Bias-corrector network settings (layer widths, training epochs)."""
+    hidden_dims: List[int] = field(default_factory=lambda: [256, 128, 64])
     training_epochs: int = 1500  
 
 @dataclass
 class AHSDConfig:
+    """Top-level pipeline config aggregating the component configs plus global
+    settings (max overlaps, SNR threshold, seed); build one with `from_yaml`."""
     detectors: List[DetectorConfig]
     waveform: WaveformConfig
     priority_net: PriorityNetConfig

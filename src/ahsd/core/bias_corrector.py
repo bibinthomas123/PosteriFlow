@@ -39,6 +39,7 @@ class ResidualMLP(nn.Module):
         ])
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Project the input and pass it through the residual MLP blocks."""
         x = self.input_proj(x)
         for block in self.blocks:
             x = x + block(x)  # Residual connection
@@ -1441,6 +1442,8 @@ class BiasCorrector(nn.Module):
         
         # IMPROVED Loss function with robust gradients + VARIANCE CORRECTION
         def loss_function(corrections_pred, uncertainties_pred, variance_scales_pred, corrections_true, quality_weights):
+            """Uncertainty- and quality-weighted training loss for the bias
+            corrector: per-parameter MSE scaled by predicted uncertainty."""
             # Compute per-parameter MSE with uncertainty weighting
             # Shape: (batch, 9) each
             squared_errors = (corrections_pred - corrections_true) ** 2

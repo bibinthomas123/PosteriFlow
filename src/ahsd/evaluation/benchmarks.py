@@ -13,7 +13,10 @@ from scipy.optimize import minimize
 from scipy.stats import multivariate_normal
 
 class StandardHierarchicalSubtraction:
-    
+    """Baseline overlap handler: extract and subtract signals in a fixed
+    highest-SNR-first order (the classical hierarchical approach AHSD is
+    benchmarked against)."""
+
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.subtraction_order = 'snr_based'  # Always highest SNR first

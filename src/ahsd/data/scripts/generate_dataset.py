@@ -59,6 +59,11 @@ def setup_logging(output_dir: Path, verbose: bool = False):
         handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)],
     )
 
+    # bilby logs every WaveformGenerator instantiation at INFO through its own
+    # handler (unaffected by the root level above), burying the progress bar.
+    # Keep it at WARNING unless --verbose.
+    logging.getLogger("bilby").setLevel(logging.DEBUG if verbose else logging.WARNING)
+
     logger = logging.getLogger(__name__)
     logger.info(f"Logging to: {log_file}")
 
@@ -194,6 +199,13 @@ def generate_dataset_from_config(config: Dict) -> Dict:
             },
         )
 
+        # Provenance: the resolved config (distance_prior, distance_ranges, mix)
+        # travels with the data, so a trained model's effective prior stays
+        # recoverable after the dataset itself is deleted.
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        with open(Path(output_dir) / "dataset_config.yaml", "w") as f:
+            yaml.safe_dump({**config, "n_samples": n_samples}, f, sort_keys=False)
+
         # Generate dataset
         summary = generator.generate_dataset(
             n_samples=n_samples,
@@ -217,7 +229,8 @@ def generate_dataset_from_config(config: Dict) -> Dict:
         logger.info("=" * 70)
         logger.info("DATASET GENERATION COMPLETE")
         logger.info("=" * 70)
-        logger.info(f"✓ Generated {summary.get('n_samples', 0):,} samples")
+        # GWDatasetGenerator reports the count as "generated"
+        logger.info(f"✓ Generated {summary.get('n_samples', summary.get('generated', 0)):,} samples")
 
         generation_time = summary.get("generation_time")
         if generation_time and generation_time > 0:
@@ -437,7 +450,8 @@ def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
         try:
             # Load samples from train split (first 5 chunks for better sampling)
             train_dir = output_dir / "train"
-            chunk_files = sorted(train_dir.glob("*chunk*.pkl"))[:5]
+            # the generator writes batch_XXXXX.pkl (older runs: *chunk*.pkl)
+            chunk_files = sorted(train_dir.glob("*.pkl"))[:5]
 
             for chunk_file in chunk_files:
                 try:

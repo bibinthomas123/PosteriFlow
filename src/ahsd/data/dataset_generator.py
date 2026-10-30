@@ -49,6 +49,8 @@ DETECTORS: List[str] = ["H1", "L1", "V1"]
 # ─────────────────────────────────────────────────────────────────────────────
 
 def encode_edge_type(detected: list) -> int:
+    """Encode a detected-signals list as an integer overlap label
+    (n_detected - 1, floored at 0)."""
     n = len([d for d in (detected or []) if d])
     return max(0, n - 1)
 
@@ -381,6 +383,7 @@ class GWDatasetGenerator:
     # ── I/O ──────────────────────────────────────────────────────────────────
 
     def _save_batch(self, samples: List[Dict], batch_id: int) -> None:
+        """Pickle a batch of generated samples to `batches/batch_XXXXX.pkl`."""
         batch_dir = self.output_dir / "batches"
         batch_dir.mkdir(parents=True, exist_ok=True)
         path = batch_dir / f"batch_{batch_id:05d}.pkl"
@@ -430,6 +433,8 @@ class GWDatasetGenerator:
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
 def _run_from_config(config_path: str) -> None:
+    """Load a YAML data config and run the dataset generator end-to-end
+    (the CLI entry point for `generate_dataset.py`)."""
     import yaml
     logging.basicConfig(
         level=logging.INFO,

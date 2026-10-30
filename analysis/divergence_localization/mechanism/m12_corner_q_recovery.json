@@ -1,0 +1,12 @@
+{
+  "corner_n": 293,
+  "corner_pred_q_med": 0.5906130075454712,
+  "corner_true_q_med": 0.8604895007355011,
+  "corner_qgt95": 0.16365187713310578,
+  "corner_rail": 0.14218430082494896,
+  "others_pred_q_med": 0.5284181237220764,
+  "others_qgt95": 0.06879451122703562,
+  "twin_n": 7,
+  "twin_pred_q_med": 0.4612993597984314,
+  "twin_pred_m1_med": 54.75750732421875
+}

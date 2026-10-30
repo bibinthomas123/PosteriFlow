@@ -223,6 +223,8 @@ class UniversalConfigReader:
         import re
         
         def replace_var(match):
+            """Regex callback: expand a ${VAR} reference to its environment
+            value, or leave it unchanged if the variable is unset."""
             var_name = match.group(1)
             return os.environ.get(var_name, match.group(0))
         

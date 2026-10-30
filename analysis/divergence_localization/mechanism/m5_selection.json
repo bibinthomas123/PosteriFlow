@@ -1,0 +1,37 @@
+{
+  "val_nll": {
+    "coherentC(ep40)": 1.368,
+    "long_run(ep18)": 0.996,
+    "long_run(ep19)": 0.864
+  },
+  "calibration": {
+    "coherentC(ep40)": {
+      "railing": 0.049856834143706105,
+      "cov90_err": 0.00024065615637736126,
+      "cov90": 0.8997593438436227,
+      "sbc_pass": 0.9090909090909091,
+      "ci_nll": 0.8715193867683411
+    },
+    "long_run(ep18)": {
+      "railing": 0.05806625,
+      "cov90_err": 0.001318181818181774,
+      "cov90": 0.9013181818181818,
+      "sbc_pass": 0.45454545454545453,
+      "ci_nll": 0.3502938747406006
+    },
+    "long_run(ep19)": {
+      "railing": 0.8943774999999999,
+      "cov90_err": 0.20533333333333337,
+      "cov90": 0.6946666666666667,
+      "sbc_pass": 0.0,
+      "ci_nll": NaN
+    }
+  },
+  "selected": {
+    "min val_nll (CURRENT)": "long_run(ep19)",
+    "min railing": "coherentC(ep40)",
+    "min |cov90-0.90|": "coherentC(ep40)",
+    "max SBC pass (=min -pass)": "coherentC(ep40)",
+    "min combined calib score": "coherentC(ep40)"
+  }
+}

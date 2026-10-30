@@ -32,6 +32,8 @@ WARN = "WARN"
 
 
 def check(label: str, cond: bool, detail: str = "", warn_only: bool = False):
+    """Record and print one physics-validation check (pass / fail / warn) with a
+    detail message."""
     if cond:
         print(f"  [{PASS}] {label}  {detail}")
         return True
@@ -42,12 +44,15 @@ def check(label: str, cond: bool, detail: str = "", warn_only: bool = False):
 
 
 def section(title: str):
+    """Print a section header in the physics-validation report."""
     print(f"\n{'='*70}")
     print(f"  {title}")
     print("=" * 70)
 
 
 def run_all():
+    """Run the full physics-validation suite (SNR scaling, whitening,
+    injection/PSD bookkeeping) and report pass/fail."""
     from ahsd.data.bilby_pipeline import (
         BilbyNoiseGenerator, BilbyWaveformGenerator,
         BilbySignalInjector, BilbyPreprocessor, get_default_psd,

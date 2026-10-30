@@ -57,6 +57,8 @@ def corner_plot(result, save: Optional[str] = None, params: Optional[list] = Non
 
 
 def _corner_fallback(data, names, truths):
+    """Minimal matplotlib corner plot (1-D hists on the diagonal, 2-D hist2d
+    below) used when the optional `corner` package is not installed."""
     k = len(names)
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(k, k, figsize=(2.0 * k, 2.0 * k))
@@ -86,6 +88,8 @@ def _corner_fallback(data, names, truths):
 
 
 def marginals_plot(result, save: Optional[str] = None):
+    """Grid of per-parameter 1-D posterior marginals (median dashed, truth in
+    red when present). Saves to `save` if given; returns the figure."""
     names = result.param_names
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(3, 4, figsize=(15, 9))
@@ -108,6 +112,8 @@ def marginals_plot(result, save: Optional[str] = None):
 
 
 def cdf_plot(result, save: Optional[str] = None):
+    """Grid of per-parameter empirical posterior CDFs (truth in red when
+    present). Saves to `save` if given; returns the figure."""
     names = result.param_names
     with plt.rc_context(_STYLE):
         fig, axes = plt.subplots(3, 4, figsize=(15, 9))
@@ -147,6 +153,9 @@ def reconstruction_plot(result, save: Optional[str] = None, n_draws: int = 50):
                                           replace=False)])
 
     def whitened_waveform(theta_row, det):
+        """Generate the detector `det` waveform for one parameter row and
+        whiten it with the same ASD the data used, matching the preprocessing
+        whitening convention."""
         p = {n: float(theta_row[j]) for j, n in enumerate(result.param_names)}
         # geocent_time is an offset from the window center; the waveform
         # generator's window is centered on _GPS_REF

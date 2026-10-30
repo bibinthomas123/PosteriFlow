@@ -74,6 +74,8 @@ def _to_bilby_params(params: Dict) -> Dict:
 
 
 def _get_approximant(params: Dict) -> str:
+    """Pick the waveform approximant: an explicit `approximant` if given, else
+    the default for the event type (BNS/NSBH/BBH)."""
     explicit = params.get("approximant")
     if explicit:
         return explicit
@@ -85,6 +87,8 @@ def _get_approximant(params: Dict) -> str:
 
 
 def _get_source_model(params: Dict):
+    """Return the (frequency-domain source model, parameter-conversion) pair for
+    the event type — binary-neutron-star for BNS, binary-black-hole otherwise."""
     et = str(params.get("event_type", "bbh")).lower()
     if "bns" in et:
         return _gwsource.lal_binary_neutron_star, _gwconv.convert_to_lal_binary_neutron_star_parameters
@@ -92,6 +96,8 @@ def _get_source_model(params: Dict):
 
 
 def _make_psd(psd_dict: Optional[Dict]) -> PowerSpectralDensity:
+    """Build a bilby PowerSpectralDensity from a {frequencies, psd} dict, or
+    fall back to the aLIGO design curve when none is provided."""
     if psd_dict and "psd" in psd_dict and "frequencies" in psd_dict:
         freqs = np.asarray(psd_dict["frequencies"], dtype=np.float64)
         psd = np.maximum(np.asarray(psd_dict["psd"], dtype=np.float64), 1e-55)
@@ -101,6 +107,8 @@ def _make_psd(psd_dict: Optional[Dict]) -> PowerSpectralDensity:
 
 def _make_ifo(detector_name: str, psd_dict: Optional[Dict],
               sample_rate: float, duration: float) -> Interferometer:
+    """Construct an empty bilby Interferometer for `detector_name` with the
+    given PSD and a [20 Hz, Nyquist] analysis band."""
     ifo = get_empty_interferometer(detector_name)
     ifo.power_spectral_density = _make_psd(psd_dict)
     ifo.minimum_frequency = 20.0
@@ -129,6 +137,8 @@ class _GWOSCCache:
         self._loaded = False
 
     def _load(self):
+        """Lazily load all cached real-noise `.npz` segments from the cache
+        directory into memory (once); silently skips unreadable files."""
         if self._loaded:
             return
         self._loaded = True
@@ -173,6 +183,7 @@ class _GWOSCCache:
         return window.astype(np.float64)
 
     def available_detectors(self) -> List[str]:
+        """Return the detectors for which real-noise segments are cached."""
         self._load()
         return list(self._segments.keys())
 
@@ -211,6 +222,9 @@ class BilbyWaveformGenerator:
             return np.zeros(self.n_samples, dtype=np.float64)
 
     def _generate(self, params: Dict, detector: str) -> np.ndarray:
+        """Generate the projected time-domain detector response: build the bilby
+        waveform generator for the event type, project the polarizations onto
+        `detector` over a merger-centered window, and IFFT to the time domain."""
         p = _to_bilby_params(params)
         source_model, param_conv = _get_source_model(p)
         approximant = _get_approximant(p)
@@ -248,6 +262,7 @@ class BilbyWaveformGenerator:
 
     # Keep old API compatible
     def generate_waveform(self, params: Dict, detector_name: str, psd=None) -> np.ndarray:
+        """Back-compat alias for `generate` returning float32 strain."""
         return self.generate(params, detector_name).astype(np.float32)
 
 
@@ -288,6 +303,8 @@ class BilbyNoiseGenerator:
 
     def _synthetic_noise(self, detector: str, psd_dict: Optional[Dict],
                          seed: Optional[int]) -> np.ndarray:
+        """Generate synthetic colored Gaussian noise via bilby, falling back to
+        the manual FFT generator if bilby fails."""
         try:
             return self._bilby_noise(detector, psd_dict, seed)
         except Exception as e:
@@ -296,6 +313,8 @@ class BilbyNoiseGenerator:
 
     def _bilby_noise(self, detector: str, psd_dict: Optional[Dict],
                      seed: Optional[int]) -> np.ndarray:
+        """Draw colored Gaussian noise from the detector PSD using bilby's
+        `set_strain_data_from_power_spectral_density`."""
         if seed is not None:
             np.random.seed(seed)
         ifo = _make_ifo(detector, psd_dict, self.sample_rate, self.duration)
@@ -307,6 +326,8 @@ class BilbyNoiseGenerator:
         return ifo.strain_data.time_domain_strain.astype(np.float64)
 
     def _fft_noise(self, psd_dict: Optional[Dict], seed: Optional[int]) -> np.ndarray:
+        """Manual colored-noise fallback: color white Gaussian noise by the PSD
+        in the frequency domain with the correct E[|X|^2]=n*S_n scaling."""
         rng = np.random.default_rng(seed)
         n = self.n_samples
         white = rng.standard_normal(n)
@@ -323,6 +344,7 @@ class BilbyNoiseGenerator:
 
     # Keep old API compatible
     def generate_colored_noise(self, psd_dict=None, seed=None) -> np.ndarray:
+        """Back-compat alias: generate one H1 noise realization."""
         return self.generate("H1", psd_dict, seed)
 
     def add_glitches(self, noise: np.ndarray, glitch_prob: float = 0.1,
@@ -369,6 +391,8 @@ class BilbyPreprocessor:
 
     def preprocess(self, strain: np.ndarray, psd_dict: Optional[Dict],
                    detector: str = "H1", whiten: bool = True, **kwargs) -> np.ndarray:
+        """Whiten `strain` with the detector PSD (bilby matched-filter norm),
+        or return it unchanged when `whiten=False`."""
         if not whiten:
             return np.asarray(strain, dtype=np.float32)
         try:
@@ -379,6 +403,9 @@ class BilbyPreprocessor:
 
     def _bilby_whiten(self, strain: np.ndarray, psd_dict: Optional[Dict],
                       detector: str = "H1") -> np.ndarray:
+        """Whiten one detector's time-domain strain via bilby's
+        `whitened_time_domain_strain` (unit-variance output for a correct PSD),
+        padded/cropped back to the input length."""
         strain64 = np.asarray(strain, dtype=np.float64)
         n = len(strain64)
         dur = n / self.sample_rate
@@ -463,6 +490,8 @@ class BilbySignalInjector:
 
     def _snr_integral(self, waveform: np.ndarray,
                       psd_dict: Optional[Dict]) -> float:
+        """Optimal matched-filter SNR sqrt(4 int |h(f)|^2 / S_n(f) df) above
+        f_lower, using the continuous-FT normalization of rfft."""
         n = len(waveform)
         dt = 1.0 / self.sample_rate
         freqs = np.fft.rfftfreq(n, dt)
@@ -483,6 +512,7 @@ class BilbySignalInjector:
         return float(np.sqrt(max(snr_sq, 0.0)))
 
     def _resize(self, arr: np.ndarray, target_len: int) -> np.ndarray:
+        """Crop or zero-pad `arr` to exactly `target_len` samples."""
         if len(arr) == target_len:
             return arr
         if len(arr) > target_len:
@@ -492,6 +522,8 @@ class BilbySignalInjector:
     # ── Compatibility shim ──────────────────────────────────────────────────
 
     def inject_signal(self, noise, params, detector_name, psd_dict=None):
+        """Compatibility shim: inject one signal and return (float32 strain,
+        metadata dict with detector / measured SNR / injection time)."""
         strain, snr = self.inject(noise, params, detector_name, psd_dict)
         meta = {"detector": detector_name, "actual_snr": snr,
                 "injection_time": params.get("geocent_time_gps",
@@ -500,6 +532,8 @@ class BilbySignalInjector:
 
     def inject_overlapping_signals(self, noise, signal_params_list, detector_name,
                                    psd_dict=None):
+        """Compatibility shim: inject multiple overlapping signals into `noise`
+        and return the combined float32 strain plus per-signal metadata."""
         combined, snrs = self.inject_multiple(noise, signal_params_list,
                                                detector_name, psd_dict)
         meta_list = [{"detector": detector_name, "signal_index": i,

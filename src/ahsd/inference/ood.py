@@ -60,6 +60,9 @@ def fit_context_stats(model, cache_dir: str, out_path: str,
 
 
 def load_context_stats(checkpoint_path: str) -> Optional[dict]:
+    """Load the context-OOD reference stats (validation-context mean, inverse
+    covariance, reference Mahalanobis distances) from `ood_stats.npz` beside the
+    checkpoint. Returns None if the file is absent (OOD scoring then skipped)."""
     p = Path(checkpoint_path).parent / "ood_stats.npz"
     if not p.exists():
         return None

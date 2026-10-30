@@ -113,6 +113,8 @@ def collect_predictions(model, dataset, device="cpu", max_samples=None):
 
 
 def main():
+    """CLI: fit and save the affine output calibration for a trained
+    PriorityNet."""
     ap = argparse.ArgumentParser(
         description="Post-training calibration for PriorityNet output range"
     )

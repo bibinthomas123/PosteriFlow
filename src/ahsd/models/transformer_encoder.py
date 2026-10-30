@@ -264,6 +264,9 @@ class LightweightTransformerEncoder(nn.Module):
         if return_dict:
             # Return object compatible with Whisper encoder output format
             class EncoderOutput:
+                """Lightweight wrapper exposing `last_hidden_state`, matching the
+                HuggingFace/Whisper encoder-output interface."""
+
                 def __init__(self, last_hidden_state):
                     self.last_hidden_state = last_hidden_state
 

@@ -23,6 +23,8 @@ CI_LEVELS = [0.50, 0.68, 0.90, 0.95]
 
 
 def _git_commit() -> str:
+    """Return the current repo HEAD commit hash for reproducibility metadata,
+    or "unknown" if git is unavailable."""
     try:
         return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
                               text=True, timeout=5).stdout.strip() or "unknown"
@@ -32,6 +34,12 @@ def _git_commit() -> str:
 
 @dataclass
 class PosteriorResult:
+    """Container for one event's posterior: `samples` [N, 11] in physical units
+    plus their log-probabilities, and the entry point for point estimates
+    (`median`/`mean`/`map_estimate`), credible intervals, a printable `summary`,
+    plots, prior reweighting, and `save`. Also carries preprocessing/diagnostics
+    (OOD gating, railing) and optional injected `truth`."""
+
     samples: np.ndarray                     # [N, 11] physical units
     log_prob: np.ndarray                    # [N] log q(theta|d) in physical units
     param_names: List[str]
@@ -45,14 +53,18 @@ class PosteriorResult:
     # ── point estimates ──────────────────────────────────────────────────────
     @property
     def median(self) -> Dict[str, float]:
+        """Per-parameter posterior median (the recommended point estimate)."""
         return {n: float(np.median(self.samples[:, j])) for j, n in enumerate(self.param_names)}
 
     @property
     def mean(self) -> Dict[str, float]:
+        """Per-parameter posterior mean."""
         return {n: float(self.samples[:, j].mean()) for j, n in enumerate(self.param_names)}
 
     @property
     def map_estimate(self) -> Dict[str, float]:
+        """Maximum-a-posteriori sample (highest log-prob), excluding
+        boundary-railed samples whose density is unreliable unless all railed."""
         # boundary-clamped samples have unreliable density values; exclude
         # them from the argmax unless everything railed
         lp = self.log_prob
@@ -62,18 +74,26 @@ class PosteriorResult:
         return {n: float(self.samples[i, j]) for j, n in enumerate(self.param_names)}
 
     def credible_interval(self, level: float = 0.90) -> Dict[str, tuple]:
+        """Central (equal-tailed) credible interval per parameter at `level`
+        (e.g. 0.90 -> the 5th–95th percentiles)."""
         lo = np.quantile(self.samples, 0.5 - level / 2, axis=0)
         hi = np.quantile(self.samples, 0.5 + level / 2, axis=0)
         return {n: (float(lo[j]), float(hi[j])) for j, n in enumerate(self.param_names)}
 
     def covariance(self) -> np.ndarray:
+        """Sample covariance matrix of the posterior [11, 11]."""
         return np.cov(self.samples.T)
 
     def correlation(self) -> np.ndarray:
+        """Sample correlation matrix of the posterior [11, 11]."""
         return np.corrcoef(self.samples.T)
 
     # ── summary ──────────────────────────────────────────────────────────────
     def summary(self, print_it: bool = True) -> Dict:
+        """Build (and, if `print_it`, pretty-print) a per-parameter summary —
+        median/mean/MAP/std, credible intervals, truth coverage when available —
+        plus diagnostics, refinement gate, and confidence verdict. Returns the
+        summary dict."""
         med, mp = self.median, self.map_estimate
         cis = {f"{int(l*100)}%": self.credible_interval(l) for l in CI_LEVELS}
         rows = []
@@ -129,18 +149,23 @@ class PosteriorResult:
 
     # ── plots (delegated) ────────────────────────────────────────────────────
     def corner(self, save: Optional[str] = None, **kw):
+        """Corner plot of the posterior (delegates to `plots.corner_plot`)."""
         from ahsd.inference.plots import corner_plot
         return corner_plot(self, save=save, **kw)
 
     def plot_marginals(self, save: Optional[str] = None):
+        """Per-parameter 1-D marginal plot (delegates to `plots.marginals_plot`)."""
         from ahsd.inference.plots import marginals_plot
         return marginals_plot(self, save=save)
 
     def plot_cdfs(self, save: Optional[str] = None):
+        """Per-parameter empirical CDF plot (delegates to `plots.cdf_plot`)."""
         from ahsd.inference.plots import cdf_plot
         return cdf_plot(self, save=save)
 
     def plot_reconstruction(self, save: Optional[str] = None, n_draws: int = 50):
+        """Overlay posterior-predictive waveform draws on the whitened data
+        (delegates to `plots.reconstruction_plot`)."""
         from ahsd.inference.plots import reconstruction_plot
         return reconstruction_plot(self, save=save, n_draws=n_draws)
 
@@ -204,10 +229,9 @@ class PosteriorResult:
     def reweight_to_uniform_masses(self, m_lo: float = 5.0):
         """Importance-reweight the posterior from the TRAINING mass prior
         (log-uniform in m1; log-uniform in m2 given m2 < m1) to the standard
-        LVC uniform-in-component-masses prior. Distance (d^2 ~ comoving
-        volume) and spin (uniform) priors already match LVC conventions, so
-        masses are the only dimension that needs correcting when comparing
-        against published posteriors.
+        LVC uniform-in-component-masses prior. Spin priors (uniform) match LVC
+        conventions; the distance prior only does for models trained on a
+        comoving_d2 dataset — see reweight_distance_prior().
 
         w(theta) = p_target/p_train ∝ m1 * m2 * log(m1/m_lo)
 
@@ -238,8 +262,54 @@ class PosteriorResult:
             rail_mask=(self.rail_mask[idx] if self.rail_mask is not None else None))
         return out
 
+    def reweight_distance_prior(self, train_prior: Optional[str] = None,
+                                target: str = "comoving_d2"):
+        """Importance-reweight luminosity distance from the prior the model
+        was TRAINED on to `target`, e.g. to compare against LVC posteriors
+        (which use p(d) ∝ d²). Datasets from configs/data_config_fixed.yaml
+        are uniform in d, so their models' raw medians sit NEARER than an
+        LVC-prior analysis of the same data would.
+
+        train_prior: "uniform" | "comoving_d2"; defaults to the checkpoint's
+        recorded `train_distance_prior`. Raises if neither is available
+        rather than guessing — the effective prior of older checkpoints was
+        never recorded and differs by source type (measured 2026-10-30).
+
+        w(d) = p_target(d)/p_train(d). Returns a NEW PosteriorResult with
+        systematically resampled draws; ESS in diagnostics["distance_reweighting"].
+        """
+        train_prior = train_prior or self.config.get("train_distance_prior")
+        priors = ("uniform", "comoving_d2")
+        if train_prior not in priors or target not in priors:
+            raise ValueError(
+                f"train_prior={train_prior!r}, target={target!r}: both must be one of "
+                f"{priors}. This checkpoint did not record its training distance "
+                "prior; pass train_prior explicitly.")
+        jd = self.param_names.index("luminosity_distance")
+        d = self.samples[:, jd].astype(np.float64)
+        logw = 2.0 * np.log(d) * ((target == "comoving_d2") - (train_prior == "comoving_d2"))
+        w = np.exp(logw - logw.max())
+        w = w / w.sum()
+        ess = float(1.0 / (w ** 2).sum())
+        n = len(w)
+        u = (np.random.default_rng(0).uniform() + np.arange(n)) / n
+        idx = np.searchsorted(np.cumsum(w), u).clip(0, n - 1)
+        return PosteriorResult(
+            samples=self.samples[idx], log_prob=self.log_prob[idx],
+            param_names=list(self.param_names), trigger_gps=self.trigger_gps,
+            truth=self.truth, prepared=self.prepared,
+            diagnostics={**self.diagnostics,
+                         "distance_reweighting": {"from": train_prior, "to": target,
+                                                  "importance_ess": round(ess, 1),
+                                                  "n": n}},
+            config=dict(self.config),
+            rail_mask=(self.rail_mask[idx] if self.rail_mask is not None else None))
+
     # ── persistence ──────────────────────────────────────────────────────────
     def save(self, outdir: str, plots: bool = True) -> Path:
+        """Write the full result to `outdir` — posterior samples/log-probs, a
+        JSON summary + reproducibility metadata, and (if `plots`) the corner /
+        marginal / CDF / reconstruction figures. Returns the output Path."""
         out = Path(outdir)
         out.mkdir(parents=True, exist_ok=True)
         np.save(out / "posterior_samples.npy", self.samples)

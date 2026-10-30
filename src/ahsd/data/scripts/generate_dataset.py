@@ -207,6 +207,7 @@ def generate_dataset_from_config(config: Dict) -> Dict:
             yaml.safe_dump({**config, "n_samples": n_samples}, f, sort_keys=False)
 
         # Generate dataset
+        t_gen = time.time()
         summary = generator.generate_dataset(
             n_samples=n_samples,
             overlap_fraction=config.get("overlap_fraction", 0.5),
@@ -232,7 +233,9 @@ def generate_dataset_from_config(config: Dict) -> Dict:
         # GWDatasetGenerator reports the count as "generated"
         logger.info(f"✓ Generated {summary.get('n_samples', summary.get('generated', 0)):,} samples")
 
-        generation_time = summary.get("generation_time")
+        generation_time = summary.get("generation_time") or (time.time() - t_gen)
+        if not summary.get("samples_per_second") and generation_time > 0:
+            summary["samples_per_second"] = summary.get("generated", 0) / generation_time
         if generation_time and generation_time > 0:
             logger.info(
                 f"✓ Time elapsed: {generation_time:.1f}s ({generation_time/60:.1f}m) @ {summary.get('samples_per_second', 0):.2f} samples/s"
@@ -332,17 +335,17 @@ def validate_premerger_samples(samples: List[Dict], logger) -> bool:
         # Check if this is a pre-merger sample
         metadata = sample.get("metadata", {})
         is_premerger = (
-            metadata.get("phase") == "inspiral_only"
+            metadata.get("is_premerger") is True
+            or metadata.get("phase") == "inspiral_only"
             or metadata.get("merger_in_window") is False
-            or "time_to_merger" in metadata
         )
 
         if is_premerger:
             premerger_count += 1
 
             # Validate has time_to_merger
-            if "time_to_merger" in metadata:
-                ttm = metadata["time_to_merger"]
+            ttm = metadata.get("time_to_merger")
+            if ttm is not None:
                 if ttm > 0:
                     valid_premerger += 1
 
@@ -490,7 +493,8 @@ def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
     logger.info("  [3/6] Checking overlap distribution...")
 
     try:
-        n_overlap = sum(1 for s in samples if s and s.get("is_overlap", False))
+        n_overlap = sum(1 for s in samples
+                        if s and (s.get("is_overlap") or (s.get("n_signals") or 1) > 1))
         n_single = len(samples) - n_overlap
         actual_overlap_frac = n_overlap / len(samples) if samples else 0
         expected_overlap_frac = config.get("overlap_fraction", 0.4)
@@ -564,9 +568,9 @@ def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
                 if isinstance(params, list):
                     params = params[0] if len(params) > 0 else None
 
-                if params is not None and isinstance(params, dict):
-                    if "target_snr" in params and params["target_snr"] > 0:
-                        integrity_checks["has_valid_snr"] += 1
+                if (sample.get("network_snr") or 0) > 0 or (
+                        isinstance(params, dict) and (params.get("target_snr") or 0) > 0):
+                    integrity_checks["has_valid_snr"] += 1
 
         validation_report["checks"]["integrity"] = integrity_checks
 
@@ -588,7 +592,7 @@ def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
         for sample in samples:
             if sample is None:
                 continue
-            event_type = sample.get("type", "unknown")
+            event_type = str(sample.get("event_type") or sample.get("type") or "unknown")
             event_counts[event_type] += 1
 
         total = sum(event_counts.values())
@@ -618,11 +622,12 @@ def validate_generated_dataset(output_dir: Path, config: Dict) -> Dict:
             if sample is None:
                 continue
 
-            # Get SNR from parameters
-            snr = None
+            # network SNR of the stored sample; older samples kept target_snr
+            # inside the parameters instead
+            snr = sample.get("network_snr")
             params = sample.get("parameters")
 
-            if params:
+            if snr is None and params:
                 if isinstance(params, list):
                     # Overlapping - take max SNR
                     snrs = [

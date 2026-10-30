@@ -171,3 +171,9 @@ analysis/ci/**
 analysis/posterior_bias_audit/**/*_result.json
 # bilby's auto-generated sampler diagnostics (checkpoint trace/run/stats plots)
 analysis/**/*_checkpoint_*.png
+
+# ============================================================================
+# Model checkpoints and run folders (never pushed)
+# ============================================================================
+model/
+models/

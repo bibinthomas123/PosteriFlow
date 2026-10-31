@@ -29,34 +29,18 @@ BILBY_NAMES = {"mass_1": "mass_1", "mass_2": "mass_2",
                "geocent_time": "geocent_time", "a1": "a_1", "a2": "a_2"}
 
 
-def build_priors(center_time: float, time_halfwidth: float = 0.2,
-                 mass_range=(5.0, 100.0), spin_max: float = 0.99,
-                 distance_range=(50.0, 2100.0)):
-    """Training-prior-matched priors; aligned spins (tilts fixed at 0)."""
-    import bilby
-    priors = bilby.gw.prior.BBHPriorDict()
-    priors["mass_1"] = bilby.core.prior.Uniform(*mass_range, "mass_1")
-    priors["mass_2"] = bilby.core.prior.Uniform(*mass_range, "mass_2")
-    priors["mass_ratio"].maximum = 1.0  # overridden by component masses below
-    del priors["chirp_mass"], priors["mass_ratio"]
-    priors["luminosity_distance"] = bilby.gw.prior.UniformSourceFrame(
-        *distance_range, name="luminosity_distance")
-    priors["a_1"] = bilby.core.prior.Uniform(0, spin_max, "a_1")
-    priors["a_2"] = bilby.core.prior.Uniform(0, spin_max, "a_2")
-    priors["tilt_1"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["tilt_2"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["phi_12"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["phi_jl"] = bilby.core.prior.DeltaFunction(0.0)
-    priors["geocent_time"] = bilby.core.prior.Uniform(
-        center_time - time_halfwidth, center_time + time_halfwidth, "geocent_time")
-    return priors
+def build_priors(center_time: float, time_halfwidth: float = 0.2, prior=None):
+    """bilby priors with the training support of `prior` (a
+    ahsd.inference.priors.TrainingPrior; default: the BBH training prior)."""
+    from ahsd.inference.priors import TrainingPrior
+    prior = prior or TrainingPrior.for_class("BBH")
+    return prior.bilby_priors(center_time, time_halfwidth)
 
 
 def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
                 outdir, label: str, center_gps: float = GPS_REF,
                 trigger_offset: float = 0.0, nlive: int = 300, npool: int = 4,
-                mass_range=(5.0, 100.0), spin_max: float = 0.99,
-                distance_range=(50.0, 2100.0), minimum_frequency: float = 20.0,
+                prior=None, minimum_frequency: float = 20.0,
                 approximant: str = "IMRPhenomXP"):
     """Nested sampling on unwhitened 4 s strains keyed by detector.
 
@@ -64,6 +48,8 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
     generated data, the trigger GPS for real events).
     trigger_offset: expected merger offset from the window center (the
     injection's geocent_time for simulated data; 0 for trigger-centered data).
+    prior: TrainingPrior of the model being compared (default: BBH); sets the
+    mass, spin and distance support and the distance shape.
     Returns the bilby result with posterior in absolute GPS time.
     """
     import bilby
@@ -89,8 +75,7 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
                             "reference_frequency": 50.0,
                             "minimum_frequency": minimum_frequency})
 
-    priors = build_priors(center_gps + trigger_offset, mass_range=mass_range,
-                          spin_max=spin_max, distance_range=distance_range)
+    priors = build_priors(center_gps + trigger_offset, prior=prior)
     like = bilby.gw.likelihood.GravitationalWaveTransient(
         interferometers=ifos, waveform_generator=wfg, priors=priors,
         phase_marginalization=True, distance_marginalization=True,
@@ -127,8 +112,10 @@ def run_comparison(result, raw_strain: Dict[str, np.ndarray], outdir: str,
         trig_off = float(injection["geocent_time"])
 
     t0 = time.time()
+    from ahsd.inference.priors import TrainingPrior
     res = run_dynesty(raw_strain, result.prepared.psds, out / "bilby", "event",
-                      center_gps=center, trigger_offset=trig_off, nlive=nlive)
+                      center_gps=center, trigger_offset=trig_off, nlive=nlive,
+                      prior=TrainingPrior.from_meta(result.config))
     t_dyn = time.time() - t0
     post = align_conventions(res.posterior, center)
 

@@ -80,6 +80,7 @@ def load_model(path: str, device: Optional[str] = None):
             # the distance prior the model learned (None = unrecorded, i.e. a
             # checkpoint trained before dataset provenance) and its support
             "train_distance_prior": a.get("dataset_distance_prior"),
+            "train_distance_ranges": a.get("dataset_distance_ranges"),
             "dist_range": [float(v) for v in model.dist_range.tolist()],
             # source classes in the training data (None = unrecorded)
             "train_event_types": a.get("dataset_event_types"),

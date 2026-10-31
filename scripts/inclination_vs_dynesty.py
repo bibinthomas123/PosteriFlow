@@ -24,6 +24,7 @@ from ahsd.data.bilby_pipeline import (BilbyNoiseGenerator, BilbyPreprocessor,  #
                                       BilbySignalInjector, get_default_psd)
 from ahsd.inference.dynesty_bridge import GPS_REF, align_conventions, run_dynesty  # noqa: E402
 from ahsd.inference.pipeline import load_model  # noqa: E402
+from ahsd.inference.priors import TrainingPrior  # noqa: E402
 from ahsd.models.lean_npe import PARAM_NAMES  # noqa: E402
 
 DETS, SR, DUR, TARGET_SNR = ["H1", "L1", "V1"], 4096, 4.0, 25.0
@@ -61,7 +62,7 @@ for i, d in enumerate(DETS):
 net = float(np.sqrt(sum(s ** 2 for s in snrs)))
 print(f"ev{a.index:02d}: theta_jn {theta}  sky ({ra}, {dec})  dL {P['luminosity_distance']:.0f} Mpc  network SNR {net:.1f}", flush=True)
 
-model, _ = load_model(a.model, "cpu")
+model, model_meta = load_model(a.model, "cpu")
 x = torch.from_numpy(np.stack([white[d] for d in DETS])).float()[None]
 ab = torch.zeros(1, 3, model.encoder.psd_bands) if model.psd_cond else None  # design noise
 torch.manual_seed(0)
@@ -71,7 +72,8 @@ np.save(out / "npe_samples.npy", npe)
 
 t0 = time.time()
 res = run_dynesty(raw, psds, out / "bilby", f"ev{a.index:02d}", center_gps=GPS_REF,
-                  trigger_offset=0.0, nlive=a.nlive, npool=a.npool, distance_range=(10.0, 5000.0))
+                  trigger_offset=0.0, nlive=a.nlive, npool=a.npool,
+                  prior=TrainingPrior.from_meta(model_meta, "BBH"))
 post = align_conventions(res.posterior, GPS_REF)
 
 

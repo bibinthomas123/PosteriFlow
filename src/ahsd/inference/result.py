@@ -185,8 +185,8 @@ class PosteriorResult:
         data["log_likelihood"] = self.log_prob  # closest available analogue
         center = self.trigger_gps if self.trigger_gps is not None else 0.0
         try:
-            from ahsd.inference.dynesty_bridge import build_priors
-            priors = build_priors(center)
+            from ahsd.inference.priors import TrainingPrior
+            priors = TrainingPrior.from_meta(self.config).bilby_priors(center)
         except Exception:
             priors = None
         res = bilby.core.result.Result(

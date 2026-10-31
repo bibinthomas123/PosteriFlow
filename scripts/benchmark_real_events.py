@@ -116,12 +116,11 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
         for det in found:
             i0 = int(round((gps - starts[det]) * 4096)) - 8192
             raw4[det] = np.asarray(raw[det][i0: i0 + 16384], dtype=np.float64)
-        kw = {}
+        from ahsd.inference.priors import TrainingPrior
+        kw = {"prior": TrainingPrior.from_meta(result.config, meta["type"])}
         if meta["type"] == "BNS":
-            kw = {"mass_range": (1.0, 3.0), "spin_max": 0.05,
-                  "distance_range": (5.0, 300.0), "minimum_frequency": 60.0}
-            rec["caveats"].append("BNS: f_min=60 Hz so the waveform fits the 4 s "
-                                  "window; BNS mass/spin/distance priors")
+            kw["minimum_frequency"] = 60.0
+            rec["caveats"].append("BNS: f_min=60 Hz so the waveform fits the 4 s window")
         t0 = time.time()
         res = run_dynesty(raw4, prepared.psds, out / name / "bilby", name,
                           center_gps=gps, trigger_offset=0.0,

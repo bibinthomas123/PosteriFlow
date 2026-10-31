@@ -33,37 +33,7 @@ import torch
 from ahsd.models.lean_npe import PARAM_NAMES
 from ahsd.inference.preprocessing import DETECTORS, SAMPLE_RATE, DURATION
 
-# training-prior constants (parameter_sampler)
-M_LO, M_HI = 5.0, 100.0
-D_LO, D_HI = 50.0, 2100.0
-TC_HW = 1.6           # scaler range; sampler draws +-1.5
-A_HI = 0.99
-
 _J = {n: i for i, n in enumerate(PARAM_NAMES)}
-
-
-def log_prior_training(theta: np.ndarray) -> np.ndarray:
-    """Closed-form log of the BBH training prior (unnormalized constants
-    kept: they cancel in self-normalized IS). theta: [N, 11] physical."""
-    m1, m2 = theta[:, _J["mass_1"]], theta[:, _J["mass_2"]]
-    d = theta[:, _J["luminosity_distance"]]
-    dec = theta[:, _J["dec"]]
-    th = theta[:, _J["theta_jn"]]
-    tc = theta[:, _J["geocent_time"]]
-    a1, a2 = theta[:, _J["a1"]], theta[:, _J["a2"]]
-
-    lp = np.zeros(len(theta))
-    ok = ((m2 > M_LO) & (m1 < M_HI) & (m2 <= m1) &
-          (d > D_LO) & (d < D_HI) & (np.abs(tc) < TC_HW) &
-          (a1 >= 0) & (a1 <= A_HI) & (a2 >= 0) & (a2 <= A_HI) &
-          (th > 0) & (th < np.pi) & (np.abs(dec) < np.pi / 2))
-    # conditional log-uniform masses: p ∝ 1/(m1 m2 log(m1/lo))
-    lp -= np.log(m1) + np.log(m2) + np.log(np.maximum(np.log(m1 / M_LO), 1e-9))
-    lp += 2.0 * np.log(d)                      # comoving-volume distance
-    lp += np.log(np.maximum(np.cos(dec), 1e-12))   # isotropic dec
-    lp += np.log(np.maximum(np.sin(th), 1e-12))    # isotropic inclination
-    lp[~ok] = -np.inf
-    return lp
 
 
 def symmetrized_log_q(theta_np, model, prepared, rank: int = 0,
@@ -192,7 +162,10 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
 
     rank = int(result.config.get("rank", 0))
     log_q = symmetrized_log_q(theta, model, result.prepared, rank, device)
-    log_pi = log_prior_training(theta)
+    # the prior the model was trained on, for the class the event is analysed as
+    from ahsd.inference.priors import TrainingPrior
+    prior = TrainingPrior.from_meta(result.config)
+    log_pi = prior.log_prob(theta)
 
     # Marginalized-space correction: the likelihood integrates phase and tc
     # analytically, so the proposal density must be the corresponding
@@ -333,7 +306,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         xs_cur = to_slow(cur_theta)
         cur_log_g = gm_logpdf_sym(gm, xs_cur)
         cur_log_g0 = gm_logpdf_sym(gm0, xs_cur)
-        cur_log_pi = log_prior_training(cur_theta)
+        cur_log_pi = prior.log_prob(cur_theta)
         log_l = eval_ll(cur_theta)
         beta_prev = beta
     pool.terminate()

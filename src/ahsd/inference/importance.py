@@ -70,11 +70,13 @@ def symmetrized_log_q(theta_np, model, prepared, rank: int = 0,
 _WORKER = {}
 
 
-def _init_worker(raw, psds, center_gps, f_min, approximant):
+def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
     """Multiprocessing pool initializer: build the bilby GW likelihood once per
     worker (phase- and time-marginalized analytically) and cache it + the noise
     log-likelihood in the module-level `_WORKER` dict for `_eval_chunk`."""
     import bilby
+    from ahsd.inference.priors import TrainingPrior
+    wf = TrainingPrior.for_class(event_type).waveform()
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
         if det not in raw:
@@ -90,8 +92,8 @@ def _init_worker(raw, psds, center_gps, f_min, approximant):
         ifos.append(ifo)
     wfg = bilby.gw.WaveformGenerator(
         duration=DURATION, sampling_frequency=SAMPLE_RATE,
-        frequency_domain_source_model=bilby.gw.source.lal_binary_black_hole,
-        parameter_conversion=bilby.gw.conversion.convert_to_lal_binary_black_hole_parameters,
+        frequency_domain_source_model=wf["source_model"],
+        parameter_conversion=wf["parameter_conversion"],
         waveform_arguments={"waveform_approximant": approximant,
                             "reference_frequency": 50.0,
                             "minimum_frequency": f_min})
@@ -123,10 +125,15 @@ def _eval_chunk(rows):
             mass_1=p["mass_1"], mass_2=p["mass_2"],
             luminosity_distance=p["luminosity_distance"], ra=p["ra"],
             dec=p["dec"], theta_jn=p["theta_jn"], psi=p["psi"],
-            phase=0.0, geocent_time=_WORKER["center"],  # marginalized out
+            # marginalized out. With time marginalization bilby searches the
+            # time prior RELATIVE to geocent_time = the data start time (it
+            # replaces the prior by that delta itself in run_sampler); passing
+            # the window centre shifts the search 2 s late and misses the
+            # signal entirely
+            phase=0.0, geocent_time=_WORKER["center"] - DURATION / 2,
             time_jitter=0.0,  # bilby time-marginalization bookkeeping param
             a_1=p["a1"], a_2=p["a2"], tilt_1=0.0, tilt_2=0.0,
-            phi_12=0.0, phi_jl=0.0)
+            phi_12=0.0, phi_jl=0.0, lambda_1=0.0, lambda_2=0.0)
         try:
             out[k] = like.log_likelihood() - _WORKER["noise_ll"]
         except Exception:
@@ -137,8 +144,8 @@ def _eval_chunk(rows):
 def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        psds: Dict[str, dict], center_gps: float,
                        model_path: Optional[str] = None,
-                       npool: int = 4, f_min: float = 20.0,
-                       approximant: str = "IMRPhenomXP",
+                       npool: int = 4, f_min: Optional[float] = None,
+                       approximant: Optional[str] = None,
                        device: str = "cpu"):
     """Reweight a PosteriorResult against the true likelihood.
 
@@ -166,6 +173,14 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     from ahsd.inference.priors import TrainingPrior
     prior = TrainingPrior.from_meta(result.config)
     log_pi = prior.log_prob(theta)
+    # waveform model of the class; band that fits the 4 s segment for the
+    # lightest chirp mass / earliest merger among the proposal samples
+    from ahsd.inference.priors import chirp_mass, window_fmin
+    approximant = approximant or prior.waveform()["approximant"]
+    if f_min is None:
+        mc_lo = float(np.quantile(chirp_mass(theta[:, _J["mass_1"]], theta[:, _J["mass_2"]]), 0.005))
+        tc_lo = float(np.quantile(theta[:, _J["geocent_time"]], 0.005))
+        f_min = window_fmin(mc_lo, DURATION / 2 + tc_lo)
 
     # Marginalized-space correction: the likelihood integrates phase and tc
     # analytically, so the proposal density must be the corresponding
@@ -229,7 +244,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
 
     ctx = mp.get_context("spawn")
     pool = ctx.Pool(npool, initializer=_init_worker,
-                    initargs=(raw_strain, psds, center_gps, f_min, approximant))
+                    initargs=(raw_strain, psds, center_gps, f_min, approximant,
+                              prior.event_type))
 
     def eval_ll(th):
         """Evaluate the log-likelihood for all rows of `th` in parallel across
@@ -332,6 +348,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "efficiency": round(ess / n, 4),
                 "wall_s": round(time.time() - t0, 1),
                 "approximant": approximant,
+                "f_min": round(f_min, 1),
                 "note": "phase and geocent_time are analytically marginalized "
                         "in the weights; their columns in the corrected "
                         "samples retain PROPOSAL values (use the NPE result "

@@ -479,10 +479,15 @@ Contents
   ├ priors.py: TrainingPrior — the prior the checkpoint was trained on for
   │   the event's class: per-class mass and spin bounds from the generator,
   │   distance range and shape from the dataset (recorded in checkpoint
-  │   args). Single source for importance sampling and dynesty
-  ├ importance.py: importance sampling against the bilby likelihood
-  │   (w = L·π / q with π = TrainingPrior, symmetrized for the mass
-  │   ordering); effective sample size reported
+  │   args). Single source for importance sampling and dynesty, including
+  │   the waveform model (the generator's per class, zero tides) and the
+  │   likelihood band: templates start where the lightest plausible chirp
+  │   mass enters the 4 s segment (window_fmin), so long BNS/NSBH templates
+  │   do not wrap and the likelihood sees the same band as the network
+  ├ importance.py: importance sampling against the bilby likelihood,
+  │   phase- and time-marginalized (bilby's time reference = data start
+  │   time), w = L·π / q with π = TrainingPrior, symmetrized for the mass
+  │   ordering; effective sample size reported
   ├ dynesty_bridge.py: full dynesty run with matched conventions (same PSDs,
   │   epoch, TrainingPrior support) for events flagged for refinement
   └ result.py: PosteriorResult — medians, credible intervals, correlations,

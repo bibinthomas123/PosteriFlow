@@ -10,6 +10,11 @@ records in its args (dataset_distance_ranges, dataset_distance_prior).
     prior = TrainingPrior.from_meta(meta, event_type="BNS")
     log_pi = prior.log_prob(theta)              # [N, 11] physical
     priors = prior.bilby_priors(center_time)    # bilby PriorDict
+    wf = prior.waveform()                       # source model, approximant
+    f_min = window_fmin(mc_min, t_merger)       # band that fits a 4 s segment
+
+The waveform model is the generator's for the class, with zero tidal
+deformability (the generator never sets lambda_1/lambda_2, so bilby uses 0).
 """
 from __future__ import annotations
 
@@ -26,6 +31,26 @@ _J = {n: i for i, n in enumerate(PARAM_NAMES)}
 # merger-time half-width: the sampler draws +-1.5 s, time-shift augmentation
 # adds up to +-0.1 s; the scaler range is +-1.6 s
 TC_HALF_WIDTH = 1.6
+
+F_LOWER = 20.0
+
+
+def chirp_mass(m1, m2):
+    return (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+
+
+def window_fmin(mc_min: float, t_merger: float, f_lower: float = F_LOWER) -> float:
+    """Lowest template frequency for a likelihood on one 4 s segment: the
+    signal of the lightest chirp mass considered must lie between the segment
+    start and the merger (t_merger s after the start), with the generator's
+    margin (1.2 x leading-order chirp time + 0.25 s, BilbyWaveformGenerator.
+    fits_window). Below it a frequency-domain template wraps around the
+    segment. This is also the band of the signal that is inside the window
+    the network sees, so the comparison uses the same information."""
+    tau_max = max((t_merger - 0.25) / 1.2, 0.05)
+    f = 100.0 * (2.18 * (1.21 / max(mc_min, 1e-3)) ** (5.0 / 3.0) / tau_max) ** (3.0 / 8.0)
+    return float(max(f_lower, f))
+
 
 # per class: (mass_1 range, mass_2 range, a1 max, a2 max)
 _CLASS = {
@@ -73,6 +98,24 @@ class TrainingPrior:
             et = event_type or meta.get("event_type") or "BBH"
         return cls.for_class(et, meta.get("train_distance_ranges"),
                              meta.get("train_distance_prior"))
+
+    @property
+    def mc_min(self) -> float:
+        """Smallest chirp mass in the support."""
+        return float(chirp_mass(self.m1_range[0], self.m2_range[0]))
+
+    def waveform(self) -> Dict:
+        """The generator's waveform model for this class: bilby source model,
+        parameter conversion, approximant and the sampler's conversion
+        function."""
+        import bilby
+        from ahsd.data.bilby_pipeline import _APPROXIMANTS, _get_source_model
+        source, conversion = _get_source_model({"event_type": self.event_type})
+        bns = self.event_type == "BNS"
+        return {"source_model": source, "parameter_conversion": conversion,
+                "approximant": _APPROXIMANTS[self.event_type.lower()],
+                "sampler_conversion": (bilby.gw.conversion.generate_all_bns_parameters if bns
+                                       else bilby.gw.conversion.generate_all_bbh_parameters)}
 
     # ── log density ──────────────────────────────────────────────────────
     def log_prob(self, theta: np.ndarray) -> np.ndarray:
@@ -129,6 +172,10 @@ class TrainingPrior:
         priors["a_2"] = P.Uniform(0, self.a2_max, "a_2")
         for k in ("tilt_1", "tilt_2", "phi_12", "phi_jl"):
             priors[k] = P.DeltaFunction(0.0)
+        if self.event_type == "BNS":
+            # the BNS source model needs tidal parameters; training used 0
+            priors["lambda_1"] = P.DeltaFunction(0.0, name="lambda_1")
+            priors["lambda_2"] = P.DeltaFunction(0.0, name="lambda_2")
         priors["geocent_time"] = P.Uniform(center_time - time_halfwidth,
                                            center_time + time_halfwidth, "geocent_time")
         return priors

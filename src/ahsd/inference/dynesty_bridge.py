@@ -40,8 +40,8 @@ def build_priors(center_time: float, time_halfwidth: float = 0.2, prior=None):
 def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
                 outdir, label: str, center_gps: float = GPS_REF,
                 trigger_offset: float = 0.0, nlive: int = 300, npool: int = 4,
-                prior=None, minimum_frequency: float = 20.0,
-                approximant: str = "IMRPhenomXP"):
+                prior=None, minimum_frequency: Optional[float] = None,
+                approximant: Optional[str] = None, mc_min: Optional[float] = None):
     """Nested sampling on unwhitened 4 s strains keyed by detector.
 
     center_gps: absolute GPS of the window center (GPS_REF for pipeline-
@@ -49,10 +49,22 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
     trigger_offset: expected merger offset from the window center (the
     injection's geocent_time for simulated data; 0 for trigger-centered data).
     prior: TrainingPrior of the model being compared (default: BBH); sets the
-    mass, spin and distance support and the distance shape.
+    mass, spin and distance support, the distance shape and the waveform
+    model (the generator's for the class; approximant overrides it).
+    minimum_frequency: default = the band that fits the 4 s segment for the
+    lightest chirp mass considered (mc_min, default the prior's smallest),
+    so long BNS/NSBH templates do not wrap (priors.window_fmin).
     Returns the bilby result with posterior in absolute GPS time.
     """
     import bilby
+    from ahsd.inference.priors import TrainingPrior, window_fmin
+    prior = prior or TrainingPrior.for_class("BBH")
+    wf = prior.waveform()
+    approximant = approximant or wf["approximant"]
+    time_halfwidth = 0.2
+    if minimum_frequency is None:
+        minimum_frequency = window_fmin(mc_min or prior.mc_min,
+                                        DURATION / 2 + trigger_offset - time_halfwidth)
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
         if det not in raw:
@@ -69,13 +81,13 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
 
     wfg = bilby.gw.WaveformGenerator(
         duration=DURATION, sampling_frequency=SAMPLE_RATE,
-        frequency_domain_source_model=bilby.gw.source.lal_binary_black_hole,
-        parameter_conversion=bilby.gw.conversion.convert_to_lal_binary_black_hole_parameters,
+        frequency_domain_source_model=wf["source_model"],
+        parameter_conversion=wf["parameter_conversion"],
         waveform_arguments={"waveform_approximant": approximant,
                             "reference_frequency": 50.0,
                             "minimum_frequency": minimum_frequency})
 
-    priors = build_priors(center_gps + trigger_offset, prior=prior)
+    priors = build_priors(center_gps + trigger_offset, time_halfwidth, prior=prior)
     like = bilby.gw.likelihood.GravitationalWaveTransient(
         interferometers=ifos, waveform_generator=wfg, priors=priors,
         phase_marginalization=True, distance_marginalization=True,
@@ -84,7 +96,7 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
     return bilby.run_sampler(
         likelihood=like, priors=priors, sampler="dynesty", nlive=nlive,
         dlogz=0.5, sample="rwalk", walks=60, naccept=20,
-        conversion_function=bilby.gw.conversion.generate_all_bbh_parameters,
+        conversion_function=wf["sampler_conversion"],
         outdir=str(outdir), label=label, resume=False, clean=True,
         save=True, plot=False, npool=npool)
 
@@ -112,10 +124,13 @@ def run_comparison(result, raw_strain: Dict[str, np.ndarray], outdir: str,
         trig_off = float(injection["geocent_time"])
 
     t0 = time.time()
-    from ahsd.inference.priors import TrainingPrior
+    from ahsd.inference.priors import TrainingPrior, chirp_mass
+    m1 = result.samples[:, result.param_names.index("mass_1")]
+    m2 = result.samples[:, result.param_names.index("mass_2")]
     res = run_dynesty(raw_strain, result.prepared.psds, out / "bilby", "event",
                       center_gps=center, trigger_offset=trig_off, nlive=nlive,
-                      prior=TrainingPrior.from_meta(result.config))
+                      prior=TrainingPrior.from_meta(result.config),
+                      mc_min=float(np.quantile(chirp_mass(m1, m2), 0.005)))
     t_dyn = time.time() - t0
     post = align_conventions(res.posterior, center)
 

@@ -53,12 +53,12 @@ def make_event(sampler, noise_gen, injector, prep, psds, seed, min_snr=8.0):
             return raw, white, p, net
 
 
-def run_dynesty(raw, psds, injection, outdir, label, nlive=300):
+def run_dynesty(raw, psds, injection, outdir, label, nlive=300, mc_min=None):
     """Run a bilby/dynesty nested-sampling run on one injection and return its
     posterior samples (the reference for the LeanNPE comparison)."""
     # single implementation lives in ahsd.inference.dynesty_bridge
     return _run_dynesty(raw, psds, outdir, label, center_gps=GPS_REF,
-                        trigger_offset=injection["geocent_time"], nlive=nlive)
+                        trigger_offset=injection["geocent_time"], nlive=nlive, mc_min=mc_min)
 
 
 def main():
@@ -106,7 +106,10 @@ def main():
                    theta_jn=p["theta_jn"], psi=p["psi"], phase=p["phase"],
                    geocent_time=p["geocent_time"], a_1=p["a1"], a_2=p["a2"])
         t0 = time.time()
-        res = run_dynesty(raw, psds, inj, out / f"event{k}_bilby", f"ev{k}", nlive=args.nlive)
+        # likelihood band: from the lightest chirp mass the NPE posterior allows
+        mc_npe = (npe_samples[:, 0] * npe_samples[:, 1]) ** 0.6 / (npe_samples[:, 0] + npe_samples[:, 1]) ** 0.2
+        res = run_dynesty(raw, psds, inj, out / f"event{k}_bilby", f"ev{k}", nlive=args.nlive,
+                          mc_min=float(np.quantile(mc_npe, 0.005)))
         t_dyn = time.time() - t0
 
         post = res.posterior

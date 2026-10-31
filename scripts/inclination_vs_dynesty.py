@@ -73,7 +73,8 @@ np.save(out / "npe_samples.npy", npe)
 t0 = time.time()
 res = run_dynesty(raw, psds, out / "bilby", f"ev{a.index:02d}", center_gps=GPS_REF,
                   trigger_offset=0.0, nlive=a.nlive, npool=a.npool,
-                  prior=TrainingPrior.from_meta(model_meta, "BBH"))
+                  prior=TrainingPrior.from_meta(model_meta, "BBH"),
+                  mc_min=float(np.quantile((npe[:, 0] * npe[:, 1]) ** 0.6 / (npe[:, 0] + npe[:, 1]) ** 0.2, 0.005)))
 post = align_conventions(res.posterior, GPS_REF)
 
 

@@ -117,10 +117,14 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
             i0 = int(round((gps - starts[det]) * 4096)) - 8192
             raw4[det] = np.asarray(raw[det][i0: i0 + 16384], dtype=np.float64)
         from ahsd.inference.priors import TrainingPrior
-        kw = {"prior": TrainingPrior.from_meta(result.config, meta["type"])}
-        if meta["type"] == "BNS":
-            kw["minimum_frequency"] = 60.0
-            rec["caveats"].append("BNS: f_min=60 Hz so the waveform fits the 4 s window")
+        from ahsd.inference.priors import chirp_mass, window_fmin
+        prior = TrainingPrior.from_meta(result.config, meta["type"])
+        mc_min = float(np.quantile(chirp_mass(npe[:, 0], npe[:, 1]), 0.005))
+        kw = {"prior": prior, "mc_min": mc_min}
+        f_min = window_fmin(mc_min, 2.0 - 0.2)
+        if f_min > 20.0:
+            rec["caveats"].append(f"{meta['type']}: likelihood band starts at {f_min:.0f} Hz so "
+                                  "the template fits the 4 s segment (the network sees the same band)")
         t0 = time.time()
         res = run_dynesty(raw4, prepared.psds, out / name / "bilby", name,
                           center_gps=gps, trigger_offset=0.0,

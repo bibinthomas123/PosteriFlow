@@ -217,6 +217,42 @@ def multiview_consistency_loss(model, views_batch, device, psd_cond):
     return ((ctx - mean) ** 2).mean()
 
 
+def profile_training(model, loader, opt, sched, args, device, aux_head):
+    """--profile_steps: time data wait vs GPU step for N training steps
+    (after 20 warm-up steps; includes torch.compile time in the warm-up)."""
+    model.train()
+    sync = torch.cuda.synchronize if device == "cuda" else (lambda: None)
+    t_data, t_step, n = 0.0, 0.0, 0
+    it = iter(loader)
+    for k in range(20 + args.profile_steps):
+        t0 = time.time()
+        try:
+            batch = next(it)
+        except StopIteration:
+            it = iter(loader)
+            batch = next(it)
+        t1 = time.time()
+        strain, params, nsig = (x.to(device, non_blocking=True) for x in batch[:3])
+        asd = batch[4].to(device, non_blocking=True).float() if args.psd_cond else None
+        loss = batch_nll(model, strain.float(), params, nsig, asd_bands=asd,
+                         aux_head=aux_head, aux_w=args.aux_mass, aux_q_embed_w=args.aux_q_embed)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+        opt.step()
+        sched.step()
+        sync()
+        t2 = time.time()
+        if k >= 20:
+            t_data += t1 - t0; t_step += t2 - t1; n += 1
+    tot = t_data + t_step
+    mem = torch.cuda.max_memory_allocated() / 2**30 if device == "cuda" else 0.0
+    log.info(f"PROFILE batch {args.batch} amp {args.amp} compile {args.compile}: "
+             f"{n / tot:.2f} it/s = {n * args.batch / tot:.0f} events/s | data wait "
+             f"{1e3 * t_data / n:.1f} ms, GPU step {1e3 * t_step / n:.1f} ms per step | "
+             f"peak GPU memory {mem:.1f} GB")
+
+
 def batch_nll(model, strain, params, nsig, asd_bands=None,
               aux_head=None, aux_w=0.0, aux_q_embed_w=0.0, return_context=False):
     """Mean per-signal NLL for a batch of events. Encoder runs ONCE per event;
@@ -453,6 +489,12 @@ def main():
                     help="v2 component dataset: remix noise/shift/distance on the fly "
                          "(builds a memmap cache under <data>/memmap on first use)")
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--amp", choices=["off", "bf16"], default="off",
+                    help="bf16 autocast for the encoder (CUDA only); the flow stays fp32")
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile the encoder (CUDA only)")
+    ap.add_argument("--profile_steps", type=int, default=0,
+                    help="time N training steps (data wait vs GPU step), print, and exit")
     ap.add_argument("--noise_bank", default=None,
                     help="real-noise bank dir (e.g. data/noise_bank); enables real-noise mixing")
     ap.add_argument("--real_noise_prob", type=float, default=0.0,
@@ -1012,7 +1054,18 @@ def main():
                  f"{(45/10)**args.mc_oversample:.1f}x more often than Mc-10")
     train_loader = DataLoader(train_ds, batch_size=args.batch,
                               shuffle=(train_sampler is None), sampler=train_sampler,
-                              num_workers=(args.workers if args.remix else 0))
+                              num_workers=(args.workers if args.remix else 0),
+                              pin_memory=(device == "cuda"))
+    if device == "cuda":
+        if args.amp == "bf16":
+            model.encoder_amp = torch.bfloat16
+            log.info("encoder runs under bf16 autocast (flow fp32)")
+        if args.compile:
+            model.encoder = torch.compile(model.encoder)
+            log.info("encoder compiled with torch.compile")
+    if args.profile_steps:
+        profile_training(model, train_loader, opt, sched, args, device, aux_head)
+        return
     val_loader = DataLoader(EventDataset(va_s, va_p, va_n, va_snr), batch_size=args.batch,
                             shuffle=False, num_workers=0)
 
@@ -1048,10 +1101,10 @@ def main():
             train_iter = train_loader
         for batch in train_iter:
             strain, params, nsig = batch[:3]
-            asd = batch[4].to(device).float() if args.psd_cond else None
-            strain = strain.to(device).float()
-            params = params.to(device)
-            nsig = nsig.to(device)
+            asd = batch[4].to(device, non_blocking=True).float() if args.psd_cond else None
+            strain = strain.to(device, non_blocking=True).float()
+            params = params.to(device, non_blocking=True)
+            nsig = nsig.to(device, non_blocking=True)
             loss, context = batch_nll(model, strain, params, nsig, asd_bands=asd,
                                       aux_head=aux_head, aux_w=args.aux_mass,
                                       aux_q_embed_w=args.aux_q_embed, return_context=True)
@@ -1091,14 +1144,16 @@ def main():
             opt.step()
             sched.step()
             global_step += 1
-            tr_losses.append(loss.item())
-            gnorms.append(float(gn))
-            if hasattr(train_iter, "set_postfix"):
-                pf = dict(nll=f"{tr_losses[-1]:.3f}", gnorm=f"{gnorms[-1]:.1f}")
+            tr_losses.append(loss.detach())
+            gnorms.append(gn.detach())
+            if hasattr(train_iter, "set_postfix") and global_step % 25 == 0:
+                pf = dict(nll=f"{tr_losses[-1].item():.3f}", gnorm=f"{gnorms[-1].item():.1f}")
                 if cons_loss_val is not None:
                     pf["cons"] = f"{cons_loss_val:.4f}"
                 train_iter.set_postfix(**pf)
 
+        tr_losses = torch.stack(tr_losses).float().cpu().numpy()
+        gnorms = torch.stack(gnorms).float().cpu().numpy()
         model.eval()
         va_losses = []
         with torch.no_grad():

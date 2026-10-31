@@ -1,184 +1,558 @@
 POSTERIFLOW — SYSTEM ARCHITECTURE
 =================================
 
-PosteriFlow estimates, in one forward pass, the posterior over 11 parameters
-of the k-th loudest compact-binary signal in 4 s of whitened H1/L1/V1 strain.
+PosteriFlow trains LeanNPE, an amortized neural posterior estimator. Given
+4 s of whitened strain from LIGO Hanford (H1), LIGO Livingston (L1) and Virgo
+(V1), one forward pass returns the posterior over 11 parameters of the k-th
+loudest compact-binary signal in the window. Overlapping signals are handled
+by querying k = 0, 1, 2, ... in turn.
 
-  parameters (fixed order): mass_1, mass_2, luminosity_distance, ra, dec,
-                            theta_jn, psi, phase, geocent_time, a1, a2
+Contents
+   1. Conventions
+   2. End-to-end flow
+   3. Data generation            src/ahsd/data/
+   4. Dataset audit              scripts/audit_dataset.py
+   5. Remixing (training data)   experiments/remix_data.py, experiments/delay_aug.py
+   6. Model                      src/ahsd/models/
+   7. Training                   experiments/train_lean_npe.py
+   8. Certification              scripts/validate_checkpoint.py
+   9. Inference                  src/ahsd/inference/, infer.py
+  10. Models, checkpoints and compatibility
+  11. Cluster pipeline           scripts/run_pipeline.py, scripts/slurm/
+  12. Throughput
 
 
-1. END-TO-END FLOW
-------------------
+1. CONVENTIONS
+==============
 
-  configs/*.yaml
+  Detectors        H1, L1, V1 (fixed order everywhere; a missing detector is
+                   unit white noise, asd_bands 0)
+  Sampling         4096 Hz, 4 s window = 16384 samples per detector
+  Band             20 Hz (f_lower) to 1024 Hz for features; whitening to Nyquist
+  Whitening        h_w(f) = h(f) / sqrt(PSD(f) / (4 df)): unit-variance noise,
+                   so absolute amplitude carries distance and SNR
+  Reference epoch  every simulated event sits at GPS_REF = 1369224018 (window
+                   centre); antenna patterns and sky rotation use this epoch
+  Merger time      geocent_time = merger offset from the window centre [s],
+                   drawn in [-1.5, +1.5]
+  Masses           detector frame, mass_1 >= mass_2 always
+  Spins            aligned spin magnitudes a1, a2
+  Parameters       mass_1, mass_2, luminosity_distance, ra, dec, theta_jn,
+  (fixed order)    psi, phase, geocent_time, a1, a2
+  Rank             signals in a window are ordered by the loudness proxy
+                   Mc^(5/6) / d_L; rank 0 = loudest. The same ordering is used
+                   when building data, when remixing and at inference
+  Network SNR      for whitened data, the optimal SNR is the L2 norm of the
+                   whitened signal (summed over kept detectors)
+
+
+2. END-TO-END FLOW
+==================
+
+  configs/data_config_*.yaml
         │
         ▼
-  ┌──────────────────────────────┐   src/ahsd/data/
-  │ DATA GENERATION (bilby)      │   parameter_sampler → waveform → project onto
-  │ components stored separately │   H1/L1/V1 → whiten → store noise and every
-  └──────────────┬───────────────┘   signal as its own float16 component
-                 ▼
-  ┌──────────────────────────────┐   scripts/audit_dataset.py
-  │ AUDIT                        │   ranges, class mix, distance shape, SNR,
-  └──────────────┬───────────────┘   no wrapped inspirals, duplicates, noise stats
-                 ▼
-  ┌──────────────────────────────┐   experiments/remix_data.py
-  │ REMIX (every epoch)          │   fresh example per event per epoch
-  └──────────────┬───────────────┘
-                 ▼
-  ┌──────────────────────────────┐   experiments/train_lean_npe.py
-  │ TRAIN LeanNPE (pure NLL)     │   calibration-gated checkpoint selection
-  └──────────────┬───────────────┘
-                 ▼
-  ┌──────────────────────────────┐   scripts/validate_checkpoint.py
-  │ CERTIFY                      │   SBC, coverage, railing, real GWTC events
-  └──────────────┬───────────────┘   of the model's classes → HTML report
-                 ▼
-  ┌──────────────────────────────┐   src/ahsd/inference/, infer.py
-  │ INFERENCE                    │   preprocessing → posterior → gating →
-  └──────────────────────────────┘   importance reweighting / dynesty fallback
-
-  On the cluster, scripts/run_pipeline.py chains all of the above (SLURM jobs:
-  generate → audit → train → certify → summary) for the four models.
+  ┌───────────────────────────┐  sample parameters → waveform (bilby) →
+  │ 3. DATA GENERATION         │  project onto H1/L1/V1 → whiten → SNR gate →
+  │    parallel seeded shards  │  store noise and each signal SEPARATELY
+  └─────────────┬─────────────┘  (float16) → merge → memmap cache
+                ▼
+  ┌───────────────────────────┐  hard failures stop the pipeline
+  │ 4. AUDIT                   │
+  └─────────────┬─────────────┘
+                ▼
+  ┌───────────────────────────┐  a different example every epoch: noise
+  │ 5. REMIX                   │  swap / real noise, sky remap, distance
+  │    DataLoader workers      │  rescale, time shift, overlap sum, dropout
+  └─────────────┬─────────────┘
+                ▼
+  ┌───────────────────────────┐  NLL of the flow; per-epoch calibration
+  │ 7. TRAIN LeanNPE           │  diagnostics; calibration-gated
+  └─────────────┬─────────────┘  best_model.pth
+                ▼
+  ┌───────────────────────────┐  SBC, coverage, railing, real-noise gap,
+  │ 8. CERTIFY                 │  real GWTC events → HTML report
+  └─────────────┬─────────────┘
+                ▼
+  ┌───────────────────────────┐  real/simulated strain → whitened window →
+  │ 9. INFERENCE               │  posterior → OOD + refinement gate →
+  └───────────────────────────┘  importance sampling / dynesty fallback
 
 
-2. DATA GENERATION — src/ahsd/data/
------------------------------------
+3. DATA GENERATION — src/ahsd/data/
+===================================
 
-  sample_signal_parameters      masses, spins, sky, orientation, distance
-                                (uniform-in-distance per class), merger time
-  BilbyWaveformGenerator        IMRPhenomXP (BBH), IMRPhenomNSBH (NSBH),
-                                IMRPhenomD_NRTidalv2 (BNS). Signals that
-                                fit the 4 s window are generated directly;
-                                longer inspirals (all BNS/NSBH, light BBH) are
-                                generated over a longer power-of-two segment
-                                starting a few seconds before the window
-  BilbySignalInjector           antenna-pattern projection + time delays
-  BilbyPreprocessor             whitening by the design PSD; long signals are
-                                whitened on the long segment, then cropped
-  DatasetGenerator              events of 1–5 signals (overlap_fraction),
-                                SNR cut on the loudest, train/val/test splits
-  generate_parallel.py          independent seeded shards merged into one
-                                dataset; build_memmap_cache → memmap/ per split
+3.1 Populations (parameter_sampler.py + configs)
 
-  Storage per event: one whitened noise realization + each whitened signal
-  component + its 11 labels. Network SNR = L2 norm of the whitened signal.
+  Class   Fraction   Masses (M☉)                        Spins            Distance (Mpc)   Waveform
+  ─────   ────────   ────────────────────────────────   ──────────────   ──────────────   ─────────────────────
+  BBH     0.65       m1, m2 log-flat in [5, 100]        a1, a2 ≤ 0.99    100 – 4000       IMRPhenomXP
+  NSBH    0.15       BH log-flat [3, 100], NS [1, 2.5]  BH ≤ 0.9,        20 – 1200        IMRPhenomNSBH
+                                                        NS ≤ 0.05
+  BNS     0.15       uniform [1, 2.5]                   a1, a2 ≤ 0.05    10 – 400         IMRPhenomD_NRTidalv2
+  noise   0.05       — (noise-only window, no signal)
 
-  Datasets:  dataset_v3       mixed BBH/NSBH/BNS   (data_config_fixed.yaml)
-             dataset_bbh_v3   BBH only             (data_config_bbh_v3.yaml)
-             dataset_nsbh_v3  NSBH only            (data_config_nsbh_v3.yaml)
-             dataset_bns_v3   BNS only             (data_config_bns_v3.yaml)
+  Fractions are for the mixed dataset (data_config_fixed.yaml). The class
+  datasets (data_config_{bbh,nsbh,bns}_v3.yaml) put 0.95 on one class and
+  0.05 on noise.
+
+  All classes: distance uniform in d_L within the class range (the
+  distance_prior is stored with the dataset so posteriors can be reweighted
+  to a d_L^2 prior at inference); ra uniform; dec = arcsin(U[-1,1]);
+  theta_jn = arccos(U[-1,1]); psi U[0, π); phase U[0, 2π); geocent_time
+  U[-1.5, 1.5] s.
+
+  NSBH black-hole spin is capped at 0.9: IMRPhenomNSBH produces a long
+  unphysical post-merger tail for spins ≥ 0.94 at mass ratios above ~20.
+
+3.2 Events (dataset_generator.py)
+
+  - With probability overlap_fraction = 0.3 an event holds 2–4 signals, each
+    an independent real source (any class in the configured mix), each with
+    its own merger time in the window. Otherwise one signal (or noise only).
+  - Noise: Gaussian, coloured by the design PSD of each detector, with an
+    independent 63-bit seed per event.
+  - SNR gate: the event is kept if the primary signal's network SNR ≥
+    min_snr = 6; secondary signals may be quieter.
+  - Splits: train 0.8 / validation 0.1 / test 0.1.
+
+3.3 Waveforms (bilby_pipeline.py)
+
+  BilbyWaveformGenerator chooses one of two paths per signal:
+
+  fits_window(p):  1.2·τ(20 Hz) + 0.25 s ≤ T/2 + t_c
+                   (τ = leading-order chirp time from 20 Hz to merger)
+
+  short path       frequency-domain generation over the 4 s window, projected
+                   with bilby interferometers, whitened in the window.
+  long path        (all BNS and NSBH, light BBH) generate_long():
+                   the waveform starts PRE_ROLL = 8 s before the window at
+                   f_start = min(f_ref, max(20 Hz, f(τ = T/2 + t_c + 8 s))),
+                   over a power-of-two duration D that holds the inspiral, the
+                   window and POST = 2 s after it. The long series is
+                   projected, whitened as a whole, then cropped to the window,
+                   so the window holds the true last seconds before merger —
+                   the same order of operations as real data (whiten a long
+                   segment, then crop).
+
+  BilbySignalInjector projects onto each detector (antenna patterns and
+  light-travel delays at GPS_REF). BilbyPreprocessor whitens with the design
+  PSD of each detector. Interferometer objects are cached per detector.
+
+3.4 Storage
+
+  Each event stores, per detector: whitened noise and each whitened signal
+  component separately (float16), plus the 11 labels per signal. The total
+  strain is never stored; it is rebuilt by summing components.
+
+  generate_parallel.py   N independent shards (one seed each, one per CPU),
+                         merged into one dataset with relative split
+                         symlinks; writes dataset_config.yaml and
+                         generation_manifest.json
+  build_memmap_cache     per split, data/<ds>/memmap/<split>/:
+                           signals.npy  [M, 3, 16384] float16  every signal
+                           params.npy   [M, 11]       float32  its labels
+                           noise.npy    [N, 3, 16384] float16  noise pool
+                           events.json  [(start, n_signals), ...] per event
 
 
-3. REMIX — experiments/remix_data.py
-------------------------------------
+4. DATASET AUDIT — scripts/audit_dataset.py
+===========================================
 
-  RemixDataset assembles a new example from the stored components each epoch:
+  Run on every dataset before training; exit code ≠ 0 on any hard failure,
+  so SLURM jobs chained with afterok only train on clean data.
 
-  noise swap            any stored Gaussian realization
-  real noise            O2/O3 GWOSC crops (data/noise_bank); signals re-colored
-                        exactly: irfft(rfft(sig) · ASD_design / ASD_measured)
-  time shift            common circular roll           → geocent_time updated
-  distance rescale      amplitude × s                  → d_L ÷ s
-  overlap summation     signals summed, re-sorted by loudness Mc^(5/6)/d_L
-  detector dropout      dropped detector → unit white noise
-  delay/sky remap       experiments/delay_aug.py: sky moved to a scored
-                        candidate, per-detector delays/antenna factors applied,
-                        distance kept inside the model support
+  Structure      event index covers every signal exactly once, contiguous
+  Physics        all labels finite; mass_1 ≥ mass_2; angles and spins in range;
+                 distance inside the model's support (--dist-range)
+  Population     classes present/absent exactly as configured; distance inside
+                 the per-class range; no empty distance decile; overlap
+                 fraction near the config value
+  Signals        finite; no all-zero waveforms; no float16 saturation;
+                 loudest signal per event ≥ min_snr;
+                 post-merger energy: < 1% of a signal's energy may lie more
+                 than 0.5 s after merger (correct signals: ~1e-5, heavy BBH
+                 ≤ 5e-3 from whitening ringing at 20 Hz; an inspiral folded
+                 into the window or a waveform-model breakdown: 1e-2 – 0.5)
+  Noise          finite; whitened std ≈ 1; no near-silent segments
+  Duplicates     exact (hash) checks on parameter sets and noise segments
 
-  Returns (strain [3,16384], params [5,11], n_signals, net_snr, asd_bands).
-  persistent_workers=False so set_epoch() reaches the loader workers.
+
+5. REMIXING — experiments/remix_data.py
+=======================================
+
+  RemixDataset builds a fresh training example from the stored components
+  each epoch. Two RNG streams per epoch slot: rng_sig (signal identity) and
+  rng_noise (noise realization), seeded by (seed, epoch, slot). The trainer
+  calls set_epoch() every epoch; persistent_workers must stay False so the
+  workers receive it.
+
+  Per event, in order:
+
+  Step                Mechanism                                       Labels
+  ─────────────────   ─────────────────────────────────────────────   ─────────────────────────
+  noise               p = real_noise_prob (0.9): real detector noise   —
+                      crop; otherwise a random stored Gaussian
+                      realization
+  sky remap           p = delay_aug (0.5) per signal, delay_aug.py:    ra, dec, psi relabelled
+                      a new sky chosen among 64 candidates with the
+                      closest antenna response; per-detector delays
+                      applied exactly (FFT phase ramp); psi rotated
+                      in closed form
+  distance rescale    amplitude × s, s ~ U[0.75, 1.33]; skipped if     d_L ÷ s
+                      d_L ÷ s leaves the model's distance support
+  time shift          common circular roll ≤ ±0.1 s (signals with      geocent_time += Δt
+                      |t_c| < 1.45 s)
+  overlap sum         components summed                                —
+  re-colouring        real-noise events: the summed signal is moved   —
+                      into the segment's whitening,
+                      irfft(rfft(sig) · ASD_design / ASD_measured)
+                      (exact: whitening is diagonal in frequency;
+                      filter clamped at 50)
+  detector dropout    p = det_dropout (0.2): keep a random detector    —
+                      subset; dropped detectors get fresh noise
+  re-sort             signals re-ordered by Mc^(5/6)/d_L after         rank labels consistent
+                      rescaling
+
+  Output per event: (strain [3,16384], params [5,11] by rank, n_signals,
+  network SNR, asd_bands [3,16]).
+
+  asd_bands         per detector, band-mean of log(design_ASD/measured_ASD)
+                    over 16 log bands from 20 Hz to Nyquist; 0 for Gaussian
+                    noise and dropped detectors. Tells the model how sensitive
+                    each detector was, so whitened amplitude maps to distance.
+
+  Real-noise bank   scripts/download_gwosc_noise_bank.py → data/noise_bank/:
+                    64 s GWOSC segments per detector from O1–O4 (Virgo from
+                    O2 on), each whitened by its own measured PSD (gwpy) and
+                    stored with its ASD on the 4 s rfft grid. Crops are taken
+                    at random positions, with a random time-reversal and sign
+                    flip.
 
 
-4. MODEL — src/ahsd/models/
----------------------------
+6. MODEL — src/ahsd/models/
+===========================
 
-  LeanNPE (lean_npe.py)
+6.1 Overview (LeanNPE, lean_npe.py; encoder = CoherentEncoder)
 
-  whitened strain [B, 3, 16384]
+  strain [B, 3, 16384]  (NaN → 0, clamped to ±100)
      │
-     ├─► asinh ─► conv stem (4 strided Conv1d, no normalization) ─► d_model 192
-     │            + detector embedding + sinusoidal positions
+     ├─ energy branch ──── 16 windows × 3 det: log mean-square of RAW strain
+     │                      MLP 48 → 64 → 64                           [B, 64]
      │
-     ├─► CoherentEncoder branches, injected as tokens into the transformer
-     │     geometry      power-weighted complex coherence |γ|, phase per band,
-     │                   GCC arrival-time delays              → 4 tokens
-     │     MF tokens     per-detector complex overlaps with a fixed (Mc, q)
-     │     (--mf_tokens) template bank (assets/mf_bank_*.npz), alias-free
-     │                   band-limited IFFT; gated into the geometry slots
-     │     polarization  polarization_features.py: best network-SNR template,
-     │     (--pol_features)  per detector pair log|z_I/z_J|, cos/sin Δφ, Δt,
-     │                   per detector asinh SNR (15 values)   → 2 tokens
+     ├─ conv stem ──────── asinh(strain), per detector, shared weights:
+     │                      Conv1d(1→32, k64, s8) GELU
+     │                      Conv1d(32→64, k16, s4) GELU
+     │                      Conv1d(64→128, k8, s4) GELU
+     │                      Conv1d(128→192, k4, s2) GELU
+     │                      → 61 tokens/det + sinusoidal position
+     │                        + detector embedding → 183 tokens × 192
      │
-     ├─► 3-layer pre-norm transformer (6 heads) ─► attention pooling (8 queries)
-     ├─► log-energy branch: 16 windowed log-energies of the raw strain
-     ├─► PSD branch (--psd_cond): per-detector log-ASD vs design in 16 bands
+     ├─ geometry branch ── 201 features → MLP 128 → 4 tokens            (6.2)
+     ├─ MF branch ──────── 3 × K × 4 features → MLP 256 → 128 → 4 tokens,
+     │  (--mf_tokens)       gated and added into the geometry tokens    (6.3)
+     ├─ polarization ───── 15 features → LayerNorm → 128 → 128 → 2 tokens
+     │  (--pol_features)                                                 (6.4)
      │
      ▼
-  context (256) ⊕ rank embedding (32, up to 5 signals)
+  [4 (+2) conditioning tokens | 183 conv tokens]
+     → transformer: 3 pre-norm layers, d = 192, 6 heads, FFN 768, dropout 0.05
+     → attention pooling with 8 learned queries                     [B, 1536]
+     │
+     ├─ PSD branch ─────── asd_bands [3 × 16] → MLP 64 → 32            [B, 32]
      ▼
-  NSFPosteriorFlow (flows.py, nflows): 10 layers, 256 hidden, 16 bins
+  concat [1536 + 64 + 32] → Linear 512 → GELU → Linear 256 = context [B, 256]
+     │
+     ⊕ rank embedding (32, up to 5 signals)                           [B, 288]
      ▼
-  11-D posterior in [-1, 1]  ─► ParamScaler ─► physical units
+  neural spline flow (6.5) → 11-D posterior in [-1, 1] → ParamScaler → physical
 
-  ParamScaler: fixed map, log for masses/distance; mass coordinates mc_q
-  (chirp mass, mass ratio); circular ra/phase/psi wrap at sampling; the
-  distance support (dist_range) is a buffer stored in the checkpoint.
+  Amplitude is never normalized away: the stem sees asinh-compressed strain
+  (monotone, bounded), the energy branch reads the raw strain, and the PSD
+  branch supplies detector sensitivity.
 
-  Per-class choices
-    BBH, mixed   coherent + MF tokens (mf_bank_bbh.npz) + polarization tokens
-    NSBH, BNS    coherent encoder without template tokens
+6.2 Geometry branch (CoherentEncoder._geometry_rel)
 
-  Checkpoint: best_model.pth = {model_state_dict, args, epoch, val_nll,
-  diagnostics}. Load with ahsd.inference.pipeline.load_model(), which rebuilds
-  LeanNPE from args (every constructor flag must be read there and at every
-  other load site).
+  From d_d(f) = rfft(x_d) (orthonormal) over 20–1024 Hz, 16 log-spaced bands:
+
+  log band energy             per detector × band                       48
+  power-weighted coherence    per pair: γ = Σ d_i d_j* / Σ |d_i||d_j|,
+                              as |γ|, cos φ, sin φ per band             144
+  arrival-time delay          per pair: power-weighted mean of the
+                              cross-spectrum phase increment over 4 Hz
+                              (group delay, immune to the constant
+                              polarization phase) + its concentration    6
+  log amplitude ratio         per pair                                    3
+                                                                       ────
+                                                                        201
+
+  Tokens are dropped per sample with probability geom_dropout (0.25) during
+  training, so the conv path stays self-sufficient.
+
+6.3 Matched-filter (MF) tokens (CoherentEncoder._mf_features)
+
+  A fixed bank of unit-norm whitened templates per detector,
+  assets/mf_bank_*.npz (built by build_mf_bank.py):
+
+    mf_bank_bbh.npz    164 templates, 26 chirp masses 4.2–90 M☉ × q grid
+                       {0.06 … 1}, IMRPhenomXP     (BBH and mixed models)
+    mf_bank_nsbh.npz   124 templates               (built, not used)
+    mf_bank_bns.npz     92 templates               (built, not used)
+    mf_bank.npz        original bank, Mc 12–45     (default for old checkpoints)
+
+  For each (detector, template) the complex overlap series is computed by an
+  inverse FFT over only the 4016 in-band bins: an alias-free baseband series
+  at ~1 ms resolution. Within ±1.6 s of the window centre the peak gives four
+  channels: asinh(|z|) in SNR units, cos and sin of the phase at the peak
+  (heterodyne ramp restored), and the peak time. The |z| pattern across the
+  grid is a profile likelihood over (Mc, q): the chirp-phase mass statistic
+  the conv stem cannot extract at low SNR.
+
+  Fusion: "add" (default) multiplies the 4 MF tokens by a zero-initialized
+  gate and adds them to the geometry tokens; "concat" appends them as 4
+  separate tokens with a type embedding. The MF tokens are computed after
+  geometry dropout, so they are always present.
+
+6.4 Polarization tokens (polarization_features.py)
+
+  Each detector records a different combination of the two polarizations:
+  d_I = F+_I h+ + Fx_I hx, with h+ ∝ (1 + cos² ι)/2 and hx ∝ cos ι. Matching
+  every detector with the same template gives one complex number per
+  detector, z_I. Ratios cancel distance and orbital phase:
+
+    z_I / z_J = [F+_I (1 + c²)/2 − i Fx_I c] / [F+_J (1 + c²)/2 − i Fx_J c],   c = cos ι
+
+  so they depend only on sky position, polarization angle and inclination.
+
+  Pass 1  template with the highest network SNR (chunked over templates,
+          keeping only per-template peaks).
+  Pass 2  full overlap series for that template; parabolic sub-sample peak
+          refinement, linear interpolation of the complex value, heterodyne
+          phase restored.
+  Output  per pair (HL, HV, LV): log|z_I/z_J|, cos Δφ, sin Δφ, Δt [ms];
+          per detector: asinh(SNR)                              = 15 features
+
+  Requires --mf_tokens (uses the same bank). Verified against the analytic
+  ratio: phase error 0.006 rad (median), amplitude scatter 1.3%.
+
+6.5 Flow (flows.py, nflows)
+
+  10 × [ ReversePermutation
+         → MaskedPiecewiseRationalQuadraticAutoregressiveTransform
+           (16 bins, linear tails, tail bound 5, 2 residual blocks,
+            256 hidden units, context 288) ]
+  base distribution N(0, I) on 11 dimensions
+
+  Sizes are LeanNPE constructor defaults (flow_layers=10, flow_hidden=256,
+  flow_bins=16), not stored in checkpoint args.
+
+6.6 Parameter scaling (ParamScaler)
+
+  Fixed invertible map physical ↔ [-1, 1]; nothing is fitted.
+
+  Flow coordinate        Range                     Scale
+  ────────────────────   ───────────────────────   ──────
+  chirp mass (mc_q)      0.8 – 95 M☉               log
+  mass ratio q (mc_q)    0.008 – 1                 linear
+  luminosity_distance    dist_range (per model)    log
+  ra                     0 – 2π                    linear, circular
+  dec                    −π/2 – π/2                linear
+  theta_jn               0 – π                     linear
+  psi                    0 – π                     linear, circular
+  phase                  0 – 2π                    linear, circular
+  geocent_time           −1.6 – 1.6 s              linear
+  a1, a2                 0 – 1                     linear
+
+  mass_param = "mc_q" (production): the flow models (log Mc, q) on a box,
+  and q ≤ 1 makes mass_1 ≥ mass_2 hold by construction. Physical interfaces
+  always use (mass_1, mass_2). dist_range is a buffer stored in the state
+  dict (BBH 80–5000, NSBH 15–1600, BNS 7–550, mixed 8–6000 Mpc).
+
+  Sampling: z ~ N(0, I) → flow inverse → circular parameters wrapped
+  exactly, others clamped → physical units.
+
+6.7 Size
+
+  Component                      BBH / mixed     NSBH / BNS
+  ────────────────────────────   ────────────    ──────────
+  conv stem                          199 k          199 k
+  transformer                      1.33 M         1.33 M
+  output projection                 967 k          967 k
+  geometry branch                   141 k          141 k
+  MF branch                         636 k            —
+  polarization branch                68 k            —
+  energy + PSD branches              13 k           13 k
+  encoder total                    3.51 M         2.81 M
+  flow                             6.21 M         6.21 M
+  total                            9.72 M         9.02 M
 
 
-5. TRAINING — experiments/train_lean_npe.py
--------------------------------------------
+7. TRAINING — experiments/train_lean_npe.py
+===========================================
 
-  loss            NLL of the flow (+ optional --aux_mass regression on the
-                  encoder context)
-  validation      fixed Gaussian and real-noise validation sets each epoch;
-                  selection metric = their mean
-  per-epoch       shufΔ (context-shuffle NLL rise), dcorr, dcov50/90, spurious
-  diagnostics     railing, base concentration, high-SNR coverage, SBC, corner
-                  table, basin probe (BBH models)
-  selection       best_model.pth = lowest selection metric among epochs with
-                  spurious railing ≤ --max_spurious_railing; last_model.pth and
-                  epoch_XXXX.pth are always written
+  Loss          mean NLL over all signals present: the encoder runs once per
+                event, the flow once per rank present in the batch.
+                --aux_mass 1.0 adds a SmoothL1 regression of the rank-0
+                (Mc, q) from the encoder context (training only).
+  Optimizer     AdamW, lr 3e-4, weight decay 1e-5, gradient clip 5
+  Schedule      linear warmup 500 steps, cosine decay to 1% of peak
+  Batch         128 events; 40 epochs (class models), 80 (mixed model)
+  Data          RemixDataset, 12 loader workers, pinned memory
+
+  Per epoch
+    validation NLL     fixed Gaussian validation set, and a fixed real-noise
+                       validation set when a noise bank is used
+    diagnostics        on 1024 validation events × 128 posterior samples:
+                       shufΔ    NLL rise when contexts are shuffled across
+                                events (the encoder is being used)
+                       dcorr    correlation of posterior median vs true d_L
+                       dcov     distance 50/90% coverage
+                       rail     spurious railing: samples pinned at a prior
+                                bound whose truth is not near it
+                       zc       E‖z‖²/D of the truth in base space (1 = calibrated)
+                       covHi    mass/distance 90% coverage at high SNR
+                       sbc      fraction of parameters passing SBC
+                       corner   per-parameter error table
+    basin probe        BBH models only: 6 fixed heavy-BBH injections that
+                       detect a collapse to equal masses
+
+  Checkpoint selection
+    selection metric   mean of Gaussian and real-noise validation NLL
+    calibration gate   spurious railing ≤ 0.10 (optional high-SNR coverage)
+    best_model.pth     best metric among calibrated epochs (epochs passing
+                       the basin probe rank first); best-NLL fallback until
+                       a calibrated epoch exists
+    also written       last_model.pth every epoch, epoch_XXXX.pth every
+                       --ckpt_every epochs, history.json
+
+  Options       --amp bf16 (encoder under autocast, flow fp32), --compile
+                (torch.compile on the encoder), --profile_steps N
+                (time data wait vs GPU step and exit)
 
 
-6. INFERENCE — src/ahsd/inference/
-----------------------------------
+8. CERTIFICATION — scripts/validate_checkpoint.py
+=================================================
 
-  pipeline.infer()       GWOSC event / local strain / injection
-     preprocessing       fetch, whiten with the measured PSD, compute asd_bands
-     resolve_model       class model (CLASS_MODELS) for --event-type, else mixed
-     sample              LeanNPE.sample_posterior(rank=k)
-     ood / gating        context OOD score + railing + width → confidence;
-                         refinement gate flags known hard regions
-     importance          likelihood importance reweighting
-     dynesty_bridge      full sampler for events flagged LOW confidence
-     result              PosteriorResult: median, intervals, diagnostics,
-                         distance-prior reweighting, plots
+  Runs automatically after each training; writes analysis/ci/<model>/
+  report.html and report.json. Gates:
 
-  infer_overlapping()    one query per rank; optional PriorityNet
-                         (src/ahsd/core/priority_net.py) reorders the results
+    Gaussian shuffle ΔNLL > 5 nats
+    Gaussian SBC KS p > 1e-3 for ≥ 9/11 parameters
+    Gaussian spurious railing < 5%
+    distance correlation > 0.5
+    distance unbiased per source class (|bias| < 25%, 90% coverage > 0.80)
+    no parameter effectively unmeasured (posterior/prior width < 0.85)
+    chirp-mass width × SNR flat in SNR (ratio < 2)
+    real-noise shuffle ΔNLL > 5 nats
+    real-noise 90% coverage within ±0.07 (≤ 2 exceptions)
+    real vs Gaussian NLL gap < 3 nats
+    real GWTC events of the trained classes: run end to end, |t_c| < 0.1 s
+      BBH:  GW150914, GW151226, GW170104, GW170608, GW170729, GW170814
+      NSBH: GW200115, GW200105
+      BNS:  GW170817, GW190425
+    basin probe (BBH models)
 
 
-7. VALIDATION & BENCHMARKS — scripts/
--------------------------------------
+9. INFERENCE — src/ahsd/inference/
+==================================
 
-  validate_checkpoint.py     certification report (analysis/ci/<model>/)
-  benchmark_real_events.py   GWTC events vs dynesty
-  dynesty_compare.py         NPE vs dynesty on injections
-  inclination_vs_dynesty.py  inclination information vs dynesty (edge-on/face-on)
-  polarization_probe.py      information content of the polarization features
-  overlap_benchmark.py       overlapping-signal accuracy per rank
-  twin_grid.py               twin-injection bias grid → inference/assets/twin_grid.json
-  audit_dataset.py           dataset audit (hard failures stop the pipeline)
-  run_pipeline.py            unattended cluster pipeline; summarize_runs.py
-                             writes the run summary
+  infer.py / pipeline.infer(event | strain | injection, event_type, rank)
+
+  ┌ preprocessing.py
+  │   real data: fetch from GWOSC (gwpy), highpass 15 Hz, ASD by median
+  │   estimator (robust to the signal), whiten irfft(rfft(x)/ASD) on a long
+  │   segment, trim 2 s edges, unit noise floor from an off-source region,
+  │   4 s window centred on the trigger time; asd_bands from the measured
+  │   ASDs. Simulated data: BilbyPreprocessor (as in training).
+  │   A detector that is not observing is filled with unit white noise.
+  ├ resolve_model: class model for event_type (CLASS_MODELS), else the
+  │   mixed model; load_model() rebuilds LeanNPE from checkpoint args (cached)
+  ├ sample_posterior(strain, rank, n_samples, asd_bands)
+  ├ ood.py: Mahalanobis distance of the context to the training context
+  │   cloud, calibrated against validation events (ood_stats.npz next to the
+  │   checkpoint); combined with input-quality flags and railing into a
+  │   HIGH / MEDIUM / LOW confidence verdict
+  ├ gating.py: refinement gate from five indicators (confidence verdict,
+  │   OOD percentile, measured bias region, posterior width, railing);
+  │   strong indicators refine alone, two moderate ones refine together;
+  │   bias grid from inference/assets/twin_grid.json (scripts/twin_grid.py)
+  ├ priors.py: TrainingPrior — the prior the checkpoint was trained on for
+  │   the event's class: per-class mass and spin bounds from the generator,
+  │   distance range and shape from the dataset (recorded in checkpoint
+  │   args). Single source for importance sampling and dynesty
+  ├ importance.py: importance sampling against the bilby likelihood
+  │   (w = L·π / q with π = TrainingPrior, symmetrized for the mass
+  │   ordering); effective sample size reported
+  ├ dynesty_bridge.py: full dynesty run with matched conventions (same PSDs,
+  │   epoch, TrainingPrior support) for events flagged for refinement
+  └ result.py: PosteriorResult — medians, credible intervals, correlations,
+      distance-prior reweighting (uniform → d_L²), plots, bilby-compatible
+      export, reproducibility record (checkpoint, git commit, settings)
+
+  Overlaps: infer_overlapping(n_signals) runs infer() once per rank;
+  PriorityNet (src/ahsd/core/priority_net.py, optional) reorders the results
+  when a checkpoint exists.
+
+
+10. MODELS, CHECKPOINTS AND COMPATIBILITY
+=========================================
+
+  Model                 Data              Distance       Encoder features
+  ───────────────────   ───────────────   ────────────   ──────────────────────────────
+  lean_npe_bbh_v3       dataset_bbh_v3    80–5000 Mpc    geometry + MF (BBH bank) + pol
+  lean_npe_nsbh_v3      dataset_nsbh_v3   15–1600 Mpc    geometry
+  lean_npe_bns_v3       dataset_bns_v3    7–550 Mpc      geometry
+  lean_npe_v3 (mixed)   dataset_v3        8–6000 Mpc     geometry + MF (BBH bank) + pol
+
+  All: coherent encoder, PSD conditioning, mc_q, delay_aug 0.5, aux_mass 1.0,
+  geom_dropout 0.25, real_noise_prob 0.9, det_dropout 0.2.
+
+  best_model.pth = {model_state_dict, args (training argparse namespace),
+                    epoch, val_nll, diagnostics}
+  args also records dataset_event_types and the dataset's distance_prior.
+
+  Loading: LeanNPE is rebuilt from args at every load site (pipeline.py,
+  validate_checkpoint.py, the scripts/). Every new LeanNPE constructor
+  argument must be read from args at every load site, or older scripts fail
+  on new checkpoints. Not in args: the flow sizes (constructor defaults) and
+  dist_range (a state-dict buffer). The MF bank is loaded from assets by
+  file name and is not stored in the checkpoint.
+
+
+11. CLUSTER PIPELINE — scripts/run_pipeline.py, scripts/slurm/
+==============================================================
+
+  Run on the login node (compute nodes have no internet):
+
+    python scripts/run_pipeline.py --regenerate
+
+  1. prefetch the certification events into the shared gwpy cache
+  2. per model: delete the old dataset → generate_parallel.sbatch (CPU node)
+     → audit_dataset.sbatch (afterok) → train_lean_npe.sbatch (afterok,
+     one full H100; certifies at the end)
+  3. summary job (afterany, all trainings) → summarize_runs.py →
+     analysis/RUN_SUMMARY.md
+
+  Per-model flags are set in run_pipeline.MODELS (dataset, config, epochs,
+  distance support, MF/polarization flags, generation node, seed).
+
+  Logs: logs/gen_parallel-<job>.out, logs/audit-<job>.out,
+  logs/train-<name>-<job>.out, model/<name>/train.log and validate.log,
+  logs/pipeline.log, logs/summary-<job>.out.
+
+
+12. THROUGHPUT
+==============
+
+  Generation   200k events in ~25–35 min on 60 CPUs (long-signal path
+               included)
+  Training     H100, batch 128, fp32: ~5 it/s (~640 events/s), 3.5–4.5 min
+               per epoch; data loading is not the bottleneck (< 0.5 ms wait
+               per step)
+
+  Benchmark (A40, BBH recipe, events/s):
+    batch 128 fp32            342
+    batch 128 bf16            372
+    batch 128 bf16 + compile  416
+    batch 512 fp32            612
+    batch 512 bf16 + compile  888

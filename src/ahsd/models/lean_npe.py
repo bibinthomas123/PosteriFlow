@@ -445,7 +445,14 @@ class LeanNPE(nn.Module):
                asd_bands: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Whitened strain [B, 3, T] -> context vector [B, context_dim].
         `asd_bands` [B, n_det, psd_bands] is the sensitivity summary required
-        when psd_cond=True (0 for design-whitened data); ignored otherwise."""
+        when psd_cond=True (0 for design-whitened data); ignored otherwise.
+        `encoder_amp` (a torch dtype, set by the trainer; not saved) runs the
+        encoder under CUDA autocast; the context returned is always fp32."""
+        amp = getattr(self, "encoder_amp", None)
+        if amp is not None and strain.is_cuda:
+            with torch.autocast("cuda", dtype=amp):
+                ctx = self.encoder(strain, asd_bands) if self.psd_cond else self.encoder(strain)
+            return ctx.float()
         return self.encoder(strain, asd_bands) if self.psd_cond else self.encoder(strain)
 
     def nll(self, strain: torch.Tensor, params_phys: torch.Tensor,

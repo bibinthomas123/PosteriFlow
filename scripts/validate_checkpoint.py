@@ -94,6 +94,13 @@ _DYNESTY_REF = {"chirp_mass": 0.00276, "mass_ratio": 0.2880}
 # doing well (DINGO reports near-parity). Generous, and still fails the current
 # generation by ~52x on Mc and ~1.8x on q.
 _SHARPNESS_TOL = 3.0
+# Parameters the "unmeasured" gate holds a model to. Excluded, because no
+# analysis (dynesty included) measures them at these SNRs: phase and psi
+# (mutually degenerate), theta_jn (constrained only near edge-on), and the
+# spins (BNS/NS spins are drawn from [0, 0.05], effects below measurability;
+# BH spins are weakly constrained). They stay in the report.
+_MUST_MEASURE = ("mass_1", "mass_2", "chirp_mass", "luminosity_distance",
+                 "geocent_time", "ra", "dec")
 
 
 def _mc_q(m1, m2):
@@ -394,7 +401,7 @@ def distance_by_type(d_samp, truth, model):
     return out
 
 
-def run_gates(gaus, real, gw_ok, gw_summary, basin=None):
+def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",)):
     """Evaluate all CI acceptance gates over the Gaussian/real-domain metrics
     and the GWTC real-event results; returns the list of gate records."""
     gates = []
@@ -428,8 +435,10 @@ def run_gates(gaus, real, gw_ok, gw_summary, basin=None):
     # is the open work item (REPORT.md ranks 1-2). Do not relax them to green.
     sh = gaus.get("sharpness") or {}
     inf = sh.get("informativeness", {})
+    # the dynesty widths above were measured on BBH events: only BBH models
+    # can be held to them
     for nm, label in (("chirp_mass", "chirp-mass"), ("mass_ratio", "mass-ratio")):
-        if nm not in inf:
+        if nm not in inf or "BBH" not in trained:
             continue
         ref = _DYNESTY_REF[nm]
         thr = ref * _SHARPNESS_TOL
@@ -442,9 +451,13 @@ def run_gates(gaus, real, gw_ok, gw_summary, basin=None):
             f"(1.0 = parameter unmeasured)"))
     # non-finite counts as unmeasured: NaN compares False against any threshold,
     # so an unguarded `v > 0.85` would let a degenerate parameter through.
-    uninformative = [k for k, v in inf.items() if not np.isfinite(v) or v > 0.85]
-    gates.append(gate("no parameter is effectively unmeasured (post/prior > 0.85)",
-                      not uninformative, f"unmeasured: {uninformative or 'none'}"))
+    uninformative = [k for k, v in inf.items()
+                     if k in _MUST_MEASURE and (not np.isfinite(v) or v > 0.85)]
+    expected = [k for k, v in inf.items()
+                if k not in _MUST_MEASURE and (not np.isfinite(v) or v > 0.85)]
+    gates.append(gate(f"no measurable parameter is unmeasured (post/prior > 0.85; {', '.join(_MUST_MEASURE)})",
+                      not uninformative, f"unmeasured: {uninformative or 'none'}"
+                      + (f"; expected-unmeasured (not gated): {expected}" if expected else "")))
     mc_scale = sh.get("snr_scaling", {}).get("chirp_mass")
     if mc_scale:
         gates.append(gate("Mc σ×SNR flat in SNR (ratio < 2.0; rising = encoder saturating)",
@@ -558,7 +571,7 @@ def main():
                     encoder_type=ckpt["args"].get("encoder_type", "conv"),
                     mass_param=ckpt["args"].get("mass_param", "m1m2"),
                     geom_phase_residual=ckpt["args"].get("geom_phase_residual", False),
-                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), mf_bank=ckpt["args"].get("mf_bank", "mf_bank.npz"), pol_features=ckpt["args"].get("pol_features", False), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
+                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), mf_bank=ckpt["args"].get("mf_bank", "mf_bank.npz"), pol_features=ckpt["args"].get("pol_features", False), lowrate_len=ckpt["args"].get("lowrate_len", 0), mc_bank=ckpt["args"].get("mc_bank", "") or "", q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"checkpoint: epoch {ckpt['epoch']}, val NLL {ckpt['val_nll']:.4f}")
@@ -686,7 +699,7 @@ def main():
     meta = {"model": args.model, "epoch": ckpt["epoch"], "val_nll": ckpt["val_nll"],
             "device": device, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "wall_s": time.time() - t_start}
-    gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows)
+    gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows, trained=trained)
     ok = html_report(out / "report.html", meta, gaus, gfigs, real, rfigs, gw, gates)
 
     with open(out / "report.json", "w") as f:

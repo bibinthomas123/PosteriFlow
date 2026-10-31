@@ -138,6 +138,9 @@ def validate_config(config: Dict) -> Dict:
                                               config.get("event_distribution")),
         "distance_ranges": config.get("distance_ranges"),
         "distance_prior": config.get("distance_prior"),
+        # multi-rate input: low-rate context stream before the window
+        "lowrate_seconds": int(config.get("lowrate_seconds", 0) or 0),
+        "lowrate_rate": int(config.get("lowrate_rate", 512)),
     }
 
     # Validate ranges

@@ -41,7 +41,10 @@ DETECTORS = ["H1", "L1", "V1"]
 SAMPLE_RATE = 4096
 DURATION = 4.0
 T_LEN = int(SAMPLE_RATE * DURATION)
-FETCH_SECONDS = 64          # context fetched around the trigger for PSD estimation
+FETCH_SECONDS = 80          # context fetched around the trigger (PSD estimation and
+                            # the 28 s low-rate stream before the window)
+LOWRATE_SECONDS = 28        # multi-rate models: seconds before the window ...
+LOWRATE_RATE = 512          # ... at this rate (must match the training dataset)
 EDGE_TRIM_S = 2             # whitening filter edge artifacts to discard
 HIGHPASS_HZ = 15.0
 ASD_FFTLENGTH = 8
@@ -60,6 +63,7 @@ class PreparedData:
     warnings: List[str] = field(default_factory=list)
     timings: Dict[str, float] = field(default_factory=dict)
     quality: Dict[str, dict] = field(default_factory=dict)  # per-detector checks
+    strain_lo: Optional[np.ndarray] = None  # [3, 28 s @ 512 Hz] context before the window (multi-rate models)
 
 
 # ── quality checks ───────────────────────────────────────────────────────────
@@ -109,7 +113,9 @@ def _whiten_real_segment(x: np.ndarray, sr_in: float, trigger_offset_s: float,
     asd_freqs/asd_vals: user-supplied ASD; when None, measured from x with the
     median estimator (robust to the signal being in the segment).
 
-    Returns (window[T_LEN] float32 unit-floor, asd_on_4s_grid, norm_factor).
+    Returns (window[T_LEN] float32 unit-floor, asd_on_4s_grid, norm_factor,
+    low-rate context stream before the window or None if the segment is too
+    short).
     """
     from gwpy.timeseries import TimeSeries
 
@@ -151,11 +157,16 @@ def _whiten_real_segment(x: np.ndarray, sr_in: float, trigger_offset_s: float,
     if i0 < 0 or i0 + T_LEN > len(w):
         raise ValueError(f"trigger too close to segment edge (need ±{DURATION/2 + EDGE_TRIM_S}s)")
     window = w[i0: i0 + T_LEN]
+    try:
+        from ahsd.data.bilby_pipeline import to_lowrate
+        lo = to_lowrate(w, i0, SAMPLE_RATE, LOWRATE_SECONDS, LOWRATE_RATE)
+    except ValueError:
+        lo = None
 
     freqs_win = np.fft.rfftfreq(T_LEN, 1.0 / SAMPLE_RATE)
     asd_win = np.interp(freqs_win, asd_freqs, asd_vals,
                         left=asd_vals[0], right=asd_vals[-1]).astype(np.float32)
-    return window, asd_win, norm
+    return window, asd_win, norm, lo
 
 
 def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
@@ -174,12 +185,15 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
     rng = np.random.default_rng(seed)
     warnings: List[str] = []
     out = np.empty((3, T_LEN), dtype=np.float32)
+    out_lo = np.empty((3, LOWRATE_SECONDS * LOWRATE_RATE), dtype=np.float32)
+    have_lo = True
     asds, psd_out, quality = {}, {}, {}
     present = []
 
     for i, det in enumerate(DETECTORS):
         if det not in strain or strain[det] is None:
             out[i] = _white_noise_fill(rng)
+            out_lo[i] = rng.standard_normal(out_lo.shape[1]).astype(np.float32)
             warnings.append(f"{det}: no data — filled with unit white noise "
                             "(posterior uses remaining detectors only)")
             continue
@@ -190,7 +204,7 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
             p = psds[det]
             user_asd = (np.asarray(p["frequencies"], float),
                         np.sqrt(np.asarray(p["psd"], float)))
-        win, asd_win, norm = _whiten_real_segment(
+        win, asd_win, norm, lo = _whiten_real_segment(
             strain[det], sr, off,
             asd_freqs=user_asd[0] if user_asd else None,
             asd_vals=user_asd[1] if user_asd else None)
@@ -198,6 +212,10 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
         quality[det] = _quality_checks(det, win, warnings)
         quality[det]["whitening_norm"] = norm
         out[i] = win
+        if lo is None:
+            have_lo = False
+        else:
+            out_lo[i] = np.nan_to_num(lo, nan=0.0, posinf=0.0, neginf=0.0)
         asds[det] = asd_win
         freqs_win = np.fft.rfftfreq(T_LEN, 1.0 / SAMPLE_RATE)
         psd_out[det] = {"frequencies": freqs_win, "psd": (asd_win.astype(np.float64)) ** 2}
@@ -209,7 +227,7 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
                         detectors_present=present, asds=asds, psds=psd_out,
                         source="real", warnings=warnings,
                         timings={"preprocess_s": round(time.time() - t0, 3)},
-                        quality=quality)
+                        quality=quality, strain_lo=out_lo if have_lo else None)
 
 
 _DESIGN_ASD_CACHE: Dict[tuple, np.ndarray] = {}
@@ -274,9 +292,16 @@ def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
     strain, starts, srs, found = {}, {}, {}, []
     for det in dets:
         try:
-            ts = TimeSeries.fetch_open_data(det, gps - fetch_seconds / 2,
-                                            gps + fetch_seconds / 2,
-                                            sample_rate=SAMPLE_RATE, cache=True)
+            for attempt in range(3):          # GWOSC downloads fail transiently
+                try:
+                    ts = TimeSeries.fetch_open_data(det, gps - fetch_seconds / 2,
+                                                    gps + fetch_seconds / 2,
+                                                    sample_rate=SAMPLE_RATE, cache=True)
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    time.sleep(5 * (attempt + 1))
             # GWOSC serves non-observing detectors as NaN-filled segments
             # (e.g. H1 during GW190425); treat them as absent so the window
             # gets the same white-noise fill as a dropped detector in

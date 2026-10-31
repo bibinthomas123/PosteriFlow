@@ -47,6 +47,12 @@ _SPIN_NS = (0.0, 0.05)
 # outside its calibration range; <= 0.92 is clean at every mass ratio.
 _SPIN_BH = (0.0, 0.9)
 
+# ── Tidal deformability (nuisance; not an NPE output) ─────────────────────────
+# Uniform per neutron star, as in the LVK low-spin BNS analyses. Without tides
+# the BNS/NSBH waveforms differ from realistic ones by a mismatch of ~3% (BNS)
+# and ~1.5% (NSBH); black holes have lambda = 0.
+_LAMBDA_NS = (0.0, 5000.0)
+
 # ── Default event-type fractions ──────────────────────────────────────────────
 _DEFAULT_FRACTIONS = {"BBH": 0.55, "BNS": 0.20, "NSBH": 0.20, "noise": 0.05}
 
@@ -123,6 +129,7 @@ class ParameterSampler:
         p["geocent_time"] = t_off          # NPE label: offset within window
         p["geocent_time_gps"] = GPS_REF + t_off  # absolute GPS for bilby
         p.update(self._sample_spins(event_type))
+        p.update(self._sample_tides(event_type))
         m1, m2 = p["mass_1"], p["mass_2"]
         p["chirp_mass"] = float((m1 * m2) ** 0.6 / (m1 + m2) ** 0.2)
         p["mass_ratio"] = float(m2 / m1)
@@ -184,6 +191,17 @@ class ParameterSampler:
             a1 = float(self.rng.uniform(*_SPIN_BBH))
             a2 = float(self.rng.uniform(*_SPIN_BBH))
         return {"a1": a1, "a2": a2}
+
+    def _sample_tides(self, event_type: str) -> Dict:
+        """Tidal deformabilities: uniform for each neutron star, 0 for black
+        holes (mass_1 is the black hole in NSBH)."""
+        et = event_type.upper()
+        ns = lambda: float(self.rng.uniform(*_LAMBDA_NS))
+        if et == "BNS":
+            return {"lambda_1": ns(), "lambda_2": ns()}
+        if et == "NSBH":
+            return {"lambda_1": 0.0, "lambda_2": ns()}
+        return {"lambda_1": 0.0, "lambda_2": 0.0}
 
     def sample_signal_parameters(self) -> Dict:
         """Draw parameters for a REAL source (BBH/BNS/NSBH), never "noise".

@@ -73,6 +73,10 @@ def load_split(data_dir: str, split: str, limit: int | None = None):
             st = np.stack([np.asarray(dd[d]["strain"], dtype=np.float32) for d in ("H1", "L1", "V1")])
             if st.shape[1] != T_LEN:
                 continue
+            if "strain_lo" in dd["H1"]:
+                # multi-rate dataset: the context stream rides after the window
+                st = np.concatenate([st, np.stack([np.asarray(dd[d]["strain_lo"], dtype=np.float32)
+                                                   for d in ("H1", "L1", "V1")])], axis=-1)
             # Rank-conditioning requires a CONSISTENT signal order, but the
             # generator stores overlapping signals in random order (measured:
             # first-listed is loudest only 49% of the time). Sort by a
@@ -489,6 +493,9 @@ def main():
                     help="v2 component dataset: remix noise/shift/distance on the fly "
                          "(builds a memmap cache under <data>/memmap on first use)")
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--mc_bank", default="",
+                    help="dense chirp-mass matched-filter bank (models/assets/mc_bank_*.npz, "
+                         "build_mc_bank.py): adds chirp-mass feature tokens to the encoder")
     ap.add_argument("--amp", choices=["off", "bf16"], default="off",
                     help="bf16 autocast for the encoder (CUDA only); the flow stays fp32")
     ap.add_argument("--compile", action="store_true",
@@ -819,6 +826,7 @@ def main():
     # model actually learned. None = unknown (dataset predates provenance).
     args.dataset_distance_prior, args.dataset_distance_ranges = None, None
     args.dataset_event_types = None
+    args.lowrate_len = 0
     dcfg_path = Path(args.data) / "dataset_config.yaml"
     if dcfg_path.exists():
         import yaml
@@ -840,6 +848,11 @@ def main():
         if not (cache / "events.json").exists():
             log.info("Building memmap cache (one-time)...")
             build_memmap_cache(args.data, "train", str(cache))
+        # multi-rate dataset: the context-stream length is part of the model
+        # (recorded in args, so every load site rebuilds the same encoder)
+        args.lowrate_len = int(json.load(open(cache / "events.json")).get("lo_len", 0))
+        if args.lowrate_len:
+            log.info(f"multi-rate input: 4 s window + {args.lowrate_len} context samples")
         train_ds = RemixDataset(str(cache), remix=True,
                                 real_noise_dir=args.noise_bank,
                                 real_noise_prob=args.real_noise_prob,
@@ -912,6 +925,7 @@ def main():
                     dist_range=args.dist_range,
                     mf_bank=args.mf_bank,
                     pol_features=args.pol_features,
+                    lowrate_len=args.lowrate_len, mc_bank=args.mc_bank,
                     flow_layers=args.flow_layers,
                     flow_hidden=args.flow_hidden,
                     flow_bins=args.flow_bins).to(device)

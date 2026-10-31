@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from .parameter_sampler import ParameterSampler
 from .bilby_pipeline import (
+    to_lowrate,
     BilbyWaveformGenerator,
     BilbyNoiseGenerator,
     BilbySignalInjector,
@@ -141,6 +142,19 @@ class GWDatasetGenerator:
             f_low=float(cfg.get("f_lower", 20.0)),
         )
         self.writer = DatasetWriter(str(self.output_dir), format="pkl")
+
+        # Multi-rate input (lowrate_seconds > 0): besides the 4 s window, store
+        # the `lowrate_seconds` before it decimated to `lowrate_rate` Hz, for
+        # long BNS/NSBH inspirals that are mostly outside the window. Noise and
+        # signals are whitened over one continuous segment and then cut, so the
+        # two streams join seamlessly.
+        self.lowrate_seconds = int(cfg.get("lowrate_seconds", 0) or 0)
+        self.lowrate_rate = int(cfg.get("lowrate_rate", 512))
+        if self.lowrate_seconds:
+            # noise segment: [window start - lowrate - pad, window end + pad]
+            self._lo_pad = 2.0
+            self.noise_gen_long = BilbyNoiseGenerator(
+                self.sample_rate, self.lowrate_seconds + self.duration + 2 * self._lo_pad)
 
         # Pre-compute default PSDs once
         self._psd_cache: Dict[str, Dict] = {
@@ -291,8 +305,10 @@ class GWDatasetGenerator:
     # ── Core sample generation ────────────────────────────────────────────────
 
     def _signal_window(self, p: Dict, det: str, psd, zeros: np.ndarray,
-                       whiten: bool) -> Tuple[np.ndarray, Optional[np.ndarray], float]:
-        """One signal in one detector over the 4 s window: (raw, whitened, SNR).
+                       whiten: bool) -> Tuple[np.ndarray, Optional[np.ndarray], float,
+                                              Optional[np.ndarray]]:
+        """One signal in one detector over the 4 s window: (raw, whitened, SNR,
+        low-rate context stream or None).
 
         Signals that fit the window keep the original 4 s generation exactly.
         Longer ones (all BNS/NSBH, light BBH) are generated over a long segment,
@@ -301,6 +317,16 @@ class GWDatasetGenerator:
         of the whitened in-window signal: what the model actually sees."""
         wg = self.injector.wfg
         n = len(zeros)
+        if self.lowrate_seconds:
+            # always the long path: the context stream needs the signal before
+            # the window, whitened together with it
+            long_raw, i0 = wg.generate_long(p, det, min_pre=self.lowrate_seconds + 2.0)
+            raw = long_raw[i0:i0 + n]
+            wl = self.preprocessor.preprocess(long_raw, psd, detector=det)
+            wh = wl[i0:i0 + n]
+            lo = to_lowrate(wl, i0, self.sample_rate, self.lowrate_seconds, self.lowrate_rate)
+            snr = float(np.sqrt(np.sum(np.asarray(wh, np.float64) ** 2)))
+            return raw, wh, snr, lo
         if wg.fits_window(p):
             raw = self.injector.inject_multiple(zeros, [p], det, psd)[0]
             wh = self.preprocessor.preprocess(raw, psd, detector=det) if whiten else None
@@ -311,7 +337,7 @@ class GWDatasetGenerator:
                   if whiten else None)
         snr = (float(np.sqrt(np.sum(np.asarray(wh, np.float64) ** 2))) if wh is not None
                else self.injector.measure_snr(raw, psd))
-        return raw, wh, snr
+        return raw, wh, snr, None
 
     def _make_sample(self, param_sets: List[Dict],
                      min_snr: float,
@@ -343,7 +369,19 @@ class GWDatasetGenerator:
             seed = int(self._rng.integers(0, 2 ** 63 - 1))
 
             # 1. Generate noise
-            noise = self.noise_gen.generate(det, psd, seed=seed)
+            wh_noise_lo = wh_noise_hi = None
+            if self.lowrate_seconds:
+                # one continuous segment, whitened as a whole, then cut into
+                # the 4 s window and the low-rate context before it
+                long_noise = self.noise_gen_long.generate(det, psd, seed=seed)
+                j0 = int((self._lo_pad + self.lowrate_seconds) * self.sample_rate)
+                noise = long_noise[j0:j0 + int(self.duration * self.sample_rate)]
+                wl = self.preprocessor.preprocess(long_noise, psd, detector=det)
+                wh_noise_hi = wl[j0:j0 + len(noise)]
+                wh_noise_lo = to_lowrate(wl, j0, self.sample_rate, self.lowrate_seconds,
+                                         self.lowrate_rate)
+            else:
+                noise = self.noise_gen.generate(det, psd, seed=seed)
             if add_glitches:
                 noise = self.noise_gen.add_glitches(noise)
 
@@ -353,6 +391,7 @@ class GWDatasetGenerator:
             zeros = np.zeros_like(noise)
             signal_components: List[np.ndarray] = []
             wh_components: List[np.ndarray] = []
+            lo_components: List[np.ndarray] = []
             whiten_components = store_components and do_preprocess
             if param_sets[0].get("event_type") == "noise":
                 strain = noise.astype(np.float64)
@@ -361,9 +400,11 @@ class GWDatasetGenerator:
                 strain = noise.astype(np.float64)
                 snrs = []
                 for p in param_sets:
-                    sig, wh, snr = self._signal_window(p, det, psd, zeros, whiten_components)
+                    sig, wh, snr, lo = self._signal_window(p, det, psd, zeros, whiten_components)
                     signal_components.append(sig)
                     wh_components.append(wh)
+                    if lo is not None:
+                        lo_components.append(lo)
                     snrs.append(snr)
                     strain = strain + sig
                 det_snr = snrs[0] if snrs else 0.0  # primary signal SNR
@@ -374,7 +415,8 @@ class GWDatasetGenerator:
             # is linear), so long signals keep their long-segment whitening.
             wh_noise = None
             if whiten_components:
-                wh_noise = self.preprocessor.preprocess(noise.astype(np.float64), psd, detector=det)
+                wh_noise = (wh_noise_hi if wh_noise_hi is not None else
+                            self.preprocessor.preprocess(noise.astype(np.float64), psd, detector=det))
                 whitened = (wh_noise.astype(np.float64)
                             + sum(w.astype(np.float64) for w in wh_components)).astype(np.float32)
             elif do_preprocess:
@@ -391,6 +433,13 @@ class GWDatasetGenerator:
                     wh_sigs = [s.astype(np.float32) for s in signal_components]
                 det_entry["noise"] = wh_noise.astype(np.float16)
                 det_entry["signals"] = [s.astype(np.float16) for s in wh_sigs]
+            if wh_noise_lo is not None:
+                det_entry["strain_lo"] = (wh_noise_lo.astype(np.float64)
+                                          + sum(l.astype(np.float64) for l in lo_components)
+                                          ).astype(np.float32)
+                if store_components:
+                    det_entry["noise_lo"] = wh_noise_lo.astype(np.float16)
+                    det_entry["signals_lo"] = [l.astype(np.float16) for l in lo_components]
             detector_data[det] = det_entry
 
         # 4. SNR gate (primary signal network SNR)

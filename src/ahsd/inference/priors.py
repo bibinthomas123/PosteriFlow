@@ -13,8 +13,8 @@ records in its args (dataset_distance_ranges, dataset_distance_prior).
     wf = prior.waveform()                       # source model, approximant
     f_min = window_fmin(mc_min, t_merger)       # band that fits a 4 s segment
 
-The waveform model is the generator's for the class, with zero tidal
-deformability (the generator never sets lambda_1/lambda_2, so bilby uses 0).
+The waveform model is the generator's for the class. Tidal deformabilities
+are nuisance parameters drawn from the generator's prior (lambda_range).
 """
 from __future__ import annotations
 
@@ -100,6 +100,21 @@ class TrainingPrior:
                              meta.get("train_distance_prior"))
 
     @property
+    def lambda_range(self) -> Optional[Tuple[float, float]]:
+        """Neutron-star tidal-deformability prior (None for BBH)."""
+        return None if self.event_type == "BBH" else tuple(ps._LAMBDA_NS)
+
+    def sample_tides(self, n: int, rng) -> Tuple[np.ndarray, np.ndarray]:
+        """(lambda_1, lambda_2) prior draws: both stars for BNS, the neutron
+        star (lambda_2) for NSBH, zeros for BBH."""
+        z = np.zeros(n)
+        if self.event_type == "BBH":
+            return z, z
+        l2 = rng.uniform(*self.lambda_range, size=n)
+        l1 = rng.uniform(*self.lambda_range, size=n) if self.event_type == "BNS" else z
+        return l1, l2
+
+    @property
     def mc_min(self) -> float:
         """Smallest chirp mass in the support."""
         return float(chirp_mass(self.m1_range[0], self.m2_range[0]))
@@ -111,10 +126,10 @@ class TrainingPrior:
         import bilby
         from ahsd.data.bilby_pipeline import _APPROXIMANTS, _get_source_model
         source, conversion = _get_source_model({"event_type": self.event_type})
-        bns = self.event_type == "BNS"
+        tidal = self.event_type != "BBH"
         return {"source_model": source, "parameter_conversion": conversion,
                 "approximant": _APPROXIMANTS[self.event_type.lower()],
-                "sampler_conversion": (bilby.gw.conversion.generate_all_bns_parameters if bns
+                "sampler_conversion": (bilby.gw.conversion.generate_all_bns_parameters if tidal
                                        else bilby.gw.conversion.generate_all_bbh_parameters)}
 
     # ── log density ──────────────────────────────────────────────────────
@@ -172,10 +187,12 @@ class TrainingPrior:
         priors["a_2"] = P.Uniform(0, self.a2_max, "a_2")
         for k in ("tilt_1", "tilt_2", "phi_12", "phi_jl"):
             priors[k] = P.DeltaFunction(0.0)
-        if self.event_type == "BNS":
-            # the BNS source model needs tidal parameters; training used 0
-            priors["lambda_1"] = P.DeltaFunction(0.0, name="lambda_1")
-            priors["lambda_2"] = P.DeltaFunction(0.0, name="lambda_2")
+        if self.event_type != "BBH":
+            # tidal deformabilities: the generator's nuisance prior
+            lo, hi = self.lambda_range
+            priors["lambda_1"] = (P.Uniform(lo, hi, name="lambda_1") if self.event_type == "BNS"
+                                  else P.DeltaFunction(0.0, name="lambda_1"))
+            priors["lambda_2"] = P.Uniform(lo, hi, name="lambda_2")
         priors["geocent_time"] = P.Uniform(center_time - time_halfwidth,
                                            center_time + time_halfwidth, "geocent_time")
         return priors

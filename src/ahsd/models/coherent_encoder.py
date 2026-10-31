@@ -53,7 +53,8 @@ class CoherentEncoder(LeanStrainEncoder):
                  geom_dropout: float = 0.0, phase_residual: bool = False,
                  mf_tokens: bool = False, mf_shape_norm: bool = False,
                  mf_token_fusion: str = "add", mf_bank: str = "mf_bank.npz",
-                 pol_features: bool = False, n_pol_tokens: int = 2, **kw):
+                 pol_features: bool = False, n_pol_tokens: int = 2,
+                 lowrate_len: int = 0, mc_bank: str = "", **kw):
         super().__init__(**kw)
         self.mf_bank = str(mf_bank)
         # Cross-detector polarization tokens (models/polarization_features.py):
@@ -65,6 +66,26 @@ class CoherentEncoder(LeanStrainEncoder):
         self.use_pol_features = bool(pol_features)
         if self.use_pol_features and not mf_tokens:
             raise ValueError("pol_features requires mf_tokens (it uses the MF template bank)")
+        # Low-rate context stream (multi-rate datasets): the lowrate_len
+        # samples after the 4 s window in each strain row are the seconds
+        # BEFORE the window at 512 Hz (long BNS/NSBH inspirals carry most of
+        # their SNR there). Own conv stem; its tokens join the transformer with
+        # the detector embedding, positions after the window's, a zero-init
+        # stream marker, and one token of raw log-energy (amplitude path).
+        self.lowrate_len = int(lowrate_len)
+        if self.lowrate_len:
+            d = self.detector_embed.embedding_dim
+            self.lo_stem = nn.Sequential(
+                nn.Conv1d(1, 32, kernel_size=32, stride=8), nn.GELU(),
+                nn.Conv1d(32, 64, kernel_size=16, stride=4), nn.GELU(),
+                nn.Conv1d(64, 128, kernel_size=8, stride=4), nn.GELU(),
+                nn.Conv1d(128, d, kernel_size=4, stride=2), nn.GELU(),
+            )
+            self.lo_type_embed = nn.Parameter(torch.zeros(d))
+            self.lo_windows = max(1, self.lowrate_len // 1024)      # 2 s windows
+            self.lo_energy_mlp = nn.Sequential(
+                nn.Linear(self.n_detectors * self.lo_windows, 64), nn.GELU(),
+                nn.Linear(64, d))
         self.geom_dropout = float(geom_dropout)
         self.phase_residual = bool(phase_residual)
         self.K = int(geometry_bands)
@@ -179,6 +200,12 @@ class CoherentEncoder(LeanStrainEncoder):
                 # Zero-init so it starts as a true no-op and only carries a
                 # signal once gradients decide it's useful.
                 self.token_type_embed = nn.Parameter(torch.zeros(2, self.d_model))
+        # dense chirp-mass matched-filter features (models/mc_features.py)
+        self.mc_bank = str(mc_bank or "")
+        if self.mc_bank:
+            from ahsd.models.mc_features import McFeatures
+            self.mc_feat = McFeatures(self.mc_bank, self.band_lo, self.Nf,
+                                      lowrate_len=self.lowrate_len, d_model=self.d_model)
         if self.use_pol_features:
             from ahsd.models.polarization_features import N_FEATURES
             self.n_pol_tokens = int(n_pol_tokens)
@@ -317,6 +344,9 @@ class CoherentEncoder(LeanStrainEncoder):
         into the transformer alongside the conv tokens, and projects the pooled
         result to the context dimension."""
         strain = torch.nan_to_num(strain, nan=0.0, posinf=100.0, neginf=-100.0).clamp(-100.0, 100.0)
+        lo = None
+        if self.lowrate_len:
+            strain, lo = strain[..., :T_LEN], strain[..., T_LEN:T_LEN + self.lowrate_len]
         g = self.geom_mlp(self._geometry_rel(strain))           # [B, geom_hidden]
         gtok = self.geom_to_tokens(g).reshape(-1, self.n_geom_tokens, self.d_model)
         use_type_embed = self.use_mf_tokens and self.mf_token_fusion == "concat"
@@ -350,5 +380,24 @@ class CoherentEncoder(LeanStrainEncoder):
             pf = polarization_features(strain, self.mf_re, self.mf_im, self.band_lo)
             ptok = self.pol_to_tokens(self.pol_mlp(pf)).reshape(-1, self.n_pol_tokens, self.d_model)
             gtok = torch.cat([gtok, ptok + self.pol_type_embed], dim=1)
+        if self.mc_bank:
+            # after geom_dropout: always present
+            gtok = torch.cat([gtok, self.mc_feat(strain, lo)], dim=1)
+        if lo is not None:
+            gtok = torch.cat([gtok, self._lowrate_tokens(lo)], dim=1)
         feats, _ = self._compute_feats(strain, asd_bands, extra_tokens=gtok)
         return self.out_proj(feats)
+
+    def _lowrate_tokens(self, lo):
+        """Context stream [B, D, L] -> tokens [B, D*n + 1, d_model]."""
+        B, D, L = lo.shape
+        w = self.lo_windows
+        win = lo[:, :, : (L // w) * w].reshape(B, D, w, -1)
+        log_e = torch.log((win ** 2).mean(-1) + 1e-8).reshape(B, -1)
+        etok = self.lo_energy_mlp(log_e).unsqueeze(1)                     # [B,1,d]
+        t = self.lo_stem(torch.asinh(lo).reshape(B * D, 1, L)).transpose(1, 2)
+        n = t.shape[1]
+        t = t + self.pos(n + 128)[128:].unsqueeze(0)                      # after the window's
+        t = t.reshape(B, D, n, -1) + self.detector_embed(
+            torch.arange(D, device=lo.device))[None, :, None, :]
+        return torch.cat([t.reshape(B, D * n, -1), etok], dim=1) + self.lo_type_embed

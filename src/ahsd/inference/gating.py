@@ -29,6 +29,7 @@ import numpy as np
 OOD_PCT = (99.0, 100.0)
 RAIL = (0.05, 0.20)
 MC_WIDTH_FRAC = (0.6, 1.0)      # 90% CI width / median for chirp mass
+TC_OFFSET = (0.05, 0.1)         # |median merger time - trigger| [s], real events
 
 _GRID_CACHE: Optional[list] = None
 
@@ -131,6 +132,19 @@ def refinement_gate(result) -> Dict:
     elif wfrac > MC_WIDTH_FRAC[0]:
         moderate.append(f"chirp-mass posterior wide ({wfrac:.0%} of median)")
 
+    # 4b. merger time vs trigger: a real event's window is centred on the
+    # trigger, so a posterior merger far from the centre means the network
+    # chose another mode (low-SNR inspirals: a lighter chirp mass merging ~1 s
+    # later traces almost the same frequency track through the window)
+    if result.trigger_gps is not None:
+        jt = names.index("geocent_time")
+        tc_med = float(np.median(result.samples[:, jt]))
+        indicators["tc_offset_s"] = round(tc_med, 3)
+        if abs(tc_med) > TC_OFFSET[1]:
+            strong.append(f"merger {tc_med:+.2f} s from the trigger time "
+                          "(posterior locked on another chirp-mass/time mode)")
+        elif abs(tc_med) > TC_OFFSET[0]:
+            moderate.append(f"merger {tc_med:+.2f} s from the trigger time")
     # 5. spurious boundary railing
     rail = d.get("boundary_railing_frac", 0.0)
     indicators["railing_frac"] = rail

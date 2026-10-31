@@ -362,7 +362,7 @@ class LeanNPE(nn.Module):
                  mf_tokens: bool = False, mf_shape_norm: bool = False,
                  mf_token_fusion: str = "add", q_embed_dim: int = 0,
                  dist_range: Optional[tuple] = None, mf_bank: str = "mf_bank.npz",
-                 pol_features: bool = False):
+                 pol_features: bool = False, lowrate_len: int = 0, mc_bank: str = ""):
         super().__init__()
         self.param_names = param_names
         self.premerger = premerger
@@ -413,11 +413,16 @@ class LeanNPE(nn.Module):
                                            mf_shape_norm=mf_shape_norm,
                                            mf_token_fusion=mf_token_fusion,
                                            mf_bank=mf_bank, pol_features=pol_features,
+                                           lowrate_len=lowrate_len, mc_bank=mc_bank,
                                            **enc_kw)
         else:
+            if lowrate_len or mc_bank:
+                raise ValueError("lowrate_len / mc_bank need encoder_type='coherent'")
             if psd_cond:
                 enc_kw["psd_bands"] = psd_bands
             self.encoder = LeanStrainEncoder(context_dim=context_dim, **enc_kw)
+        # strain rows are [n_det, 16384 + lowrate_len] for multi-rate models
+        self.lowrate_len = int(lowrate_len)
         self.rank_embed = nn.Embedding(max_signals, rank_dim)
 
         self.flow = NSFPosteriorFlow(

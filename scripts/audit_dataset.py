@@ -31,6 +31,9 @@ J = {n: i for i, n in enumerate(PARAM_NAMES)}
 FAIL, WARN = [], []
 
 
+T_WIN = 16384   # 4 s window at 4096 Hz
+
+
 def hard(ok, msg):
     print(("  ✓ " if ok else "  ✗ ") + msg)
     if not ok:
@@ -81,10 +84,16 @@ def audit_split(ds, split, cfg, dist_range):
     ev = json.load(open(c / "events.json"))
     ev = ev["events"] if isinstance(ev, dict) else ev
     par = np.load(c / "params.npy", mmap_mode="r")
-    sig = np.load(c / "signals.npy", mmap_mode="r")
-    noi = np.load(c / "noise.npy", mmap_mode="r")
+    sig_all = np.load(c / "signals.npy", mmap_mode="r")
+    noi_all = np.load(c / "noise.npy", mmap_mode="r")
+    meta = json.load(open(c / "events.json"))
+    lo_len = int(meta.get("lo_len", 0)) if isinstance(meta, dict) else 0
+    # multi-rate datasets: rows are [4 s window | low-rate context]; the
+    # window checks below run on the window, the context gets its own
+    sig, noi = sig_all[..., :T_WIN], noi_all[..., :T_WIN]
     print(f"\n[{split}] {len(ev):,} events, {len(sig):,} signals, {len(noi):,} noise segments, "
-          f"strain {sig.shape[1:]} {sig.dtype}")
+          f"strain {sig_all.shape[1:]} {sig.dtype}"
+          + (f" (window {T_WIN} + context {lo_len})" if lo_len else ""))
 
     nsig = np.array([n for _, n in ev])
     hard(int(nsig.sum()) == len(sig) == len(par), "event index covers every signal exactly once")
@@ -164,6 +173,18 @@ def audit_split(ds, split, cfg, dist_range):
          f"signals with >1% energy 0.5 s after merger (median {np.median(post[has_tail]):.1e})"
          + (" by type " + str({t: int((wrapped & (typ == t)).sum()) for t in ('BBH', 'NSBH', 'BNS')}) if wrapped.any() else ""))
     sat = chunked(sig, lambda x: (np.abs(x) > 6.0e4).any(axis=(1, 2)))
+    if lo_len:
+        # context stream: finite, no saturation; noise unit-variance after
+        # decimation; the context carries part of every long signal's SNR
+        slo, nlo = sig_all[..., T_WIN:], noi_all[..., T_WIN:]
+        hard(bool(chunked(slo, lambda x: np.isfinite(x).all(axis=(1, 2))).all()), "context stream: signals finite")
+        hard(not chunked(slo, lambda x: (np.abs(x) > 6.0e4).any(axis=(1, 2))).any(), "context stream: no saturation")
+        nlo_std = chunked(nlo, lambda x: x.astype(np.float64).std(axis=2).mean(axis=1))
+        soft(bool(0.8 < np.median(nlo_std) < 1.2), f"context stream: noise std median {np.median(nlo_std):.3f} (expect ~1)")
+        e_lo = chunked(slo, lambda x: (x.astype(np.float64) ** 2).sum(axis=(1, 2)))
+        share = e_lo / np.maximum(e_lo + snr ** 2, 1e-30)
+        print("    context share of signal SNR^2: " + " | ".join(
+            f"{t} median {np.median(share[typ == t]):.0%}" for t in ("BBH", "NSBH", "BNS") if (typ == t).any()))
     hard(not sat.any(), f"no float16-saturated signals ({int(sat.sum())})")
     print("    per-signal whitened SNR (network): " + " | ".join(
         f"{t} median {np.median(snr[typ == t]):.1f} p5 {np.percentile(snr[typ == t], 5):.1f} "

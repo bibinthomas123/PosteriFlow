@@ -47,6 +47,30 @@ _APPROXIMANTS = {
 }
 _DEFAULT_APPROX = "IMRPhenomXP"
 
+# ── Low-rate context stream (multi-rate input) ───────────────────────────────
+LOWRATE_PAD_S = 1.0   # filter support taken on each side before decimating
+
+
+def to_lowrate(wh: np.ndarray, i0: int, sample_rate: int, seconds: int, rate: int) -> np.ndarray:
+    """The `seconds` before index i0 of a whitened series, decimated to `rate`
+    Hz (zero-phase polyphase low-pass, cut at rate/2) and scaled by
+    sqrt(sample_rate/rate) so whitened noise stays unit-variance.
+
+    The same function builds the stream for generated signals and noise, the
+    real-noise bank and real events, so all of them see the same filter.
+    Needs LOWRATE_PAD_S of data on both sides of the span."""
+    from scipy.signal import resample_poly
+    down = int(sample_rate // rate)
+    pad = int(LOWRATE_PAD_S * sample_rate)
+    a = i0 - int(seconds * sample_rate) - pad
+    if a < 0 or i0 + pad > len(wh):
+        raise ValueError(f"to_lowrate: need {seconds + LOWRATE_PAD_S:g} s before and "
+                         f"{LOWRATE_PAD_S:g} s after index {i0} (series length {len(wh)})")
+    lo = resample_poly(np.asarray(wh[a:i0 + pad], dtype=np.float64), 1, down) * np.sqrt(down)
+    k = pad // down
+    return lo[k:k + int(seconds * rate)].astype(np.float32)
+
+
 # ── Parameter name mapping (internal → bilby) ─────────────────────────────────
 _RENAME = {"a1": "a_1", "a2": "a_2"}
 
@@ -68,6 +92,9 @@ def _to_bilby_params(params: Dict) -> Dict:
     p.setdefault("phi_jl", 0.0)
     p.setdefault("chi_1", p.get("a_1", 0.0))
     p.setdefault("chi_2", p.get("a_2", 0.0))
+    # tidal deformabilities (BNS/NSBH source model); absent = point particles
+    p.setdefault("lambda_1", 0.0)
+    p.setdefault("lambda_2", 0.0)
     # Use absolute GPS time for bilby; geocent_time_gps is set by parameter_sampler
     if "geocent_time_gps" in p and "geocent_time" in p:
         p["geocent_time"] = p.pop("geocent_time_gps")
@@ -89,9 +116,12 @@ def _get_approximant(params: Dict) -> str:
 
 def _get_source_model(params: Dict):
     """Return the (frequency-domain source model, parameter-conversion) pair for
-    the event type — binary-neutron-star for BNS, binary-black-hole otherwise."""
+    the event type — the tidal (neutron-star) model for BNS and NSBH, the
+    binary-black-hole model for BBH."""
     et = str(params.get("event_type", "bbh")).lower()
-    if "bns" in et:
+    # NSBH too: IMRPhenomNSBH reads the NS tidal deformability (lambda_2;
+    # lambda_1 must be 0), which only the neutron-star source model passes on
+    if "bns" in et or "nsbh" in et:
         return _gwsource.lal_binary_neutron_star, _gwconv.convert_to_lal_binary_neutron_star_parameters
     return _gwsource.lal_binary_black_hole, _gwconv.convert_to_lal_binary_black_hole_parameters
 
@@ -301,7 +331,8 @@ class BilbyWaveformGenerator:
         t_merger = self.duration / 2.0 + float(params.get("geocent_time", 0.0))
         return 1.2 * self.chirp_time(params, self.f_lower) + 0.25 <= t_merger
 
-    def generate_long(self, params: Dict, detector: str) -> Tuple[np.ndarray, int]:
+    def generate_long(self, params: Dict, detector: str,
+                      min_pre: float = 0.0) -> Tuple[np.ndarray, int]:
         """Projected raw strain over a long segment that contains the window,
         so a signal longer than the window is cut off — not wrapped — at the
         window start. Returns (strain [n_long], index of the window start).
@@ -313,11 +344,15 @@ class BilbyWaveformGenerator:
         t_c = float(params.get("geocent_time", 0.0))
         # start the waveform PRE_ROLL s before the window (never above f_ref, so
         # the phase convention of the labels is unchanged)
-        tau_needed = T / 2.0 + t_c + self.PRE_ROLL
+        # min_pre: seconds of segment required before the window (the low-rate
+        # context stream); the waveform then starts at least that early too
+        pre = max(self.PRE_ROLL, float(min_pre))
+        tau_needed = T / 2.0 + t_c + pre
         f_start = 100.0 * (2.18 * (1.21 / self._mc(params)) ** (5.0 / 3.0) / tau_needed) ** (3.0 / 8.0)
         f_start = float(min(self.f_ref, max(self.f_lower, f_start)))
         tau = self.chirp_time(params, f_start)
-        need = 1.25 * tau + T / 2.0 - t_c + self.POST + 2.0
+        need = max(1.25 * tau + T / 2.0 - t_c + self.POST + 2.0,
+                   T + self.POST + pre + 1.0)
         D = float(2 ** int(np.ceil(np.log2(max(need, 2 * T)))))
         wfg = _BilbyWFG(
             duration=D, sampling_frequency=self.sample_rate,

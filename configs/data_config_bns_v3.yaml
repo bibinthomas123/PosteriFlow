@@ -39,6 +39,11 @@ distance_ranges:                   # physically-motivated detectable ranges per 
   BNS: [10.0, 400.0]
   NSBH: [20.0, 1200.0]
 min_snr: 6.0
+# multi-rate input: also store the 28 s before the 4 s window at 512 Hz (a
+# long inspiral carries most of its SNR there: BNS ~70%, NSBH ~45% of the
+# window+context total); the model reads [window | context]
+lowrate_seconds: 28
+lowrate_rate: 512
 
 # ── standard pipeline ───────────────────────────────────────────────────────
 overlap_fraction: 0.3

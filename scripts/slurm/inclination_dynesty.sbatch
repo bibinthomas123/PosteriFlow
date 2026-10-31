@@ -1,6 +1,6 @@
 #!/bin/bash
 # LeanNPE vs dynesty theta_jn information test, one event per array task.
-#   sbatch --array=0-5 scripts/slurm/inclination_dynesty.sbatch
+#   sbatch --array=0-5 [--export=ALL,MODEL=model/<m>/best_model.pth,OUTDIR=results/<dir>] scripts/slurm/inclination_dynesty.sbatch
 # Runs on CPU nodes other than ant2 (kept for GPU training jobs' loaders).
 #SBATCH --job-name=incl_dyn
 #SBATCH --partition=gpu-stud
@@ -12,4 +12,5 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$HOME/PosteriFlow}"
 ${PY:-$HOME/miniforge3/envs/ahsd/bin/python} -u scripts/inclination_vs_dynesty.py \
-    --index "$SLURM_ARRAY_TASK_ID" --npool "$SLURM_CPUS_PER_TASK"
+    --index "$SLURM_ARRAY_TASK_ID" --npool "$SLURM_CPUS_PER_TASK" \
+    ${MODEL:+--model "$MODEL"} ${OUTDIR:+--outdir "$OUTDIR"}

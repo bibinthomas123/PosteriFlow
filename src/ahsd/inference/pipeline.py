@@ -70,7 +70,7 @@ def load_model(path: str, device: Optional[str] = None):
                     mass_param=a.get("mass_param", "m1m2"),
                     geom_phase_residual=a.get("geom_phase_residual", False),
                     mf_tokens=a.get("mf_tokens", False),
-                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), q_embed_dim=a.get("q_embed_dim", 0))
+                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), lowrate_len=a.get("lowrate_len", 0), mc_bank=a.get("mc_bank", "") or "", q_embed_dim=a.get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     meta = {"model_path": str(path), "model_epoch": int(ckpt.get("epoch", -1)),
@@ -87,6 +87,21 @@ def load_model(path: str, device: Optional[str] = None):
             "device": device}
     _MODEL_CACHE[key] = (model, meta)
     return model, meta
+
+
+def model_input(model: LeanNPE, prepared: PreparedData) -> np.ndarray:
+    """The strain row the model reads: the 4 s window, followed for multi-rate
+    models by the low-rate context stream before it."""
+    x = prepared.strain
+    if getattr(model, "lowrate_len", 0):
+        lo = prepared.strain_lo
+        if lo is None or lo.shape[-1] != model.lowrate_len:
+            raise ValueError(
+                f"this model needs {model.lowrate_len} samples of low-rate context before the "
+                "window (28 s of data before the trigger); the prepared data has "
+                f"{'none' if lo is None else lo.shape[-1]}")
+        x = np.concatenate([x, lo], axis=-1)
+    return x
 
 
 def _log_prob_physical(model: LeanNPE, y_norm: torch.Tensor,
@@ -189,7 +204,7 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
 
     # ---- encode + sample + log-prob ----
     t0 = time.time()
-    st = torch.from_numpy(prepared.strain).unsqueeze(0).to(dev).float()
+    st = torch.from_numpy(model_input(net, prepared)).unsqueeze(0).to(dev).float()
     asd_bands = None
     if net.psd_cond:
         # design-whitened (simulated) data has unit sensitivity -> 0; real data
@@ -281,7 +296,19 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
     # multi-indicator refinement gate (confidence + OOD + bias map + width
     # + railing) — the auditable "do I trust this?" decision
     from ahsd.inference.gating import refinement_gate
-    out.diagnostics["refinement"] = refinement_gate(out)
+    gate = refinement_gate(out)
+    out.diagnostics["refinement"] = gate
+    # the verdict was formed before the gate: an event the gate sends to
+    # refinement cannot stay HIGH (strong indicator -> LOW, otherwise MEDIUM)
+    v = out.diagnostics["verdict"]
+    if gate.get("refine_global"):
+        strong = gate.get("strong_indicators") or []
+        floor = "LOW" if strong else "MEDIUM"
+        order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        if order[floor] > order[v["confidence"]]:
+            v["confidence"] = floor
+            v["reasons"] = list(v.get("reasons", [])) + [
+                "refinement gate: " + "; ".join((strong or gate.get("moderate_indicators") or [])[:2])]
     return out
 
 

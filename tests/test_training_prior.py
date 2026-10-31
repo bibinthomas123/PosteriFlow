@@ -68,3 +68,34 @@ def test_bilby_priors_bounds(et, shape):
     assert bp["luminosity_distance"].maximum == RANGES[et][1]
     assert bp["mass_1"].minimum == prior.m1_range[0] and bp["mass_2"].maximum == prior.m2_range[1]
     assert bp["a_1"].maximum == prior.a1_max
+
+
+def test_tides_sampled_and_in_priors():
+    """Neutron stars carry a tidal deformability drawn from the generator's
+    prior; black holes carry none. dynesty priors and IS draws use the same."""
+    s = ParameterSampler({"random_seed": 2})
+    bns, nsbh, bbh = (s.sample_parameters(t) for t in ("BNS", "NSBH", "BBH"))
+    assert bns["lambda_1"] > 0 and bns["lambda_2"] > 0
+    assert nsbh["lambda_1"] == 0 and nsbh["lambda_2"] > 0
+    assert bbh["lambda_1"] == bbh["lambda_2"] == 0
+    rng = np.random.default_rng(0)
+    l1, l2 = TrainingPrior.for_class("NSBH", RANGES).sample_tides(500, rng)
+    assert (l1 == 0).all() and 0 <= l2.min() and l2.max() <= 5000
+
+
+def test_merger_time_gate_flags_wrong_mode():
+    """A real event's window is centred on its trigger: a posterior merger
+    ~1 s away (the GW190425/GW200115 failure) is a strong refine indicator."""
+    from types import SimpleNamespace
+    from ahsd.inference.gating import refinement_gate
+    th = _draw("NSBH", 400)
+    j = PARAM_NAMES.index("geocent_time")
+    for tc, expect in ((0.0, False), (1.0, True)):
+        x = th.copy(); x[:, j] = tc + np.random.default_rng(1).normal(0, 0.01, len(x))
+        x[:, 0], x[:, 1] = 8.0, 1.4                      # narrow chirp mass
+        r = SimpleNamespace(samples=x, param_names=list(PARAM_NAMES), prepared=None,
+                            median={n: float(np.median(x[:, i])) for i, n in enumerate(PARAM_NAMES)},
+                            trigger_gps=1263097407.7,
+                            diagnostics={"verdict": {"confidence": "HIGH"}, "boundary_railing_frac": 0.0})
+        g = refinement_gate(r)
+        assert any("trigger time" in m for m in g["strong_indicators"]) == expect

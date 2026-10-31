@@ -43,7 +43,8 @@ def symmetrized_log_q(theta_np, model, prepared, rank: int = 0,
     from ahsd.inference.pipeline import _log_prob_physical
 
     theta = torch.from_numpy(theta_np.astype(np.float32))
-    strain = torch.from_numpy(prepared.strain).unsqueeze(0).to(device).float()
+    from ahsd.inference.pipeline import model_input
+    strain = torch.from_numpy(model_input(model, prepared)).unsqueeze(0).to(device).float()
     with torch.no_grad():
         ctx = model.encoder(strain)
     r = torch.full((1,), rank, dtype=torch.long, device=device)
@@ -76,7 +77,14 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
     log-likelihood in the module-level `_WORKER` dict for `_eval_chunk`."""
     import bilby
     from ahsd.inference.priors import TrainingPrior
-    wf = TrainingPrior.for_class(event_type).waveform()
+    prior = TrainingPrior.for_class(event_type)
+    wf = prior.waveform()
+    # tides are nuisance parameters, not NPE outputs: each likelihood
+    # evaluation draws them from the prior. With q(theta, lambda) =
+    # q(theta) pi(lambda) the weight L pi / q is unchanged, so IS marginalizes
+    # them exactly (at the cost of some extra variance)
+    _WORKER["prior"] = prior
+    _WORKER["rng"] = np.random.default_rng(int(center_gps * 1000) % 2 ** 32)
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
         if det not in raw:
@@ -119,6 +127,7 @@ def _eval_chunk(rows):
     parameter rows using the cached marginalized likelihood (-inf on failure)."""
     like = _WORKER["like"]
     out = np.empty(len(rows))
+    l1s, l2s = _WORKER["prior"].sample_tides(len(rows), _WORKER["rng"])
     for k, th in enumerate(rows):
         p = {n: float(th[j]) for n, j in _J.items()}
         like.parameters = dict(
@@ -133,7 +142,7 @@ def _eval_chunk(rows):
             phase=0.0, geocent_time=_WORKER["center"] - DURATION / 2,
             time_jitter=0.0,  # bilby time-marginalization bookkeeping param
             a_1=p["a1"], a_2=p["a2"], tilt_1=0.0, tilt_2=0.0,
-            phi_12=0.0, phi_jl=0.0, lambda_1=0.0, lambda_2=0.0)
+            phi_12=0.0, phi_jl=0.0, lambda_1=float(l1s[k]), lambda_2=float(l2s[k]))
         try:
             out[k] = like.log_likelihood() - _WORKER["noise_ll"]
         except Exception:

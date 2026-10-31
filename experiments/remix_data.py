@@ -38,6 +38,18 @@ PARAM_NAMES = [
 ]
 MAX_SIGNALS = 5
 T_LEN = 16384
+SR = 4096
+# multi-rate datasets also carry a low-rate context stream (the seconds before
+# the window at LO_RATE Hz); in memory it is appended after the window, so a
+# strain row is [3, T_LEN + lo_len] and the model splits it
+LO_RATE = 512
+
+
+def _lo_stack(dd):
+    """[3, lo_len] context stream of one sample's detector data, or None."""
+    if "noise_lo" not in dd["H1"]:
+        return None
+    return np.stack([dd[d]["noise_lo"] for d in ("H1", "L1", "V1")])
 IDX_DIST = PARAM_NAMES.index("luminosity_distance")
 IDX_TIME = PARAM_NAMES.index("geocent_time")
 
@@ -94,8 +106,8 @@ def build_memmap_cache(data_dir: str, split: str, out_dir: str) -> dict:
     files = sorted(glob.glob(f"{data_dir}/{split}/batch_*.pkl"))
     assert files, f"no chunks under {data_dir}/{split}"
 
-    # pass 1: count
-    n_noise, n_sig = 0, 0
+    # pass 1: count (and the context-stream length, if any)
+    n_noise, n_sig, lo_len = 0, 0, 0
     for fp in files:
         with open(fp, "rb") as fh:
             b = pickle.load(fh)
@@ -104,14 +116,17 @@ def build_memmap_cache(data_dir: str, split: str, out_dir: str) -> dict:
             if "noise" not in dd:
                 continue
             n_noise += 1
+            if "noise_lo" in dd:
+                lo_len = len(dd["noise_lo"])
             if str(s.get("event_type")) != "noise":
                 n_sig += min(len(s.get("parameters", [])), MAX_SIGNALS)
-    print(f"[{split}] noise pool={n_noise}  total signals={n_sig}")
-
+    print(f"[{split}] noise pool={n_noise}  total signals={n_sig}"
+          + (f"  context stream {lo_len} samples @ {LO_RATE} Hz" if lo_len else ""))
+    W = T_LEN + lo_len
     noise_mm = np.lib.format.open_memmap(out / "noise.npy", mode="w+",
-                                         dtype=np.float16, shape=(n_noise, 3, T_LEN))
+                                         dtype=np.float16, shape=(n_noise, 3, W))
     sig_mm = np.lib.format.open_memmap(out / "signals.npy", mode="w+",
-                                       dtype=np.float16, shape=(n_sig, 3, T_LEN))
+                                       dtype=np.float16, shape=(n_sig, 3, W))
     par_mm = np.lib.format.open_memmap(out / "params.npy", mode="w+",
                                        dtype=np.float32, shape=(n_sig, len(PARAM_NAMES)))
     events = []  # (sig_start, n_sig) per signal-event
@@ -123,13 +138,19 @@ def build_memmap_cache(data_dir: str, split: str, out_dir: str) -> dict:
             dd = s["detector_data"]
             if "noise" not in dd["H1"]:
                 continue
-            noise_mm[ni] = np.stack([dd[d]["noise"] for d in ("H1", "L1", "V1")])
+            nz = np.stack([dd[d]["noise"] for d in ("H1", "L1", "V1")])
+            if lo_len:
+                nz = np.concatenate([nz, _lo_stack(dd)], axis=-1)
+            noise_mm[ni] = nz
             ni += 1
             if str(s.get("event_type")) == "noise":
                 continue
             plist = s.get("parameters", [])[:MAX_SIGNALS]
             sigs = [np.stack([dd[d]["signals"][k] for d in ("H1", "L1", "V1")])
                     for k in range(len(plist))]
+            if lo_len:
+                sigs = [np.concatenate([sg, np.stack([dd[d]["signals_lo"][k] for d in ("H1", "L1", "V1")])],
+                                       axis=-1) for k, sg in enumerate(sigs)]
             order = sorted(range(len(plist)), reverse=True,
                            key=lambda k: _loudness(plist[k]["mass_1"], plist[k]["mass_2"],
                                                    plist[k]["luminosity_distance"]))
@@ -140,7 +161,8 @@ def build_memmap_cache(data_dir: str, split: str, out_dir: str) -> dict:
                 si += 1
             events.append([start, len(plist)])
     noise_mm.flush(); sig_mm.flush(); par_mm.flush()
-    meta = {"n_noise": int(ni), "n_signals": int(si), "events": events}
+    meta = {"n_noise": int(ni), "n_signals": int(si), "events": events,
+            "lo_len": int(lo_len), "lo_rate": LO_RATE if lo_len else 0}
     with open(out / "events.json", "w") as f:
         json.dump(meta, f)
     print(f"[{split}] cache written -> {out}  (noise {ni}, signals {si}, events {len(events)})")
@@ -182,6 +204,12 @@ class RemixDataset(Dataset):
             meta = json.load(f)
         self.events = meta["events"]
         self.n_noise = meta["n_noise"]
+        self.lo_len = int(meta.get("lo_len", 0))
+        if self.lo_len:
+            self._lo_sec = self.lo_len // LO_RATE
+            self._lo_freq = np.fft.rfftfreq(self.lo_len, 1.0 / LO_RATE)
+            self._recolor_lo = {}
+            self._bank_lo = {}
 
         # ---- basin-cell oversampling (analysis/attractor_basin) ----
         # The {tau_HL in [+4,+10] ms} x {m1>=29} cell collapses to a constant
@@ -330,7 +358,7 @@ class RemixDataset(Dataset):
         rank0 = np.array([e[0] for e in self.events])
         tau = np.empty(len(rank0), dtype=np.float32)
         for i in range(0, len(rank0), 512):
-            s = np.asarray(self.signals[rank0[i:i + 512]], dtype=np.float32)
+            s = np.asarray(self.signals[rank0[i:i + 512]], dtype=np.float32)[..., :T_LEN]
             X = np.fft.rfft(s[:, 0]) * np.conj(np.fft.rfft(s[:, 1]))
             cc = np.fft.irfft(X)
             win = np.concatenate([cc[:, -maxlag:], cc[:, :maxlag + 1]], axis=1)
@@ -355,6 +383,32 @@ class RemixDataset(Dataset):
         p = self._seg_p[d]
         return int(rng.choice(n, p=p)) if p is not None else int(rng.integers(n))
 
+    def _bank_window_and_context(self, d, k, rng):
+        """One real-noise crop for a multi-rate event: the 4 s window and the
+        context before it from one continuous segment. The segment's low-rate
+        stream is decimated once and cached (decimating 30 s per detector per
+        event made data loading 3x slower than the GPU step); the window start
+        is a multiple of the decimation factor so the cached stream lines up
+        with the window exactly."""
+        from ahsd.data.bilby_pipeline import LOWRATE_PAD_S, to_lowrate
+        down = SR // LO_RATE
+        seg = self.real_bank[d][k]
+        key = (d, k)
+        if key not in self._bank_lo:
+            n = seg.shape[0]
+            # whole segment at 512 Hz (cut points never fall in the edge pad)
+            full = to_lowrate(np.concatenate([np.zeros(int(LOWRATE_PAD_S * SR), np.float32),
+                                              seg.astype(np.float32),
+                                              np.zeros(int(LOWRATE_PAD_S * SR), np.float32)]),
+                              n + int(LOWRATE_PAD_S * SR), SR, n / SR, LO_RATE)
+            self._bank_lo[key] = full
+        first = int((self._lo_sec + LOWRATE_PAD_S) * SR) // down + 1
+        last = (seg.shape[0] - T_LEN) // down - int(LOWRATE_PAD_S * LO_RATE)
+        j = int(rng.integers(first, last))           # window start in 512 Hz samples
+        i0 = j * down
+        lo = self._bank_lo[key][j - self.lo_len: j]
+        return np.concatenate([seg[i0:i0 + T_LEN].astype(np.float32), lo])
+
     def _real_noise_and_filters(self, rng, seg_override=None):
         """Random 4 s crop per detector from the real bank + that segment's
         re-coloring filter. Time-flip+sign decorrelates reused segments.
@@ -365,16 +419,31 @@ class RemixDataset(Dataset):
         (and hence asd_bands, which is a function of the segment's recolor
         filter) identical across views, so only the fine noise instantiation
         varies -- the real-noise analogue of force_design=True."""
-        crops, filts = [], []
+        crops, filts, lo_filts = [], [], []
         for d in ("H1", "L1", "V1"):
             k = seg_override[d] if seg_override is not None else self._draw_seg(d, rng)
             seg = self.real_bank[d][k]
-            i0 = int(rng.integers(0, seg.shape[0] - T_LEN))
-            c = seg[i0:i0 + T_LEN].astype(np.float32)
-            if rng.uniform() < 0.5:
-                c = -c[::-1].copy()
+            if self.lo_len:
+                # window plus the context before it, from one continuous
+                # segment; a time flip would put the context after the window,
+                # so only the sign is randomized
+                c = self._bank_window_and_context(d, k, rng)
+                if rng.uniform() < 0.5:
+                    c = -c
+            else:
+                i0 = int(rng.integers(0, seg.shape[0] - T_LEN))
+                c = seg[i0:i0 + T_LEN].astype(np.float32)
+                if rng.uniform() < 0.5:
+                    c = -c[::-1].copy()
             crops.append(c)
             filts.append(self.recolor[d][k])
+            if self.lo_len and (d, k) not in self._recolor_lo:
+                f_hi = np.fft.rfftfreq(T_LEN, 1.0 / SR)
+                self._recolor_lo[(d, k)] = np.interp(self._lo_freq, f_hi, self.recolor[d][k]).astype(np.float32)
+            if self.lo_len:
+                lo_filts.append(self._recolor_lo[(d, k)])
+        # context-stream re-colouring filters of this draw (read by _remix_event)
+        self._last_recolor_lo = lo_filts
         return np.stack(crops), filts
 
     def _remix_event(self, start, nsig, rng_sig, rng_noise,
@@ -419,7 +488,12 @@ class RemixDataset(Dataset):
             par = self.params[start + k].copy()
             if self.remix:
                 if self.sky_remap is not None and rng_sig.uniform() < self.delay_aug:
-                    sig = self.sky_remap.remap(sig, par, rng_sig)
+                    if self.lo_len:
+                        hi, lo = self.sky_remap.remap(sig[:, :T_LEN], par, rng_sig,
+                                                      ctx=sig[:, T_LEN:], ctx_rate=LO_RATE)
+                        sig = np.concatenate([hi, lo], axis=-1)
+                    else:
+                        sig = self.sky_remap.remap(sig, par, rng_sig)
                 # distance rescale (exact relabel), clamped to scaler range
                 s = float(rng_sig.uniform(self.dist_lo, self.dist_hi))
                 d_new = par[IDX_DIST] / s
@@ -431,7 +505,16 @@ class RemixDataset(Dataset):
                 if abs(par[IDX_TIME]) < 1.45 and self.shift_max_samp > 0:
                     ds = int(rng_sig.integers(-self.shift_max_samp, self.shift_max_samp + 1))
                     if ds != 0:
-                        sig = np.roll(sig, ds, axis=-1)
+                        if self.lo_len:
+                            # window: exact roll; context: the same shift as
+                            # an FFT phase ramp (not a whole number of samples)
+                            hi = np.roll(sig[:, :T_LEN], ds, axis=-1)
+                            ramp = np.exp(-2j * np.pi * self._lo_freq * (ds / SR))
+                            lo = np.fft.irfft(np.fft.rfft(sig[:, T_LEN:], axis=-1) * ramp,
+                                              n=self.lo_len, axis=-1).astype(np.float32)
+                            sig = np.concatenate([hi, lo], axis=-1)
+                        else:
+                            sig = np.roll(sig, ds, axis=-1)
                         par[IDX_TIME] += ds / 4096.0
             sig_sum += sig
             entries.append(par)
@@ -441,7 +524,12 @@ class RemixDataset(Dataset):
             # the chosen segment's whitening (exact: whitening is diagonal in
             # frequency, so it commutes with the scale/shift applied above)
             for di in range(3):
-                sig_sum[di] = np.fft.irfft(np.fft.rfft(sig_sum[di]) * recolor_filts[di],n=T_LEN).astype(np.float32)
+                sig_sum[di, :T_LEN] = np.fft.irfft(np.fft.rfft(sig_sum[di, :T_LEN]) * recolor_filts[di],
+                                                   n=T_LEN).astype(np.float32)
+            if self.lo_len:
+                for di, f_lo in enumerate(self._last_recolor_lo):
+                    sig_sum[di, T_LEN:] = np.fft.irfft(np.fft.rfft(sig_sum[di, T_LEN:]) * f_lo,
+                                                       n=self.lo_len).astype(np.float32)
         strain += sig_sum
 
         kept_dets = [0, 1, 2]
@@ -461,13 +549,18 @@ class RemixDataset(Dataset):
                         k = (force_real_segs[det_name] if force_real_segs is not None
                             else self._draw_seg(det_name, rng_noise))
                         seg = self.real_bank[det_name][k]
-                        i0 = int(rng_noise.integers(0, seg.shape[0] - T_LEN))
-                        c = seg[i0:i0 + T_LEN].astype(np.float32)
-                        if rng_noise.uniform() < 0.5:
-                            c = -c[::-1].copy()
+                        if self.lo_len:
+                            c = self._bank_window_and_context(det_name, k, rng_noise)
+                            if rng_noise.uniform() < 0.5:
+                                c = -c
+                        else:
+                            i0 = int(rng_noise.integers(0, seg.shape[0] - T_LEN))
+                            c = seg[i0:i0 + T_LEN].astype(np.float32)
+                            if rng_noise.uniform() < 0.5:
+                                c = -c[::-1].copy()
                         strain[di] = c
                     else:
-                        strain[di] = rng_noise.standard_normal(T_LEN).astype(np.float32)
+                        strain[di] = rng_noise.standard_normal(T_LEN + self.lo_len).astype(np.float32)
 
         # Network SNR of the (rescaled/shifted/re-colored/summed) whitened
         # injection: for unit-variance whitened data the optimal matched-filter
@@ -475,7 +568,7 @@ class RemixDataset(Dataset):
         # correct under every augmentation above WITHOUT any stored SNR (which
         # would be stale after distance rescaling and real-noise re-coloring).
         # Sum only over KEPT detectors — a dropped detector's signal is gone.
-        net_snr = float(np.sqrt((sig_sum[kept_dets] ** 2).sum()))
+        net_snr = float(np.sqrt((sig_sum[kept_dets, :T_LEN] ** 2).sum()))
 
         # re-sort by loudness AFTER rescaling so rank labels stay consistent
         entries.sort(key=lambda p: _loudness(p[0], p[1], p[IDX_DIST]), reverse=True)

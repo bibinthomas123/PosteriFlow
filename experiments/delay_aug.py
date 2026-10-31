@@ -133,9 +133,12 @@ class SkyRemapper:
         fx = np.einsum("dab,kab->kd", self.dtensor, ex)
         return fp + 1j * fx
 
-    def remap(self, sig: np.ndarray, par: np.ndarray, rng) -> np.ndarray:
+    def remap(self, sig: np.ndarray, par: np.ndarray, rng, ctx: np.ndarray = None,
+              ctx_rate: int = 512):
         """Remap one signal [3,T] to a new sky; relabels par[ra,dec,psi] in
-        place, returns the delay-shifted signal."""
+        place, returns the delay-shifted signal. With a low-rate context
+        stream `ctx` [3, L] at `ctx_rate` Hz it gets the same scale and delays,
+        and (sig, ctx) is returned."""
         ra, dec, psi = float(par[IDX_RA]), float(par[IDX_DEC]), float(par[IDX_PSI])
         d_old = self._delays([ra], [dec])[0]                          # [3]
         g = np.exp(-2j * psi) * self._antenna0([ra], [dec])[0]        # [3]
@@ -167,7 +170,7 @@ class SkyRemapper:
         # d' = d/alpha. Degenerate matches (tiny/huge alpha) are skipped
         # rather than amplified.
         if not 0.25 <= alpha <= 4.0:
-            return sig
+            return sig if ctx is None else (sig, ctx)
         # Clamp so the relabel stays inside the distance window, and when the
         # clamp bites RESCALE the signal by alpha_c/alpha so amplitude and the
         # new label still agree. (The clamp used to be the hard-coded legacy
@@ -180,6 +183,8 @@ class SkyRemapper:
         alpha_c = float(np.clip(alpha, lo_a, hi_a)) if lo_a <= hi_a else 1.0
         if alpha_c != alpha:
             sig = sig * (alpha_c / alpha)
+            if ctx is not None:
+                ctx = ctx * (alpha_c / alpha)
         alpha = alpha_c
 
         # exact per-detector delay change; s'(t) = s(t - delta) moves each
@@ -191,9 +196,13 @@ class SkyRemapper:
         Sf = np.fft.rfft(sig, axis=-1)
         sig = np.fft.irfft(Sf * np.exp(-2j * np.pi * fr[None, :] * delta[:, None]),
                            n=sig.shape[-1], axis=-1).astype(np.float32)
+        if ctx is not None:
+            fl = np.fft.rfftfreq(ctx.shape[-1], 1.0 / ctx_rate)
+            ctx = np.fft.irfft(np.fft.rfft(ctx, axis=-1) * np.exp(-2j * np.pi * fl[None, :] * delta[:, None]),
+                               n=ctx.shape[-1], axis=-1).astype(np.float32)
 
         par[IDX_RA] = self.grid_ra[c]
         par[IDX_DEC] = self.grid_dec[c]
         par[IDX_PSI] = psi_new
         par[IDX_DIST] = d_old_lab / alpha
-        return sig
+        return sig if ctx is None else (sig, ctx)

@@ -64,6 +64,11 @@ graphify-out/
 # ============================================================================
 *.npy
 *.npz
+# matched-filter template banks the encoder loads (mf_tokens / pol_features)
+!src/ahsd/models/assets/mf_bank.npz
+!src/ahsd/models/assets/mf_bank_bbh.npz
+!src/ahsd/models/assets/mf_bank_nsbh.npz
+!src/ahsd/models/assets/mf_bank_bns.npz
 *.fits
 *.csv
 data/.pkl
@@ -179,3 +184,5 @@ analysis/**/*_checkpoint_*.png
 /models/
 # documentation: track despite the blanket *.md rule above
 !docs/*.md
+results/inclination_dynesty/
+results/polarization_probe.json

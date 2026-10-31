@@ -277,6 +277,73 @@ class BilbyWaveformGenerator:
         signal_td = np.fft.irfft(signal_fd, n=self.n_samples) * self.sample_rate
         return signal_td.astype(np.float64)
 
+    # ── long signals ────────────────────────────────────────────────────────
+    # A frequency-domain waveform sampled at 1/duration represents only
+    # `duration` seconds: anything longer WRAPS circularly when irfft'd. Every
+    # BNS (~135 s in band from 20 Hz), every NSBH (~18 s) and ~34% of BBH are
+    # longer than the 4 s window, so they used to be stored with their whole
+    # inspiral folded into it — unlike real data, which holds only the last
+    # 4 s before merger (measured 2026-10-31).
+
+    PRE_ROLL = 8.0   # s of signal kept before the window start (whitening support)
+    POST = 2.0       # s between window end and long-segment end (Tukey roll-off)
+
+    @staticmethod
+    def chirp_time(params: Dict, f: float) -> float:
+        """Leading-order (Newtonian) time from frequency `f` to merger [s]."""
+        m1, m2 = float(params["mass_1"]), float(params["mass_2"])
+        mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+        return 2.18 * (1.21 / mc) ** (5.0 / 3.0) * (100.0 / f) ** (8.0 / 3.0)
+
+    def fits_window(self, params: Dict) -> bool:
+        """True if the whole signal from f_lower lies between the window start
+        and the merger (with margin), i.e. the 4 s FD generation cannot wrap."""
+        t_merger = self.duration / 2.0 + float(params.get("geocent_time", 0.0))
+        return 1.2 * self.chirp_time(params, self.f_lower) + 0.25 <= t_merger
+
+    def generate_long(self, params: Dict, detector: str) -> Tuple[np.ndarray, int]:
+        """Projected raw strain over a long segment that contains the window,
+        so a signal longer than the window is cut off — not wrapped — at the
+        window start. Returns (strain [n_long], index of the window start).
+        Whiten the whole array, then crop [i0, i0 + n_samples): the same
+        order as real data (prepare_real whitens a long segment, then crops)."""
+        p = _to_bilby_params(params)
+        source_model, param_conv = _get_source_model(p)
+        T = self.duration
+        t_c = float(params.get("geocent_time", 0.0))
+        # start the waveform PRE_ROLL s before the window (never above f_ref, so
+        # the phase convention of the labels is unchanged)
+        tau_needed = T / 2.0 + t_c + self.PRE_ROLL
+        f_start = 100.0 * (2.18 * (1.21 / self._mc(params)) ** (5.0 / 3.0) / tau_needed) ** (3.0 / 8.0)
+        f_start = float(min(self.f_ref, max(self.f_lower, f_start)))
+        tau = self.chirp_time(params, f_start)
+        need = 1.25 * tau + T / 2.0 - t_c + self.POST + 2.0
+        D = float(2 ** int(np.ceil(np.log2(max(need, 2 * T)))))
+        wfg = _BilbyWFG(
+            duration=D, sampling_frequency=self.sample_rate,
+            frequency_domain_source_model=source_model, parameter_conversion=param_conv,
+            waveform_arguments={"waveform_approximant": _get_approximant(p),
+                                "reference_frequency": self.f_ref,
+                                "minimum_frequency": f_start})
+        polarizations = wfg.frequency_domain_strain(p)
+        window_start = _GPS_REF - T / 2.0
+        long_start = window_start - (D - T - self.POST)
+        ifo = _empty_ifo(detector)
+        ifo.minimum_frequency = self.f_lower
+        ifo.maximum_frequency = self.f_upper
+        ifo.set_strain_data_from_zero_noise(sampling_frequency=self.sample_rate,
+                                            duration=D, start_time=long_start)
+        signal_fd = ifo.get_detector_response(waveform_polarizations=polarizations, parameters=p)
+        n_long = int(round(D * self.sample_rate))
+        long_td = np.fft.irfft(signal_fd, n=n_long) * self.sample_rate
+        i0 = int(round((D - T - self.POST) * self.sample_rate))
+        return long_td.astype(np.float64), i0
+
+    @staticmethod
+    def _mc(params: Dict) -> float:
+        m1, m2 = float(params["mass_1"]), float(params["mass_2"])
+        return (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+
     # Keep old API compatible
     def generate_waveform(self, params: Dict, detector_name: str, psd=None) -> np.ndarray:
         """Back-compat alias for `generate` returning float32 strain."""

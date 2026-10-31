@@ -290,6 +290,29 @@ class GWDatasetGenerator:
 
     # ── Core sample generation ────────────────────────────────────────────────
 
+    def _signal_window(self, p: Dict, det: str, psd, zeros: np.ndarray,
+                       whiten: bool) -> Tuple[np.ndarray, Optional[np.ndarray], float]:
+        """One signal in one detector over the 4 s window: (raw, whitened, SNR).
+
+        Signals that fit the window keep the original 4 s generation exactly.
+        Longer ones (all BNS/NSBH, light BBH) are generated over a long segment,
+        whitened there and cropped, so the window holds the true last seconds
+        before merger instead of a circularly wrapped inspiral. SNR is the norm
+        of the whitened in-window signal: what the model actually sees."""
+        wg = self.injector.wfg
+        n = len(zeros)
+        if wg.fits_window(p):
+            raw = self.injector.inject_multiple(zeros, [p], det, psd)[0]
+            wh = self.preprocessor.preprocess(raw, psd, detector=det) if whiten else None
+        else:
+            long_raw, i0 = wg.generate_long(p, det)
+            raw = long_raw[i0:i0 + n]
+            wh = (self.preprocessor.preprocess(long_raw, psd, detector=det)[i0:i0 + n]
+                  if whiten else None)
+        snr = (float(np.sqrt(np.sum(np.asarray(wh, np.float64) ** 2))) if wh is not None
+               else self.injector.measure_snr(raw, psd))
+        return raw, wh, snr
+
     def _make_sample(self, param_sets: List[Dict],
                      min_snr: float,
                      add_glitches: bool,
@@ -329,6 +352,8 @@ class GWDatasetGenerator:
             #    exactly (same float64 additions as inject_multiple performed).
             zeros = np.zeros_like(noise)
             signal_components: List[np.ndarray] = []
+            wh_components: List[np.ndarray] = []
+            whiten_components = store_components and do_preprocess
             if param_sets[0].get("event_type") == "noise":
                 strain = noise.astype(np.float64)
                 det_snr = 0.0
@@ -336,15 +361,23 @@ class GWDatasetGenerator:
                 strain = noise.astype(np.float64)
                 snrs = []
                 for p in param_sets:
-                    sig, sig_snrs = self.injector.inject_multiple(zeros, [p], det, psd)
+                    sig, wh, snr = self._signal_window(p, det, psd, zeros, whiten_components)
                     signal_components.append(sig)
-                    snrs.append(sig_snrs[0] if sig_snrs else 0.0)
+                    wh_components.append(wh)
+                    snrs.append(snr)
                     strain = strain + sig
                 det_snr = snrs[0] if snrs else 0.0  # primary signal SNR
             per_det_snr[det] = float(det_snr)
 
-            # 3. Whiten using the correct detector PSD
-            if do_preprocess:
+            # 3. Whiten using the correct detector PSD. With components, the
+            # total is whitened noise + the per-signal whitened windows (whitening
+            # is linear), so long signals keep their long-segment whitening.
+            wh_noise = None
+            if whiten_components:
+                wh_noise = self.preprocessor.preprocess(noise.astype(np.float64), psd, detector=det)
+                whitened = (wh_noise.astype(np.float64)
+                            + sum(w.astype(np.float64) for w in wh_components)).astype(np.float32)
+            elif do_preprocess:
                 whitened = self.preprocessor.preprocess(strain, psd, detector=det)
             else:
                 whitened = strain.astype(np.float32)
@@ -352,12 +385,7 @@ class GWDatasetGenerator:
             det_entry = {"strain": whitened, "snr": float(det_snr)}
             if store_components:
                 if do_preprocess:
-                    wh_noise = self.preprocessor.preprocess(
-                        noise.astype(np.float64), psd, detector=det)
-                    wh_sigs = [
-                        self.preprocessor.preprocess(s, psd, detector=det)
-                        for s in signal_components
-                    ]
+                    wh_sigs = wh_components
                 else:
                     wh_noise = noise.astype(np.float32)
                     wh_sigs = [s.astype(np.float32) for s in signal_components]

@@ -147,6 +147,21 @@ def audit_split(ds, split, cfg, dist_range):
     zero = snr == 0
     hard(not zero.any(), f"no all-zero signal waveforms ({int(zero.sum())}; = failed generation)"
          + (" by type " + str({t: int((zero & (typ == t)).sum()) for t in ('BBH', 'NSBH', 'BNS')}) if zero.any() else ""))
+    # wrapped inspirals (pre-2026-10-31 generator folded long signals into the
+    # window): a correct signal has ~1e-5 of its energy later than 0.5 s
+    # after merger, a wrapped one 1e-2..0.5 (tests/test_long_signal_generation)
+    T_s = sig.shape[2] / 4096
+    post_i = ((T_s / 2 + tc + 0.5) * 4096).astype(int)
+    def _post(i0, x):
+        x = x.astype(np.float64) ** 2
+        cut = np.arange(x.shape[2])[None, :] >= post_i[i0:i0 + len(x), None]
+        return (x * cut[:, None]).sum(axis=(1, 2)) / np.maximum(x.sum(axis=(1, 2)), 1e-30)
+    post = np.concatenate([_post(i, np.asarray(sig[i:i + 2048])) for i in range(0, len(sig), 2048)])
+    has_tail = post_i < sig.shape[2] - 0.05 * 4096
+    wrapped = has_tail & (post > 3e-3)
+    hard(wrapped.mean() < 1e-3, f"no wrapped long inspirals: {int(wrapped.sum())} signals with >0.3% "
+         f"energy after merger (median {np.median(post[has_tail]):.1e})"
+         + (" by type " + str({t: int((wrapped & (typ == t)).sum()) for t in ('BBH', 'NSBH', 'BNS')}) if wrapped.any() else ""))
     sat = chunked(sig, lambda x: (np.abs(x) > 6.0e4).any(axis=(1, 2)))
     hard(not sat.any(), f"no float16-saturated signals ({int(sat.sum())})")
     print("    per-signal whitened SNR (network): " + " | ".join(

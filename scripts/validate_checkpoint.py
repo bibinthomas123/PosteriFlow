@@ -355,6 +355,13 @@ def gate(name, ok, detail):
     return {"gate": name, "pass": bool(ok), "detail": detail}
 
 
+def _redshift(d_l_mpc: float) -> float:
+    """Redshift of a luminosity distance (Planck15), for source->detector frame."""
+    from astropy import units as u
+    from astropy.cosmology import Planck15, z_at_value
+    return float(z_at_value(Planck15.luminosity_distance, d_l_mpc * u.Mpc))
+
+
 def distance_by_type(d_samp, truth, model):
     """Distance calibration per source class, conditioned on the PREDICTION.
 
@@ -459,7 +466,7 @@ def run_gates(gaus, real, gw_ok, gw_summary, basin=None):
         gates.append(gate("real vs gaussian NLL gap < 3 nats",
                           abs(real["nll"] - gaus["nll"]) < 3,
                           f"gaussian {gaus['nll']:.2f} vs real {real['nll']:.2f}"))
-    gates.append(gate("real-event smoke tests (6 GWTC events, |t_c|<0.1s)", gw_ok, gw_summary))
+    gates.append(gate("real-event smoke tests (GWTC events of the trained classes, |t_c|<0.1s)", gw_ok, gw_summary))
     if basin is not None:
         from ahsd.evaluation.basin_probe import basin_gate
         b_ok, b_detail = basin_gate(basin)
@@ -592,22 +599,43 @@ def main():
     # GW170729 (dL ~2750 Mpc) sits OUTSIDE the training distance prior — it is
     # a deliberate live test of the OOD/refinement gate on every CI run.
 
-    REAL_EVENTS = [
-            ("GW150914", {"m1": 38.8, "m2": 33.4, "dL": 440}),
-            ("GW151226", {"m1": 13.7, "m2": 7.7, "dL": 440}),
-            ("GW170104", {"m1": 31.0, "m2": 20.1, "dL": 960}),
-            ("GW170608", {"m1": 12.0, "m2": 7.0, "dL": 320}),
-            ("GW170729", {"m1": 50.6, "m2": 34.3, "dL": 2750}),
-            ("GW170814", {"m1": 30.7, "m2": 25.3, "dL": 600}),
-        ]
+    # Approximate GWTC medians (SOURCE frame). Events whose short name the
+    # catalog loader cannot resolve carry their GPS time.
+    EVENTS_BY_CLASS = {
+        "BBH": [
+            ("GW150914", {"m1": 38.8, "m2": 33.4, "dL": 440}, None),
+            ("GW151226", {"m1": 13.7, "m2": 7.7, "dL": 440}, None),
+            ("GW170104", {"m1": 31.0, "m2": 20.1, "dL": 960}, None),
+            ("GW170608", {"m1": 12.0, "m2": 7.0, "dL": 320}, None),
+            ("GW170729", {"m1": 50.6, "m2": 34.3, "dL": 2750}, None),
+            ("GW170814", {"m1": 30.7, "m2": 25.3, "dL": 600}, None),
+        ],
+        "NSBH": [
+            # effectively single-detector (L1); marginal in GWTC-3, not in the
+            # cached catalog -> GPS of 2020-01-05 16:24:26 UTC
+            ("GW200105", {"m1": 8.9, "m2": 1.9, "dL": 280}, 1262276684.0),
+            ("GW200115_042309", {"m1": 5.9, "m2": 1.4, "dL": 300}, None),
+        ],
+        "BNS": [
+            ("GW170817", {"m1": 1.46, "m2": 1.27, "dL": 40}, None),
+            # H1 not observing (NaN at GWOSC -> treated as absent)
+            ("GW190425", {"m1": 2.0, "m2": 1.4, "dL": 160}, None),
+        ],
+    }
+    # certify on the classes the checkpoint was trained on (older checkpoints
+    # record none: their mixed training set is certified on BBH, as before)
+    trained = ckpt["args"].get("dataset_event_types") or ["BBH"]
+    REAL_EVENTS = [(n, c, p, g) for c in ("BBH", "NSBH", "BNS") if c in trained
+                   for n, p, g in EVENTS_BY_CLASS[c]]
     
     if not args.skip_gw150914:
         from ahsd.inference import infer
         gw, fails = {}, []
-        for name, pub in REAL_EVENTS:
-            print(f"{name} smoke test ...")
+        for name, cls, pub, gps in REAL_EVENTS:
+            print(f"{name} ({cls}) smoke test ...")
             try:
-                res = infer(event=name, num_samples=3000, model=args.model,
+                src = {"event": name} if gps is None else {"trigger_time": gps}
+                res = infer(**src, event_type=cls, num_samples=3000, model=args.model,
                             device=device)
                 med = res.median
                 v = res.diagnostics.get("verdict", {})
@@ -615,10 +643,24 @@ def main():
                 tc_ok = abs(med["geocent_time"]) < 0.1
                 if not tc_ok:
                     fails.append(f"{name}: t_c offset {med['geocent_time']:+.3f}s")
+                # Published masses are SOURCE frame; the model measures the
+                # DETECTOR frame, m_det = m_src (1 + z). Published distances
+                # use p(d) ~ d^2; convert the posterior when the training
+                # prior is known (uniform for data_config_fixed datasets).
+                z = _redshift(pub["dL"])
+                q_s = res.samples[:, 1] / res.samples[:, 0]
+                q_lo, q_hi = np.quantile(q_s, [0.05, 0.95])
+                dl_line = f"dL {med['luminosity_distance']:.0f}"
+                try:
+                    rw = res.reweight_distance_prior(target="comoving_d2")
+                    dl_line += f" -> {rw.median['luminosity_distance']:.0f} (d2 prior)"
+                except ValueError:
+                    pass
                 gw[name] = (
-                    f"m1 {med['mass_1']:.1f} (pub {pub['m1']}) | "
-                    f"m2 {med['mass_2']:.1f} (pub {pub['m2']}) | "
-                    f"dL {med['luminosity_distance']:.0f} (pub {pub['dL']}) | "
+                    f"[{cls}] m1 {med['mass_1']:.1f} (pub {pub['m1'] * (1 + z):.1f} det) | "
+                    f"m2 {med['mass_2']:.1f} (pub {pub['m2'] * (1 + z):.1f} det) | "
+                    f"q {np.median(q_s):.2f} [{q_lo:.2f},{q_hi:.2f}] (pub {pub['m2'] / pub['m1']:.2f}) | "
+                    f"{dl_line} (pub {pub['dL']}) | "
                     f"t_c {med['geocent_time']:+.3f}s | "
                     f"rail {res.diagnostics['boundary_railing_frac']:.1%} | "
                     f"conf {v.get('confidence', '?')} | "
@@ -630,7 +672,7 @@ def main():
                 fails.append(f"{name}: {type(e).__name__}: {e}")
                 gw[name] = f"FAILED: {e}"
         gw_ok = not fails
-        gw_summary = (f"all {len(REAL_EVENTS)} events ran, |t_c|<0.1s"
+        gw_summary = (f"all {len(REAL_EVENTS)} events ({', '.join(sorted({c for _, c, _, _ in REAL_EVENTS}))}) ran, |t_c|<0.1s"
                       if gw_ok else "; ".join(fails)[:200])
 
     basin_rows = None

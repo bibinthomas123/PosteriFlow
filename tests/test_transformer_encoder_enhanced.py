@@ -233,6 +233,7 @@ class TestTransformerStrainEncoder:
             input_length=2048,
             output_dim=64
         )
+        encoder.eval()  # dropout is active in train mode: outputs would differ by chance
 
         # Run full batch
         with torch.no_grad():

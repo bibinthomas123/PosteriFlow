@@ -21,7 +21,7 @@ sys.path.insert(0, "src")
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from ahsd.models.lean_npe import ParamScaler, PARAM_NAMES  # noqa: E402
-from ahsd.models.parameter_scalers import FLOW_NORM_BOUND  # noqa: E402
+from ahsd.models.flows import FLOW_NORM_BOUND  # noqa: E402
 
 MEMMAP = HERE.parents[1] / "data/dataset/memmap/train"
 TAIL_BOUND = 5.0   # LeanNPE passes tail_bound=5.0 to NSFPosteriorFlow

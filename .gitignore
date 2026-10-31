@@ -177,3 +177,5 @@ analysis/**/*_checkpoint_*.png
 # ============================================================================
 /model/
 /models/
+# documentation: track despite the blanket *.md rule above
+!docs/*.md

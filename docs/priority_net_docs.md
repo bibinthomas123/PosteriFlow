@@ -1,3 +1,11 @@
+> **Status (2026-10-31):** PriorityNet is optional. It only reorders the
+> per-rank LeanNPE results in `infer.py --n_signals >1`; the posteriors come
+> from LeanNPE's own rank conditioning, which is the ranking actually relied
+> on. Its ranking has been measured unreliable, and its checkpoint (trained
+> on the pre-v3 contaminated data) was deleted — without one, overlap
+> inference keeps the NPE loudness order. Retrain only if a benchmark shows
+> it orders signals better than LeanNPE's rank.
+
 # PriorityNet: A Comprehensive Guide to Intelligent Signal Prioritization
 
 ## Introduction

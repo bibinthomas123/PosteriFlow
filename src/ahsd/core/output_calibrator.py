@@ -99,6 +99,7 @@ def calibrate_predictions(
     targets: np.ndarray,
     method: str = "percentile",
     val_split: float = 0.2,
+    seed: int = 0,
 ) -> Tuple[OutputCalibrator, dict]:
     """
     Calibrate model predictions post-training.
@@ -112,7 +113,10 @@ def calibrate_predictions(
     method : str
         'percentile' (default), 'minmax', or 'learned'
     val_split : float
-        Fraction for validation (only for 'learned')
+        Fraction held out for validation (only for 'learned'); the "after"
+        metrics are then computed on the held-out events only.
+    seed : int
+        Seed for the train/validation split.
 
     Returns
     -------
@@ -147,6 +151,7 @@ def calibrate_predictions(
     L.info(f"  Gap: {before['targ_range'] - before['pred_range']:.4f} (target_range - pred_range)")
 
     calibrator = OutputCalibrator()
+    eval_idx = np.arange(len(model_preds))  # rows the "after" metrics use
 
     if method == "percentile":
         gain, bias = calibrator.calibrate_static(model_preds, targets)
@@ -162,8 +167,10 @@ def calibrate_predictions(
         # Split data
         n = len(model_preds)
         n_val = int(n * val_split)
-        idx = np.random.permutation(n)
+        idx = np.random.default_rng(seed).permutation(n)
         val_idx, train_idx = idx[:n_val], idx[n_val:]
+        if n_val > 0:
+            eval_idx = val_idx
 
         pred_train = torch.tensor(model_preds[train_idx], dtype=torch.float32)
         targ_train = torch.tensor(targets[train_idx], dtype=torch.float32)
@@ -189,10 +196,12 @@ def calibrate_predictions(
     else:
         raise ValueError(f"Unknown calibration method: {method}")
 
-    # Apply calibration
+    # Apply calibration. For 'learned', score only the held-out events: scoring
+    # the rows the affine map was fitted on overstated the improvement.
     with torch.no_grad():
-        cal_preds = calibrator(torch.tensor(model_preds, dtype=torch.float32))
+        cal_preds = calibrator(torch.tensor(model_preds[eval_idx], dtype=torch.float32))
         cal_preds = cal_preds.cpu().numpy()
+    targets = targets[eval_idx]
 
     after = {
         "pred_mean": cal_preds.mean(),
@@ -202,7 +211,11 @@ def calibrate_predictions(
         "pred_range": cal_preds.max() - cal_preds.min(),
         "mse": np.mean((cal_preds - targets) ** 2),
         "mae": np.mean(np.abs(cal_preds - targets)),
+        "n_eval": int(len(eval_idx)),
     }
+    if method == "learned":
+        # like-for-like baseline on the same held-out rows
+        before["mse_eval"] = float(np.mean((model_preds[eval_idx] - targets) ** 2))
 
     L.info("\nAfter calibration:")
     L.info(f"  Pred: mean={after['pred_mean']:.4f} std={after['pred_std']:.4f}")

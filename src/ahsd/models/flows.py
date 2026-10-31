@@ -13,10 +13,10 @@ import logging
 
 from ahsd.utils.universal_config import UniversalConfigReader, ConfigDict
 
-# Single source of truth for the normalizing flow's expected input/output range.
-# Imported from parameter_scalers so both sides of the normalize→flow boundary
-# always reference the same constant.
-from ahsd.models.parameter_scalers import FLOW_NORM_BOUND
+# Default flow tail bound in normalized space: the single definition every
+# clamp/bound in this module uses (moved here from the retired
+# parameter_scalers module, 2026-10-31). LeanNPE passes its own tail_bound.
+FLOW_NORM_BOUND: float = 3.0
 
 from nflows.flows import Flow
 from nflows.distributions.normal import StandardNormal

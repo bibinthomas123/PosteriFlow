@@ -5,6 +5,22 @@ design decision. They are grouped by the question they answered, in roughly
 chronological order, so the sequence reads as the paper's "what failed and
 why" narrative. Each entry: what was tested → verdict → what replaced it.
 
+> **Every model before `lean_npe_v3` (2026-10-31) was trained on contaminated
+> data.** The generator injected a fixed placeholder source (m1 = m2 = 30,
+> face-on, zero spin) into overlap events; it made up 70% of all heavy
+> equal-mass training signals. The reports below are kept as the record of
+> what that bug did — most of §4's "attractor" is its fingerprint (railing on
+> GW150914/GW170814 fell from ~74% to 0.5–4% on clean data). Their
+> checkpoints and NPE results have been deleted; the dynesty/bilby runs in
+> `results/` do not involve the models and remain valid ground truth.
+>
+> The per-model certification reports of those runs (`ci/<run>/report.*`)
+> and `figures/` were then removed from the working tree as well; every table
+> below that cites them reflects their contents, and the files are recoverable
+> from git history (`git show 818340a:analysis/ci/<run>/report.json`). Note
+> that `ci/lean_npe_v3/` now holds the 2026-10-31 clean-data model; the July
+> run of the same name (the third LeanNPE generation in §6) is in history.
+
 Regenerable bulk (posterior-sample dumps, dynesty resume pickles, `.npy`/`.pt`
 caches, per-event CI folders) was moved out on 2026-10-30 to
 `~/Developer/PosteriFlow-analysis-archive/` (same layout; `MANIFEST.txt`
@@ -71,7 +87,7 @@ while validation NLL kept improving:
 | `lean_npe_boost` | 4× basin-cell oversampling | −1.60 | 30.6 / 30.6 | 63% | incentive is not the lever |
 | `lean_npe_mft` | MF tokens (fine-tune) | −1.61 | 43.3 / 31.6 | 48% | partial |
 | `lean_npe_noiseinv`, `_noiseinv_real` | noise-invariance views | −1.28 / −1.26 | 31.1 / 31.0 | 82% / 79% | worse on real events |
-| `lean_npe_mf_scratch` | MF tokens + delay aug + aux mass, from scratch | −0.97 | 31.0 / 30.9 | 74% | **current deploy candidate**: all synthetic basin tests pass; real events routed to dynesty by the OOD gate |
+| `lean_npe_mf_scratch` | MF tokens + delay aug + aux mass, from scratch | −0.97 | 31.0 / 30.9 | 74% | best of the contaminated-data era: all synthetic basin tests pass, real events still collapse |
 
 ## 5. Why LeanNPE's posteriors are wider than Bilby's
 
@@ -97,6 +113,15 @@ are kept only for the current best, `ci/lean_npe_mf_scratch/`.
 | `lean_coherentC` | 1.37 | 9/10 | 30.4/10.9, 407 | 14% | coherent encoder, calibrated |
 | `long_run_ep18`, `long_run_gated` | 1.00 / 2.85 | 8/10 · 5/10 | 50.4/29.5, 632 · 30.3/9.6, 466 | 41% / 17% | §3 divergence |
 | attractor-fix runs | see §4 | | | | |
+
+## 7. Resolution: the data, not the model (2026-10-31)
+
+| Evidence | Where | Finding |
+|---|---|---|
+| full-dataset audit | `scripts/audit_dataset.py` | overlap slots injected a fixed placeholder source (m1 = m2 = 30, face-on, zero spin): **70% of heavy equal-mass training signals** in every pre-v3 dataset |
+| clean 50k vs contaminated | `ci/lean_npe_v3_50k/` | same size, clean data: GW150914 railing 74% → 0.7% — the (30, 30) attractor is that placeholder |
+| clean 200k | `ci/lean_npe_v3/` | val NLL −2.32, SBC 10/11, railing 0.7%; GW150914 detector-frame m1/m2 42.6/35.1 (truth 42.4/36.5), q 0.83 (0.86) |
+| type confusion | `scripts/type_confusion_probe.py` | the mixed model puts 18% (BBH) / 48% (NSBH) / 38% (BNS) of posterior mass on the wrong class; restricting to the right class removes the per-class distance bias (BNS ×0.51 → ×0.90) → per-class models |
 
 ## Other
 

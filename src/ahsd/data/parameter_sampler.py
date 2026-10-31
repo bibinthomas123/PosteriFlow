@@ -182,6 +182,18 @@ class ParameterSampler:
             a2 = float(self.rng.uniform(*_SPIN_BBH))
         return {"a1": a1, "a2": a2}
 
+    def sample_signal_parameters(self) -> Dict:
+        """Draw parameters for a REAL source (BBH/BNS/NSBH), never "noise".
+
+        Used for the extra signals of an overlap event. sample_parameters()
+        can return the fixed noise placeholder below, and a placeholder in a
+        non-primary slot was injected as a real waveform with those fixed
+        values: in the 50k dataset it made up 70% of all heavy equal-mass
+        training signals (one face-on, zero-spin (30, 30) source)."""
+        types = [t for t in self._types if t != "noise"]
+        probs = np.array([self._probs[self._types.index(t)] for t in types])
+        return self.sample_parameters(self.rng.choice(types, p=probs / probs.sum()))
+
     def _noise_params(self) -> Dict:
         """Placeholder parameters for noise-only samples (no signal)."""
         return {

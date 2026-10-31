@@ -768,12 +768,17 @@ def main():
     # PosteriorResult.reweight_distance_prior() can convert from the prior the
     # model actually learned. None = unknown (dataset predates provenance).
     args.dataset_distance_prior, args.dataset_distance_ranges = None, None
+    args.dataset_event_types = None
     dcfg_path = Path(args.data) / "dataset_config.yaml"
     if dcfg_path.exists():
         import yaml
         dcfg = yaml.safe_load(open(dcfg_path)) or {}
         args.dataset_distance_prior = str(dcfg.get("distance_prior") or "comoving_d2").lower()
         args.dataset_distance_ranges = dcfg.get("distance_ranges")
+        # source classes present (inference warns when an event falls outside)
+        mix = dcfg.get("event_type_distribution") or {}
+        args.dataset_event_types = sorted(t.upper() for t, p in mix.items()
+                                          if t != "noise" and float(p) > 0) or None
         log.info(f"dataset distance prior: {args.dataset_distance_prior} "
                  f"ranges={args.dataset_distance_ranges}")
     else:

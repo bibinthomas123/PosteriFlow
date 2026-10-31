@@ -277,6 +277,14 @@ def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
             ts = TimeSeries.fetch_open_data(det, gps - fetch_seconds / 2,
                                             gps + fetch_seconds / 2,
                                             sample_rate=SAMPLE_RATE, cache=True)
+            # GWOSC serves non-observing detectors as NaN-filled segments
+            # (e.g. H1 during GW190425); treat them as absent so the window
+            # gets the same white-noise fill as a dropped detector in
+            # training, not a zeroed channel the model has never seen.
+            nan_frac = float(np.isnan(ts.value).mean())
+            if nan_frac > 0.01:
+                log.warning(f"{det}: {nan_frac:.0%} NaN in GWOSC data (not observing) — treated as absent")
+                continue
             strain[det] = ts.value
             starts[det] = float(ts.t0.value)
             srs[det] = float(ts.sample_rate.value)

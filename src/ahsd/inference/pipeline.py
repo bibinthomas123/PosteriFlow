@@ -30,6 +30,30 @@ from ahsd.inference.result import PosteriorResult
 
 _MODEL_CACHE: dict = {}
 
+# Per-source-class models (2026-10-31). A model trained on the BBH+NSBH+BNS
+# mixture confuses the classes (BNS posteriors put 38% of their mass on other
+# classes), which biases distance per class and put GW170608 in an NSBH mode.
+# As in LVC analyses, the source class comes from the detection trigger and
+# selects the model; the mixed model remains for mixed-class overlaps.
+CLASS_MODELS = {
+    "BBH": "model/lean_npe_bbh_v3/best_model.pth",
+    "NSBH": "model/lean_npe_nsbh_v3/best_model.pth",
+    "BNS": "model/lean_npe_bns_v3/best_model.pth",
+}
+MIXED_MODEL = "model/lean_npe_v3/best_model.pth"
+
+
+def resolve_model(event_type: str, model: Optional[str] = None) -> tuple:
+    """(checkpoint path, how it was chosen) for an event of `event_type`.
+    An explicit `model` always wins; otherwise the class model if it exists,
+    else the mixed model."""
+    if model is not None:
+        return model, "explicit"
+    path = CLASS_MODELS.get(event_type.upper())
+    if path and Path(path).exists():
+        return path, f"class model ({event_type.upper()})"
+    return MIXED_MODEL, f"mixed model (no {event_type.upper()} class model found)"
+
 
 def load_model(path: str, device: Optional[str] = None):
     """Load (and cache) a LeanNPE checkpoint. Returns (model, ckpt_meta)."""
@@ -57,6 +81,8 @@ def load_model(path: str, device: Optional[str] = None):
             # checkpoint trained before dataset provenance) and its support
             "train_distance_prior": a.get("dataset_distance_prior"),
             "dist_range": [float(v) for v in model.dist_range.tolist()],
+            # source classes in the training data (None = unrecorded)
+            "train_event_types": a.get("dataset_event_types"),
             "device": device}
     _MODEL_CACHE[key] = (model, meta)
     return model, meta
@@ -103,7 +129,7 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
           event_type: str = "BBH",
           num_samples: int = 10000,
           rank: int = 0,
-          model: str = "model/lean_npe/best_model.pth",
+          model: Optional[str] = None,
           source: str = "auto",
           already_whitened: bool = False,
           segment_start: Optional[Dict[str, float]] = None,
@@ -116,7 +142,12 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
     """Run LeanNPE inference on one event. See module docstring for modes.
 
     rank: which overlapping signal to infer (0 = loudest).
-    event_type: informational for now (the model is trained on the full
+    event_type: source class from the detection trigger (BBH/NSBH/BNS). With
+    model=None it selects that class's model (CLASS_MODELS), falling back to
+    the mixed model; an explicit `model` path is used as given. Either way a
+    mismatch with the checkpoint's training classes is flagged in
+    diagnostics["model_selection"].
+    (previously informational: the model is trained on the full
     BBH/NSBH/BNS mix; priors are baked into training).
     """
     if event_type.upper() not in ("BBH", "NSBH", "BNS"):
@@ -147,7 +178,12 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
         raise ValueError("provide `event`, or `strain` (+ `trigger_time` for real data)")
 
     # ---- model ----
+    model, how = resolve_model(event_type, model)
     net, meta = load_model(model, device=device)
+    trained_on = meta.get("train_event_types")
+    model_selection = {"model": model, "chosen": how, "event_type": event_type.upper(),
+                       "trained_on": trained_on,
+                       "class_mismatch": bool(trained_on) and event_type.upper() not in trained_on}
     dev = meta["device"]
 
     # ---- encode + sample + log-prob ----
@@ -227,6 +263,11 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
         diagnostics["context_ood"] = ood_score
     diagnostics["verdict"] = confidence_verdict(ood_score, rail_frac,
                                                 prepared.warnings)
+    diagnostics["model_selection"] = model_selection
+    if model_selection["class_mismatch"]:
+        prepared.warnings.append(
+            f"event_type {event_type.upper()} is outside this model's training "
+            f"classes {trained_on}: posterior is extrapolated")
 
     config = {**meta, "num_samples": num_samples, "rank": rank, "seed": seed,
               "event": event, "event_type": event_type, "source": prepared.source,

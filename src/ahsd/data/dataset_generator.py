@@ -13,6 +13,7 @@ Main class: GWDatasetGenerator
 """
 
 import logging
+import os
 import pickle
 import time
 import uuid
@@ -206,8 +207,14 @@ class GWDatasetGenerator:
                 else:
                     n_sig = 1
 
-                # Draw parameters
-                param_sets = [self.sampler.sample_parameters() for _ in range(n_sig)]
+                # Draw parameters. The first draw decides noise-only vs signal;
+                # extra overlap signals are always real sources (a "noise"
+                # draw there used to inject the fixed placeholder parameters
+                # as a real waveform).
+                param_sets = [self.sampler.sample_parameters()]
+                if param_sets[0].get("event_type") != "noise":
+                    param_sets += [self.sampler.sample_signal_parameters()
+                                   for _ in range(n_sig - 1)]
 
                 # Decide pre-merger for eligible single-signal BNS/NSBH events
                 time_to_merger = None
@@ -307,7 +314,10 @@ class GWDatasetGenerator:
 
         for i, det in enumerate(self.detectors):
             psd = self._psd_cache[det]
-            seed = int(self._rng.integers(0, 2 ** 31)) + seed_offset * 100 + i
+            # independent 63-bit seed per detector draw: the old
+            # randint(2**31) + 100*seed_offset + i collided across ~5e5 draws
+            # (measured: 20 repeated single-detector segments in 200k events)
+            seed = int(self._rng.integers(0, 2 ** 63 - 1))
 
             # 1. Generate noise
             noise = self.noise_gen.generate(det, psd, seed=seed)
@@ -415,7 +425,8 @@ class GWDatasetGenerator:
             for bf in files:
                 dest = split_dir / bf.name
                 if not dest.exists():
-                    dest.symlink_to(bf.resolve())
+                    # relative, so the dataset stays valid when copied or moved
+                    dest.symlink_to(os.path.relpath(bf.resolve(), split_dir.resolve()))
         _log.info(
             f"Splits: train={len(splits['train'])} "
             f"validation={len(splits['validation'])} test={len(splits['test'])} batches"

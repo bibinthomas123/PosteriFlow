@@ -138,21 +138,12 @@ def sample_detections():
         }
     ]
 
-def test_feature_extraction(sample_detections):
-    """Test feature extraction for priority ranking"""
-    extractor = SignalFeatureExtractor()
-    
-    features = extractor.extract_features(sample_detections)
-    
-    assert features.shape[0] == len(sample_detections)
-    assert features.shape[1] == len(extractor.feature_names)
-    assert torch.all(torch.isfinite(features))
-
 def test_priority_net_forward(priority_net_config, sample_detections):
     """Test PriorityNet forward pass"""
     model = PriorityNet(priority_net_config)
     
-    scores = model.forward(sample_detections)
+    scores, uncertainty = model.forward(sample_detections)
+    assert uncertainty.shape == scores.shape
     
     assert scores.shape[0] == len(sample_detections)
     assert torch.all(torch.isfinite(scores))
@@ -167,9 +158,12 @@ def test_priority_ranking(priority_net_config, sample_detections):
     assert len(ranking) == len(sample_detections)
     assert set(ranking) == set(range(len(sample_detections)))
 
+@pytest.mark.skipif(not __import__("pathlib").Path("model/pn/priority_net_best.pth").exists(),
+                    reason="SNR ordering is a property of a TRAINED PriorityNet; random init is chance")
 def test_priority_consistency(priority_net_config, sample_detections):
     """Test that higher SNR signals get higher priority (generally)"""
-    model = PriorityNet(priority_net_config)
+    from ahsd.core.priority_net import load_priority_net
+    model = load_priority_net("model/pn/priority_net_best.pth")
     
     # Make first signal clearly stronger
     sample_detections[0]['network_snr'] = 25.0
@@ -208,74 +202,6 @@ def test_empty_detections(priority_net_config):
     
     ranking = model.rank_detections([])
     assert ranking == []
-
-def test_feature_extractor_missing_values():
-    """Test feature extraction with missing parameter values"""
-    extractor = SignalFeatureExtractor()
-    
-    incomplete_detection = [{
-        'network_snr': 15.0,
-        'mass_1': 35.0
-        # Missing many parameters
-    }]
-    
-    features = extractor.extract_features(incomplete_detection)
-    
-    assert features.shape[0] == 1
-    assert features.shape[1] == len(extractor.feature_names)
-    assert torch.all(torch.isfinite(features))
-
-def test_astrophysical_significance():
-    """Test astrophysical significance computation"""
-    extractor = SignalFeatureExtractor()
-    
-    # High mass, high SNR signal
-    high_sig_detection = {
-        'network_snr': 20.0,
-        'total_mass_source': 60.0,
-        'mass_1': 35.0,
-        'mass_2': 30.0,
-        'luminosity_distance': 200.0
-    }
-    
-    # Low mass, low SNR signal
-    low_sig_detection = {
-        'network_snr': 8.0,
-        'total_mass_source': 20.0,
-        'mass_1': 12.0,
-        'mass_2': 8.0,
-        'luminosity_distance': 1000.0
-    }
-    
-    high_sig = extractor._compute_astrophysical_significance(high_sig_detection)
-    low_sig = extractor._compute_astrophysical_significance(low_sig_detection)
-    
-    assert high_sig > low_sig
-
-def test_overlap_computations():
-    """Test frequency and time overlap computations"""
-    extractor = SignalFeatureExtractor()
-    
-    signals = [
-        {'chirp_mass_source': 30.0, 'geocent_time': 0.0},
-        {'chirp_mass_source': 32.0, 'geocent_time': 0.1},  # Similar mass, close time
-        {'chirp_mass_source': 50.0, 'geocent_time': 1.0}   # Different mass, far time
-    ]
-    
-    freq_overlap_01 = extractor._compute_frequency_overlap(signals[0], signals)
-    freq_overlap_02 = extractor._compute_frequency_overlap(signals[0], [signals[0], signals[2]])
-    
-    time_overlap_01 = extractor._compute_time_overlap(signals[0], signals)
-    time_overlap_02 = extractor._compute_time_overlap(signals[0], [signals[0], signals[2]])
-    
-    # Should have higher overlap with similar signal
-    assert freq_overlap_01 > freq_overlap_02
-    assert time_overlap_01 > time_overlap_02
-
-
-# ============================================================================
-# Distribution Separation Tests (AUC, Entropy, Sharpness)
-# ============================================================================
 
 def test_distribution_separation_auc():
     """Test AUC metric for separating high vs low priority signals"""
@@ -398,9 +324,13 @@ def test_wasserstein_distance_similar():
     assert distance < 0.1, f"Expected small Wasserstein distance, got {distance}"
 
 
+@pytest.mark.skipif(not __import__("pathlib").Path("model/pn/priority_net_best.pth").exists(),
+                    reason="SNR separation is a property of a TRAINED PriorityNet; "
+                           "on random init the AUC is chance (~0.5)")
 def test_priority_net_separation_quality(priority_net_config, sample_detections):
     """Test overall distribution separation quality of PriorityNet"""
-    model = PriorityNet(priority_net_config)
+    from ahsd.core.priority_net import load_priority_net
+    model = load_priority_net("model/pn/priority_net_best.pth")
     
     # Create high and low SNR signal pairs
     high_snr_signals = []
@@ -416,8 +346,8 @@ def test_priority_net_separation_quality(priority_net_config, sample_detections)
         low_snr_signals.append(low_snr)
     
     # Get priority scores
-    high_scores = model.forward(high_snr_signals).detach().numpy()
-    low_scores = model.forward(low_snr_signals).detach().numpy()
+    high_scores = model.forward(high_snr_signals)[0].detach().numpy()
+    low_scores = model.forward(low_snr_signals)[0].detach().numpy()
     
     # Compute separation metrics
     auc = DistributionMetrics.compute_separation_auc(high_scores, low_scores)

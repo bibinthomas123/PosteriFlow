@@ -54,6 +54,14 @@ def rank_overlapping(results: List, strain: np.ndarray,
         return {"order": list(range(k)), "priority": None, "uncertainty": None,
                 "priority_net": None}
 
+    from pathlib import Path
+    if not priority_net or not Path(priority_net).exists():
+        # No PriorityNet checkpoint: keep the NPE's own loudness-rank order,
+        # which is what the posteriors are conditioned on anyway.
+        return {"order": list(range(k)), "priority": None, "uncertainty": None,
+                "priority_net": None,
+                "fallback": f"NPE rank order (PriorityNet checkpoint {priority_net!r} not found)"}
+
     pn = _get_pn(priority_net, device)
 
     detections, segments = [], []

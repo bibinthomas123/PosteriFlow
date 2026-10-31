@@ -101,7 +101,12 @@ def main():
                          help="simulated injection through the training pipeline")
     ap.add_argument("--gps", type=float, help="trigger GPS time (required with --strain)")
     ap.add_argument("--psd", help="directory of {det}_psd.txt/.npy (else measured/design)")
-    ap.add_argument("--model", default="model/lean_npe/best_model.pth")
+    ap.add_argument("--event-type", default="BBH", choices=["BBH", "NSBH", "BNS"],
+                    help="source class from the detection trigger; selects that "
+                         "class's model unless --model is given (default BBH)")
+    ap.add_argument("--model", default=None,
+                    help="checkpoint path (default: the --event-type class model, "
+                         "else the mixed model)")
     ap.add_argument("--samples", type=int, default=10000)
     ap.add_argument("--rank", type=int, default=0, help="overlapping-signal rank (0=loudest)")
     ap.add_argument("--n_signals", type=int, default=1,
@@ -126,6 +131,7 @@ def main():
     if args.event:
         name = args.event
         posterior = infer(event=args.event, psds=psds, num_samples=args.samples,
+                          event_type=args.event_type,
                           rank=args.rank, model=args.model, detectors=args.detectors,
                           device=args.device, seed=args.seed)
     elif args.strain:
@@ -139,7 +145,7 @@ def main():
             starts[det] = t0 if t0 is not None else args.gps - len(x) / sr / 2
         posterior = infer(strain=strain, psds=psds, trigger_time=args.gps,
                           segment_start=starts, sample_rates=srs,
-                          num_samples=args.samples, rank=args.rank,
+                          num_samples=args.samples, rank=args.rank, event_type=args.event_type,
                           model=args.model, device=args.device, seed=args.seed)
         raw_for_dynesty = strain
     else:
@@ -149,6 +155,7 @@ def main():
               + "  ".join(f"{k}={v:.3g}" for k, v in list(truth.items())[:3]))
         posterior = infer(strain=white, psds=inj_psds, source="simulated",
                           already_whitened=True, num_samples=args.samples,
+                          event_type=args.event_type,
                           rank=args.rank, model=args.model, truth=truth,
                           device=args.device, seed=args.seed)
 

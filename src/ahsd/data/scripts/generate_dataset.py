@@ -773,13 +773,13 @@ Examples:
         "--no-splits", action="store_true", help="Do not create train/val/test splits"
     )
     parser.add_argument(
-        "--train-frac", type=float, default=0.8, help="Training set fraction (default: 0.8)"
+        "--train-frac", type=float, default=None, help="Training set fraction (default: config, else 0.8)"
     )
     parser.add_argument(
-        "--val-frac", type=float, default=0.1, help="Validation set fraction (default: 0.1)"
+        "--val-frac", type=float, default=None, help="Validation set fraction (default: config, else 0.1)"
     )
     parser.add_argument(
-        "--test-frac", type=float, default=0.1, help="Test set fraction (default: 0.1)"
+        "--test-frac", type=float, default=None, help="Test set fraction (default: config, else 0.1)"
     )
     parser.add_argument(
         "--chunk-size", type=int, default=100, help="Samples per chunk file (default: 100)"
@@ -843,6 +843,12 @@ def main():
         config["validate_output"] = False
     if args.no_save_complete:
         config["save_complete"] = False
+    # split flags were parsed but never applied
+    if args.no_splits:
+        config["create_splits"] = False
+    for k in ("train_frac", "val_frac", "test_frac"):
+        if getattr(args, k) is not None:
+            config[k] = getattr(args, k)
 
     # Validate configuration
     try:

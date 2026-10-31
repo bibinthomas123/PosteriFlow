@@ -2,13 +2,6 @@
 """
 Enhanced PriorityNet for intelligent signal extraction ordering in overlapping GW scenarios.
 Includes temporal encoding, multi-detector coherence, and uncertainty quantification.
-
-FIXES (GPU utilization):
-  - AdaptiveRankingLoss: O(n²) Python loop → fully vectorized [n,n] tensor ops
-  - CrossSignalAnalyzer: O(n²) Python loop → vectorized broadcast over all pairs
-  - _detections_to_tensor: numpy scalar loop → batched tensor construction
-  - All intermediate tensors explicitly created on model device
-  - MPS-safe: float32 everywhere, no float64, no pin_memory issues
 """
 
 import torch
@@ -248,15 +241,18 @@ class SignalFeatureExtractor(nn.Module):
         hidden_dims = _get(config, "hidden_dims", [640, 512, 384, 256])
         dropout     = _get(config, "dropout",     0.25)
 
+        # one width-preserving block, then one block per width transition; for
+        # the default 4 widths this is exactly the original 4-block stack (and
+        # its state-dict keys). Indexing hidden_dims[0..3] crashed any config
+        # with a different number of widths.
+        hidden_dims = list(hidden_dims)
         self.input_embed = nn.Linear(input_dim, hidden_dims[0])
-        self.blocks = nn.ModuleList([
-            ResidualBlock(hidden_dims[0], hidden_dims[0], dropout),
-            ResidualBlock(hidden_dims[0], hidden_dims[1], dropout),
-            ResidualBlock(hidden_dims[1], hidden_dims[2], dropout),
-            ResidualBlock(hidden_dims[2], hidden_dims[3], dropout),
-        ])
+        self.blocks = nn.ModuleList(
+            [ResidualBlock(hidden_dims[0], hidden_dims[0], dropout)]
+            + [ResidualBlock(a, b, dropout) for a, b in zip(hidden_dims[:-1], hidden_dims[1:])]
+        )
         self.output_proj = nn.Sequential(
-            nn.LayerNorm(hidden_dims[3]), nn.Linear(hidden_dims[3], 64)
+            nn.LayerNorm(hidden_dims[-1]), nn.Linear(hidden_dims[-1], 64)
         )
         self.physics_encoder = nn.Sequential(
             nn.Linear(8, 64), nn.LayerNorm(64), nn.GELU(), nn.Linear(64, 32)

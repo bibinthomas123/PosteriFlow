@@ -1,29 +1,19 @@
 """
-AHSD: Adaptive Hierarchical Signal Decomposition
-
-A deep learning pipeline for analyzing overlapping gravitational wave signals
-using real LIGO-Virgo-KAGRA data.
+AHSD / PosteriFlow: amortized neural posterior estimation (LeanNPE) for
+overlapping compact-binary signals in LIGO-Virgo strain.
 """
 
 __version__ = "1.0.0"
 
 try:
-    from .utils.config import AHSDConfig
     from .utils.data_format import standardize_strain_data
     from .core.priority_net import PriorityNet
-    from .core.adaptive_subtractor import AdaptiveSubtractor
-    from .core.bias_corrector import BiasCorrector
-    from .core.ahsd_pipeline import AHSDPipeline
-    from . import data  
-    
+    from . import data
+
     __all__ = [
-        'AHSDConfig',
-        'standardize_strain_data', 
+        'standardize_strain_data',
         'PriorityNet',
-        'AdaptiveSubtractor',
-        'BiasCorrector',
-        'AHSDPipeline',
-        'data'  
+        'data'
     ]
     
 except ImportError as e:

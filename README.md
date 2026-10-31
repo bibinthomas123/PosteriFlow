@@ -44,13 +44,14 @@ the loudest signal, rank 1 for the second-loudest, etc.
 
 | | |
 |---|---|
-| **Deploy candidate** | `model/lean_npe_mf_scratch/best_model.pth` |
-| **Passes** | every population-level calibration/coverage gate, the synthetic basin probe, off-source real-noise twins |
-| **Known limitation** | GW150914 and GW170814's own exact strain still mis-estimate mass ratio (mechanistically understood — see §5.2 — and correctly caught by the OOD/confidence gate, which routes both to dynesty refinement) |
-| **Active research** | closing that residual gap without regressing population quality — see §5.2/§5.3. Encoder-side representation has been demonstrably improved (`mf_token_fusion="concat"`) and independently confirmed insufficient; the flow's conditioning mechanism is the current focus |
+| **Current models** | `model/lean_npe_v3` (mixed BBH/NSBH/BNS, 200k clean events) and per-class `model/lean_npe_{bbh,nsbh,bns}_v3`, selected with `infer.py --event-type` |
+| **Passes** (`lean_npe_v3`) | population calibration/coverage, SBC 10/11, spurious railing 0.7%, shuffle ΔNLL 19.9, synthetic basin probe; GW150914 detector-frame m1/m2 42.6/35.1 vs 42.4/36.5 (railing 4%, was 74%) |
+| **Known limitations** | the mixed model confuses source classes (biases per-class distance; GW170608 lands in an NSBH mode) — the motivation for per-class models; real-event distances ~1.2–1.5× high under the LVC d² prior; chirp mass ~150× wider than dynesty |
+| **2026-10-31 reset** | every earlier model (incl. `lean_npe_mf_scratch`) was trained on data with a placeholder-event bug that produced the GW150914/GW170814 (30, 30) attractor; those checkpoints were deleted. §5's evidence trail predates the fix — read it as the record of that bug's effects |
 
-If you just want a working, certified checkpoint: use `lean_npe_mf_scratch` and
-trust the OOD gate for anything it flags LOW confidence. If you're extending
+If you just want a working checkpoint: use `lean_npe_v3` (or the class model
+for a known source class) and trust the OOD gate for anything it flags LOW
+confidence. If you're extending
 the research, start at §5 — the evidence trail explains *why* each design
 choice exists and which recent ones didn't pan out, so you don't repeat a
 tested dead end.
@@ -349,7 +350,8 @@ single evidence trail in the repo). Condensed timeline:
    mass statistic geometry provably lacks (in-cell AUC 0.989 vs. 0.532).
    `mf_tokens` + `--delay_aug` + `--aux_mass`, trained from scratch, closed
    the basin for every synthetic and semi-synthetic test —
-   **`lean_npe_mf_scratch`, the current deploy candidate.**
+   **`lean_npe_mf_scratch`** (superseded: see §2, the attractor's root cause
+   was later found in the training data).
 4. **Residual real-event failure, root-caused.** GW150914/GW170814's own
    exact strain still collapsed. Signal-subtraction + token-grafting showed
    the collapse is carried by the MF-token branch's response to their
@@ -437,12 +439,18 @@ conda run -n ahsd python src/ahsd/models/build_mf_bank.py   # -> src/ahsd/models
 ### Generate a dataset (component storage)
 
 ```bash
-conda run -n ahsd python src/ahsd/data/scripts/generate_dataset.py \
-    --config configs/data_config.yaml --n-samples 50000 --output-dir data/dataset
+# parallel shards merged into one dataset (~8 min for 200k events on 32 cores)
+conda run -n ahsd python src/ahsd/data/scripts/generate_parallel.py \
+    --config configs/data_config_fixed.yaml --n-samples 200000 \
+    --output-dir data/dataset_v3 --shards 32 --seed 2026
+# then audit every event before training
+conda run -n ahsd python scripts/audit_dataset.py data/dataset_v3 --dist-range 8 6000
 ```
 
-~2 h for 50k events on a laptop; ~22 GB. `configs/data_config.yaml` controls
-event mix, overlap fraction, SNR gate, and pre-merger fraction.
+`configs/data_config_fixed.yaml` (uniform distance prior) is the default;
+`data_config_{bbh,nsbh,bns}_v3.yaml` are single-class variants. See
+`docs/DATASET_GENERATION.md` for the layout, the audit, and the generator
+bugs fixed on 2026-10-31.
 
 ### Download the real-noise bank
 
@@ -510,7 +518,7 @@ invisible to every metric above it.
 ### Certify a checkpoint (SBC / coverage / railing + GWTC real-event smoke tests → HTML)
 
 ```bash
-conda run -n ahsd python scripts/validate_checkpoint.py --model model/lean_npe_mf_scratch/best_model.pth
+conda run -n ahsd python scripts/validate_checkpoint.py --model model/lean_npe_v3/best_model.pth
 ```
 
 Other benchmarks: `scripts/benchmark_real_events.py` (vs dynesty),
@@ -533,7 +541,7 @@ conda run -n ahsd python infer.py --event GW150914 --samples 10000 --output resu
 import torch
 from ahsd.models.lean_npe import LeanNPE
 
-ckpt = torch.load("model/lean_npe_mf_scratch/best_model.pth", map_location="cpu", weights_only=False)
+ckpt = torch.load("model/lean_npe_v3/best_model.pth", map_location="cpu", weights_only=False)
 a = ckpt["args"]
 model = LeanNPE(premerger=a.get("premerger", False),
                 psd_cond=a.get("psd_cond", False) or False,
@@ -611,11 +619,11 @@ analysis/divergence_localization/  # the "val improves / GWTC worsens" calibrati
 
 infer.py       # inference CLI (real GWOSC event / local strain / fresh injection)
 analysis/      # measured evidence: diagnostic reports, audits, comparison outputs (the paper's evidence)
-configs/       # YAML configs (data_config.yaml is the main one)
+configs/       # YAML configs (data_config_fixed.yaml is the default; data_config.yaml is a legacy reference)
 data/          # dataset (component storage), memmap caches, noise_bank  (git-ignored)
-model/         # checkpoints (best_model.pth bundles weights + args + diagnostics); many directories
-               # are named after the experiment that produced them (see §5) — lean_npe_mf_scratch
-               # is the current deploy candidate, lean_npe_mf_concat / lean_npe_q_embed are active
+model/         # checkpoints (best_model.pth bundles weights + args + diagnostics). Every pre-v3
+               # run was trained on contaminated data and deleted (2026-10-31); lean_npe_v3
+               # (mixed) and lean_npe_{bbh,nsbh,bns}_v3 (per class) are the current models
                # research checkpoints, and most others are historical/superseded generations kept
                # for reproducibility of the evidence trail
 ```

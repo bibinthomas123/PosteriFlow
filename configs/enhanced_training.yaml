@@ -2,6 +2,10 @@
 # Complete PriorityNet training configuration with all validated parameters
 # Updated: 2025-11-10
 
+# PriorityNet training config (experiments/train_priority_net.py). The
+# adaptive-subtractor, RL-controller and bias-corrector sections were removed
+# with those components (2026-10-31). `neural_posterior` describes the retired
+# OverlapNeuralPE; it stays only because universal_config.py requires it.
 experiment_name: "AHSD_Phase2_PriorityNet"
 random_seed: 420
 device: "auto"
@@ -290,99 +294,6 @@ neural_posterior:
     snr_min_threshold: 10.0              # (not used)
     mass_ratio_threshold: 5.0            # (not used)
     
-
-
-# ==============================================================================
-# ADAPTIVE SUBTRACTION (Signal removal for overlaps)
-# ==============================================================================
-adaptive_subtractor:
-  complexity_level: "medium"              # low, medium, high
-  waveform_approximant: "IMRPhenomPv2"   # Waveform model
-  post_newtonian_order: "3.5PN"          # PN order for waveforms
-  
-  # --- PHYSICS ---
-  spin_effects: true                      # Include spin effects
-  tidal_effects: true                     # Include tidal effects
-  
-  # --- SUBTRACTION STRENGTH ---
-  base_strength: 0.1                      # Base subtraction strength
-  max_strength: 0.8                       # Maximum strength
-  uncertainty_threshold: 0.3              # Uncertainty threshold for adaptation
-  match_threshold: 0.7                    # Match threshold for acceptance
-
-
-# ==============================================================================
-# REINFORCEMENT LEARNING CONTROLLER (Adaptive complexity)
-# ==============================================================================
-rl_controller:
-  enabled: true
-  
-  # --- STATE ---
-  state_features:
-    - remaining_signals
-    - residual_power
-    - current_snr
-    - extraction_success_rate
-  
-  # --- COMPLEXITY LEVELS ---
-  complexity_levels: ["low", "medium", "high"]
-  complexity_configs:
-    low:
-      flow_layers: 4
-      inference_samples: 500
-    medium:
-      flow_layers: 8
-      inference_samples: 1000
-    high:
-      flow_layers: 14
-      inference_samples: 2000
-  
-  # --- LEARNING ---
-  learning_rate: 1.0e-3
-  epsilon: 0.1                            # Exploration rate
-  epsilon_decay: 0.995
-  memory_size: 10000
-  batch_size: 32
-
-# ==============================================================================
-# BIAS CORRECTION NETWORK (Systematic error correction)
-# ==============================================================================
-bias_corrector:
-  enabled: true   # Enabled: trained after Neural PE converges on validation set
-                  # Uses actual 768D context embeddings from context encoder
-                  # Learns to correct systematic biases in parameter predictions
-
-  # --- ARCHITECTURE (IMPROVED - Nov 20) ---
-  hidden_dims: [256, 128, 64]
-  context_dim: 768                         # ✅ MATCHES context encoder output (from neural_posterior.context_dim)
-  dropout: 0.15                            # ⬆️ Increased from 0.10 (regularization)
-  
-  # --- NETWORK CAPACITY (Nov 20 UPGRADE) ---
-  # Increased model capacity 2.6× to handle small 97-sample dataset with proper regularization
-  # Embedding dims: 64→256 (4× larger)
-  # Transformer d_model: 96→256 (2.67× larger), num_layers: 3→4
-  # Head dims: 96→256 (2.67× larger)
-  # Total params: ~0.4M → ~1.1M (275% increase)
-  # Justification: Bias corrections are fundamentally harder than classification (uncertainty critical)
-  # Larger model forces richer parameter representation despite small dataset
-
-  # --- TRAINING (IMPROVED - Nov 20) ---
-  learning_rate: 2.0e-4                  # ⬆️ Doubled from 1e-4 (larger capacity needs stronger learning)
-  batch_size: 32                          # ⬆️ Increased from 16 (better batch statistics, stable norms)
-  epochs: 50                              # ⬆️ Increased from 30 (larger model needs more training)
-  patience: 20                            # ⬆️ Increased from 10 (tolerance for variance with small dataset)
-  
-  # --- LOSS FUNCTION (NEW - Nov 20) ---
-  # Multi-component loss for stable learning on small dataset:
-  # - NLL (0.50): Likelihood-based, robust to outliers
-  # - Relative Error (0.30): Forces model to learn correction magnitudes
-  # - Uncertainty Entropy (0.15): Encourages proper uncertainty estimates
-  # - Quality Weighting (0.05): Emphasize high-quality signals
-  loss_components:
-    nll_weight: 0.50
-    relative_error_weight: 0.30
-    entropy_weight: 0.15
-    quality_weight: 0.05
 
 
 # ==============================================================================

@@ -272,29 +272,29 @@ def run_all():
     section("8. Parameter scaler invertibility (lossless)")
     try:
         import torch
-        from ahsd.models.parameter_scalers import TorchParameterScaler
-        from ahsd.data.dataset_generator import PARAM_NAMES
-        scaler = TorchParameterScaler(param_names=PARAM_NAMES)
+        # LeanNPE's ParamScaler is the scaler the models use (the old
+        # TorchParameterScaler was retired with OverlapNeuralPE).
+        from ahsd.models.lean_npe import ParamScaler, PARAM_NAMES
+        scaler = ParamScaler(PARAM_NAMES, mass_param="mc_q", dist_range=(8.0, 6000.0))
         raw_samples = [sampler.sample_parameters() for _ in range(100)]
         param_arr = np.array([[float(s.get(k, 0.0)) for k in PARAM_NAMES]
                                for s in raw_samples], dtype=np.float32)
         t = torch.from_numpy(param_arr)
-        t_norm = scaler.normalize_batch(t)
-        t_rec = scaler.denormalize_batch(t_norm)
-        # Check round-trip error (excluding clipped values)
-        in_range_mask = (torch.abs(t_norm) <= 2.9)  # below FLOW_NORM_BOUND
+        t_norm = scaler.normalize(t)
+        t_rec = scaler.denormalize(t_norm)
+        # values at the support edge are clamped by design; exclude them
+        in_range_mask = (torch.abs(t_norm) < 0.999)
+        span = torch.tensor([scaler.RANGES[n][1] - scaler.RANGES[n][0] for n in PARAM_NAMES])
+        span[PARAM_NAMES.index("luminosity_distance")] = 6000.0 - 8.0
         if in_range_mask.any():
-            max_err = float(torch.abs(t[in_range_mask] - t_rec[in_range_mask]).max())
-            mean_err = float(torch.abs(t[in_range_mask] - t_rec[in_range_mask]).mean())
-            ok_inv = max_err < 1e-3
-            check("Scaler round-trip (normalize→denormalize)", ok_inv,
-                  f"max_err={max_err:.2e}  mean_err={mean_err:.2e}")
-            # Check no values are clipped (in-bounds check)
+            rel = (torch.abs(t - t_rec) / span)[in_range_mask]
+            check("Scaler round-trip (normalize→denormalize)", float(rel.max()) < 1e-5,
+                  f"max error {float(rel.max()):.2e} of parameter span")
             frac_clipped = float((~in_range_mask).float().mean())
             check("Clipping < 2% within bounds", frac_clipped < 0.02,
                   f"clipped={frac_clipped*100:.1f}%", warn_only=True)
         else:
-            print("  [WARN] All values clipped — scaler stats likely stale")
+            print("  [WARN] All values clipped — scaler ranges do not cover the prior")
     except Exception as e:
         print(f"  [FAIL] Scaler test failed: {e}")
         all_pass = False

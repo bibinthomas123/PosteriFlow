@@ -12,6 +12,7 @@ Real noise support: set GWOSC_CACHE_DIR to a directory containing pre-downloaded
 when real segments are unavailable.
 """
 
+import copy
 import logging
 import os
 import numpy as np
@@ -105,11 +106,27 @@ def _make_psd(psd_dict: Optional[Dict]) -> PowerSpectralDensity:
     return PowerSpectralDensity.from_aligo()
 
 
+_IFO_TEMPLATES: Dict[str, Interferometer] = {}
+
+
+def _empty_ifo(detector_name: str) -> Interferometer:
+    """Private copy of bilby's empty Interferometer for `detector_name`.
+
+    get_empty_interferometer() re-reads the detector definition and its
+    default PSD text file on every call (genfromtxt: ~84% of dataset
+    generation time, worse on network filesystems). Build it once per
+    detector and deep-copy, so every caller still gets its own mutable
+    Interferometer with the same default PSD."""
+    if detector_name not in _IFO_TEMPLATES:
+        _IFO_TEMPLATES[detector_name] = get_empty_interferometer(detector_name)
+    return copy.deepcopy(_IFO_TEMPLATES[detector_name])
+
+
 def _make_ifo(detector_name: str, psd_dict: Optional[Dict],
               sample_rate: float, duration: float) -> Interferometer:
     """Construct an empty bilby Interferometer for `detector_name` with the
     given PSD and a [20 Hz, Nyquist] analysis band."""
-    ifo = get_empty_interferometer(detector_name)
+    ifo = _empty_ifo(detector_name)
     ifo.power_spectral_density = _make_psd(psd_dict)
     ifo.minimum_frequency = 20.0
     ifo.maximum_frequency = sample_rate / 2.0
@@ -245,7 +262,7 @@ class BilbyWaveformGenerator:
         # Fixed window: [GPS_REF - T/2, GPS_REF + T/2] so the merger appears at
         # position (geocent_time_gps - start_time)*fs within the array, not always at the end.
         start_time = _GPS_REF - self.duration / 2.0
-        ifo = get_empty_interferometer(detector)
+        ifo = _empty_ifo(detector)
         ifo.minimum_frequency = self.f_lower
         ifo.maximum_frequency = self.f_upper
         ifo.set_strain_data_from_zero_noise(
@@ -316,7 +333,11 @@ class BilbyNoiseGenerator:
         """Draw colored Gaussian noise from the detector PSD using bilby's
         `set_strain_data_from_power_spectral_density`."""
         if seed is not None:
-            np.random.seed(seed)
+            np.random.seed(seed % 2 ** 32)  # legacy API takes 32-bit seeds only
+            # bilby 2.x draws noise from its own generator, which
+            # np.random.seed does not reach: without this, --random-seed
+            # reproduced parameters but never the noise
+            bilby.core.utils.random.seed(seed)
         ifo = _make_ifo(detector, psd_dict, self.sample_rate, self.duration)
         ifo.set_strain_data_from_power_spectral_density(
             sampling_frequency=self.sample_rate,

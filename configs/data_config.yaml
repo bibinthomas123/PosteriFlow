@@ -1,3 +1,7 @@
+# LEGACY REFERENCE CONFIG (2026-10-31): documents every generator option, but
+# its d^2 distance prior and BBH range (50-2000 Mpc) are superseded. Generate
+# training data from configs/data_config_fixed.yaml (or the per-class
+# data_config_{bbh,nsbh,bns}_v3.yaml); see docs/DATASET_GENERATION.md.
 # ==============================================================================
 # AHSD PRODUCTION CONFIG - REALISTIC O4/DESIGN LIGO SENSITIVITY
 # Optimized for Neural PE & Priority Network Training

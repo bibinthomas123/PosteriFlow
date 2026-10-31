@@ -9,7 +9,7 @@
 > minutes-to-hours, with per-signal posteriors for time-overlapping sources.
 
 <p align="center">
-  <img src="docs/img/overview.gif" alt="Overlapping signals in H1/L1/V1 pass through LeanNPE, which returns one posterior per signal, queried by loudness rank" width="100%">
+  <img src="docs/img/overview.gif" alt="Two black holes spiral together and merge on a warped spacetime sheet; the gravitational wave is recorded in H1, L1 and V1, LeanNPE reads it, and the posterior appears" width="100%">
 </p>
 
 ## What it does

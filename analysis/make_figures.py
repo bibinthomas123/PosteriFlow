@@ -28,7 +28,8 @@ import matplotlib.pyplot as plt
 NPE, DYN, THIRD = "#3b6fd4", "#d07a2e", "#3f8f4a"
 INK, GRID = "#3a3f47", "#e8ebef"
 FIG = Path("analysis/figures")
-FIG.mkdir(parents=True, exist_ok=True)
+DATA = Path("data/dataset")                       # --data
+REPORT = Path("analysis/ci/lean_npe_v3/report.json")   # --report
 
 plt.rcParams.update({
     "figure.dpi": 150, "savefig.dpi": 200, "savefig.bbox": "tight",
@@ -51,8 +52,8 @@ def _save(fig, name, caption):
 
 
 def _train_params():
-    par = np.load("data/dataset/memmap/train/params.npy", mmap_mode="r")
-    ev = json.load(open("data/dataset/memmap/train/events.json"))["events"]
+    par = np.load(DATA / "memmap/train/params.npy", mmap_mode="r")
+    ev = json.load(open(DATA / "memmap/train/events.json"))["events"]
     return par, ev
 
 
@@ -73,32 +74,42 @@ def fig_mass_plane():
     ax.set_xlabel(r"$\log_{10}$ chirp mass $\mathcal{M}_c\ [M_\odot]$")
     ax.set_ylabel("mass ratio  $q = m_2/m_1$")
     ax.set_title("Training population: rank-0 signals in the mass plane")
-    # annotate the amortization-bias region measured by the twin grid
-    ax.add_patch(plt.Rectangle((np.log10(20), 0.8), np.log10(45 / 20), 0.2,
-                               fill=False, edgecolor=DYN, lw=1.6))
-    ax.text(np.log10(21), 0.955, "q-collapse region (twin grid)",
-            color=DYN, fontsize=8.5, va="top")
     _save(fig, "01_training_mass_plane", "population density, Mc-q plane")
 
 
 def fig_distance_prior():
-    """Sampled luminosity distance against the d^2 comoving-volume prior."""
+    """Training distances per source class against the prior they were drawn
+    from (the dataset's own distance_prior and per-class range): the gap is
+    what the SNR cut removes."""
+    import yaml
     par, ev = _train_params()
     starts = [e[0] for e in ev]
+    m1 = np.asarray(par[starts, 0], float)
+    m2 = np.asarray(par[starts, 1], float)
     d = np.asarray(par[starts, 2], float)
-    d = d[(d > 40) & (d < 2200)]
-    fig, ax = plt.subplots(figsize=(6.4, 4.4))
-    ax.hist(d, bins=70, density=True, color=NPE, edgecolor="white", lw=0.3,
-            label="sampled (after SNR selection)")
-    x = np.linspace(50, 2100, 300)
-    p = 3 * x ** 2 / (2100 ** 3 - 50 ** 3)
-    ax.plot(x, p, color=INK, ls="--", lw=1.4, label=r"$p(d_L)\propto d_L^2$ prior")
-    ax.set_xlabel("luminosity distance $d_L$ [Mpc]")
-    ax.set_ylabel("density")
-    ax.set_title("Distance population vs comoving-volume prior")
-    ax.legend()
+    cfg = yaml.safe_load(open(DATA / "dataset_config.yaml"))
+    shape = str(cfg.get("distance_prior") or "comoving_d2").lower()
+    ranges = cfg.get("distance_ranges") or {}
+    cls = np.where(m1 < 3.0, "BNS", np.where(m2 < 3.0, "NSBH", "BBH"))
+    present = [c for c in ("BBH", "NSBH", "BNS") if (cls == c).any() and c in ranges]
+    fig, axes = plt.subplots(1, len(present), figsize=(5.2 * len(present), 4.2), squeeze=False)
+    for ax, c in zip(axes[0], present):
+        lo, hi = ranges[c]
+        dc = d[cls == c]
+        ax.hist(dc, bins=60, range=(lo, hi), density=True, color=NPE, edgecolor="white", lw=0.3,
+                label="training events (after SNR cut)")
+        x = np.linspace(lo, hi, 300)
+        prior = (np.full_like(x, 1.0 / (hi - lo)) if shape == "uniform"
+                 else 3 * x ** 2 / (hi ** 3 - lo ** 3))
+        prior_name = "uniform in $d_L$" if shape == "uniform" else r"$p(d_L) \propto d_L^2$"
+        ax.plot(x, prior, color=INK, ls="--", lw=1.4, label="drawn from: " + prior_name)
+        ax.set_xlabel("luminosity distance $d_L$ [Mpc]")
+        ax.set_title(f"{c}: {lo:g}-{hi:g} Mpc, n={len(dc):,}")
+        ax.legend(fontsize=8)
+    axes[0][0].set_ylabel("density")
+    fig.suptitle("Distance: prior vs training events (far, quiet sources fail the SNR cut)", y=1.02)
     _save(fig, "02_distance_prior_check",
-          "SNR selection depletes the far tail relative to the d^2 prior")
+          "training distances vs the prior they were drawn from, per class")
 
 
 def fig_overlap_separation():
@@ -296,7 +307,7 @@ def fig_probe_hom():
 # ── calibration + benchmark ──────────────────────────────────────────────────
 
 def fig_coverage(domain="gaussian"):
-    rep = json.load(open("analysis/ci/lean_npe_v3/report.json"))
+    rep = json.load(open(REPORT))
     cov = rep[domain]["coverage"]
     fig, ax = plt.subplots(figsize=(7.0, 4.2))
     xs = np.arange(len(PARAM_NAMES))
@@ -460,9 +471,15 @@ FIGS = {
 
 
 def main():
+    global FIG, DATA, REPORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="+", choices=list(FIGS), default=None)
+    ap.add_argument("--data", default=str(DATA), help="dataset directory (with memmap/train)")
+    ap.add_argument("--report", default=str(REPORT), help="certification report.json")
+    ap.add_argument("--out", default=str(FIG), help="figure directory")
     args = ap.parse_args()
+    FIG, DATA, REPORT = Path(args.out), Path(args.data), Path(args.report)
+    FIG.mkdir(parents=True, exist_ok=True)
     for name, fn in FIGS.items():
         if args.only and name not in args.only:
             continue

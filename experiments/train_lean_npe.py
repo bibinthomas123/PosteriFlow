@@ -946,6 +946,9 @@ def main():
                          f"{tuple(sd[wk].shape)} -> {tuple(cur.shape)}")
                 sd[wk] = torch.cat([sd[wk], pad], dim=1)
         missing, unexpected = model.load_state_dict(sd, strict=False)
+        mcf = getattr(getattr(model, "encoder", None), "mc_feat", None)
+        if mcf is not None:
+            mcf.reset_definition()      # a new model trains with the current features
         assert not unexpected, f"unexpected keys loading {args.init_from}: {unexpected}"
         if missing:
             log.info(f"freshly initialized (absent from checkpoint): {missing}")

@@ -36,18 +36,31 @@ os.chdir(ROOT)
 PY = sys.executable
 
 # Matched-filter template tokens + the cross-detector polarization features
-# built on them. Only for models with BBH in the data: a template bank coarse
-# enough for the encoder matches BNS/NSBH inspirals poorly (fitting factor
-# ~0.16), so those models train without MF tokens.
+# built on them (BBH and mixed). Every class also gets chirp-mass features
+# from a dense bank (models/mc_features.py; mc_bank_<cls>[_ctx].npz, built by
+# build_mc_bank.py when missing — too large for git). BNS and NSBH use the
+# multi-rate input (configs carry lowrate_seconds), so their banks include
+# context templates.
 MF_BBH = "--mf_tokens --mf_bank mf_bank_bbh.npz --pol_features"
+MC = {"bbh": "--mc_bank mc_bank_bbh.npz", "nsbh": "--mc_bank mc_bank_nsbh_ctx.npz",
+      "bns": "--mc_bank mc_bank_bns_ctx.npz"}
+BANKS = {"mc_bank_bbh.npz": ["--cls", "bbh"], "mc_bank_nsbh_ctx.npz": ["--cls", "nsbh", "--context"],
+         "mc_bank_bns_ctx.npz": ["--cls", "bns", "--context"]}
+# Batch 128 (the sbatch default). A/B on dataset_bbh_v3, 8 epochs: batch 512
+# (lr 6e-4) is 2.3x faster per epoch with the same calibration but learns
+# less per epoch (val NLL 1.27 vs 0.73 at epoch 8: 4x fewer optimizer
+# steps), so quality wins; the GPUs are used by training models in parallel.
+TRAIN = "--workers 12"
 
 # name, dataset, generation config, epochs, distance support (Mpc),
 # model flags, generation node, generation seed
 MODELS = [
-    ("lean_npe_v3_e80", "data/dataset_v3", "configs/data_config_fixed.yaml", 80, (8, 6000), MF_BBH, "ant2", 2026),
-    ("lean_npe_bbh_v3", "data/dataset_bbh_v3", "configs/data_config_bbh_v3.yaml", 40, (80, 5000), MF_BBH, "ant2", 2027),
-    ("lean_npe_nsbh_v3", "data/dataset_nsbh_v3", "configs/data_config_nsbh_v3.yaml", 40, (15, 1600), "", "ant7", 2028),
-    ("lean_npe_bns_v3", "data/dataset_bns_v3", "configs/data_config_bns_v3.yaml", 40, (7, 550), "", "ant7", 2029),
+    ("lean_npe_bbh_mc", "data/dataset_bbh_v3", "configs/data_config_bbh_v3.yaml", 40, (80, 5000),
+     f"{MF_BBH} {MC['bbh']}", "ant2", 2027),
+    ("lean_npe_nsbh_mr", "data/dataset_nsbh_mr", "configs/data_config_nsbh_v3.yaml", 40, (15, 1600),
+     MC["nsbh"], "ant7", 2049),
+    ("lean_npe_bns_mr", "data/dataset_bns_mr", "configs/data_config_bns_v3.yaml", 40, (7, 550),
+     MC["bns"], "ant7", 2048),
 ]
 N_SAMPLES = 200000
 # two generation jobs per node (ant1 is often ReqNodeNotAvail; ant2 has 64 CPUs)
@@ -101,6 +114,11 @@ for ev in CERT_EVENTS:
     except Exception as e:  # certification reports the failure per event
         log(f"  prefetch {ev} failed: {str(e)[:80]}")
 
+for bank, flags in BANKS.items():
+    if not (ROOT / "src/ahsd/models/assets" / bank).exists():
+        log(f"building chirp-mass bank {bank}")
+        subprocess.run([PY, "src/ahsd/models/build_mc_bank.py", *flags], check=True)
+
 ids, data_jobs = {}, {}
 for name, data, config, epochs, (lo, hi), flags, node, seed in models:
     short = name.replace("lean_npe_", "")
@@ -123,7 +141,7 @@ for name, data, config, epochs, (lo, hi), flags, node, seed in models:
         log(f"submitted generation {gen} ({config} -> {data} on {node}) and audit {audit}")
     ids[name] = sbatch(*dep, "--gres=gpu:h100:1", f"--job-name={short}",
                        f"--export=ALL,NAME={name},DATA={data},EPOCHS={epochs},"
-                       f"MODEL_FLAGS={flags or 'none'},EXTRA=--dist_range {lo} {hi}",
+                       f"MODEL_FLAGS={flags or 'none'},EXTRA=--dist_range {lo} {hi} {TRAIN}",
                        "scripts/slurm/train_lean_npe.sbatch")
     log(f"submitted {name} ({data}, {epochs} epochs, {lo}-{hi} Mpc, flags '{flags}') as {ids[name]}")
 

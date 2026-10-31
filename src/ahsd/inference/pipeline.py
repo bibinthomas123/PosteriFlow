@@ -70,7 +70,7 @@ def load_model(path: str, device: Optional[str] = None):
                     mass_param=a.get("mass_param", "m1m2"),
                     geom_phase_residual=a.get("geom_phase_residual", False),
                     mf_tokens=a.get("mf_tokens", False),
-                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), q_embed_dim=a.get("q_embed_dim", 0))
+                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), q_embed_dim=a.get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     meta = {"model_path": str(path), "model_epoch": int(ckpt.get("epoch", -1)),

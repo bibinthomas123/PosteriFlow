@@ -78,7 +78,11 @@ class SkyRemapper:
     """Per-signal sky remap: exact delay re-roll + antenna-matched relabel."""
 
     def __init__(self, cache_dir: str, grid_n: int = 16384, n_candidates: int = 64,
-                 tau_window: float = 0.35e-3):
+                 tau_window: float = 0.35e-3, dist_window: tuple = (45.0, 2100.0)):
+        """dist_window: the (lo, hi) Mpc range a relabelled distance must stay
+        in — RemixDataset passes its guard window (derived from the model's
+        dist_range). The default is the legacy 40-2200 Mpc support's window."""
+        self.dist_lo, self.dist_hi = (float(v) for v in dist_window)
         g = _load_geom(cache_dir)
         self.vertex, self.dtensor, self.gmst = g["vertex"], g["dtensor"], g["gmst"]
         self.n_candidates = int(n_candidates)
@@ -160,11 +164,23 @@ class SkyRemapper:
         c = int(cand[k])
         psi_new = float((-np.angle(S[k]) / 2.0) % np.pi)
         alpha = float(np.abs(S[k]) / max(A[k], 1e-30))
-        # d' = d/alpha, alpha clamped so the relabel stays inside the prior
-        # box (and within a sane range even for near-degenerate matches)
+        # d' = d/alpha. Degenerate matches (tiny/huge alpha) are skipped
+        # rather than amplified.
+        if not 0.25 <= alpha <= 4.0:
+            return sig
+        # Clamp so the relabel stays inside the distance window, and when the
+        # clamp bites RESCALE the signal by alpha_c/alpha so amplitude and the
+        # new label still agree. (The clamp used to be the hard-coded legacy
+        # window 45-2100 Mpc with no rescale: with the widened distance ranges
+        # it corrupted ~34% of augmented BBH labels by x0.66 and ~9% of BNS by
+        # x1.76, measured 2026-10-31.)
         d_old_lab = float(par[IDX_DIST])
-        alpha = float(np.clip(alpha, max(0.5, d_old_lab / 2100.0),
-                              min(2.0, d_old_lab / 45.0)))
+        lo_a = max(0.5, d_old_lab / self.dist_hi)
+        hi_a = min(2.0, d_old_lab / self.dist_lo)
+        alpha_c = float(np.clip(alpha, lo_a, hi_a)) if lo_a <= hi_a else 1.0
+        if alpha_c != alpha:
+            sig = sig * (alpha_c / alpha)
+        alpha = alpha_c
 
         # exact per-detector delay change; s'(t) = s(t - delta) moves each
         # detector's arrival to the new sky's delay (subsample FFT shift;

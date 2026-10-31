@@ -495,6 +495,14 @@ def main():
                     help="NSF conditioner hidden width (default matches LeanNPE)")
     ap.add_argument("--flow_bins", type=int, default=16,
                     help="RQS bins per layer (default matches LeanNPE)")
+    ap.add_argument("--pol_features", action="store_true",
+                    help="add cross-detector polarization tokens (amplitude ratio, relative phase, "
+                         "arrival-time difference of the best template; needs --mf_tokens). "
+                         "Targets the unmeasured inclination/psi/sky (analysis/inclination_info)")
+    ap.add_argument("--mf_bank", default="mf_bank.npz",
+                    help="matched-filter template bank (file under src/ahsd/models/assets/ or a path) "
+                         "for --mf_tokens; must cover the dataset's chirp masses. Default: the original "
+                         "heavy-BBH bank (Mc 12-45). Per-class: mf_bank_{bbh,nsbh,bns}.npz")
     ap.add_argument("--dist_range", type=float, nargs=2, default=None, metavar=("LO", "HI"),
                     help="luminosity-distance support in Mpc (default: legacy 40 2200). "
                          "Targets outside it are clamped, so it must cover the dataset's "
@@ -860,6 +868,8 @@ def main():
                     mf_token_fusion=args.mf_token_fusion,
                     q_embed_dim=args.q_embed_dim,
                     dist_range=args.dist_range,
+                    mf_bank=args.mf_bank,
+                    pol_features=args.pol_features,
                     flow_layers=args.flow_layers,
                     flow_hidden=args.flow_hidden,
                     flow_bins=args.flow_bins).to(device)
@@ -920,13 +930,17 @@ def main():
     # population metric AND to the sky-aggregated corner table, so it gets its
     # own fixed injections, printed every epoch like the corner.
     basin_bank = None
-    try:
-        from ahsd.evaluation.basin_probe import (build_bank, evaluate_bank,
-                                                 log_basin, basin_gate)
-        basin_bank = build_bank()
-        log.info(f"basin probe bank ready: {len(basin_bank['labels'])} injections")
-    except Exception as e:
-        log.warning(f"basin probe unavailable ({type(e).__name__}: {e})")
+    # the probe's injections are heavy BBH: meaningless for NSBH/BNS-only models
+    if "BBH" not in (args.dataset_event_types or ["BBH"]):
+        log.info("basin probe skipped (no BBH in the training data)")
+    else:
+        try:
+            from ahsd.evaluation.basin_probe import (build_bank, evaluate_bank,
+                                                     log_basin, basin_gate)
+            basin_bank = build_bank()
+            log.info(f"basin probe bank ready: {len(basin_bank['labels'])} injections")
+        except Exception as e:
+            log.warning(f"basin probe unavailable ({type(e).__name__}: {e})")
 
     # Noise-consistency loss pool (see multiview_consistency_loss docstring).
     cons_pool = None

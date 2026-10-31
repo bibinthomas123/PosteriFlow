@@ -558,7 +558,7 @@ def main():
                     encoder_type=ckpt["args"].get("encoder_type", "conv"),
                     mass_param=ckpt["args"].get("mass_param", "m1m2"),
                     geom_phase_residual=ckpt["args"].get("geom_phase_residual", False),
-                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
+                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), mf_bank=ckpt["args"].get("mf_bank", "mf_bank.npz"), pol_features=ckpt["args"].get("pol_features", False), q_embed_dim=ckpt["args"].get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"checkpoint: epoch {ckpt['epoch']}, val NLL {ckpt['val_nll']:.4f}")
@@ -676,11 +676,12 @@ def main():
                       if gw_ok else "; ".join(fails)[:200])
 
     basin_rows = None
-    try:
-        from ahsd.evaluation.basin_probe import build_bank, evaluate_bank
-        basin_rows = evaluate_bank(model, build_bank(), device)
-    except Exception as e:
-        print(f"basin probe failed ({type(e).__name__}: {e})")
+    if "BBH" in trained:      # heavy-BBH injections: not applicable to NSBH/BNS models
+        try:
+            from ahsd.evaluation.basin_probe import build_bank, evaluate_bank
+            basin_rows = evaluate_bank(model, build_bank(), device)
+        except Exception as e:
+            print(f"basin probe failed ({type(e).__name__}: {e})")
 
     meta = {"model": args.model, "epoch": ckpt["epoch"], "val_nll": ckpt["val_nll"],
             "device": device, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

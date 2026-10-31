@@ -56,7 +56,7 @@ def main():
                     encoder_type=a.get("encoder_type", "coherent"),
                     mass_param=a.get("mass_param", "mc_q"), geom_dropout=0.0,
                     geom_phase_residual=a.get("geom_phase_residual", False),
-                    mf_tokens=True, mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), q_embed_dim=a.get("q_embed_dim", 0))
+                    mf_tokens=True, mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), q_embed_dim=a.get("q_embed_dim", 0))
     model.load_state_dict(ck["model_state_dict"])
     model.eval()
     enc = model.encoder

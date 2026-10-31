@@ -361,7 +361,8 @@ class LeanNPE(nn.Module):
                  geom_dropout: float = 0.0, geom_phase_residual: bool = False,
                  mf_tokens: bool = False, mf_shape_norm: bool = False,
                  mf_token_fusion: str = "add", q_embed_dim: int = 0,
-                 dist_range: Optional[tuple] = None):
+                 dist_range: Optional[tuple] = None, mf_bank: str = "mf_bank.npz",
+                 pol_features: bool = False):
         super().__init__()
         self.param_names = param_names
         self.premerger = premerger
@@ -410,7 +411,9 @@ class LeanNPE(nn.Module):
                                            phase_residual=geom_phase_residual,
                                            mf_tokens=mf_tokens,
                                            mf_shape_norm=mf_shape_norm,
-                                           mf_token_fusion=mf_token_fusion, **enc_kw)
+                                           mf_token_fusion=mf_token_fusion,
+                                           mf_bank=mf_bank, pol_features=pol_features,
+                                           **enc_kw)
         else:
             if psd_cond:
                 enc_kw["psd_bands"] = psd_bands

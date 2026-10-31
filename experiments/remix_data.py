@@ -214,7 +214,8 @@ class RemixDataset(Dataset):
         self.sky_remap = None
         if self.delay_aug > 0.0 and remix:
             from delay_aug import SkyRemapper
-            self.sky_remap = SkyRemapper(str(cache), n_candidates=delay_aug_candidates)
+            self.sky_remap = SkyRemapper(str(cache), n_candidates=delay_aug_candidates,
+                                         dist_window=_dist_guard_window(dist_range=dist_range))
             print(f"[RemixDataset] delay aug: p={self.delay_aug}/signal, "
                   f"{delay_aug_candidates} sky candidates")
         self.shift_max_samp = int(time_shift_max * sample_rate)

@@ -40,7 +40,7 @@ def load_model(path=CANON, device=DEVICE):
                     mass_param=a.get("mass_param", "m1m2"),
                     geom_phase_residual=a.get("geom_phase_residual", False),
                     mf_tokens=a.get("mf_tokens", False),
-                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), q_embed_dim=a.get("q_embed_dim", 0))
+                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), q_embed_dim=a.get("q_embed_dim", 0))
     model.load_state_dict(ckpt["model_state_dict"], strict=True)
     model.to(device).eval()
     model._ckpt_meta = dict(epoch=ckpt.get("epoch"), val_nll=ckpt.get("val_nll"),

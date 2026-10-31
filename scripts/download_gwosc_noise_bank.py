@@ -37,6 +37,11 @@ RUN_RANGES = {
     "O4a": (O4A_START, O4A_END),
     "O4b":  (O4B_START, O4B_END),
 }
+# Per-detector observing windows where they differ from the run: Virgo only
+# joined O2 on 2017-08-01. Sampling V1 over all of O2 landed almost every draw
+# where Virgo has no data, leaving 4 O2 V1 segments in a 604-segment V1 bank
+# (measured 2026-10-31) -- O2-era Virgo noise was effectively absent.
+DET_RUN_RANGES = {("V1", "O2"): (1185580818, O2_END)}
 DET_RUNS = {
     "H1": ("O1", "O2", "O3b", "O4a", "O4b"),
     "L1": ("O1", "O2", "O3b", "O4a", "O4b"),
@@ -50,6 +55,13 @@ def main():
     ap.add_argument("--per_det", type=int, default=120)
     ap.add_argument("--outdir", default="gw_noise_bank")
     ap.add_argument("--seed", type=int, default=3)
+    ap.add_argument("--dets", nargs="+", default=["H1", "L1", "V1"],
+                    help="detectors to fetch (default all)")
+    ap.add_argument("--runs", nargs="+", default=None,
+                    help="restrict to these observing runs, e.g. --runs O2")
+    ap.add_argument("--add", type=int, default=None,
+                    help="top-up mode: fetch this many NEW segments per detector "
+                         "(ignores the existing count), e.g. --dets V1 --runs O2 --add 80")
     args = ap.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
     rng = np.random.default_rng(args.seed)
@@ -59,9 +71,13 @@ def main():
     # (shuffled so eras interleave and the bank fills uniformly across runs)
     det_candidates = {}
     for det, runs in DET_RUNS.items():
+        if det not in args.dets:
+            continue
         cands = []
         for run in runs:
-            lo, hi = RUN_RANGES[run]
+            if args.runs and run not in args.runs:
+                continue
+            lo, hi = DET_RUN_RANGES.get((det, run), RUN_RANGES[run])
             grid = np.arange(lo + 10000, hi - 10000, 3600)
             CANDIDATES_PER_RUN = 1500
 
@@ -72,7 +88,7 @@ def main():
                     replace=False,
                 )
             )
-        c = np.concatenate(cands)
+        c = np.concatenate(cands) if cands else np.zeros(0, dtype=np.int64)
         rng.shuffle(c)
         det_candidates[det] = c
 
@@ -153,21 +169,23 @@ def main():
 
     # Round-robin across detectors so all three fill up together — a usable
     # (if small) bank exists almost immediately and grows uniformly.
+    dets = [d for d in ("H1", "L1", "V1") if d in det_candidates]
     got = {d: sum(1 for f in os.listdir(args.outdir)
                   if f.startswith(f"{d}_") and f.endswith("_strain.npy"))
-           for d in ("H1", "L1", "V1")}
+           for d in dets}
     print("existing:", got)
-    pos = {d: 0 for d in ("H1", "L1", "V1")}
-    while not all(got[d] >= args.per_det or pos[d] >= len(det_candidates[d])
-                  for d in ("H1", "L1", "V1")):
-        for det in ("H1", "L1", "V1"):
-            if got[det] >= args.per_det or pos[det] >= len(det_candidates[det]):
+    # top-up mode counts only NEW segments
+    target = {d: (got[d] + args.add if args.add is not None else args.per_det) for d in dets}
+    pos = {d: 0 for d in dets}
+    while not all(got[d] >= target[d] or pos[d] >= len(det_candidates[d]) for d in dets):
+        for det in dets:
+            if got[det] >= target[det] or pos[det] >= len(det_candidates[det]):
                 continue
             gps = int(det_candidates[det][pos[det]])
             pos[det] += 1
             if fetch_one(det, gps):
                 got[det] += 1
-                print(f"[{det}] {gps} ok ({got[det]}/{args.per_det})", flush=True)
+                print(f"[{det}] {gps} ok ({got[det]}/{target[det]})", flush=True)
     print("done:", got)
 
 

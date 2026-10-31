@@ -52,8 +52,19 @@ class CoherentEncoder(LeanStrainEncoder):
                  n_geom_tokens: int = 4, tau_max_ms: float = 30.0,
                  geom_dropout: float = 0.0, phase_residual: bool = False,
                  mf_tokens: bool = False, mf_shape_norm: bool = False,
-                 mf_token_fusion: str = "add", **kw):
+                 mf_token_fusion: str = "add", mf_bank: str = "mf_bank.npz",
+                 pol_features: bool = False, n_pol_tokens: int = 2, **kw):
         super().__init__(**kw)
+        self.mf_bank = str(mf_bank)
+        # Cross-detector polarization tokens (models/polarization_features.py):
+        # pairwise amplitude ratio, relative phase and arrival-time difference
+        # of the best template's complex SNR. The encoder's other features were
+        # measured to carry no inclination/psi and almost no sky information
+        # (analysis/inclination_info, probe R^2 ~ 0); these give sin(dec) R^2
+        # 0.62 and resolve inclination jointly with sky. Needs the MF bank.
+        self.use_pol_features = bool(pol_features)
+        if self.use_pol_features and not mf_tokens:
+            raise ValueError("pol_features requires mf_tokens (it uses the MF template bank)")
         self.geom_dropout = float(geom_dropout)
         self.phase_residual = bool(phase_residual)
         self.K = int(geometry_bands)
@@ -133,7 +144,13 @@ class CoherentEncoder(LeanStrainEncoder):
         self.mf_shape_norm = bool(mf_shape_norm)
         if self.use_mf_tokens:
             from pathlib import Path
-            bk = np.load(Path(__file__).parent / "assets/mf_bank.npz")
+            # mf_bank: a file name under models/assets/ or a path. Per-class
+            # models need their own bank: the original covers Mc 12-45 only,
+            # i.e. NO templates for BNS, NSBH or light BBH (2026-10-31).
+            bank_path = Path(self.mf_bank)
+            if not bank_path.is_absolute() and bank_path.parent == Path("."):
+                bank_path = Path(__file__).parent / "assets" / bank_path
+            bk = np.load(bank_path)
             assert int(bk["band_lo"]) == self.band_lo and int(bk["n_band"]) == self.Nf, \
                 "mf_bank.npz band does not match encoder band — rebuild with build_mf_bank.py"
             # persistent=False: the 12 MB bank is a deterministic build artifact
@@ -162,6 +179,15 @@ class CoherentEncoder(LeanStrainEncoder):
                 # Zero-init so it starts as a true no-op and only carries a
                 # signal once gradients decide it's useful.
                 self.token_type_embed = nn.Parameter(torch.zeros(2, self.d_model))
+        if self.use_pol_features:
+            from ahsd.models.polarization_features import N_FEATURES
+            self.n_pol_tokens = int(n_pol_tokens)
+            self.pol_mlp = nn.Sequential(
+                nn.LayerNorm(N_FEATURES), nn.Linear(N_FEATURES, 128), nn.GELU(),
+                nn.Linear(128, 128), nn.GELU())
+            self.pol_to_tokens = nn.Linear(128, self.n_pol_tokens * self.d_model)
+            # zero-init marker telling the transformer which tokens these are
+            self.pol_type_embed = nn.Parameter(torch.zeros(self.d_model))
 
     def _tau_features(self, Xr, Xi, Ei, Ej):
         """Phase-slope arrival-time delay + alignment strength for one pair.
@@ -318,5 +344,11 @@ class CoherentEncoder(LeanStrainEncoder):
                 gtok = torch.cat([gtok, mftok], dim=1)
             else:
                 gtok = gtok + mftok
+        if self.use_pol_features:
+            # after geom_dropout: always present, like the MF pathway
+            from ahsd.models.polarization_features import polarization_features
+            pf = polarization_features(strain, self.mf_re, self.mf_im, self.band_lo)
+            ptok = self.pol_to_tokens(self.pol_mlp(pf)).reshape(-1, self.n_pol_tokens, self.d_model)
+            gtok = torch.cat([gtok, ptok + self.pol_type_embed], dim=1)
         feats, _ = self._compute_feats(strain, asd_bands, extra_tokens=gtok)
         return self.out_proj(feats)

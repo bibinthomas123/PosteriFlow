@@ -104,6 +104,21 @@ def model_input(model: LeanNPE, prepared: PreparedData) -> np.ndarray:
     return x
 
 
+def model_asd_bands(model: LeanNPE, prepared: PreparedData, device) -> Optional[torch.Tensor]:
+    """Sensitivity input [1, 3, psd_bands] for a PSD-conditioned model (None
+    otherwise): design-whitened (simulated) data has unit sensitivity -> 0;
+    real data gets log(design/measured) bands so the model can convert
+    whitened amplitude to physical SNR."""
+    if not model.psd_cond:
+        return None
+    if prepared.source == "real":
+        from ahsd.inference.preprocessing import compute_asd_bands
+        bands = compute_asd_bands(prepared, psd_bands=model.encoder.psd_bands)
+    else:
+        bands = np.zeros((3, model.encoder.psd_bands), dtype=np.float32)
+    return torch.from_numpy(bands).unsqueeze(0).to(device).float()
+
+
 def _log_prob_physical(model: LeanNPE, y_norm: torch.Tensor,
                        full_ctx: torch.Tensor) -> torch.Tensor:
     """log q(theta|d) in PHYSICAL units for normalized samples y_norm.
@@ -205,17 +220,7 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
     # ---- encode + sample + log-prob ----
     t0 = time.time()
     st = torch.from_numpy(model_input(net, prepared)).unsqueeze(0).to(dev).float()
-    asd_bands = None
-    if net.psd_cond:
-        # design-whitened (simulated) data has unit sensitivity -> 0; real data
-        # gets log(design/measured) bands so the model can convert whitened
-        # amplitude to physical SNR (correct distance for quieter detectors).
-        if prepared.source == "real":
-            from ahsd.inference.preprocessing import compute_asd_bands
-            bands = compute_asd_bands(prepared, psd_bands=net.encoder.psd_bands)
-        else:
-            bands = np.zeros((3, net.encoder.psd_bands), dtype=np.float32)
-        asd_bands = torch.from_numpy(bands).unsqueeze(0).to(dev).float()
+    asd_bands = model_asd_bands(net, prepared, dev)
     with torch.no_grad():
         ctx = net.encode(st, asd_bands)
     encode_s = time.time() - t0

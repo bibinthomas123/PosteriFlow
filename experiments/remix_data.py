@@ -367,6 +367,16 @@ class RemixDataset(Dataset):
         print(f"[RemixDataset] tau_HL sidecar computed -> {f}")
         return tau
 
+    def _fits_shift(self, sig) -> bool:
+        """True if a signal's window part has < 1e-4 of its energy within the
+        maximum shift of either window edge."""
+        w = sig[:, :T_LEN].astype(np.float64) ** 2
+        tot = w.sum()
+        if tot <= 0:
+            return True
+        m = self.shift_max_samp
+        return (w[:, :m].sum() + w[:, -m:].sum()) < 1e-4 * tot
+
     def set_epoch(self, epoch: int):
         """Set the current epoch so per-worker RNGs draw fresh noise/signal
         pairings each epoch (must be called before iterating; workers respawn
@@ -504,6 +514,12 @@ class RemixDataset(Dataset):
                 # circular time shift, same across detectors
                 if abs(par[IDX_TIME]) < 1.45 and self.shift_max_samp > 0:
                     ds = int(rng_sig.integers(-self.shift_max_samp, self.shift_max_samp + 1))
+                    # a circular shift is only physical for a signal that is
+                    # ~zero at both window edges; a long inspiral filling the
+                    # window start would wrap past the merger (and break the
+                    # window/context seam), so those keep their stored time
+                    if ds != 0 and not self._fits_shift(sig):
+                        ds = 0
                     if ds != 0:
                         if self.lo_len:
                             # window: exact roll; context: the same shift as

@@ -43,10 +43,11 @@ def symmetrized_log_q(theta_np, model, prepared, rank: int = 0,
     from ahsd.inference.pipeline import _log_prob_physical
 
     theta = torch.from_numpy(theta_np.astype(np.float32))
-    from ahsd.inference.pipeline import model_input
+    from ahsd.inference.pipeline import model_asd_bands, model_input
     strain = torch.from_numpy(model_input(model, prepared)).unsqueeze(0).to(device).float()
     with torch.no_grad():
-        ctx = model.encoder(strain)
+        # the same conditional that drew the samples: sensitivity input included
+        ctx = model.encode(strain, model_asd_bands(model, prepared, device))
     r = torch.full((1,), rank, dtype=torch.long, device=device)
     fc1 = model._full_context(ctx, r)
 
@@ -84,7 +85,8 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
     # q(theta) pi(lambda) the weight L pi / q is unchanged, so IS marginalizes
     # them exactly (at the cost of some extra variance)
     _WORKER["prior"] = prior
-    _WORKER["rng"] = np.random.default_rng(int(center_gps * 1000) % 2 ** 32)
+    import os
+    _WORKER["rng"] = np.random.default_rng((int(center_gps * 1000) % 2 ** 32, os.getpid()))
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
         if det not in raw:
@@ -169,6 +171,15 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
 
     t0 = time.time()
     model, _ = load_model(model_path or result.config["model_path"], device=device)
+    caveats = []
+    if getattr(model, "lowrate_len", 0):
+        # the likelihood covers the 4 s window only (above window_fmin); the
+        # network also read the 28 s before it, so its proposal can be
+        # narrower than this target and the weights less reliable
+        caveats.append("multi-rate model: IS likelihood uses the 4 s window only, the "
+                       "proposal also used 28 s of context; treat the ESS with caution")
+        import logging
+        logging.getLogger(__name__).warning(caveats[-1])
 
     keep = np.ones(len(result.samples), bool)
     if result.rail_mask is not None:
@@ -358,6 +369,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "wall_s": round(time.time() - t0, 1),
                 "approximant": approximant,
                 "f_min": round(f_min, 1),
+                "caveats": caveats,
                 "note": "phase and geocent_time are analytically marginalized "
                         "in the weights; their columns in the corrected "
                         "samples retain PROPOSAL values (use the NPE result "

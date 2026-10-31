@@ -150,6 +150,9 @@ class GWDatasetGenerator:
         # two streams join seamlessly.
         self.lowrate_seconds = int(cfg.get("lowrate_seconds", 0) or 0)
         self.lowrate_rate = int(cfg.get("lowrate_rate", 512))
+        if self.lowrate_seconds and (cfg.get("add_glitches") or float(cfg.get("real_noise_prob", 0) or 0) > 0):
+            raise ValueError("lowrate_seconds (multi-rate) does not support add_glitches or "
+                             "real_noise_prob: the long noise segment is synthetic and unglitched")
         if self.lowrate_seconds:
             # noise segment: [window start - lowrate - pad, window end + pad]
             self._lo_pad = 2.0
@@ -400,7 +403,12 @@ class GWDatasetGenerator:
                 strain = noise.astype(np.float64)
                 snrs = []
                 for p in param_sets:
-                    sig, wh, snr, lo = self._signal_window(p, det, psd, zeros, whiten_components)
+                    try:
+                        sig, wh, snr, lo = self._signal_window(p, det, psd, zeros, whiten_components)
+                    except Exception as e:      # a waveform outside its model's domain
+                        _log.warning(f"waveform failed [{det}] ({type(e).__name__}: {str(e)[:80]}); "
+                                     "sample rejected")
+                        return None, 1
                     signal_components.append(sig)
                     wh_components.append(wh)
                     if lo is not None:

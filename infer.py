@@ -65,7 +65,7 @@ def make_injection(seed: int, min_snr: float = 8.0):
     from ahsd.data.parameter_sampler import ParameterSampler
     from ahsd.models.lean_npe import PARAM_NAMES
 
-    sampler = ParameterSampler()
+    sampler = ParameterSampler({"random_seed": seed})
     noise_gen = BilbyNoiseGenerator(4096, 4.0)
     injector = BilbySignalInjector(4096, 4.0)
     prep = BilbyPreprocessor(4096, 4.0)
@@ -79,10 +79,18 @@ def make_injection(seed: int, min_snr: float = 8.0):
         raw, white, snrs = {}, {}, []
         for det in ("H1", "L1", "V1"):
             noise = noise_gen.generate(det, psds[det], seed=int(rng.integers(2**31)))
-            strain, s = injector.inject(noise, p, det, psds[det])
-            raw[det] = strain
-            white[det] = prep.preprocess(strain, psds[det], detector=det)
-            snrs.append(s)
+            # as the dataset generator: long inspirals over a long segment,
+            # whitened there and cropped (a 4 s generation would wrap them)
+            if injector.wfg.fits_window(p):
+                sig = injector.inject_multiple(np.zeros_like(noise), [p], det, psds[det])[0]
+                wsig = prep.preprocess(sig, psds[det], detector=det)
+            else:
+                long_raw, i0 = injector.wfg.generate_long(p, det)
+                sig = long_raw[i0:i0 + len(noise)]
+                wsig = prep.preprocess(long_raw, psds[det], detector=det)[i0:i0 + len(noise)]
+            raw[det] = noise + sig
+            white[det] = prep.preprocess(noise, psds[det], detector=det) + wsig
+            snrs.append(float(np.sqrt(np.sum(np.asarray(wsig, np.float64) ** 2))))
         net = float(np.sqrt(sum(s**2 for s in snrs)))
         if net >= min_snr:
             truth = {n: float(p[n]) for n in PARAM_NAMES}

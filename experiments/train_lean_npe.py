@@ -833,6 +833,9 @@ def main():
         dcfg = yaml.safe_load(open(dcfg_path)) or {}
         args.dataset_distance_prior = str(dcfg.get("distance_prior") or "comoving_d2").lower()
         args.dataset_distance_ranges = dcfg.get("distance_ranges")
+        # multi-rate datasets: the context stream is part of every strain row
+        # (remix and fixed-split paths alike), so the model must know its length
+        args.lowrate_len = int(dcfg.get("lowrate_seconds", 0) or 0) * int(dcfg.get("lowrate_rate", 512))
         # source classes present (inference warns when an event falls outside)
         mix = dcfg.get("event_type_distribution") or {}
         args.dataset_event_types = sorted(t.upper() for t, p in mix.items()
@@ -850,7 +853,11 @@ def main():
             build_memmap_cache(args.data, "train", str(cache))
         # multi-rate dataset: the context-stream length is part of the model
         # (recorded in args, so every load site rebuilds the same encoder)
-        args.lowrate_len = int(json.load(open(cache / "events.json")).get("lo_len", 0))
+        lo_cache = int(json.load(open(cache / "events.json")).get("lo_len", 0))
+        if dcfg_path.exists() and lo_cache != args.lowrate_len:
+            raise ValueError(f"memmap cache has {lo_cache} context samples but dataset_config.yaml "
+                             f"implies {args.lowrate_len}: rebuild {cache}")
+        args.lowrate_len = lo_cache
         if args.lowrate_len:
             log.info(f"multi-rate input: 4 s window + {args.lowrate_len} context samples")
         train_ds = RemixDataset(str(cache), remix=True,
@@ -1078,7 +1085,9 @@ def main():
             model.encoder_amp = torch.bfloat16
             log.info("encoder runs under bf16 autocast (flow fp32)")
         if args.compile:
-            model.encoder = torch.compile(model.encoder)
+            # compile the forward only: replacing the module would save its
+            # weights as encoder._orig_mod.*, which no load site can read
+            model.encoder.forward = torch.compile(model.encoder.forward)
             log.info("encoder compiled with torch.compile")
     if args.profile_steps:
         profile_training(model, train_loader, opt, sched, args, device, aux_head)

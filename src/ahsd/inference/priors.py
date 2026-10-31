@@ -168,17 +168,29 @@ class TrainingPrior:
     # ── bilby priors (dynesty) ───────────────────────────────────────────
     def bilby_priors(self, center_time: float, time_halfwidth: float = 0.2):
         """bilby PriorDict with the training support: per-class mass and
-        spin bounds, the dataset's distance range and shape; aligned spins.
-        Black-hole masses are log-uniform, neutron-star masses uniform; the
-        posterior is sorted to mass_1 >= mass_2 afterwards
-        (dynesty_bridge.align_conventions)."""
+        spin bounds and mass prior (mass_2 conditional on mass_1, as
+        generated), the dataset's distance range and shape; aligned spins."""
         import bilby
         P = bilby.core.prior
         priors = bilby.gw.prior.BBHPriorDict()
         del priors["chirp_mass"], priors["mass_ratio"]
-        bh = {"BBH": (True, True), "NSBH": (True, False), "BNS": (False, False)}[self.event_type]
-        for name, rng, log in (("mass_1", self.m1_range, bh[0]), ("mass_2", self.m2_range, bh[1])):
-            priors[name] = (P.LogUniform if log else P.Uniform)(*rng, name=name)
+        (m1_lo, m1_hi), (m2_lo, m2_hi) = self.m1_range, self.m2_range
+        # the generator's mass prior exactly (log_prob above): BBH m1 log-
+        # uniform, m2 log-uniform on [lo, m1]; BNS m1 uniform, m2 uniform on
+        # [lo, m1]; NSBH black hole log-uniform, neutron star uniform
+        upto_m1 = lambda reference_params, mass_1: dict(minimum=reference_params["minimum"],
+                                                        maximum=mass_1)
+        if self.event_type == "BBH":
+            priors["mass_1"] = P.LogUniform(m1_lo, m1_hi, name="mass_1")
+            priors["mass_2"] = P.ConditionalLogUniform(condition_func=upto_m1, minimum=m2_lo,
+                                                       maximum=m2_hi, name="mass_2")
+        elif self.event_type == "BNS":
+            priors["mass_1"] = P.Uniform(m1_lo, m1_hi, name="mass_1")
+            priors["mass_2"] = P.ConditionalUniform(condition_func=upto_m1, minimum=m2_lo,
+                                                    maximum=m2_hi, name="mass_2")
+        else:
+            priors["mass_1"] = P.LogUniform(m1_lo, m1_hi, name="mass_1")
+            priors["mass_2"] = P.Uniform(m2_lo, m2_hi, name="mass_2")
         d_lo, d_hi = self.dist_range
         priors["luminosity_distance"] = (
             P.Uniform(d_lo, d_hi, name="luminosity_distance") if self.dist_shape == "uniform"

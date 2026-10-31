@@ -42,7 +42,10 @@ _MASS_NSBH_NS = (1.0, 2.5)
 _SPIN_BBH = (0.0, 0.99)
 _SPIN_BNS = (0.0, 0.05)
 _SPIN_NS = (0.0, 0.05)
-_SPIN_BH = (0.0, 0.99)
+# NSBH black-hole spin: IMRPhenomNSBH develops a long unphysical post-merger
+# tail (3-30% of the signal energy) for spin >= 0.94 at mass ratios >~ 20,
+# outside its calibration range; <= 0.92 is clean at every mass ratio.
+_SPIN_BH = (0.0, 0.9)
 
 # ── Default event-type fractions ──────────────────────────────────────────────
 _DEFAULT_FRACTIONS = {"BBH": 0.55, "BNS": 0.20, "NSBH": 0.20, "noise": 0.05}

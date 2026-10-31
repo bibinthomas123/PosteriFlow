@@ -2,8 +2,8 @@
 """
 Research-grade analysis figures for the PosteriFlow paper.
 
-    python analysis.py            # builds every figure whose source data exists
-    python analysis.py --only mass_plane anchors_q
+    python analysis/make_figures.py            # builds every figure whose source data exists
+    python analysis/make_figures.py --only mass_plane anchors_q
 
 One chart per file under analysis/figures/. Sources are durable artifacts
 only (memmap dataset, noise bank, twin grid, dynesty anchors, CI report,

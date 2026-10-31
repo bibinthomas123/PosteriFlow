@@ -1,728 +1,184 @@
-🚀 COMPLETE AHSD SYSTEM ARCHITECTURE & PROCESS (UPDATED JAN 3, 2026)
-
-📐 OVERALL SYSTEM ARCHITECTURE:
-```
-🌊 AHSD (Adaptive Hierarchical Signal Decomposition) Pipeline
-┌─────────────────────────────────────────────────────────────────┐
-│                    INPUT: Overlapping GW Signals                 │
-│                    (Multiple BBH/BNS in Same Data)              │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│  PHASE 1: SIGNAL GENERATION & DATASET PREPARATION               │
-│  ├── Synthetic GW Signal Generation (LALSuite-based)            │
-│  ├── Multi-signal Injection & Overlap Creation                  │
-│  ├── Noise Addition (Realistic LIGO/Virgo PSDs)                 │
-│  └── Quality Metrics & Ground Truth Labels                      │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│  PHASE 2: PRIORITYNET - SIGNAL RANKING & ORDERING               │
-│  🧠 Advanced Neural Network (99.7% Accuracy)                    │
-│  ├── Multi-Modal Feature Extraction                             │
-│  ├── Cross-Signal Overlap Analysis                              │
-│  ├── Physics-Informed Feature Engineering                       │
-│  └── Uncertainty-Aware Priority Prediction                      │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│  PHASE 3: ADAPTIVE SUBTRACTOR - NEURAL PE & REMOVAL             │
-│  🎯 Advanced Flow-Based Processing                              │
-│  ├── 3a: Neural Parameter Estimation (NSF Flow + Calibration)   │
-│  ├── 3b: Uncertainty-Aware Signal Subtraction                   │
-│  ├── 3c: Iterative Extraction & Residual Analysis              │
-│  └── 3d: RL-Based Complexity Adaptation (Dynamic)              │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│                    OUTPUT: Clean Individual Signals             │
-│                    + Accurate Parameter Estimates               │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-═══════════════════════════════════════════════════════════════════
-
-🧠 PHASE 2: PRIORITYNET DETAILED ARCHITECTURE
-
-📊 Network Structure (99.7% Ranking Accuracy):
-
-The PriorityNet is a sophisticated multi-modal neural architecture designed to intelligently rank overlapping gravitational wave signals for optimal extraction. It processes strain data and signal parameters through five specialized encoder modules.
-
-### COMPONENT 1: TEMPORAL STRAIN ENCODER
-Conv1d Multi-Scale Architecture:
-├── Input: [batch_size, 3, 4096] (H1, L1 & V1 detectors × time samples)
-├── Block 1: Conv1d(3→32, kernel=16, stride=2) → BatchNorm1d(32) → GELU → Dropout(0.2)
-│           Output: [32, 2048]
-├── Block 2: Conv1d(32→64, kernel=8, stride=2) → BatchNorm1d(64) → GELU → Dropout(0.2)
-│           Output: [64, 1024]  
-├── Block 3: Conv1d(64→128, kernel=4, stride=2) → BatchNorm1d(128) → GELU → Dropout(0.2)
-│           Output: [128, 512]
-├── Block 4: Conv1d(128→64, kernel=4, stride=2) → BatchNorm1d(64) → GELU → Dropout(0.2)
-│           Output: [64, 256]
-├── BiLSTM Layer:
-│   ├── 2 stacked bidirectional LSTM layers (hidden_dim=128)
-│   ├── Processes [batch_size, 64, 256] → [batch_size, 256, 256]
-│   └── Captures temporal dependencies & signal evolution
-├── Multi-Head Self-Attention:
-│   ├── 8 attention heads, embed_dim=256
-│   ├── Computes feature importance across time
-│   └── Output: [batch_size, 256, 256]
-└── Output Projection: Linear(256 → 64)
-    Final output: [batch_size, 64] (temporal feature vector)
-
-**Optional Transformer Encoder (use_transformer_encoder: true)**
-├── TransformerStrainEncoder with:
-│   ├── 3-Detector Input Processing (H1, L1, V1)
-│   ├── Multi-head self-attention layers
-│   ├── Positional embeddings for temporal context
-│   └── Output: [batch_size, 768] dimension context
-└── Handles real H1/L1/V1 strain data directly from detector_data
-
-**Kernel Details:**
-- Conv kernels progressively decrease (16→8→4→4) to extract hierarchical features
-- Each kernel is learnable (requires gradients) for adaptive feature extraction
-- Stride=2 provides 2× downsampling at each layer, reducing computation while preserving information
-- BiLSTM processes the full temporal sequence, capturing long-range dependencies
-- Multi-head attention (8 heads) ensures diverse feature representations
-
-### COMPONENT 2: CROSS-SIGNAL ANALYZER
-Pairwise Overlap Computation:
-├── Input: signal_1, signal_2 with parameters (SNR, distance, sky coords, etc.)
-├── Overlap Metrics (8-dimensional):
-│   ├── Time Separation: min(|Δt_geocent| / 1.0, 1.0) [normalized, capped at 1.0]
-│   ├── Sky Separation: min(geodesic_distance / π, 1.0) [spherical geometry]
-│   ├── Mass Similarity: exp(-|m1_1 - m1_2| / 20) [exponential decay]
-│   ├── Chirp Mass Ratio: min(|mc_1 - mc_2| / max(mc), 1.0) [relative difference]
-│   ├── Frequency Overlap: min(|f_isco_1 - f_isco_2| / 1000, 1.0) [ISCO frequency bands]
-│   ├── Overlap Duration: 1 - |duration_1 - duration_2| / max(duration) [length match]
-│   ├── Distance Ratio: min(max(d1/d2, d2/d1), 1.0) [mutual scaling]
-│   └── SNR Product: normalized_snr_1 × normalized_snr_2 [joint detectability]
-├── Learned Importance Network:
-│   ├── Input: 8-D overlap metrics + SNR features
-│   ├── Architecture: Linear(8 → 16) → ReLU → Linear(16 → 1) → Sigmoid
-│   └── Outputs [0, 1]: importance weight per pair
-└── Output: [batch_size, n_signals, 16] (each signal has 16 concatenated pair metrics)
-
-**Design Rationale:**
-- 8 metrics capture geometric, temporal, and physical signal relationships
-- Learned importance network adaptively weights pair contributions
-- Metrics range normalized to [0,1] for stable gradient flow
-
-### COMPONENT 3: SIGNAL FEATURE EXTRACTOR
-Parameter Embedding & Physics Encoding:
-├── Input: 16 Normalized Parameters (signal physics):
-│   ├── Masses: mass_1, mass_2 (normalized to [0,1])
-│   ├── Distance: luminosity_distance (log-normalized, log(10)→log(5000))
-│   ├── Sky coords: ra, dec (spherical normalized)
-│   ├── Orientation: theta_jn, psi, phase (angle normalized)
-│   ├── Time: geocent_time (normalized)
-│   ├── Spin: a_1, a_2 (magnitude normalized)
-│   └── Quality: network_snr (log-normalized)
-│   └── Edge-type: categorical (17 edge case types)
-│
-├── Embedding Layer: Linear(16 → 32)
-│   └── Maps discrete parameters to continuous embedding space
-│
-├── 4 Stacked Residual Blocks:
-│   ├── Block 1: [32] → LayerNorm → Linear(32→512) → GELU → Dropout(0.3)
-│   │            Residual: [32] → [512] via Linear(32→512)
-│   ├── Block 2: [512] → LayerNorm → Linear(512→384) → GELU → Dropout(0.3)
-│   ├── Block 3: [384] → LayerNorm → Linear(384→256) → GELU → Dropout(0.3)
-│   └── Block 4: [256] → LayerNorm → Linear(256→128) → GELU → Dropout(0.3)
-│   
-├── Physics Encoder (Hand-Crafted Features):
-│   ├── Chirp Mass: (m1*m2)^(3/5) / (m1+m2)^(1/5) [merger property]
-│   ├── Mass Ratio: max(m1,m2) / min(m1,m2) [spin-tendency indicator]
-│   ├── SNR-to-Distance: SNR * d / reference_distance [scaling]
-│   ├── ISCO Frequency: c^3 / (6^(3/2) * π * G * M_total) [merger frequency]
-│   ├── Inspiral Duration: (5/256) * c^5 / G^3 * (m1*m2)^(5/3) / (m1+m2)^(5/3) / f_start
-│   ├── Spin Magnitude: sqrt(a_1^2 + a_2^2) [total spin content]
-│   ├── BH Spin Parameter: a_1/m_1^2 (Kerr parameter) [relativistic effects]
-│   └── Orbital Eccentricity Proxy: time_to_merger deviation from zero-ecc model
-│   
-├── Physics Feature Projection: Linear(8 → 32)
-│   └── Projects 8 hand-crafted features to 32-D space
-│
-└── Output: Concatenate [64-D learned features, 32-D physics features] → 96-D metadata vector
-
-**Kernel & Layer Details:**
-- Residual blocks use Pre-LN architecture (LayerNorm first) for stable training
-- Hidden dimensions progressively reduce (512→384→256→128) for hierarchical abstraction
-- Physics encoder directly computes astrophysical quantities (no learnable parameters)
-- Dropout increases with network depth (0.2→0.3) to regularize hidden layers
-
-### COMPONENT 4: MULTI-MODAL FUSION
-Feature Concatenation & Cross-Modal Attention:
-├── Input Assembly:
-│   ├── Metadata features: 96-D (from SignalFeatureExtractor)
-│   ├── Overlap features: 16-D (from CrossSignalAnalyzer)
-│   ├── Temporal features: 64-D (from TemporalStrainEncoder)
-│   ├── Edge-type embedding: 32-D (from Embedding(17, 32, padding_idx=0))
-│   └── Total concatenated: 96+16+64+32 = 208-D
-│
-├── Feature Projection: Linear(208 → 64)
-│   └── Reduces dimensionality for efficient attention
-│
-├── Cross-Modal Self-Attention:
-│   ├── 4 attention heads, embed_dim=64 (16-D per head)
-│   ├── Computes global feature importance across all modalities
-│   ├── Q,K,V projections: Linear(64 → 64) for each
-│   ├── Attention weights: softmax(Q·K^T / sqrt(16))
-│   ├── Output: [batch_size, n_signals, 64]
-│   └── Captures inter-modal dependencies
-│
-├── Residual Feed-Forward Network:
-│   ├── LayerNorm(64) → Linear(64→256) → GELU → Dropout(0.1)
-│   │ → Linear(256→64) + residual connection
-│   └── Output: [batch_size, n_signals, 64]
-│
-└── Final Output: [batch_size, n_signals, 64] (fused representation per signal)
-
-**Architecture Notes:**
-- 208→64 projection achieves 3.25× dimensionality reduction
-- 4 attention heads enable diverse feature interactions
-- Feed-forward ratio 64→256→64 (4× expansion) is standard in transformer-like models
-- All operations are signal-wise (per-signal processing, no inter-signal mixing in final step)
-
-═══════════════════════════════════════════════════════════════════
-
-### PREDICTION HEADS
-
-#### Priority Prediction Head:
-└── Input: [batch_size, n_signals, 64] (fused features)
-    ├── Linear(64 → 32) → ReLU
-    ├── Linear(32 → 16) → ReLU
-    ├── Linear(16 → 1) (no activation, unbounded output)
-    └── Output: [batch_size, n_signals] (raw priority scores)
-
-**No Sigmoid/Tanh:** Priorities are unbounded; competitive ranking via direct score comparison.
-
-#### Uncertainty Prediction Head:
-└── Input: [batch_size, n_signals, 64] (fused features)
-    ├── Linear(64 → 1) → Softplus (σ = log(1 + exp(x)), beta=2.0)
-    └── Output: [batch_size, n_signals] (positive uncertainties σ > 0)
-
-**Softplus Activation:** Ensures σ > 0.0 for proper probability calibration.
-
-#### Optional Overlap Density Head:
-└── Input: [batch_size, n_signals, 64] (fused features)
-    ├── Linear(64 → 4) → Softmax
-    └── Output: [batch_size, n_signals, 4] (4-class overlap density)
-    
-    Classes: {minimal_overlap, partial_overlap, significant_overlap, heavy_overlap}
-
-### CALIBRATION LAYERS
-
-Affine Calibration:
-├── Priority Gain (learnable parameter): prio_gain ∈ ℝ
-│   └── Scales all priorities: priority_adjusted = priority_raw × exp(prio_gain)
-│   └── exp() ensures positive scaling factor (gain_init=0.588 for 1.8× scaling)
-│
-└── Priority Bias (learnable parameter): prio_bias ∈ ℝ
-    └── Shifts all priorities: priority_final = priority_adjusted + prio_bias
-    └── Enables mean calibration (bias_init=-0.05)
-
-These parameters are optimized during "calibration mode" (fine-tuning phase) to match empirical priority distributions.
-
-═══════════════════════════════════════════════════════════════════
-
-### LOSS FUNCTIONS
-
-#### Adaptive Ranking Loss:
-Loss_rank(i, j) where i < j (i has higher true priority):
-├── Target gap: Δ_ij = priority_true_i - priority_true_j (always > 0)
-├── Predicted gap: Δ̂_ij = priority_pred_i - priority_pred_j
-├── Margin scaling: margin_ij = base_margin × sqrt(|Δ_ij|)
-│   └── Larger true gaps → larger margins (harder negative examples)
-├── Pairwise ranking loss: max(0, margin_ij - Δ̂_ij)^2
-│   └── Penalizes if predicted gap < margin
-└── Final loss: sum over all pairs / n_pairs
-
-**Design Rationale:** Larger true gaps warrant larger prediction gaps; dynamic margin learning.
-
-#### Composite PriorityLoss:
-Total Loss = α·MSE + β·RankingLoss + γ·CalibrationLoss + δ·BoundsPenalty
-
-1. **MSE Component (α=0.05):**
-    ├── MSE = (1/n) Σ ||priority_pred - priority_true||²
-    ├── SNR-weighted variant: MSE_snr = Σ w_snr_i * (pred_i - true_i)²
-    │   where w_snr_i = (snr_i / mean_snr)^0.5
-    └── Emphasizes high-SNR signals (more reliable labels)
-
-2. **Ranking Loss Component (β=0.50):**
-    ├── Pairwise ranking loss (described above)
-    ├── Applied to each ordered signal pair
-    └── Ensures correct extraction order even when absolute values differ
-
-3. **Calibration Loss Component (γ=2.50):**
-    ├── Ratio-based expansion penalty: 1.0 - (pred_max / target_max) for expansion
-    ├── Range expansion penalty: 1.0 - (pred_range / target_range)
-    ├── Minimum variance penalty: if pred_std < 0.5*target_std, penalize 2.0x
-    └── Ensures full dynamic range is utilized (avoids compression)
-
-4. **Bounds Penalty Component (δ=5.0):**
-    ├── Out-of-bounds low: ReLU(-predictions) if pred < 0
-    ├── Out-of-bounds high: ReLU(predictions - 1.0) if pred > 1
-    └── Hard constraint: prevents predictions outside [0, 1] valid range
-
-#### Training Loop:
-```
-For each epoch:
-├── Training Phase:
-│   ├── Iterate over batches
-│   ├── Forward pass: compute outputs & loss
-│   ├── Backward pass: compute gradients
-│   ├── Gradient clipping: clip_norm(grads, 5.0)
-│   ├── Optimizer step: AdamW update
-│   ├── Track: avg_loss, avg_nll, gradient_norm
-│   └── RL controller update: every N batches
-│
-├── Validation Phase:
-│   ├── No gradient computation (inference)
-│   ├── Evaluate on validation split
-│   ├── Compute: avg_loss, avg_nll, uncertainty calibration
-│   ├── RL reward computation
-│   └── Log to WandB
-│
-├── Complexity Adaptation:
-│   ├── Update RL state from metrics
-│   ├── Select new complexity level
-│   ├── Adjust flow layers if needed
-│   └── Log decision
-│
-├── Early Stopping:
-│   ├── Monitor: validation loss
-│   ├── Best model: save when new minimum achieved
-│   ├── Patience: 20 epochs without improvement
-│   ├── Trigger: stop training & exit loop
-│   └── Best model restored before final evaluation
-│
-├── Checkpoint Saving:
-│   ├── Frequency: every 10 epochs
-│   ├── Full state: model, optimizer, scheduler, RL controller
-│   ├── Metadata: epoch, validation metrics, training history
-│   └── Resumable training: load_checkpoint(path) → start_epoch
-│
-└── Logging & Monitoring:
-    ├── Console: loss, gradient norm, learning rate, patience counter
-    ├── WandB: metrics → cloud dashboard
-    ├── File: training_history.yaml (final summary)
-    └── Artifacts: best model, training curves
-```
-
-═══════════════════════════════════════════════════════════════════
-
-🎯 PHASE 3a: NEURAL PARAMETER ESTIMATION (OverlapNeuralPE)
-
-**Architecture Overview:**
-
-The OverlapNeuralPE implements state-of-the-art Bayesian posterior estimation for overlapping GW signals using Neural Spline Flows (NSF). It combines:
-- Flow-based likelihood-free inference
-- Context encoding from strain data
-- Physics-informed priors
-- Calibrated uncertainty estimation
-- Iterative signal extraction
-
-**Core Components (src/ahsd/models/overlap_neuralpe.py):**
-
-1. **Context Encoder - ResidualContextAdapter**
-   ├── Purpose: Adapt PriorityNet context for signal-specific estimation
-   ├── Architecture:
-   │   ├── Input: PriorityNet context [batch, context_dim]
-   │   ├── Adapter: Linear(context_dim → hidden_dim) → LayerNorm → GELU → Dropout → Linear(hidden_dim → context_dim)
-   │   ├── Residual scaling: output = input + scale * (adapter_output / ||adapter_output||)
-   │   └── Scale parameter: Learnable, starts at 0.1 (10% modification)
-   └── Output: Adapted context [batch, context_dim]
-
-2. **Neural Spline Flow (NSF)**
-   ├── Type: Rational Quadratic Splines with Autoregressive Transform
-   ├── Implementation: nflows.transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform
-   ├── Configuration:
-   │   ├── hidden_features: 256-512 (learnable parameter mapping dimension)
-   │   ├── num_layers: 8-12 (stacked autoregressive layers)
-   │   ├── num_blocks_per_layer: 2 (MADE blocks per layer)
-   │   ├── context_features: context_dim (384-768 for conditioning)
-   │   ├── spline_range: [-3, 3] (covers ~99.7% of Gaussian)
-   │   └── tail_bound: 3.0 (polynomial continuation outside spline range)
-   └── Output: Posterior samples from flow.inverse() in normalized space
-
-3. **Physics-Informed Bounds Penalty**
-   ├── Purpose: Keep posterior centered near ground truth
-   ├── Hard bounds for each parameter:
-   │   ├── mass_1/mass_2: [1.0, 100.0] M☉
-   │   ├── luminosity_distance: [10.4, 8000.0] Mpc (matches scaler bounds exactly)
-   │   ├── geocent_time: [-2.0, 8.0] seconds (covers edge case spacing)
-   │   ├── spin a1/a2: [0.0, 0.99]
-   │   └── sky coordinates: spherical constraints
-   ├── Loss: penalty_weight * sum(ReLU(violations))
-   └── Weight: 0.5 (balances with flow loss)
-
-4. **Endpoint Loss - Flow Anchoring**
-   ├── Purpose: Constrain flow distribution to contain ground truth
-   ├── Algorithm:
-   │   ├── Flow extremes at t=-3 and t=+3 (outside distribution tail)
-   │   ├── Compute flow([−3, +3], t_final=1.0) endpoints
-   │   ├── Penalize if true_params < endpoint_min or > endpoint_max
-   │   └── Additional spread penalty if endpoints collapse
-   ├── Loss: weight * (endpoint_violations + 0.2 * endpoint_spread)
-   └── Weight: 0.5 (balances with flow loss)
-
-5. **Parameter Scaler - TorchParameterScaler**
-   ├── Purpose: Normalize parameters to [-1, 1] for stable learning
-   ├── Bounds (from Dec 31 fix):
-   │   ├── mass_1/mass_2: log([1, 100]) = [0, 4.605] → [-1, 1]
-   │   ├── luminosity_distance: log([10, 5000]) = [2.303, 8.517] → [-1, 1]
-   │   ├── geocent_time: linear([-2, 8]) → [-1, 1]
-   │   ├── chirp_mass: derived from masses
-   │   ├── network_snr: log([5, 100]) → [-1, 1]
-   │   └── sky/spin: spherical/bounded transforms
-   └── Round-trip verified: all errors < 0.002 Mpc
-
-**Loss Function Components:**
-
-```
-Total Loss = Σ w_i * L_i
-
-Where:
-├── L_flow (w=1.0): NLL from NSF, log_prob(samples | context)
-├── L_bounds (w=0.5): Physics hard constraints penalty
-├── L_endpoint (w=0.5): Flow endpoint anchoring
-├── L_extraction (w=0.3): If using extracted signal residuals
-├── L_residual (w=0.1): Residual power penalty
-└── L_physics (w=0.05): Soft physics priors
-```
-
-**Data Flow:**
-
-```
-Strain Data [batch, 3, 16384]
-    ↓
-[PriorityNet] (frozen, provides context)
-    ↓
-ContextAdapter
-    ↓
-Adapted Context [batch, context_dim=384-768]
-    ↓
-NSF Flow (with context conditioning)
-    ↓
-Posterior Samples [n_samples, batch, 9D params]
-    ↓
-[Denormalization] back to physical units
-    ↓
-Parameter Estimates + Uncertainties
-```
-
-═══════════════════════════════════════════════════════════════════
-
-🔄 PHASE 3b: ADAPTIVE SUBTRACTION & ITERATION
-
-**AdaptiveSubtractor Integration:**
-
-The OverlapNeuralPE includes full integration with AdaptiveSubtractor for iterative extraction:
-
-1. **Per-Signal Processing:**
-   ├── Estimate signal 1 parameters (via NSF posterior)
-   ├── Reconstruct signal 1 waveform
-   ├── Subtract from strain data
-   ├── Compute residual (noise + remaining signals)
-   └── Repeat for signal 2, 3, ... on residuals
-
-2. **Complexity Adaptation (RL Controller):**
-   ├── State: [remaining_signals, residual_power, SNR, success_rate, time_budget]
-   ├── Actions: low/medium/high complexity (affects flow layers, iterations)
-   ├── Reward: accuracy - speed_cost - complexity_cost
-   ├── Learning: DQN with experience replay (from rl_controller.py)
-   └── Adaptation: Automatic layer count adjustment (6-12 layers)
-
-3. **Quality Metrics Computed:**
-   ├── Per-sample MSE: mean((true - estimated)²) [normalized parameter space]
-   ├── Distance bias: mean(distance_estimated - distance_true) [Mpc]
-   ├── Coverage: % samples within 1σ credible interval
-   ├── Calibration error: |coverage - 0.68| [68% target]
-   ├── KL divergence: between posterior and true posterior
-   └── Computational time: seconds per sample
-
-═══════════════════════════════════════════════════════════════════
-
-📊 TRAINING SPECIFICATIONS FOR BOTH PHASES:
-
-Hardware & Software:
-```
-Environment:
-├── Platform: Python 3.11, PyTorch 2.0+
-├── GPU: CUDA 12.x (recommended), fallback to CPU
-├── Memory: 16+ GB GPU for batch_size=16
-├── Conda: ahsd environment (already exists)
-└── Runtime: ~50 hours for Phase 2, ~100 hours for Phase 3a on V100
-
-Dependencies:
-├── Deep Learning: torch, torch.nn, torch.optim
-├── Flows: nflows (NSF, RealNVP)
-├── GW Physics: pycbc, gwpy, bilby
-├── Data: numpy, scipy, h5py, pandas
-├── ML: scikit-learn (metrics), matplotlib (plotting)
-└── Utilities: yaml, json, logging, pathlib, wandb
-```
-
-Training Hyperparameters:
-```
-Phase 2 (PriorityNet - src/ahsd/core/priority_net.py):
-├── Epochs: 500, early stopping ~245 observed
-├── Batch Size: 24 (increased from 6 for stable BatchNorm)
-├── Learning Rate: 1e-4 (AdamW)
-├── Warmup: 1000 steps (LinearLR: 0 → 1e-4)
-├── Scheduler: ReduceLROnPlateau (factor=0.5, patience=20, mode='rel')
-├── Loss: Composite (MSE 0.05 + Ranking 0.50 + Calibration 2.50 + Bounds 5.0)
-├── Dropout: 0.2-0.3 (per layer)
-├── Gradient Clip: 5.0 (increased for stable training)
-├── Weight Initialization: std=0.10 (2× stronger)
-├── Affine Init: gain=0.588 (1.8×), bias=-0.05
-└── Best Val Loss: ~0.08 (MSE scale)
-
-Phase 3a (Neural PE - experiments/train_neuralpe.py):
-├── Epochs: 200, early stopping ~120 expected
-├── Batch Size: 16 (matches data loader)
-├── Learning Rate: 1e-4 (AdamW)
-├── Weight Decay: 1e-5 (L2 regularization)
-├── Scheduler: ReduceLROnPlateau (factor=0.5, patience=10, mode='rel')
-├── Flow Type: NSF (Neural Spline Flows, default)
-├── Flow Layers: 8 (configurable, up to 12)
-├── Flow Hidden Dim: 512 (2× flow parameters)
-├── Flow Dropout: 0.15 (in coupling networks)
-├── Context Dim: 768 (from TransformerStrainEncoder)
-├── Loss: Multi-component (flow 1.0 + bounds 0.5 + endpoint 0.5 + physics 0.05)
-├── Gradient Clip: 5.0
-├── Data Augmentation: 30% probability (noise scale ±5%, time shift ±5ms)
-└── Best Val Loss: ~2-3 bits NLL (expected for 9D posterior)
-
-Optimizer Configuration:
-├── AdamW (decoupled weight decay)
-├── Beta1: 0.9 (momentum)
-├── Beta2: 0.999 (2nd moment)
-├── Epsilon: 1e-8 (numerical stability)
-└── Weight Decay: 1e-5 (L2 regularization, disabled on biases)
-```
-
-═══════════════════════════════════════════════════════════════════
-
-🏆 PERFORMANCE METRICS:
-
-System Performance (Current Results):
-```
-Component Performance:
-├── Phase 1: Dataset Generation
-│   ├── ✅ 50,000+ samples generated (chunked, resumable)
-│   ├── ✅ SNR-distance correlation: r ≈ -0.78 (strong physics-correct anticorrelation)
-│   ├── ✅ Distance CV: 0.71-0.90 (improved from 2.14)
-│   ├── ✅ Coefficient of Variation: BBH 0.63, BNS 0.80, NSBH 0.90
-│   └── ✅ All samples within distance bounds: 0 violations
-│
-├── Phase 2: PriorityNet  
-│   ├── ✅ Ranking Correlation: 99.7% (Spearman ρ)
-│   ├── ✅ Top-K Precision: 99.8% (first signal correct)
-│   ├── ✅ Priority Accuracy: 96.3% (MSE-based)
-│   ├── ✅ Output Dynamic Range: 100% utilization (no compression)
-│   ├── ✅ Uncertainty Correlation: >0.35 (trainable)
-│   └── ✅ Parameter Count: ~6.56M (with TransformerStrainEncoder)
-│
-├── Phase 3a: Neural PE (OverlapNeuralPE)
-│   ├── ✅ Flow Loss: 2-4 bits NLL (improved from 8-12)
-│   ├── ✅ Distance Bias: ±10-20 Mpc (improved from ±100)
-│   ├── ✅ Parameter Accuracy: 85-92% (context-dependent)
-│   ├── ✅ Uncertainty Calibration: In progress (coverage 60-70%)
-│   ├── ✅ Context Encoder: 768D output, properly learning
-│   ├── ✅ Parameter Scaler: Distance bounds 10.4-8000 Mpc (verified)
-│   └── ✅ Parameter Count: ~9.3M (NSF + context adapter)
-│
-└── Phase 3b: Adaptive Subtraction (In Development)
-    ├── Expected Efficiency: 75-85%
-    ├── Expected Residual SNR: <10% of injected
-    └── Expected Count: ~1.8M parameters
-```
-
-Benchmark Results:
-```
-Single Signal Extraction:
-├── Mass Estimation Error: ~2-5% BBH, ~1-3% BNS
-├── Distance Error: ~5-10% (systematic, being corrected)
-├── Sky Localization: ~50-100 sq. deg
-└── Time Resolution: ±5 ms
-
-Overlapping Signals (2-5 sources):
-├── Separation Accuracy: 92-98% signals ranked correctly (PriorityNet)
-├── Cross-Talk Bias: <3% systematic error
-├── Subtraction Residual: <5% of signal power
-└── Computational Time: ~1-10 seconds per scenario
-
-Edge Cases:
-├── High Mass Ratio (q > 8): 85% accuracy
-├── High Spin (a > 0.8): 81% accuracy
-├── Eccentric (e > 0.1): 78% accuracy
-├── Heavy Overlaps (5+ signals): 88% separation
-└── Low SNR (< 10): 65% accuracy (expected for marginal signals)
-```
-
-═══════════════════════════════════════════════════════════════════
-
-📁 MODEL FILES STRUCTURE (src/ahsd/models/):
-
-1. **overlap_neuralpe.py** (Main Integration Point)
-   ├── ResidualContextAdapter: Context modification with bounded scaling
-   ├── OverlapNeuralPE: Unified neural PE for multiple overlapping signals
-   ├── compute_loss(): Multi-component loss with all constraints
-   ├── sample_posterior(): Full Bayesian posterior sampling
-   └── extract_overlapping_signals(): Iterative extraction with adaptation
-
-2. **flows.py** (Flow Implementations)
-   ├── TransformerBlock: Self-attention layer for context
-   ├── AdaptiveContextGating: Multi-signal context selection
-   ├── OverlapAwareVelocityNet: Flow matching velocity network
-   ├── EnhancedFlowMatchingPosterior: CFM-based posterior (legacy)
-   ├── NSFPosteriorFlow: Neural Spline Flow (recommended)
-   └── create_flow_model(): Factory function for flow selection
-
-3. **parameter_scalers.py** (Normalization & Bounds)
-   ├── ParameterScaler: Numpy-based parameter normalization
-   ├── TorchParameterScaler: PyTorch-based (GPU compatible)
-   └── Bounds: event_type specific (BBH/BNS/NSBH)
-
-4. **transformer_encoder.py** (Strain Context Encoding)
-   ├── TransformerStrainEncoder: 3-detector strain processing (768D output)
-   ├── LightweightTransformerEncoder: Simplified version
-   └── EncoderOutput: Result dataclass with attention weights
-
-5. **rl_controller.py** (Adaptive Complexity)
-   ├── DQNController: Deep Q-Network for complexity selection
-   ├── AdaptiveComplexityController: State/action/reward management
-   └── experience replay & target network for stable learning
-
-6. **neural_pe.py** (Legacy Components, Still Used)
-   ├── NeuralPosteriorEstimator: Original NPE class
-   ├── AdaptiveRealNVP: Flexible RealNVP implementation
-   ├── CouplingLayer: Invertible coupling transform
-   ├── HierarchicalBiasCorrector: Bias correction module
-   └── MultiScaleContextEncoder: Multi-scale context encoding
-
-═══════════════════════════════════════════════════════════════════
-
-🎯 FINAL SYSTEM CAPABILITIES:
-
-Real-Time Analysis Pipeline:
-```
-Input: 4-second raw strain data from LIGO/Virgo
-  ├── [3, 16384] array (H1, L1 & V1 at 4096 Hz)
-  └── Minimal latency requirements
-
-Step 1: PriorityNet Ranking (50-100 ms)
-  ├── Process 3-detector strain data with TransformerStrainEncoder
-  ├── Compute signal priorities
-  ├── Rank for extraction order
-  ├── Output uncertainties for signal reliability
-  └── Output: [signal_1, signal_2, ...] ordered by priority
-
-Step 2: Iterative Neural PE & Subtraction (0.5-5 s per signal)
-  ├── For each ranked signal:
-  │   ├── Compute context via ResidualContextAdapter
-  │   ├── Estimate parameters via NSF posterior flow
-  │   ├── Sample full posterior (100+ samples)
-  │   ├── Reconstruct GW waveform
-  │   ├── Subtract from residual data
-  │   └── RL complexity control: fast for easy, thorough for hard
-  └── Repeat for remaining signals on residuals
-
-Step 3: Output Generation
-  ├── Individual GW parameters (9D: masses, distance, sky, time, spins)
-  ├── Credible intervals (5%, 16%, 50%, 84%, 95%)
-  ├── Uncertainties (σ per parameter, calibrated)
-  ├── Confidence scores (0-1 per signal)
-  ├── Residual data (noise + any uncaught overlaps)
-  └── Computational metrics (time, complexity level, RL rewards)
-
-Latency Breakdown:
-├── PriorityNet: 50-100 ms (independent of n_signals)
-├── Neural PE (per signal): 500-2000 ms (RL-adaptive)
-├── For n=2 signals: ~2-5 seconds total
-├── For n=5 signals: ~5-10 seconds total
-└── vs. real-time multiplier: 5-10× real time (background processing viable)
-
-Accuracy Guarantees (95% confidence):
-├── Mass parameter errors: 2-8% (depending on SNR & overlap)
-├── Distance errors: 5-15%
-├── Sky localization: 50-500 sq. deg (SNR-dependent)
-├── Time resolution: ±2-10 ms
-└── Signal detection: >99% for SNR > 10, >90% for SNR > 8
-
-Robustness Features:
-├── Handles overlapping signals: up to 5-6 concurrent detections
-├── Edge case adaptation: 17 classified edge types
-├── Noise resilience: trained on realistic LIGO/Virgo PSDs
-├── Real GW compatibility: validated on GWOSC public events
-├── Graceful degradation: fallback to simpler mode on GPU OOM
-└── Physics-informed bounds: keeps estimates within physical reality
-```
-
-═══════════════════════════════════════════════════════════════════
-
-📚 KEY REFERENCES & DESIGN DECISIONS:
-
-1. **PriorityNet Multi-Modal Architecture (Phase 2):**
-   - Temporal strain encoder captures waveform morphology (Conv + BiLSTM)
-   - Cross-signal analyzer models geometric/temporal overlap
-   - Physics encoder encodes astrophysical quantities
-   - Multi-modal fusion via cross-attention (transformer-style)
-   - Reduces dimensionality through projection layers for efficiency
-   - Output dynamic range expansion via ratio-based calibration losses
-   - All bounds checked and enforced via hard penalty
-
-2. **Neural PE with Neural Spline Flows (Phase 3a):**
-   - NSF (Rational Quadratic Splines) selected for stability
-   - Invertible by construction (no ODE approximation needed)
-   - Autoregressive transforms with adaptive masking
-   - Context conditioning (768D from TransformerStrainEncoder)
-   - Physics-informed priors: log-space for masses/distance, bounds for spins
-   - Endpoint loss for distribution anchoring (superior to sample mean)
-   - Parameter scaler with exact bounds matching data generation
-   - Event-type specific scaling factors (BBH/BNS/NSBH)
-
-3. **Complexity Adaptation via RL (Phase 3c):**
-   - DQN-based controller learns optimal processing level per signal
-   - Rewards accuracy improvement & penalizes unnecessary computation
-   - Real-time adjustment based on signal difficulty metrics
-   - Target network stabilizes Q-learning (reduces oscillations)
-   - Layer count adjustment: 6-12 layers auto-selected
-
-4. **Loss Function Design:**
-   - Composite losses balance multiple objectives
-   - Flow loss: -log_prob (likelihood-free inference)
-   - Physics bounds penalty: hard constraints on parameters
-   - Endpoint loss: flow support containment
-   - Calibration components ensure σ ≈ |error|
-   - All weights tuned through extensive validation
-
-5. **Data Handling:**
-   - Streaming chunk-based loading respects memory constraints
-   - Weighted sampling over-represents challenging multi-signal scenarios
-   - Artificial overlap creation expands dataset variety
-   - Edge-case classification enables targeted improvement efforts
-   - SNR-distance correlation maintained via reference parameter choice
-   - Distance clipping + scatter produces realistic CV
-
-6. **Key Fixes (Dec 2025 - Jan 2026):**
-   - ✅ Distance scaler bounds: 2.345-8.987 log range → 2.303-8.517 (matches data)
-   - ✅ Distance CV control: scatter σ=0.15 → 0.50 for proper calibration
-   - ✅ SNR-distance correlation: Preserved r≈-0.78 through proper sampling
-   - ✅ Context encoder output: 768D properly configured
-   - ✅ Parameter bounds: geocent_time [-2, 8]s, distance [10.4, 8000]Mpc
-   - ✅ Detector ordering: H1/L1/V1 always in correct order (fixed strain extraction)
-   - ✅ Gradient stability: batch_size 6→24, gradient_clip 2.0→5.0
-   - ✅ Flow matching: Fixed identity mapping bug, proper noise sampling
-   - ✅ Context encoder learning: Increased weights, fixed discrimination loss
-
-═══════════════════════════════════════════════════════════════════
-
-This architecture represents a state-of-the-art gravitational wave analysis system,
-combining deep learning with physics domain knowledge for robust, efficient multi-signal
-decomposition in real-time astronomical observations.
-
-Last Updated: January 3, 2026
-Status: ✅ Production Ready (Phase 2 & 3a Complete)
+POSTERIFLOW — SYSTEM ARCHITECTURE
+=================================
+
+PosteriFlow estimates, in one forward pass, the posterior over 11 parameters
+of the k-th loudest compact-binary signal in 4 s of whitened H1/L1/V1 strain.
+
+  parameters (fixed order): mass_1, mass_2, luminosity_distance, ra, dec,
+                            theta_jn, psi, phase, geocent_time, a1, a2
+
+
+1. END-TO-END FLOW
+------------------
+
+  configs/*.yaml
+        │
+        ▼
+  ┌──────────────────────────────┐   src/ahsd/data/
+  │ DATA GENERATION (bilby)      │   parameter_sampler → waveform → project onto
+  │ components stored separately │   H1/L1/V1 → whiten → store noise and every
+  └──────────────┬───────────────┘   signal as its own float16 component
+                 ▼
+  ┌──────────────────────────────┐   scripts/audit_dataset.py
+  │ AUDIT                        │   ranges, class mix, distance shape, SNR,
+  └──────────────┬───────────────┘   no wrapped inspirals, duplicates, noise stats
+                 ▼
+  ┌──────────────────────────────┐   experiments/remix_data.py
+  │ REMIX (every epoch)          │   fresh example per event per epoch
+  └──────────────┬───────────────┘
+                 ▼
+  ┌──────────────────────────────┐   experiments/train_lean_npe.py
+  │ TRAIN LeanNPE (pure NLL)     │   calibration-gated checkpoint selection
+  └──────────────┬───────────────┘
+                 ▼
+  ┌──────────────────────────────┐   scripts/validate_checkpoint.py
+  │ CERTIFY                      │   SBC, coverage, railing, real GWTC events
+  └──────────────┬───────────────┘   of the model's classes → HTML report
+                 ▼
+  ┌──────────────────────────────┐   src/ahsd/inference/, infer.py
+  │ INFERENCE                    │   preprocessing → posterior → gating →
+  └──────────────────────────────┘   importance reweighting / dynesty fallback
+
+  On the cluster, scripts/run_pipeline.py chains all of the above (SLURM jobs:
+  generate → audit → train → certify → summary) for the four models.
+
+
+2. DATA GENERATION — src/ahsd/data/
+-----------------------------------
+
+  sample_signal_parameters      masses, spins, sky, orientation, distance
+                                (uniform-in-distance per class), merger time
+  BilbyWaveformGenerator        IMRPhenomXP (BBH), IMRPhenomNSBH (NSBH),
+                                IMRPhenomD_NRTidalv2 (BNS). Signals that
+                                fit the 4 s window are generated directly;
+                                longer inspirals (all BNS/NSBH, light BBH) are
+                                generated over a longer power-of-two segment
+                                starting a few seconds before the window
+  BilbySignalInjector           antenna-pattern projection + time delays
+  BilbyPreprocessor             whitening by the design PSD; long signals are
+                                whitened on the long segment, then cropped
+  DatasetGenerator              events of 1–5 signals (overlap_fraction),
+                                SNR cut on the loudest, train/val/test splits
+  generate_parallel.py          independent seeded shards merged into one
+                                dataset; build_memmap_cache → memmap/ per split
+
+  Storage per event: one whitened noise realization + each whitened signal
+  component + its 11 labels. Network SNR = L2 norm of the whitened signal.
+
+  Datasets:  dataset_v3       mixed BBH/NSBH/BNS   (data_config_fixed.yaml)
+             dataset_bbh_v3   BBH only             (data_config_bbh_v3.yaml)
+             dataset_nsbh_v3  NSBH only            (data_config_nsbh_v3.yaml)
+             dataset_bns_v3   BNS only             (data_config_bns_v3.yaml)
+
+
+3. REMIX — experiments/remix_data.py
+------------------------------------
+
+  RemixDataset assembles a new example from the stored components each epoch:
+
+  noise swap            any stored Gaussian realization
+  real noise            O2/O3 GWOSC crops (data/noise_bank); signals re-colored
+                        exactly: irfft(rfft(sig) · ASD_design / ASD_measured)
+  time shift            common circular roll           → geocent_time updated
+  distance rescale      amplitude × s                  → d_L ÷ s
+  overlap summation     signals summed, re-sorted by loudness Mc^(5/6)/d_L
+  detector dropout      dropped detector → unit white noise
+  delay/sky remap       experiments/delay_aug.py: sky moved to a scored
+                        candidate, per-detector delays/antenna factors applied,
+                        distance kept inside the model support
+
+  Returns (strain [3,16384], params [5,11], n_signals, net_snr, asd_bands).
+  persistent_workers=False so set_epoch() reaches the loader workers.
+
+
+4. MODEL — src/ahsd/models/
+---------------------------
+
+  LeanNPE (lean_npe.py)
+
+  whitened strain [B, 3, 16384]
+     │
+     ├─► asinh ─► conv stem (4 strided Conv1d, no normalization) ─► d_model 192
+     │            + detector embedding + sinusoidal positions
+     │
+     ├─► CoherentEncoder branches, injected as tokens into the transformer
+     │     geometry      power-weighted complex coherence |γ|, phase per band,
+     │                   GCC arrival-time delays              → 4 tokens
+     │     MF tokens     per-detector complex overlaps with a fixed (Mc, q)
+     │     (--mf_tokens) template bank (assets/mf_bank_*.npz), alias-free
+     │                   band-limited IFFT; gated into the geometry slots
+     │     polarization  polarization_features.py: best network-SNR template,
+     │     (--pol_features)  per detector pair log|z_I/z_J|, cos/sin Δφ, Δt,
+     │                   per detector asinh SNR (15 values)   → 2 tokens
+     │
+     ├─► 3-layer pre-norm transformer (6 heads) ─► attention pooling (8 queries)
+     ├─► log-energy branch: 16 windowed log-energies of the raw strain
+     ├─► PSD branch (--psd_cond): per-detector log-ASD vs design in 16 bands
+     │
+     ▼
+  context (256) ⊕ rank embedding (32, up to 5 signals)
+     ▼
+  NSFPosteriorFlow (flows.py, nflows): 10 layers, 256 hidden, 16 bins
+     ▼
+  11-D posterior in [-1, 1]  ─► ParamScaler ─► physical units
+
+  ParamScaler: fixed map, log for masses/distance; mass coordinates mc_q
+  (chirp mass, mass ratio); circular ra/phase/psi wrap at sampling; the
+  distance support (dist_range) is a buffer stored in the checkpoint.
+
+  Per-class choices
+    BBH, mixed   coherent + MF tokens (mf_bank_bbh.npz) + polarization tokens
+    NSBH, BNS    coherent encoder without template tokens
+
+  Checkpoint: best_model.pth = {model_state_dict, args, epoch, val_nll,
+  diagnostics}. Load with ahsd.inference.pipeline.load_model(), which rebuilds
+  LeanNPE from args (every constructor flag must be read there and at every
+  other load site).
+
+
+5. TRAINING — experiments/train_lean_npe.py
+-------------------------------------------
+
+  loss            NLL of the flow (+ optional --aux_mass regression on the
+                  encoder context)
+  validation      fixed Gaussian and real-noise validation sets each epoch;
+                  selection metric = their mean
+  per-epoch       shufΔ (context-shuffle NLL rise), dcorr, dcov50/90, spurious
+  diagnostics     railing, base concentration, high-SNR coverage, SBC, corner
+                  table, basin probe (BBH models)
+  selection       best_model.pth = lowest selection metric among epochs with
+                  spurious railing ≤ --max_spurious_railing; last_model.pth and
+                  epoch_XXXX.pth are always written
+
+
+6. INFERENCE — src/ahsd/inference/
+----------------------------------
+
+  pipeline.infer()       GWOSC event / local strain / injection
+     preprocessing       fetch, whiten with the measured PSD, compute asd_bands
+     resolve_model       class model (CLASS_MODELS) for --event-type, else mixed
+     sample              LeanNPE.sample_posterior(rank=k)
+     ood / gating        context OOD score + railing + width → confidence;
+                         refinement gate flags known hard regions
+     importance          likelihood importance reweighting
+     dynesty_bridge      full sampler for events flagged LOW confidence
+     result              PosteriorResult: median, intervals, diagnostics,
+                         distance-prior reweighting, plots
+
+  infer_overlapping()    one query per rank; optional PriorityNet
+                         (src/ahsd/core/priority_net.py) reorders the results
+
+
+7. VALIDATION & BENCHMARKS — scripts/
+-------------------------------------
+
+  validate_checkpoint.py     certification report (analysis/ci/<model>/)
+  benchmark_real_events.py   GWTC events vs dynesty
+  dynesty_compare.py         NPE vs dynesty on injections
+  inclination_vs_dynesty.py  inclination information vs dynesty (edge-on/face-on)
+  polarization_probe.py      information content of the polarization features
+  overlap_benchmark.py       overlapping-signal accuracy per rank
+  twin_grid.py               twin-injection bias grid → inference/assets/twin_grid.json
+  audit_dataset.py           dataset audit (hard failures stop the pipeline)
+  run_pipeline.py            unattended cluster pipeline; summarize_runs.py
+                             writes the run summary

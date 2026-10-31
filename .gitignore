@@ -186,3 +186,4 @@ analysis/**/*_checkpoint_*.png
 !docs/*.md
 results/inclination_dynesty/
 results/polarization_probe.json
+results/cluster_inclination/

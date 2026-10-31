@@ -11,7 +11,7 @@ Produces analysis/overlap_benchmark.json with four sections:
   dt_bins       2-signal events binned by true merger separation |dt|
   ranking       PriorityNet ordering accuracy vs true loudness order
   runtime       measured k-rank NPE wall time vs sequential dynesty baseline
-Figures are rendered from the JSON by analysis.py (one chart per file).
+Figures are rendered from the JSON by analysis/make_figures.py (one chart per file).
 """
 import argparse
 import json

@@ -1,0 +1,61 @@
+cff-version: 1.2.0
+message: "If you use PosteriFlow, please cite it as below."
+title: "PosteriFlow: Calibrated Neural Posterior Estimation for Overlapping Gravitational-Wave Signals"
+type: software
+authors:
+  - family-names: Thomas
+    given-names: Bibin
+    email: bibinthomas951@gmail.com
+version: 1.0.0
+date-released: 2026-10-31
+license: MIT
+repository-code: "https://github.com/bibinthomas123/PosteriFlow"
+abstract: >-
+  Amortized neural posterior estimation for compact-binary coalescences in
+  whitened H1/L1/V1 strain. One forward pass returns the posterior over 11
+  source parameters of the k-th loudest signal, handling time-overlapping
+  signals through rank conditioning, with calibration-gated model selection
+  and real-detector-noise training.
+keywords:
+  - gravitational waves
+  - simulation-based inference
+  - neural posterior estimation
+  - normalizing flows
+  - overlapping signals
+references:
+  - type: article
+    title: "Real-Time Gravitational Wave Science with Neural Posterior Estimation"
+    authors:
+      - family-names: Dax
+        given-names: Maximilian
+    year: 2021
+    identifiers:
+      - type: other
+        value: "arXiv:2106.12594"
+  - type: article
+    title: "Neural Spline Flows"
+    authors:
+      - family-names: Durkan
+        given-names: Conor
+    year: 2019
+    identifiers:
+      - type: other
+        value: "arXiv:1906.04032"
+  - type: article
+    title: "Bilby: A user-friendly Bayesian inference library for gravitational-wave astronomy"
+    authors:
+      - family-names: Ashton
+        given-names: Gregory
+    year: 2019
+    identifiers:
+      - type: other
+        value: "arXiv:1811.02042"
+  - type: article
+    title: "Validating Bayesian Inference Algorithms with Simulation-Based Calibration"
+    authors:
+      - family-names: Talts
+        given-names: Sean
+    year: 2018
+    identifiers:
+      - type: other
+        value: "arXiv:1804.06788"

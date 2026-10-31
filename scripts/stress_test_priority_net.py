@@ -4,7 +4,7 @@
 Complete 11-block validation with real GWTC-3 event parameters from GWOSC API.
 
 Usage:
-  python experiments/stress_test_priority_net.py \
+  python scripts/stress_test_priority_net.py \
     --model models/priority_net/priority_net_best.pth \
     --data_dir data/dataset \
     --device cpu
@@ -23,7 +23,7 @@ import yaml
 
 project_root = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
+sys.path.insert(0, str(project_root / "experiments"))
 
 from train_priority_net import (
     PriorityNetDataset, ChunkedGWDataLoader, evaluate_priority_net, PriorityNet

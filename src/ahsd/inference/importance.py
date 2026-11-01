@@ -315,7 +315,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 b = mid
         return max(a, lo + 1e-4)
 
-    target_frac, MAX_STAGES, N_MOVES = 0.20, 40, 5
+    # 15 moves per stage: with 5 the particles stayed too close to their
+    # resampled parents (GW200115: m1 90% width 0.4 vs dynesty's 1.5)
+    target_frac, MAX_STAGES, N_MOVES = 0.20, 40, 15
     # Path anchor: a mixture SURROGATE of the proposal, fitted on the flow
     # samples. Anchoring on the flow density itself fails: its razor tails
     # assign ~e^-10^4 to mixture draws and stall the ladder (measured).
@@ -358,6 +360,10 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     cur_theta, cur_log_g = theta, log_q
     cur_log_g0 = gm_logpdf_sym(gm0, to_slow(theta))
     log_l = eval_ll(cur_theta)
+    if not np.isfinite(log_l).any():
+        pool.terminate()
+        raise RuntimeError(f"likelihood is -inf for every sample: the {approximant} "
+                           "waveform failed (model not available in this LAL installation?)")
     log_t1 = log_l + log_pi              # log(L * pi)
     beta_prev, betas, accs = 0.0, [], []
     scale = 2.38 / np.sqrt(len(SLOW)) * 0.5
@@ -406,6 +412,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "importance_ess": round(ess, 1),
                 "beta_ladder": betas,
                 "mh_acceptance": accs,
+                # distinct particles among the returned samples: low values
+                # mean the moves did not spread the resampled particles
+                "unique_frac": round(float(len(np.unique(theta[idx][:, 0]))) / n, 3),
                 "n_stages": len(betas),
                 "efficiency": round(ess / n, 4),
                 "wall_s": round(time.time() - t0, 1),

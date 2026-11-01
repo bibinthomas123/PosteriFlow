@@ -46,6 +46,12 @@ CLASSES = {
     # the chirp mass of spinning systems; 4 q x 4 aligned spins per chirp mass
     "bbh_spin": dict(mc=(4.2, 90.0), dlog=0.01, q=(0.9, 0.6, 0.35, 0.15),
                      chi=(0.0, 0.3, 0.6, 0.85), approx="IMRPhenomXP"),
+    # finer, signed spin-aware BBH bank: the 1% chirp-mass grid and spins >= 0
+    # of bbh_spin capped the chirp-mass precision at high SNR (bank estimate
+    # ~2%; matched width vs dynesty 1.3x at SNR 8-20 but 4.5x at SNR 35+ in
+    # the 8-epoch A/B, 2026-11-01), and v4 data have anti-aligned spins
+    "bbh_spin_fine": dict(mc=(4.2, 90.0), dlog=0.005, q=(0.9, 0.6, 0.35, 0.15),
+                          chi=(-0.6, -0.3, 0.0, 0.3, 0.6, 0.85), approx="IMRPhenomXP"),
     # spin-aware NSBH bank: black-hole spin only (neutron-star spins are
     # drawn from [0, 0.05]); NSBH mass ratios span 0.01-0.8
     "nsbh_spin": dict(mc=(1.35, 11.5), dlog=0.01, q=(0.4, 0.15, 0.06, 0.025),
@@ -71,6 +77,14 @@ def masses_on_grid(mc, q, m_min=0.9):
         lo, hi = (lo, mid) if masses_from_mc_q(mc, mid)[1] >= m_min else (mid, hi)
     m1, m2 = masses_from_mc_q(mc, hi)
     return m1, m2, hi
+
+
+def spins(chi, cfg):
+    """Aligned spins as bilby magnitudes and tilts (chi < 0: anti-aligned,
+    tilt pi); the secondary carries chi too unless chi_primary_only."""
+    a2 = 0.0 if cfg.get("chi_primary_only") else chi
+    return dict(a_1=abs(chi), a_2=abs(a2), tilt_1=np.pi if chi < 0 else 0.0,
+                tilt_2=np.pi if a2 < 0 else 0.0)
 
 
 def chirp_time(mc, f):
@@ -111,7 +125,7 @@ def main():
                                                  left=np.inf, right=np.inf)) for d in DETS})
         hp = gens[D].frequency_domain_strain(dict(
             mass_1=m1, mass_2=m2, luminosity_distance=100.0, theta_jn=0.0, psi=0.0, phase=0.0,
-            a_1=chi, a_2=0.0 if cfg.get("chi_primary_only") else chi, tilt_1=0.0, tilt_2=0.0, phi_12=0.0, phi_jl=0.0,
+            **spins(chi, cfg), phi_12=0.0, phi_jl=0.0,
             ra=0.0, dec=0.0, geocent_time=D - 4.0))["plus"]
         fl, asd = asds[D]
         n = int(D * SR)
@@ -131,7 +145,7 @@ def main():
                                     "reference_frequency": 50.0, "minimum_frequency": fmin})
         hp = win_gens[fmin].frequency_domain_strain(dict(
             mass_1=m1, mass_2=m2, luminosity_distance=100.0, theta_jn=0.0, psi=0.0, phase=0.0,
-            a_1=chi, a_2=0.0 if cfg.get("chi_primary_only") else chi, tilt_1=0.0, tilt_2=0.0, phi_12=0.0, phi_jl=0.0,
+            **spins(chi, cfg), phi_12=0.0, phi_jl=0.0,
             ra=0.0, dec=0.0, geocent_time=0.0))["plus"]
         rows = []
         for d in DETS:

@@ -190,6 +190,9 @@ def audit_split(ds, split, cfg, dist_range):
         share = e_lo / np.maximum(e_lo + snr ** 2, 1e-30)
         print("    context share of signal SNR^2: " + " | ".join(
             f"{t} median {np.median(share[typ == t]):.0%}" for t in ("BBH", "NSBH", "BNS") if (typ == t).any()))
+        if cfg.get("snr_definition") == "window+context":
+            # the generator's SNR (and its cut) counts both streams
+            snr = np.sqrt(snr ** 2 + e_lo)
     hard(not sat.any(), f"no float16-saturated signals ({int(sat.sum())})")
     print("    per-signal whitened SNR (network): " + " | ".join(
         f"{t} median {np.median(snr[typ == t]):.1f} p5 {np.percentile(snr[typ == t], 5):.1f} "

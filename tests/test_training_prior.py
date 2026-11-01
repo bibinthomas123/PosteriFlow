@@ -88,6 +88,7 @@ def test_merger_time_gate_flags_wrong_mode():
     ~1 s away (the GW190425/GW200115 failure) is a strong refine indicator."""
     from types import SimpleNamespace
     from ahsd.inference.gating import refinement_gate
+    from ahsd.inference.result import PosteriorResult
     th = _draw("NSBH", 400)
     j = PARAM_NAMES.index("geocent_time")
     for tc, expect in ((0.0, False), (1.0, True)):
@@ -97,5 +98,74 @@ def test_merger_time_gate_flags_wrong_mode():
                             median={n: float(np.median(x[:, i])) for i, n in enumerate(PARAM_NAMES)},
                             trigger_gps=1263097407.7,
                             diagnostics={"verdict": {"confidence": "HIGH"}, "boundary_railing_frac": 0.0})
+        r.modes = lambda p, r=r: PosteriorResult.modes(r, p)
         g = refinement_gate(r)
         assert any("trigger time" in m for m in g["strong_indicators"]) == expect
+
+
+def test_merger_time_modes():
+    """A bimodal merger-time posterior: the dominant mode is reported (the
+    median falls between the modes) and the second mode is flagged."""
+    from types import SimpleNamespace
+    from ahsd.inference.gating import refinement_gate
+    from ahsd.inference.result import PosteriorResult
+    rng = np.random.default_rng(3)
+    th = _draw("NSBH", 3000)
+    j = PARAM_NAMES.index("geocent_time")
+    th[:, j] = np.where(rng.random(3000) < 0.65, rng.normal(0.01, 0.005, 3000), rng.normal(1.1, 0.02, 3000))
+    m = PosteriorResult.modes(SimpleNamespace(samples=th, param_names=list(PARAM_NAMES)))
+    assert abs(m[0]["center"] - 0.01) < 0.01 and abs(m[0]["frac"] - 0.65) < 0.03
+    assert abs(m[1]["center"] - 1.1) < 0.02
+    th[:, 0], th[:, 1] = 8.0, 1.4
+    r = SimpleNamespace(samples=th, param_names=list(PARAM_NAMES), prepared=None,
+                        median={n: float(np.median(th[:, i])) for i, n in enumerate(PARAM_NAMES)},
+                        trigger_gps=1263097407.7, modes=lambda p: m,
+                        diagnostics={"verdict": {"confidence": "HIGH"}, "boundary_railing_frac": 0.0})
+    g = refinement_gate(r)
+    assert not any("trigger time" in s for s in g["strong_indicators"])
+    assert any("bimodal" in s for s in g.get("moderate_indicators", []))
+
+
+def test_signed_spins_sampler_and_prior():
+    """signed_spins datasets draw aligned components in [-max, max]; the
+    prior's support and its bilby priors (chi_i) follow."""
+    s = ParameterSampler({"random_seed": 4, "signed_spins": True, "distance_prior": "uniform",
+                          "distance_ranges": RANGES})
+    th = np.array([[p[k] for k in PARAM_NAMES] for p in s.sample_batch(2000, "NSBH")])
+    a1 = th[:, PARAM_NAMES.index("a1")]
+    assert a1.min() < -0.5 and a1.max() > 0.5
+    signed = TrainingPrior.for_class("NSBH", RANGES, "uniform", signed_spins=True)
+    assert np.isfinite(signed.log_prob(th)).all()
+    assert np.isneginf(TrainingPrior.for_class("NSBH", RANGES, "uniform").log_prob(th[a1 < 0])).all()
+    assert TrainingPrior.from_meta({"train_event_types": ["NSBH"], "train_signed_spins": True}).signed_spins
+    pytest.importorskip("bilby")
+    bp = signed.bilby_priors(1369224018.0)
+    assert "chi_1" in bp and "a_1" not in bp and bp["chi_1"].minimum == -signed.a1_max
+
+
+def test_negative_spin_reaches_the_waveform():
+    """bilby rebuilds a_i/tilt_i from chi_i: the sign must survive (it was
+    lost before 2026-11-01, every spin came out aligned)."""
+    pytest.importorskip("bilby")
+    from ahsd.data.bilby_pipeline import _to_bilby_params
+    p = _to_bilby_params({"a1": -0.5, "a2": 0.3})
+    assert p["a_1"] == 0.5 and abs(p["tilt_1"] - np.pi) < 1e-12 and abs(p["chi_1"] + 0.5) < 1e-12
+    assert p["tilt_2"] == 0.0 and p["chi_2"] == 0.3
+    q = _to_bilby_params({"a1": 0.5, "tilt_1": np.pi})
+    assert abs(q["chi_1"] + 0.5) < 1e-12
+
+
+def test_spin_convention_travels_with_the_checkpoint():
+    import torch
+    from ahsd.models.lean_npe import LeanNPE
+    signed = LeanNPE(spin_signed=True)
+    y = signed.scaler.normalize(torch.tensor([[30.0, 20.0, 400, 1, 0.1, 1, 1, 1, 0.0, -0.6, 0.2]]))
+    assert -1 < float(y[0, PARAM_NAMES.index("a1")]) < 0
+    sd = {k: v for k, v in signed.state_dict().items()}
+    fresh = LeanNPE()
+    fresh.load_state_dict(sd)
+    assert fresh.scaler.spin_signed                          # buffer wins over the default
+    sd.pop("spin_signed")
+    legacy = LeanNPE(spin_signed=True)
+    legacy.load_state_dict(sd)                               # pre-buffer checkpoint: magnitudes
+    assert not legacy.scaler.spin_signed

@@ -88,10 +88,18 @@ def _to_bilby_params(params: Dict) -> Dict:
     # Aligned-spin defaults when tilt angles are not sampled
     p.setdefault("tilt_1", 0.0)
     p.setdefault("tilt_2", 0.0)
+    # signed aligned spin (signed_spins datasets): magnitude + tilt pi
+    for i in (1, 2):
+        if p.get(f"a_{i}", 0.0) < 0:
+            p[f"a_{i}"] = -p[f"a_{i}"]
+            p[f"tilt_{i}"] = float(np.pi - p[f"tilt_{i}"])
     p.setdefault("phi_12", 0.0)
     p.setdefault("phi_jl", 0.0)
-    p.setdefault("chi_1", p.get("a_1", 0.0))
-    p.setdefault("chi_2", p.get("a_2", 0.0))
+    # bilby rebuilds a_i and tilt_i from chi_i when chi_i is present, so chi_i
+    # must carry the tilt: chi_i = a_i cos(tilt_i) (with chi_i = a_i the sign
+    # of an anti-aligned spin, tilt = pi, was silently lost)
+    p.setdefault("chi_1", p.get("a_1", 0.0) * float(np.cos(p["tilt_1"])))
+    p.setdefault("chi_2", p.get("a_2", 0.0) * float(np.cos(p["tilt_2"])))
     # tidal deformabilities (BNS/NSBH source model); absent = point particles
     p.setdefault("lambda_1", 0.0)
     p.setdefault("lambda_2", 0.0)

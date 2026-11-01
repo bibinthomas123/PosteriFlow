@@ -73,6 +73,33 @@ class PosteriorResult:
         i = int(np.argmax(lp))
         return {n: float(self.samples[i, j]) for j, n in enumerate(self.param_names)}
 
+    def modes(self, param: str = "geocent_time", bin_width: float = 0.01,
+              min_frac: float = 0.05) -> List[Dict[str, float]]:
+        """Separate posterior modes of one parameter, heaviest first:
+        [{"center", "frac", "lo", "hi"}]. Histogram (bin_width), 3-bin
+        smoothing, local maxima holding >= min_frac of the peak height, mass
+        split at the minima between them. At low SNR the merger time is often
+        multimodal (a lighter chirp mass merging later traces a similar track)
+        and the median then falls between modes or on the lighter one."""
+        x = self.samples[:, self.param_names.index(param)]
+        edges = np.arange(x.min(), x.max() + 2 * bin_width, bin_width)
+        h, _ = np.histogram(x, edges)
+        hs = np.convolve(h, np.ones(3) / 3, mode="same")
+        mid = 0.5 * (edges[:-1] + edges[1:])
+        pk = [i for i in range(len(hs)) if hs[i] >= min_frac * hs.max()
+              and hs[i] >= (hs[i - 1] if i else -1) and hs[i] > (hs[i + 1] if i + 1 < len(hs) else -1)]
+        if not pk:
+            pk = [int(hs.argmax())]
+        cuts = [0] + [int(pk[j] + np.argmin(hs[pk[j]:pk[j + 1] + 1])) for j in range(len(pk) - 1)] + [len(h)]
+        out = []
+        for j, c in enumerate(pk):
+            lo_i, hi_i = cuts[j], cuts[j + 1]
+            m = (x >= edges[lo_i]) & (x < edges[hi_i])
+            if m.any():
+                out.append({"center": float(np.median(x[m])), "frac": float(m.mean()),
+                            "lo": float(edges[lo_i]), "hi": float(edges[hi_i])})
+        return sorted(out, key=lambda d: -d["frac"])
+
     def credible_interval(self, level: float = 0.90) -> Dict[str, tuple]:
         """Central (equal-tailed) credible interval per parameter at `level`
         (e.g. 0.90 -> the 5th–95th percentiles)."""

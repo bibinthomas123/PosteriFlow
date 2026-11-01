@@ -108,7 +108,8 @@ class ParamScaler:
     LEGACY_DIST_RANGE = (40.0, 2200.0)
 
     def __init__(self, param_names: List[str] = PARAM_NAMES, premerger: bool = False,
-                 mass_param: str = "m1m2", dist_range: Optional[tuple] = None):
+                 mass_param: str = "m1m2", dist_range: Optional[tuple] = None,
+                 spin_signed: bool = False):
         """premerger=True widens geocent_time to cover early-warning events
         whose merger lies up to ~3 s past the window end (t_c up to +5 s).
         Must match between training and inference (stored in checkpoint args).
@@ -118,8 +119,12 @@ class ParamScaler:
 
         dist_range (lo, hi) Mpc overrides the luminosity-distance support
         (default LEGACY_DIST_RANGE).
+
+        spin_signed: a1/a2 are signed aligned components in [-1, 1]
+        (signed_spins datasets) instead of magnitudes in [0, 1].
         """
         self.dist_range = tuple(float(v) for v in (dist_range or self.LEGACY_DIST_RANGE))
+        self.spin_signed = bool(spin_signed)
         if mass_param not in ("m1m2", "mc_q"):
             raise ValueError(f"mass_param must be 'm1m2' or 'mc_q', got {mass_param!r}")
         self.param_names = param_names
@@ -138,6 +143,8 @@ class ParamScaler:
                 l, h = -1.6, 5.2
             if p == "luminosity_distance":
                 l, h = self.dist_range
+            if p in ("a1", "a2") and self.spin_signed:
+                l = -1.0
             lo.append(math.log(l) if g else l)
             hi.append(math.log(h) if g else h)
             lg.append(g)
@@ -362,7 +369,8 @@ class LeanNPE(nn.Module):
                  mf_tokens: bool = False, mf_shape_norm: bool = False,
                  mf_token_fusion: str = "add", q_embed_dim: int = 0,
                  dist_range: Optional[tuple] = None, mf_bank: str = "mf_bank.npz",
-                 pol_features: bool = False, lowrate_len: int = 0, mc_bank: str = ""):
+                 pol_features: bool = False, lowrate_len: int = 0, mc_bank: str = "",
+                 spin_signed: bool = False):
         super().__init__()
         self.param_names = param_names
         self.premerger = premerger
@@ -395,13 +403,16 @@ class LeanNPE(nn.Module):
         # and every physical-space interface are identical between the two.
         self.mass_param = mass_param
         self.scaler = ParamScaler(param_names, premerger=premerger,
-                                  mass_param=mass_param, dist_range=dist_range)
+                                  mass_param=mass_param, dist_range=dist_range,
+                                  spin_signed=spin_signed)
         # Persisted so a checkpoint carries its own distance support: any load
         # site (all of them build LeanNPE without dist_range) gets the trained
         # range from load_state_dict. Checkpoints that predate this buffer get
         # the legacy range via _load_from_state_dict below.
         self.register_buffer("dist_range", torch.tensor(self.scaler.dist_range,
                                                         dtype=torch.float32))
+        # same for the spin convention (signed aligned components or magnitudes)
+        self.register_buffer("spin_signed", torch.tensor(float(bool(spin_signed))))
 
         enc_kw = dict(encoder_kwargs or {})
         if encoder_type == "coherent":
@@ -496,13 +507,16 @@ class LeanNPE(nn.Module):
         key = prefix + "dist_range"
         if key not in state_dict:
             state_dict[key] = torch.tensor(ParamScaler.LEGACY_DIST_RANGE, dtype=torch.float32)
+        if prefix + "spin_signed" not in state_dict:      # spin magnitudes before signed spins
+            state_dict[prefix + "spin_signed"] = torch.tensor(0.0)
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                                       missing_keys, unexpected_keys, error_msgs)
         rng = tuple(float(v) for v in self.dist_range.tolist())
-        if rng != self.scaler.dist_range:
+        signed = bool(self.spin_signed)
+        if rng != self.scaler.dist_range or signed != self.scaler.spin_signed:
             self.scaler = ParamScaler(self.param_names, premerger=self.premerger,
-                                      mass_param=self.mass_param,
-                                      dist_range=rng).to(self.dist_range.device)
+                                      mass_param=self.mass_param, dist_range=rng,
+                                      spin_signed=signed).to(self.dist_range.device)
 
     def to(self, *args, **kwargs):
         """Move the model to a device/dtype and keep the (non-Parameter)

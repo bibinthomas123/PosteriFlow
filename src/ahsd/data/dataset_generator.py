@@ -317,7 +317,8 @@ class GWDatasetGenerator:
         Longer ones (all BNS/NSBH, light BBH) are generated over a long segment,
         whitened there and cropped, so the window holds the true last seconds
         before merger instead of a circularly wrapped inspiral. SNR is the norm
-        of the whitened in-window signal: what the model actually sees."""
+        of the whitened signal the model sees: the window, plus the context
+        stream for multi-rate data."""
         wg = self.injector.wfg
         n = len(zeros)
         if self.lowrate_seconds:
@@ -328,7 +329,12 @@ class GWDatasetGenerator:
             wl = self.preprocessor.preprocess(long_raw, psd, detector=det)
             wh = wl[i0:i0 + n]
             lo = to_lowrate(wl, i0, self.sample_rate, self.lowrate_seconds, self.lowrate_rate)
-            snr = float(np.sqrt(np.sum(np.asarray(wh, np.float64) ** 2)))
+            # the model reads both streams, so the SNR (and the cut on it) counts
+            # both: the context noise is unit-variance white too, and the two
+            # spans do not overlap. Window-only SNR rejected BNS whose SNR is
+            # mostly in the 28 s before the window
+            snr = float(np.sqrt(np.sum(np.asarray(wh, np.float64) ** 2)
+                                + np.sum(np.asarray(lo, np.float64) ** 2)))
             return raw, wh, snr, lo
         if wg.fits_window(p):
             raw = self.injector.inject_multiple(zeros, [p], det, psd)[0]

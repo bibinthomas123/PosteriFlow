@@ -653,9 +653,11 @@ def main():
                 med = res.median
                 v = res.diagnostics.get("verdict", {})
                 g = res.diagnostics.get("refinement", {})
-                tc_ok = abs(med["geocent_time"]) < 0.1
-                if not tc_ok:
-                    fails.append(f"{name}: t_c offset {med['geocent_time']:+.3f}s")
+                # dominant merger-time mode: a multimodal median falls between modes
+                tcm = res.modes("geocent_time")
+                tc = tcm[0]["center"]
+                if abs(tc) >= 0.1:
+                    fails.append(f"{name}: t_c offset {tc:+.3f}s")
                 # Published masses are SOURCE frame; the model measures the
                 # DETECTOR frame, m_det = m_src (1 + z). Published distances
                 # use p(d) ~ d^2; convert the posterior when the training
@@ -674,7 +676,7 @@ def main():
                     f"m2 {med['mass_2']:.1f} (pub {pub['m2'] * (1 + z):.1f} det) | "
                     f"q {np.median(q_s):.2f} [{q_lo:.2f},{q_hi:.2f}] (pub {pub['m2'] / pub['m1']:.2f}) | "
                     f"{dl_line} (pub {pub['dL']}) | "
-                    f"t_c {med['geocent_time']:+.3f}s | "
+                    f"t_c {tc:+.3f}s" + (f" ({tcm[1]['frac']:.0%} at {tcm[1]['center']:+.2f}s)" if len(tcm) > 1 else "") + " | "
                     f"rail {res.diagnostics['boundary_railing_frac']:.1%} | "
                     f"conf {v.get('confidence', '?')} | "
                     f"gate: {'REFINE' if g.get('refine') else 'as-is'}"

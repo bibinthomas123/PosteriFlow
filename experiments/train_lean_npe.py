@@ -144,7 +144,8 @@ def audit_scaler_support(train_ds, args, log):
         return
 
     scaler = ParamScaler(PARAM_NAMES, premerger=args.premerger,
-                         mass_param=args.mass_param, dist_range=args.dist_range)
+                         mass_param=args.mass_param, dist_range=args.dist_range,
+                         spin_signed=getattr(args, "signed_spins", False))
     # Audit in the PHYSICAL parameters the dataset actually stores. The mc_q
     # internal coordinates are a bijection of (m1, m2), so checking m1/m2 covers
     # the mass pair under either mass_param.
@@ -155,6 +156,8 @@ def audit_scaler_support(train_ds, args, log):
             lo, hi = -1.6, 5.2
         if name == "luminosity_distance":
             lo, hi = scaler.dist_range
+        if name in ("a1", "a2") and scaler.spin_signed:
+            lo = -1.0
         v = p[:, i]
         frac_lo = float((v < lo).mean())
         frac_hi = float((v > hi).mean())
@@ -827,6 +830,7 @@ def main():
     args.dataset_distance_prior, args.dataset_distance_ranges = None, None
     args.dataset_event_types = None
     args.lowrate_len = 0
+    args.signed_spins = False
     dcfg_path = Path(args.data) / "dataset_config.yaml"
     if dcfg_path.exists():
         import yaml
@@ -836,6 +840,8 @@ def main():
         # multi-rate datasets: the context stream is part of every strain row
         # (remix and fixed-split paths alike), so the model must know its length
         args.lowrate_len = int(dcfg.get("lowrate_seconds", 0) or 0) * int(dcfg.get("lowrate_rate", 512))
+        # a1/a2 labels are signed aligned components in these datasets
+        args.signed_spins = bool(dcfg.get("signed_spins", False))
         # source classes present (inference warns when an event falls outside)
         mix = dcfg.get("event_type_distribution") or {}
         args.dataset_event_types = sorted(t.upper() for t, p in mix.items()
@@ -933,6 +939,7 @@ def main():
                     mf_bank=args.mf_bank,
                     pol_features=args.pol_features,
                     lowrate_len=args.lowrate_len, mc_bank=args.mc_bank,
+                    spin_signed=args.signed_spins,
                     flow_layers=args.flow_layers,
                     flow_hidden=args.flow_hidden,
                     flow_bins=args.flow_bins).to(device)
@@ -967,10 +974,19 @@ def main():
             model.dist_range.copy_(torch.tensor(args.dist_range, dtype=torch.float32))
             model.scaler = ParamScaler(PARAM_NAMES, premerger=args.premerger,
                                        mass_param=args.mass_param,
-                                       dist_range=tuple(args.dist_range)).to(device)
+                                       dist_range=tuple(args.dist_range),
+                                       spin_signed=args.signed_spins).to(device)
             if old != tuple(args.dist_range):
                 log.warning(f"init_from: distance support {old} -> {tuple(args.dist_range)} Mpc; "
                             "the flow's distance coordinate must re-learn its map")
+        # likewise the spin convention comes from the dataset, not the init checkpoint
+        if bool(model.spin_signed) != args.signed_spins:
+            model.spin_signed.fill_(float(args.signed_spins))
+            model.scaler = ParamScaler(PARAM_NAMES, premerger=args.premerger,
+                                       mass_param=args.mass_param,
+                                       dist_range=tuple(model.dist_range.tolist()),
+                                       spin_signed=args.signed_spins).to(device)
+            log.warning(f"init_from: spin convention -> {'signed' if args.signed_spins else 'magnitude'}")
         log.info(f"fine-tuning from {args.init_from} "
                  f"(epoch {init.get('epoch')}, val_nll {init.get('val_nll'):.4f})")
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

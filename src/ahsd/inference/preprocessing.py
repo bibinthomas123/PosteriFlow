@@ -49,6 +49,9 @@ EDGE_TRIM_S = 2             # whitening filter edge artifacts to discard
 HIGHPASS_HZ = 15.0
 ASD_FFTLENGTH = 8
 ASD_OVERLAP = 4
+GLITCH_SIGMA = 50.0         # whitened excursion above any signal in the training
+                            # sets (per-sample peak max 47.5σ, BBH at SNR 524;
+                            # Gaussian max ≈ 4.5σ): a detector above it is absent
 
 
 @dataclass
@@ -173,13 +176,17 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
                  segment_start_gps: Dict[str, float],
                  sample_rates: Dict[str, float],
                  psds: Optional[Dict[str, dict]] = None,
-                 seed: int = 0) -> PreparedData:
+                 seed: int = 0, drop_glitches: bool = True) -> PreparedData:
     """Real (or externally supplied) detector data -> model representation.
 
     strain: raw (unwhitened) strain per detector, ideally >= 16 s around the
     trigger for a stable in-segment ASD estimate (64 s recommended).
     psds: optional user-supplied {det: {frequencies, psd}}; otherwise the ASD
     is measured from the data (median estimator).
+    drop_glitches: a detector whose window or context stream exceeds
+    GLITCH_SIGMA is replaced by white noise, as a dropped detector is in
+    training, provided another detector remains (GW170817: L1 glitch at 137σ
+    gave chirp mass 1.38 and merger -0.58 s; without L1, 1.205 and +0.10 s).
     """
     t0 = time.time()
     rng = np.random.default_rng(seed)
@@ -223,6 +230,21 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
 
     if not present:
         raise ValueError("no detector data supplied")
+    glitchy = [d for d in present
+               if max(quality[d]["max_abs"],
+                      float(np.abs(out_lo[DETECTORS.index(d)]).max()) if have_lo else 0.0) > GLITCH_SIGMA]
+    for d in glitchy:
+        if not drop_glitches or len(present) == 1:
+            warnings.append(f"{d}: excursion above {GLITCH_SIGMA:.0f}σ kept (no other detector "
+                            "to fall back on) — posterior unreliable")
+            continue
+        i = DETECTORS.index(d)
+        out[i] = _white_noise_fill(rng)
+        out_lo[i] = rng.standard_normal(out_lo.shape[1]).astype(np.float32)
+        asds.pop(d); psd_out.pop(d); present.remove(d)
+        quality[d]["dropped_glitch"] = True
+        warnings.append(f"{d}: excursion above {GLITCH_SIGMA:.0f}σ (glitch) — dropped and filled "
+                        "with unit white noise; gate or subtract the glitch to use this detector")
     return PreparedData(strain=out, trigger_gps=float(trigger_gps),
                         detectors_present=present, asds=asds, psds=psd_out,
                         source="real", warnings=warnings,
@@ -268,6 +290,22 @@ def compute_asd_bands(prepared: PreparedData, psd_bands: int = 16,
         logr = np.log(ratio)
         ab[i] = [float(logr[s[s < n]].mean()) if (s < n).any() else 0.0 for s in slices]
     return ab
+
+
+def raw_segment(strain: Dict[str, np.ndarray], segment_start_gps: Dict[str, float],
+                center_gps: float, seconds: float = DURATION) -> Dict[str, np.ndarray]:
+    """Unwhitened strain ending at the window end (center + 2 s), `seconds`
+    long, per detector (4096 Hz input, e.g. from fetch_gwosc): what
+    importance sampling and dynesty need. For a multi-rate model pass
+    seconds = 4 + 28 so the likelihood covers the context it read."""
+    out = {}
+    n = int(round(seconds * SAMPLE_RATE))
+    for det, x in strain.items():
+        i1 = int(round((center_gps + DURATION / 2 - segment_start_gps[det]) * SAMPLE_RATE))
+        if i1 - n < 0 or i1 > len(x):
+            raise ValueError(f"{det}: data does not cover {seconds:.0f} s before the window end")
+        out[det] = np.asarray(x[i1 - n:i1], np.float64)
+    return out
 
 
 def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,

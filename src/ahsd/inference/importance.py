@@ -87,6 +87,10 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
     _WORKER["prior"] = prior
     import os
     _WORKER["rng"] = np.random.default_rng((int(center_gps * 1000) % 2 ** 32, os.getpid()))
+    # segment: the window plus whatever precedes it in `raw` (it ends at the
+    # window end), so a multi-rate model's 28 s of context is in the likelihood
+    dur = segment_duration(raw)
+    start = center_gps + DURATION / 2 - dur
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
         if det not in raw:
@@ -97,11 +101,11 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
             psd_array=np.asarray(psds[det]["psd"], float))
         ifo.strain_data.set_from_time_domain_strain(
             np.asarray(raw[det], np.float64), sampling_frequency=SAMPLE_RATE,
-            duration=DURATION, start_time=center_gps - DURATION / 2)
+            duration=dur, start_time=start)
         ifo.minimum_frequency = f_min
         ifos.append(ifo)
     wfg = bilby.gw.WaveformGenerator(
-        duration=DURATION, sampling_frequency=SAMPLE_RATE,
+        duration=dur, sampling_frequency=SAMPLE_RATE,
         frequency_domain_source_model=wf["source_model"],
         parameter_conversion=wf["parameter_conversion"],
         waveform_arguments={"waveform_approximant": approximant,
@@ -121,6 +125,7 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
         phase_marginalization=True, time_marginalization=True)
     _WORKER["like"] = like
     _WORKER["center"] = center_gps
+    _WORKER["start"] = start
     _WORKER["noise_ll"] = like.noise_log_likelihood()
 
 
@@ -141,15 +146,25 @@ def _eval_chunk(rows):
             # replaces the prior by that delta itself in run_sampler); passing
             # the window centre shifts the search 2 s late and misses the
             # signal entirely
-            phase=0.0, geocent_time=_WORKER["center"] - DURATION / 2,
+            phase=0.0, geocent_time=_WORKER["start"],
             time_jitter=0.0,  # bilby time-marginalization bookkeeping param
-            a_1=p["a1"], a_2=p["a2"], tilt_1=0.0, tilt_2=0.0,
+            # signed aligned spins: magnitude and tilt pi when negative
+            a_1=abs(p["a1"]), a_2=abs(p["a2"]),
+            tilt_1=np.pi if p["a1"] < 0 else 0.0, tilt_2=np.pi if p["a2"] < 0 else 0.0,
             phi_12=0.0, phi_jl=0.0, lambda_1=float(l1s[k]), lambda_2=float(l2s[k]))
         try:
             out[k] = like.log_likelihood() - _WORKER["noise_ll"]
         except Exception:
             out[k] = -np.inf
     return out
+
+
+def segment_duration(raw: Dict[str, np.ndarray]) -> float:
+    """Seconds covered by the raw strains (all detectors the same length)."""
+    lens = {len(v) for v in raw.values()}
+    if len(lens) != 1:
+        raise ValueError(f"raw strains differ in length: {sorted(lens)}")
+    return lens.pop() / SAMPLE_RATE
 
 
 def importance_correct(result, raw_strain: Dict[str, np.ndarray],
@@ -160,8 +175,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        device: str = "cpu"):
     """Reweight a PosteriorResult against the true likelihood.
 
-    raw_strain: UNWHITENED 4 s strains keyed by detector (same data the
-    NPE saw, pre-whitening). center_gps: absolute GPS of the window center
+    raw_strain: UNWHITENED strains keyed by detector, ending at the window end
+    (centre + 2 s): the 4 s window, or for a multi-rate model the window plus
+    the 28 s before it (32 s), so the likelihood covers what the NPE read. center_gps: absolute GPS of the window center
     (result.trigger_gps for real events; GPS_REF for pipeline-simulated).
     Returns a new PosteriorResult (resampled) with IS diagnostics attached.
     """
@@ -172,12 +188,14 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     t0 = time.time()
     model, _ = load_model(model_path or result.config["model_path"], device=device)
     caveats = []
-    if getattr(model, "lowrate_len", 0):
-        # the likelihood covers the 4 s window only (above window_fmin); the
-        # network also read the 28 s before it, so its proposal can be
-        # narrower than this target and the weights less reliable
-        caveats.append("multi-rate model: IS likelihood uses the 4 s window only, the "
-                       "proposal also used 28 s of context; treat the ESS with caution")
+    dur = segment_duration(raw_strain)
+    lo_s = getattr(model, "lowrate_len", 0) / 512.0
+    if lo_s and dur < DURATION + lo_s - 1e-6:
+        # the network also read the 28 s before the window: a shorter likelihood
+        # is a wider target than the proposal, so the weights are less reliable
+        caveats.append(f"multi-rate model: IS likelihood covers {dur:.0f} s, the proposal "
+                       f"used {DURATION + lo_s:.0f} s; pass the window plus the "
+                       f"{lo_s:.0f} s before it")
         import logging
         logging.getLogger(__name__).warning(caveats[-1])
 
@@ -200,7 +218,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     if f_min is None:
         mc_lo = float(np.quantile(chirp_mass(theta[:, _J["mass_1"]], theta[:, _J["mass_2"]]), 0.005))
         tc_lo = float(np.quantile(theta[:, _J["geocent_time"]], 0.005))
-        f_min = window_fmin(mc_lo, DURATION / 2 + tc_lo)
+        f_min = window_fmin(mc_lo, dur - DURATION / 2 + tc_lo)
 
     # Marginalized-space correction: the likelihood integrates phase and tc
     # analytically, so the proposal density must be the corresponding

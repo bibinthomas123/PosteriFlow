@@ -207,7 +207,9 @@ def generate_dataset_from_config(config: Dict) -> Dict:
         # recoverable after the dataset itself is deleted.
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         with open(Path(output_dir) / "dataset_config.yaml", "w") as f:
-            yaml.safe_dump({**config, "n_samples": n_samples}, f, sort_keys=False)
+            yaml.safe_dump({**config, "n_samples": n_samples,
+                            "snr_definition": "window+context" if config.get("lowrate_seconds") else "window"},
+                           f, sort_keys=False)
 
         # Generate dataset
         t_gen = time.time()

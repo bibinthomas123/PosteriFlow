@@ -153,7 +153,9 @@ def main():
     elapsed = time.time() - t0
     with open(out / "dataset_config.yaml", "w") as f:
         yaml.safe_dump({**cfg, "n_samples": args.n_samples, "random_seed": seeds,
-                        "parallel_shards": args.shards}, f, sort_keys=False)
+                        "parallel_shards": args.shards,
+                        "snr_definition": "window+context" if cfg.get("lowrate_seconds") else "window"},
+                       f, sort_keys=False)
     manifest = {"n_samples": args.n_samples, "shards": args.shards, "seeds": seeds,
                 "shard_sizes": sizes, "batches": n_batches, "splits": split_counts,
                 "elapsed_s": round(elapsed, 1), "config": str(args.config)}

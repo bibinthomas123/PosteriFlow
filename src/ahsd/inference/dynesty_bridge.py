@@ -102,11 +102,16 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
 
 
 def align_conventions(posterior, center_gps: float):
-    """In-place: sort masses per draw (training convention m1 >= m2) and make
-    geocent_time relative to the window center."""
+    """In-place: sort masses per draw (training convention m1 >= m2), make
+    geocent_time relative to the window center, and spins signed aligned."""
     m1, m2 = posterior["mass_1"].values.copy(), posterior["mass_2"].values.copy()
     posterior["mass_1"], posterior["mass_2"] = np.maximum(m1, m2), np.minimum(m1, m2)
     posterior["geocent_time"] = posterior["geocent_time"].values - center_gps
+    # a1/a2 compare as the signed aligned components (equal to the magnitudes
+    # for aligned-only priors, tilt 0; signed_spins priors sample chi_i)
+    for i in (1, 2):
+        if f"chi_{i}" in posterior:
+            posterior[f"a_{i}"] = posterior[f"chi_{i}"].values
     return posterior
 
 

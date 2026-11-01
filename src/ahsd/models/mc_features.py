@@ -18,6 +18,19 @@ ratio, summed over detectors):
     chirp mass that fits best depends on mass ratio (and spin), so the flow
     gets the trade-off instead of a single grid maximum
 These go through a small MLP into n_tokens transformer tokens.
+
+Trigger features (bank spec "<bank>.npz:trigger"): the network's merger-time
+posterior was ~0.28 s wide and its sky (ra/dec) and inclination near the
+prior, because the convolutional stem downsamples away the sub-millisecond
+arrival-time differences and the inter-detector phases. The best template's
+complex SNR series, at 8x oversampled lags (0.12 ms), gives them directly:
+merger time to ~1-2 ms and the H1-L1 delay to ~0.25 ms at SNR 15-25
+(measured 2026-11-01). Per event:
+  - the two strongest network-SNR peaks in time (> 50 ms apart): time, SNR,
+    so a second merger-time mode is visible to the flow
+  - per detector at the main peak: arrival time relative to it, SNR, phase
+  - per detector pair (L1-H1, V1-H1): delay and phase difference
+These go through their own MLP into N_TRIG_TOKENS tokens.
 """
 from __future__ import annotations
 
@@ -34,12 +47,20 @@ COARSE = 10              # coarse search: every 10th grid chirp mass (multi-q ba
 FINE = 12                # fine search: +-12 grid points around the coarse best
 COINC_S = 0.012          # detectors must agree on arrival time within +-12 ms
 SECOND_PEAK_EXCL = 0.03  # a second peak must be > 3% away in chirp mass
+TRIG_OS = 8              # trigger features: lag oversampling (4 s / (8 x 4016) = 0.12 ms)
+TRIG_SECOND_S = 0.05     # a second merger-time peak must be > 50 ms away
+N_TRIG = 4 + 3 * 4 + 2 * 3
+N_TRIG_TOKENS = 2
 
 
 class McFeatures(nn.Module):
     def __init__(self, bank: str, band_lo: int, n_band: int, lowrate_len: int = 0,
                  d_model: int = 192, n_tokens: int = 2):
         super().__init__()
+        # "<bank>.npz[:opt,...]": options change the module's parameters, so they
+        # travel with the bank name that every checkpoint load site passes on
+        bank, _, opts = str(bank).partition(":")
+        self.trigger = "trigger" in opts.split(",")
         path = Path(bank)
         if not path.is_absolute() and path.parent == Path("."):
             path = Path(__file__).parent / "assets" / path
@@ -93,6 +114,11 @@ class McFeatures(nn.Module):
         self.n_tokens = int(n_tokens)
         self.to_tokens = nn.Linear(128, self.n_tokens * d_model)
         self.type_embed = nn.Parameter(torch.zeros(d_model))     # zero-init marker
+        if self.trigger:
+            self.trig_mlp = nn.Sequential(nn.LayerNorm(N_TRIG), nn.Linear(N_TRIG, 128), nn.GELU(),
+                                          nn.Linear(128, 128), nn.GELU())
+            self.trig_to_tokens = nn.Linear(128, N_TRIG_TOKENS * d_model)
+            self.trig_type_embed = nn.Parameter(torch.zeros(d_model))
 
     def _peak_snr2(self, d: torch.Tensor, H: torch.Tensor, n: int, scale: float,
                    duration: float) -> torch.Tensor:
@@ -264,8 +290,68 @@ class McFeatures(nn.Module):
                 q_mc, q_snr, _ = self._peak(prof_q[..., j])
                 parts += [q_mc[:, None], q_snr[:, None]]
         f = torch.cat(parts, dim=1)
-        tok = self.to_tokens(self.mlp(f)).reshape(B, self.n_tokens, -1)
-        return tok + self.type_embed
+        tok = self.to_tokens(self.mlp(f)).reshape(B, self.n_tokens, -1) + self.type_embed
+        if self.trigger:
+            tf = self._trigger(hi, prof, prof_q)
+            ttok = self.trig_to_tokens(self.trig_mlp(tf)).reshape(B, N_TRIG_TOKENS, -1)
+            tok = torch.cat([tok, ttok + self.trig_type_embed], dim=1)
+        return tok
+
+    @torch.no_grad()
+    def _trigger(self, hi: torch.Tensor, prof: torch.Tensor, prof_q: torch.Tensor):
+        """Arrival times, SNRs and phases of the best template [B, N_TRIG]
+        (see module docstring), from the window stream."""
+        B, dev = hi.shape[0], hi.device
+        nb, n = self.n_band, TRIG_OS * self.n_band
+        k = prof.argmax(-1)
+        t = k * self.n_q + prof_q[torch.arange(B, device=dev), k].argmax(-1)
+        H = torch.complex(self.win_re, self.win_im)[:, t].permute(1, 0, 2)          # [B,D,F]
+        d = torch.fft.rfft(hi.float(), dim=-1)[..., self.band_lo:self.band_lo + nb]
+        z = torch.fft.ifft(d * H.conj(), n=n, dim=-1) * (n / math.sqrt(T_LEN / 2.0))  # [B,D,n]
+        a2 = z.abs() ** 2
+        w = max(1, int(round(COINC_S * n * SR / T_LEN)))
+        pooled = torch.nn.functional.max_pool1d(
+            torch.nn.functional.pad(a2.reshape(-1, 1, n), (w, w), mode="circular"),
+            2 * w + 1, stride=1).reshape(a2.shape).sum(1)                           # [B,n] network SNR^2
+        dt = T_LEN / SR / n                                                         # s per lag
+        c1 = pooled.argmax(-1)
+        lag = torch.arange(n, device=dev)
+        sep = ((lag[None] - c1[:, None]) % n).clamp(max=n // 2)
+        sep = torch.minimum(sep, (c1[:, None] - lag[None]) % n)
+        c2 = torch.where(sep > TRIG_SECOND_S / dt, pooled, torch.zeros_like(pooled)).argmax(-1)
+        # the pooled network SNR is flat over a +-w plateau and argmax returns its
+        # left edge, so each detector is searched over [c - w, c + 3w]
+        span = torch.arange(-w, 3 * w + 1, device=dev)
+        net = a2.sum(1)
+
+        def refine(c):                    # unpooled network-SNR peak near c: lag, SNR
+            lg = (c[:, None] + span) % n
+            v = net.gather(1, lg)
+            return lg.gather(1, v.argmax(-1, keepdim=True)).squeeze(1), v.amax(-1).clamp_min(0).sqrt()
+        # per detector around the main peak: interpolated arrival lag, SNR, phase
+        lags = (c1[:, None] + span) % n                                             # [B,S]
+        zz = z.gather(2, lags[:, None, :].expand(-1, z.shape[1], -1))                # [B,D,S]
+        mag = zz.abs()
+        a = mag.argmax(-1).clamp(1, span.numel() - 2)
+        y0, y1, y2 = (mag.gather(2, (a + o)[..., None]).squeeze(-1) for o in (-1, 0, 1))
+        dk = (0.5 * (y0 - y2) / (y0 - 2 * y1 + y2).clamp(max=-1e-9)).clamp(-1, 1)
+        arr = (c1[:, None] - w + a).float() + dk                                     # arrival lag per detector
+        wgt = y1 ** 2 / (y1 ** 2).sum(-1, keepdim=True).clamp_min(1e-9)
+        ref = (wgt * arr).sum(-1)                                                    # SNR^2-weighted arrival
+        zc = zz.gather(2, a[..., None]).squeeze(-1)
+        # baseband ifft: undo the band-start frequency shift to get the phase
+        phi = torch.angle(zc) + 2 * math.pi * self.band_lo * ((c1[:, None] - w + a) % n).float() / n
+        tau = (arr - ref[:, None]) * dt / COINC_S                                    # in units of +-12 ms
+        # lag -> merger time in s from the window centre: the template's merger
+        # sits at lag 0 of its circular frame, i.e. at the window start
+        tm = lambda lag: torch.remainder(lag * dt, T_LEN / SR) - T_LEN / SR / 2
+        l2, s2 = refine(c2)
+        feats = [tm(ref) / 1.5, torch.asinh((y1 ** 2).sum(-1).sqrt()), tm(l2.float()) / 1.5, torch.asinh(s2)]
+        for j in range(z.shape[1]):
+            feats += [tau[:, j], torch.asinh(y1[:, j]), torch.cos(phi[:, j]), torch.sin(phi[:, j])]
+        for j in (1, 2):
+            feats += [tau[:, j] - tau[:, 0], torch.cos(phi[:, j] - phi[:, 0]), torch.sin(phi[:, j] - phi[:, 0])]
+        return torch.stack(feats, dim=1)
 
     @torch.no_grad()
     def estimate(self, hi: torch.Tensor, lo: torch.Tensor = None) -> torch.Tensor:

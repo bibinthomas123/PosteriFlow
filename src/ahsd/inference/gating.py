@@ -29,7 +29,8 @@ import numpy as np
 OOD_PCT = (99.0, 100.0)
 RAIL = (0.05, 0.20)
 MC_WIDTH_FRAC = (0.6, 1.0)      # 90% CI width / median for chirp mass
-TC_OFFSET = (0.05, 0.1)         # |median merger time - trigger| [s], real events
+TC_OFFSET = (0.05, 0.1)         # |dominant merger-time mode - trigger| [s], real events
+TC_SECOND_MODE = 0.2            # a second merger-time mode holding > 20% of the mass
 
 _GRID_CACHE: Optional[list] = None
 
@@ -136,15 +137,20 @@ def refinement_gate(result) -> Dict:
     # trigger, so a posterior merger far from the centre means the network
     # chose another mode (low-SNR inspirals: a lighter chirp mass merging ~1 s
     # later traces almost the same frequency track through the window)
+    # (dominant mode, not the median: a multimodal median falls between modes)
     if result.trigger_gps is not None:
-        jt = names.index("geocent_time")
-        tc_med = float(np.median(result.samples[:, jt]))
-        indicators["tc_offset_s"] = round(tc_med, 3)
-        if abs(tc_med) > TC_OFFSET[1]:
-            strong.append(f"merger {tc_med:+.2f} s from the trigger time "
+        modes = result.modes("geocent_time")
+        tc = modes[0]["center"]
+        indicators["tc_offset_s"] = round(tc, 3)
+        indicators["tc_modes"] = [[round(m["center"], 3), round(m["frac"], 3)] for m in modes[:3]]
+        if abs(tc) > TC_OFFSET[1]:
+            strong.append(f"merger {tc:+.2f} s from the trigger time "
                           "(posterior locked on another chirp-mass/time mode)")
-        elif abs(tc_med) > TC_OFFSET[0]:
-            moderate.append(f"merger {tc_med:+.2f} s from the trigger time")
+        elif abs(tc) > TC_OFFSET[0]:
+            moderate.append(f"merger {tc:+.2f} s from the trigger time")
+        if len(modes) > 1 and modes[1]["frac"] > TC_SECOND_MODE:
+            moderate.append(f"merger time bimodal: {modes[1]['frac']:.0%} of the posterior at "
+                            f"{modes[1]['center']:+.2f} s")
     # 5. spurious boundary railing
     rail = d.get("boundary_railing_frac", 0.0)
     indicators["railing_frac"] = rail

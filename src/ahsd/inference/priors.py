@@ -69,10 +69,11 @@ class TrainingPrior:
     a2_max: float
     dist_range: Tuple[float, float]
     dist_shape: str                       # "uniform" | "comoving_d2"
+    signed_spins: bool = False            # a1/a2 aligned components in [-max, max]
 
     @classmethod
     def for_class(cls, event_type: str, dist_ranges: Optional[Dict] = None,
-                  dist_shape: Optional[str] = None) -> "TrainingPrior":
+                  dist_shape: Optional[str] = None, signed_spins: bool = False) -> "TrainingPrior":
         """Prior of one source class; dist_ranges is the dataset's
         {class: [lo, hi]} (sampler defaults when absent)."""
         et = event_type.upper()
@@ -84,7 +85,7 @@ class TrainingPrior:
         if shape not in ("uniform", "comoving_d2"):
             raise ValueError(f"unknown distance prior {dist_shape!r}")
         return cls(et, tuple(m1), tuple(m2), float(a1), float(a2),
-                   (float(rng[0]), float(rng[-1])), shape)
+                   (float(rng[0]), float(rng[-1])), shape, bool(signed_spins))
 
     @classmethod
     def from_meta(cls, meta: Dict, event_type: Optional[str] = None) -> "TrainingPrior":
@@ -97,7 +98,8 @@ class TrainingPrior:
         else:
             et = event_type or meta.get("event_type") or "BBH"
         return cls.for_class(et, meta.get("train_distance_ranges"),
-                             meta.get("train_distance_prior"))
+                             meta.get("train_distance_prior"),
+                             bool(meta.get("train_signed_spins", False)))
 
     @property
     def lambda_range(self) -> Optional[Tuple[float, float]]:
@@ -113,6 +115,14 @@ class TrainingPrior:
         l2 = rng.uniform(*self.lambda_range, size=n)
         l1 = rng.uniform(*self.lambda_range, size=n) if self.event_type == "BNS" else z
         return l1, l2
+
+    @property
+    def a1_lo(self) -> float:
+        return -self.a1_max if self.signed_spins else 0.0
+
+    @property
+    def a2_lo(self) -> float:
+        return -self.a2_max if self.signed_spins else 0.0
 
     @property
     def mc_min(self) -> float:
@@ -146,7 +156,7 @@ class TrainingPrior:
 
         ok = ((m1 >= m1_lo) & (m1 <= m1_hi) & (m2 >= m2_lo) & (m2 <= m2_hi) & (m2 <= m1) &
               (d >= d_lo) & (d <= d_hi) & (np.abs(tc) < TC_HALF_WIDTH) &
-              (a1 >= 0) & (a1 <= self.a1_max) & (a2 >= 0) & (a2 <= self.a2_max) &
+              (a1 >= self.a1_lo) & (a1 <= self.a1_max) & (a2 >= self.a2_lo) & (a2 <= self.a2_max) &
               (th > 0) & (th < np.pi) & (np.abs(dec) < np.pi / 2))
         m1c, m2c = np.maximum(m1, 1e-6), np.maximum(m2, 1e-6)
         if self.event_type == "BBH":
@@ -195,9 +205,19 @@ class TrainingPrior:
         priors["luminosity_distance"] = (
             P.Uniform(d_lo, d_hi, name="luminosity_distance") if self.dist_shape == "uniform"
             else P.PowerLaw(alpha=2, minimum=d_lo, maximum=d_hi, name="luminosity_distance"))
-        priors["a_1"] = P.Uniform(0, self.a1_max, "a_1")
-        priors["a_2"] = P.Uniform(0, self.a2_max, "a_2")
-        for k in ("tilt_1", "tilt_2", "phi_12", "phi_jl"):
+        if self.signed_spins:
+            # aligned components; bilby's conversion sets a_i = |chi_i| and the
+            # tilt from the sign
+            for k in ("a_1", "a_2", "tilt_1", "tilt_2"):      # BBHPriorDict defaults
+                priors.pop(k, None)
+            priors["chi_1"] = P.Uniform(-self.a1_max, self.a1_max, "chi_1")
+            priors["chi_2"] = P.Uniform(-self.a2_max, self.a2_max, "chi_2")
+            spin_fixed = ("phi_12", "phi_jl")
+        else:
+            priors["a_1"] = P.Uniform(0, self.a1_max, "a_1")
+            priors["a_2"] = P.Uniform(0, self.a2_max, "a_2")
+            spin_fixed = ("tilt_1", "tilt_2", "phi_12", "phi_jl")
+        for k in spin_fixed:
             priors[k] = P.DeltaFunction(0.0)
         if self.event_type != "BBH":
             # tidal deformabilities: the generator's nuisance prior

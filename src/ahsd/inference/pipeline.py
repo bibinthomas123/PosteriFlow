@@ -84,6 +84,8 @@ def load_model(path: str, device: Optional[str] = None):
             "dist_range": [float(v) for v in model.dist_range.tolist()],
             # source classes in the training data (None = unrecorded)
             "train_event_types": a.get("dataset_event_types"),
+            # a1/a2 are signed aligned components (signed_spins datasets)
+            "train_signed_spins": bool(a.get("signed_spins", False)),
             "device": device}
     _MODEL_CACHE[key] = (model, meta)
     return model, meta

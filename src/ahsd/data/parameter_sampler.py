@@ -96,6 +96,11 @@ class ParameterSampler:
         # it to remove the chirp-mass->distance shortcut. See analysis/
         # gw150914_localization/AUDIT_mcdl.md.
         self._dist_prior = str(cfg.get("distance_prior") or "comoving_d2").lower()
+        # signed aligned spins: a1/a2 are the spin components along the orbital
+        # angular momentum, uniform in [-max, max] (negative = anti-aligned).
+        # Off: magnitudes in [0, max], aligned only (datasets before 2026-11-01;
+        # GW200115's black-hole spin is likely anti-aligned)
+        self._signed_spins = bool(cfg.get("signed_spins", False))
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -178,19 +183,15 @@ class ParameterSampler:
         return {"mass_1": max(m1, m2), "mass_2": min(m1, m2)}
 
     def _sample_spins(self, event_type: str) -> Dict:
-        """Sample aligned-spin magnitudes a1/a2 from the per-event-type ranges
-        (BH vs NS components differ for NSBH)."""
+        """Sample aligned spins a1/a2 from the per-event-type ranges (BH vs NS
+        components differ for NSBH): magnitudes in [0, max], or with
+        signed_spins the aligned components in [-max, max]."""
         et = event_type.upper()
-        if et == "BNS":
-            a1 = float(self.rng.uniform(*_SPIN_BNS))
-            a2 = float(self.rng.uniform(*_SPIN_BNS))
-        elif et == "NSBH":
-            a1 = float(self.rng.uniform(*_SPIN_BH))   # BH component
-            a2 = float(self.rng.uniform(*_SPIN_NS))   # NS component
-        else:
-            a1 = float(self.rng.uniform(*_SPIN_BBH))
-            a2 = float(self.rng.uniform(*_SPIN_BBH))
-        return {"a1": a1, "a2": a2}
+        r1, r2 = {"BNS": (_SPIN_BNS, _SPIN_BNS), "NSBH": (_SPIN_BH, _SPIN_NS)}.get(et, (_SPIN_BBH, _SPIN_BBH))
+        if self._signed_spins:
+            return {"a1": float(self.rng.uniform(-r1[1], r1[1])),
+                    "a2": float(self.rng.uniform(-r2[1], r2[1]))}
+        return {"a1": float(self.rng.uniform(*r1)), "a2": float(self.rng.uniform(*r2))}
 
     def _sample_tides(self, event_type: str) -> Dict:
         """Tidal deformabilities: uniform for each neutron star, 0 for black

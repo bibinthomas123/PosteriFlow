@@ -747,6 +747,10 @@ def main():
             "wall_s": time.time() - t_start}
     matched = None
     ref = next((MATCHED_REF[c] for c in trained if c in MATCHED_REF and MATCHED_REF[c].exists()), None)
+    if ref is not None and getattr(model, "lowrate_len", 0):
+        # the reference set holds the 4 s window only (no context stream)
+        print(f"matched dynesty comparison skipped: {ref} has no context stream for this multi-rate model")
+        ref = None
     if ref is not None:
         print(f"matched dynesty comparison ({ref}) ...")
         matched = matched_dynesty(model, device, ref)

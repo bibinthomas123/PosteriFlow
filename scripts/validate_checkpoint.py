@@ -89,6 +89,11 @@ _SNR_BINS = ((0, 12), (12, 20), (20, 35), (35, 60), (60, 10000))
 # two measurements (the spin draw's low-mass events gave a tighter 0.0012).
 # Both choices are deliberately conservative. The q reference rests on only 4
 # events — re-measure with ~12 spinning events before treating it as settled.
+# SUPERSEDED (2026-11-01) wherever a matched reference set exists
+# (MATCHED_REF below): this compares the model's MEAN informativeness over the
+# whole validation population (down to SNR 6) with dynesty's MEDIAN on 12
+# lighter events at SNR 12-40, which read a matched 1.5x gap as 104x. Kept as
+# the fallback for classes without a matched set.
 _DYNESTY_REF = {"chirp_mass": 0.00276, "mass_ratio": 0.2880}
 # An amortized estimator within this factor of a reference sampler's width is
 # doing well (DINGO reports near-parity). Generous, and still fails the current
@@ -401,7 +406,36 @@ def distance_by_type(d_samp, truth, model):
     return out
 
 
-def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",)):
+MATCHED_REF = {"BBH": Path("analysis/dynesty_reference/bbh_v4.npz")}
+
+
+def matched_dynesty(model, device, path, n_post=2000):
+    """The model on the events of a matched dynesty reference set
+    (build_dynesty_reference.py): per-event 90% widths of chirp mass and mass
+    ratio against dynesty's on the SAME strain, and truth coverage. Replaces
+    comparing a population-mean width with a reference measured on other
+    events (which read a 1.5x gap as 104x, 2026-11-01)."""
+    z = np.load(path)
+    x = torch.from_numpy(z["strain"]).float().to(device)
+    ab = torch.zeros(len(x), 3, model.encoder.psd_bands, device=device) if model.psd_cond else None
+    with torch.no_grad():
+        s = torch.cat([model.sample_posterior(x[i:i + 8], n_samples=n_post,
+                                              asd_bands=ab[i:i + 8] if ab is not None else None).cpu()
+                       for i in range(0, len(x), 8)]).numpy()
+    m1, m2 = s[..., 0], s[..., 1]
+    mc, q = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2, m2 / m1
+    w = lambda v: np.quantile(v, 0.95, axis=1) - np.quantile(v, 0.05, axis=1)
+    cov = lambda v, t: float(((np.quantile(v, 0.05, axis=1) <= t) & (t <= np.quantile(v, 0.95, axis=1))).mean())
+    r_mc, r_q = w(mc) / z["mc_w90"], w(q) / z["q_w90"]
+    snr = z["snr"]
+    return {"n": int(len(x)), "path": str(path),
+            "mc_w90_ratio_median": float(np.median(r_mc)), "q_w90_ratio_median": float(np.median(r_q)),
+            "mc_w90_ratio_by_snr": {f"{lo:g}-{hi:g}": float(np.median(r_mc[(snr >= lo) & (snr < hi)]))
+                                    for lo, hi in ((8, 20), (20, 35), (35, 1e9)) if ((snr >= lo) & (snr < hi)).any()},
+            "mc_cov90": cov(mc, z["mc_true"]), "q_cov90": cov(q, z["q_true"])}
+
+
+def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",), matched=None):
     """Evaluate all CI acceptance gates over the Gaussian/real-domain metrics
     and the GWTC real-event results; returns the list of gate records."""
     gates = []
@@ -437,8 +471,17 @@ def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",)):
     inf = sh.get("informativeness", {})
     # the dynesty widths above were measured on BBH events: only BBH models
     # can be held to them
+    if matched:
+        for key, label in (("mc", "chirp-mass"), ("q", "mass-ratio")):
+            r = matched[f"{key}_w90_ratio_median"]
+            gates.append(gate(
+                f"{label} 90% width within {_SHARPNESS_TOL:g}x dynesty on matched events (median)",
+                np.isfinite(r) and r < _SHARPNESS_TOL,
+                f"{r:.2f}x over {matched['n']} events; truth coverage {matched[f'{key}_cov90']:.2f}"
+                + (f"; by SNR {', '.join(f'{k}: {v:.1f}x' for k, v in matched['mc_w90_ratio_by_snr'].items())}"
+                   if key == "mc" else "")))
     for nm, label in (("chirp_mass", "chirp-mass"), ("mass_ratio", "mass-ratio")):
-        if nm not in inf or "BBH" not in trained:
+        if matched or nm not in inf or "BBH" not in trained:
             continue
         ref = _DYNESTY_REF[nm]
         thr = ref * _SHARPNESS_TOL
@@ -672,7 +715,8 @@ def main():
                 except ValueError:
                     pass
                 gw[name] = (
-                    f"[{cls}] m1 {med['mass_1']:.1f} (pub {pub['m1'] * (1 + z):.1f} det) | "
+                    f"[{cls}] m1 {med['mass_1']:.1f} [{np.quantile(res.samples[:, 0], 0.05):.1f},"
+                    f"{np.quantile(res.samples[:, 0], 0.95):.1f}] (pub {pub['m1'] * (1 + z):.1f} det) | "
                     f"m2 {med['mass_2']:.1f} (pub {pub['m2'] * (1 + z):.1f} det) | "
                     f"q {np.median(q_s):.2f} [{q_lo:.2f},{q_hi:.2f}] (pub {pub['m2'] / pub['m1']:.2f}) | "
                     f"{dl_line} (pub {pub['dL']}) | "
@@ -701,12 +745,18 @@ def main():
     meta = {"model": args.model, "epoch": ckpt["epoch"], "val_nll": ckpt["val_nll"],
             "device": device, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "wall_s": time.time() - t_start}
-    gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows, trained=trained)
+    matched = None
+    ref = next((MATCHED_REF[c] for c in trained if c in MATCHED_REF and MATCHED_REF[c].exists()), None)
+    if ref is not None:
+        print(f"matched dynesty comparison ({ref}) ...")
+        matched = matched_dynesty(model, device, ref)
+    gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows, trained=trained, matched=matched)
     ok = html_report(out / "report.html", meta, gaus, gfigs, real, rfigs, gw, gates)
 
     with open(out / "report.json", "w") as f:
         json.dump({"meta": meta, "gaussian": gaus, "real": real, "gw150914": gw,
-                   "basin_probe": basin_rows, "gates": gates}, f, indent=2, default=float)
+                   "basin_probe": basin_rows, "matched_dynesty": matched, "gates": gates},
+                  f, indent=2, default=float)
     for g in gates:
         print(f"  {'PASS' if g['pass'] else 'FAIL'}  {g['gate']}  ({g['detail']})")
     print(f"report -> {out}/report.html  |  overall: {'PASS' if ok else 'FAIL'}")

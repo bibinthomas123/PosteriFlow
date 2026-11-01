@@ -101,7 +101,9 @@ def main():
     import yaml
     from ahsd.inference.priors import TrainingPrior
     cfg = yaml.safe_load(open(args.config)) if args.config else {}
-    sampler = ParameterSampler(cfg)
+    # seeded: the batch is reproducible and build_dynesty_reference.py can
+    # pair a model with exactly these events
+    sampler = ParameterSampler(dict(cfg, random_seed=args.seed))
     # dynesty gets the prior the model was trained on
     prior = TrainingPrior.for_class("BBH", cfg.get("distance_ranges"), cfg.get("distance_prior"),
                                     bool(cfg.get("signed_spins", False)))
@@ -127,6 +129,7 @@ def main():
             npe_samples = model.sample_posterior(st, rank=0, n_samples=3000, asd_bands=ab)[0].cpu().numpy()
         t_npe = time.time() - t0
         np.save(out / f"event{k}_npe_samples.npy", npe_samples)
+        np.save(out / f"event{k}_white.npy", np.stack([white[d] for d in DETS]).astype(np.float32))
 
         # dynesty (the expensive part)
         inj = dict(mass_1=p["mass_1"], mass_2=p["mass_2"],

@@ -37,6 +37,15 @@ EVENTS = {
                  "truth": {"mass_1": 37.3, "mass_2": 24.2, "luminosity_distance": 990.0}},
     "GW170608": {"gps": 1180922494.5, "type": "BBH",
                  "truth": {"mass_1": 11.8, "mass_2": 8.1, "luminosity_distance": 320.0}},
+    # BNS/NSBH (detector frame = source x (1+z); GWTC-1/2/3 medians)
+    "GW170817": {"gps": 1187008882.4, "type": "BNS",
+                 "truth": {"mass_1": 1.48, "mass_2": 1.28, "luminosity_distance": 40.0}},
+    "GW190425": {"gps": 1240215503.0, "type": "BNS",
+                 "truth": {"mass_1": 2.07, "mass_2": 1.45, "luminosity_distance": 159.0}},
+    "GW200105": {"gps": 1262276684.0, "type": "NSBH",
+                 "truth": {"mass_1": 9.4, "mass_2": 2.0, "luminosity_distance": 280.0}},
+    "GW200115": {"gps": 1263097407.7, "type": "NSBH",
+                 "truth": {"mass_1": 6.3, "mass_2": 1.5, "luminosity_distance": 300.0}},
     "GW170814": {"gps": 1186741861.5, "type": "BBH",
                  "truth": {"mass_1": 34.3, "mass_2": 28.2, "luminosity_distance": 580.0}},
     "GW170817": {"gps": 1187008882.4, "type": "BNS",
@@ -100,17 +109,40 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
                               "for the missing detector(s)")
 
     # ---- LeanNPE ----
-    result = infer(strain=prepared, num_samples=args.samples, model=args.model,
-                   device=args.device, seed=0)
+    # model=None: the class model (pipeline.CLASS_MODELS) for the event's type
+    result = infer(strain=prepared, event_type=meta["type"], num_samples=args.samples,
+                   model=args.model, device=args.device, seed=0)
+    found = list(prepared.detectors_present)       # minus detectors dropped for glitches
+    rec["model"] = result.config.get("model_path")
     rec["t_npe_s"] = result.diagnostics["runtime"]["total_s"]
     rec["npe_ood_flags"] = result.diagnostics["ood_flags"]
     result.truth = dict(meta["truth"])
     result.save(out / name / "npe", plots=not args.no_plots)
     npe = result.samples
 
+    is_res = None
+    if args.importance:
+        # likelihood over what the network read: the window, plus the 28 s
+        # before it for multi-rate models
+        from ahsd.inference.pipeline import load_model
+        from ahsd.inference.preprocessing import raw_segment
+        model, _ = load_model(rec["model"], device=args.device)
+        seconds = 4.0 + getattr(model, "lowrate_len", 0) / 512.0
+        seg = raw_segment({d: raw[d] for d in found}, starts, gps, seconds=seconds)
+        try:
+            is_res = result.importance_correct(seg, npool=args.npool, device=args.device or "cpu")
+            rec["importance"] = {k: v for k, v in is_res.diagnostics["importance_sampling"].items()
+                                 if k != "note"}
+            print(f"  IS: ESS {rec['importance']['importance_ess']} "
+                  f"({rec['importance']['efficiency']:.1%}), {rec['importance']['wall_s']} s")
+        except Exception as e:
+            rec["importance"] = {"error": f"{type(e).__name__}: {e}"}
+            print(f"  IS failed: {rec['importance']['error'][:200]}")
+
     comparison = {}
     dyn_post = None
-    if not args.skip_dynesty:
+    # dynesty references for BBH only: a 32 s BNS/NSBH likelihood takes hours
+    if not args.skip_dynesty and (meta["type"] == "BBH" or args.dynesty_all):
         # ---- dynesty on the identical data ----
         raw4 = {}
         for det in found:
@@ -157,6 +189,13 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
         entry = {"published": tv,
                  "npe_med": float(np.median(npe[:, j])),
                  "npe_in_90": bool(lo <= tv <= hi)}
+        if is_res is not None:
+            s_ = is_res.samples[:, j]
+            ilo, ihi = np.quantile(s_, [0.05, 0.95])
+            entry["is_med"] = float(np.median(s_))
+            entry["is_in_90"] = bool(ilo <= tv <= ihi)
+            entry["npe_90_width"] = float(hi - lo)
+            entry["is_90_width"] = float(ihi - ilo)
         if dyn_post is not None:
             d = dyn_post[BILBY_NAMES[pname]].values
             dlo, dhi = np.quantile(d, [0.05, 0.95])
@@ -192,6 +231,16 @@ def print_summary(records):
         else:
             row += f"{'—':>14}{'—':>10}{'—':>13}"
         row += f"{n_in:>13}/{len(tc)}"
+        imp = r.get("importance")
+        if imp:
+            if "error" in imp:
+                row += "  IS failed"
+            else:
+                n_is = sum(v.get("is_in_90", False) for v in tc.values())
+                m1 = tc.get("mass_1", {})
+                shrink = m1.get("npe_90_width", np.nan) / max(m1.get("is_90_width", np.nan), 1e-9)
+                row += (f"  IS ESS {imp['importance_ess']:.0f} ({imp['efficiency']:.1%}) "
+                        f"pub in IS 90% {n_is}/{len(tc)}, m1 90% width /{shrink:.1f}")
         print(row)
         for cav in r["caveats"]:
             print(f"           note: {cav}")
@@ -205,7 +254,13 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--events", nargs="+", default=list(EVENTS),
                     choices=list(EVENTS))
-    ap.add_argument("--model", default="model/lean_npe_v3/best_model.pth")
+    ap.add_argument("--model", default=None,
+                    help="checkpoint for every event (default: the class model per event)")
+    ap.add_argument("--importance", action="store_true",
+                    help="importance-sample each NPE posterior against the likelihood")
+    ap.add_argument("--npool", type=int, default=16)
+    ap.add_argument("--dynesty-all", action="store_true",
+                    help="dynesty for BNS/NSBH too (32 s likelihood: hours per event)")
     ap.add_argument("--samples", type=int, default=10000)
     ap.add_argument("--nlive", type=int, default=300)
     ap.add_argument("--outdir", default="results/real_event_benchmark")

@@ -17,7 +17,7 @@ print(f"grid on {MODEL} (epoch {ckpt['epoch']})", flush=True)
 
 inj = BilbySignalInjector(4096, 4.0); prep = BilbyPreprocessor(4096, 4.0)
 psds = {d: get_default_psd(d) for d in ("H1","L1","V1")}
-ds = RemixDataset("data/dataset/memmap/validation", remix=False, seed=1234)
+ds = RemixDataset(sys.argv[3] if len(sys.argv) > 3 else "data/dataset/memmap/validation", remix=False, seed=1234)
 rng = np.random.default_rng(11)
 j1, j2, jd = [PARAM_NAMES.index(k) for k in ("mass_1","mass_2","luminosity_distance")]
 

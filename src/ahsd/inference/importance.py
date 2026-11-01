@@ -93,7 +93,7 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
     start = center_gps + DURATION / 2 - dur
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
-        if det not in raw:
+        if det not in raw or det not in psds:      # absent, or dropped (glitch) in preprocessing
             continue
         ifo = bilby.gw.detector.get_empty_interferometer(det)
         ifo.power_spectral_density = bilby.gw.detector.PowerSpectralDensity(

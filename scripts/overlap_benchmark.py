@@ -48,7 +48,11 @@ def sample_ranks(model, strain, max_rank, K, device, batch_ev=24):
     with torch.no_grad():
         for i in range(0, N, batch_ev):
             st = strain[i:i + batch_ev].to(device).float()
-            ctx = model.encoder(st)
+            # encode(), not encoder(): splits off a multi-rate model's context
+            # stream; design-noise validation data has unit sensitivity (0)
+            ab = (torch.zeros(st.shape[0], 3, model.encoder.psd_bands, device=device)
+                  if model.psd_cond else None)
+            ctx = model.encode(st, ab)
             nb = ctx.shape[0]
             for r in range(max_rank):
                 rk = torch.full((nb,), r, dtype=torch.long, device=device)
@@ -95,7 +99,7 @@ def main():
     separation / SNR-ratio configurations."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="model/lean_npe_v3/best_model.pth")
-    ap.add_argument("--dataset ", default="data/dataset/memmap/validation")
+    ap.add_argument("--dataset", default="data/dataset/memmap/validation")
     ap.add_argument("--per_group", type=int, default=400,
                     help="events per multiplicity group (1,2,3+)")
     ap.add_argument("--n_post", type=int, default=400)

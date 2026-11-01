@@ -1,7 +1,9 @@
 #!/bin/bash
-# LeanNPE training (mf_scratch recipe + widened distance support) on a slice
-# of an H100, followed by full certification. Measured peak 5.7 GB VRAM ->
-# 2 shards; data remixing is CPU-bound -> 16 CPUs / 12 loader workers.
+# LeanNPE training (mf_scratch recipe + widened distance support) on a whole
+# H100, followed by full certification. A whole GPU, not shards: shards share
+# one GPU's compute, and two runs landed on the same H100 (2026-11-01); the
+# multi-rate step is GPU-bound in the matched-filter features. 20 CPUs /
+# WORKERS (default 16) loader workers for the remixing.
 #   sbatch --export=ALL,NAME=lean_npe_v3,DATA=data/dataset_v3,EPOCHS=40 scripts/slurm/train_lean_npe.sbatch
 # MODEL_FLAGS sets the encoder's template features (default --mf_tokens with
 # the original bank; MODEL_FLAGS=none for none). EXTRA appends trainer flags (a later --dist_range overrides the default);
@@ -11,9 +13,9 @@
 # events on the login node first (gwpy caches them in ~/.astropy/cache).
 #SBATCH --job-name=lean_npe
 #SBATCH --partition=gpu-stud
-#SBATCH --gres=shard:2
+#SBATCH --gres=gpu:1
 #SBATCH --exclude=ant7,ant8
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=20
 #SBATCH --mem=96G
 #SBATCH --time=1-00:00:00
 #SBATCH --output=logs/train-%x-%j.out
@@ -28,7 +30,7 @@ MF=${MODEL_FLAGS:---mf_tokens}
 nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv,noheader
 echo "[$(date)] train $NAME on $DATA ($(hostname))"
 $PY -u experiments/train_lean_npe.py --data "$DATA" --remix \
-    --epochs "${EPOCHS:-40}" --batch 128 --lr 3e-4 --workers 12 --outdir "$OUT" \
+    --epochs "${EPOCHS:-40}" --batch 128 --lr 3e-4 --workers "${WORKERS:-16}" --outdir "$OUT" \
     --dist_range 8 6000 \
     --noise_bank data/noise_bank --real_noise_prob 0.9 --det_dropout 0.2 \
     --psd_cond --encoder_type coherent --mass_param mc_q $MF \

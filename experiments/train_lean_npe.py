@@ -279,19 +279,14 @@ def batch_nll(model, strain, params, nsig, asd_bands=None,
     already-resolved events, so the gradient self-targets the collapsed
     ones."""
     context = model.encode(strain, asd_bands)
-    count = 0
-    losses = []
-    max_n = int(nsig.max().item())
-    for r in range(max_n):
-        mask = nsig > r
-        if not mask.any():
-            continue
-        idx = mask.nonzero(as_tuple=True)[0]
-        rank = torch.full((idx.numel(),), r, dtype=torch.long, device=strain.device)
-        nll = model.nll(None, params[idx, r, :], rank, context=context[idx])
-        losses.append(nll.sum())
-        count += idx.numel()
-    loss = torch.stack(losses).sum() / count
+    # every (event, rank) pair present, in ONE flow call: the same per-signal
+    # NLLs as one call per rank (the loss is their mean either way), without
+    # up to max_signals sequential flow passes per step
+    R = params.shape[1]
+    present = nsig.unsqueeze(1) > torch.arange(R, device=strain.device).unsqueeze(0)   # [B, R]
+    ev, rank = present.nonzero(as_tuple=True)
+    nll = model.nll(None, params[ev, rank, :], rank, context=context[ev])
+    loss = nll.mean()
     if aux_head is not None and aux_w > 0.0:
         # .contiguous(): the column slice is strided and MPS smooth_l1_loss
         # rejects non-contiguous inputs (CPU tolerates them)

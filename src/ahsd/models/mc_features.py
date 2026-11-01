@@ -51,6 +51,35 @@ TRIG_OS = 8              # trigger features: lag oversampling (4 s / (8 x 4016) 
 TRIG_SECOND_S = 0.05     # a second merger-time peak must be > 50 ms away
 N_TRIG = 4 + 3 * 4 + 2 * 3
 N_TRIG_TOKENS = 2
+CHUNK_ELEMS = 4e7         # complex elements per matched-filter chunk (GPU memory vs speed)
+FEAT_VERSION = 3          # feature definition of new models (see __init__)
+
+
+def fast_len(n: int) -> int:
+    """Smallest 2^a 3^b >= n: an FFT length cuFFT runs without Bluestein."""
+    best = 1 << (n - 1).bit_length()
+    p3 = 1
+    while p3 < best:
+        p2 = p3
+        while p2 < n:
+            p2 *= 2
+        best = min(best, p2)
+        p3 *= 3
+    return best
+
+
+def circ_maxpool(a: torch.Tensor, w: int) -> torch.Tensor:
+    """Max over [i-w, i+w] along the last (circular) axis: the same values as
+    max_pool1d on the circularly padded tensor, by doubling (log2(2w+1)
+    passes instead of 2w+1 reads per output)."""
+    k = 2 * w + 1
+    x = torch.cat([a[..., -w:], a, a[..., :w]], dim=-1) if w else a
+    m, span = x, 1
+    while 2 * span <= k:
+        m = torch.maximum(m[..., :-span], m[..., span:])
+        span *= 2
+    L = a.shape[-1]
+    return torch.maximum(m[..., :L], m[..., k - span:k - span + L])
 
 
 class McFeatures(nn.Module):
@@ -106,7 +135,13 @@ class McFeatures(nn.Module):
         #    fine window onto "not evaluated" (-1) or coarse values
         #  - the coincidence max-filter did not wrap around the circular lag
         #    axis (context-stream peaks sit at lag ~0)
-        self.register_buffer("feat_version", torch.tensor(2.0))
+        # 3 (speed, 2026-11-01): lag axes zero-padded to fast FFT lengths
+        # (4016 = 16 x 251 ran cuFFT's Bluestein path, ~3x slower), so lags are
+        # sampled ~2% more densely; the coincidence max-filter by doubling
+        # (identical values, ~6 passes instead of one read per window lag).
+        # Measured per step (B=128, H100): NSBH spin bank 515 -> 248 ms, BNS
+        # 237 -> 124 ms; BNS chirp-mass error in real noise unchanged (0.038%).
+        self.register_buffer("feat_version", torch.tensor(float(FEAT_VERSION)))
         self._sync_flags()
         self.n_features = 2 + (2 * W + 1) + 2 + 4 + (2 * self.n_q if self.n_q > 1 else 0)
         self.mlp = nn.Sequential(nn.LayerNorm(self.n_features), nn.Linear(self.n_features, 128), nn.GELU(),
@@ -135,12 +170,26 @@ class McFeatures(nn.Module):
         per_event = H.dim() == 4
         B, Dn, F = d.shape
         K = H.shape[-2]
-        chunk = max(1, int(4e7 / max(B * Dn * max(n, F), 1)))
+        if self._v3:
+            # zero-pad the lag axis to a fast FFT length: same correlation,
+            # sampled on a finer lag grid; scale^2 applied after the maxima
+            nf = fast_len(n)
+            scale2 = (scale * nf / n) ** 2
+            n = nf
+        chunk = max(1, int(CHUNK_ELEMS / max(B * Dn * max(n, F), 1)))
         w = max(1, int(round(COINC_S * n / duration)))
         out = []
         for k0 in range(0, K, chunk):
             h = H[..., k0:k0 + chunk, :].conj()
             prod = d.unsqueeze(2) * (h if per_event else h.unsqueeze(0))
+            if self._v3:
+                a = torch.fft.ifft(prod, n=n, dim=-1).abs().square_()            # [B,D,kc,n]
+                if self._coinc:
+                    a = circ_maxpool(a, w)
+                    out.append(a.sum(1).amax(-1) * scale2)
+                else:
+                    out.append(a.amax(-1).sum(1) * scale2)
+                continue
             a = (torch.fft.ifft(prod, n=n, dim=-1).abs() * scale) ** 2          # [B,D,kc,n]
             if self._coinc:
                 kc = a.shape[2]
@@ -161,6 +210,7 @@ class McFeatures(nn.Module):
         the matched-filter loop would force a device sync per chunk."""
         self._coinc = bool(self.coinc_flag)
         self._v2 = float(self.feat_version) >= 2
+        self._v3 = float(self.feat_version) >= 3
 
     @property
     def coincident(self) -> bool:
@@ -175,7 +225,7 @@ class McFeatures(nn.Module):
         """Current feature definition (coincidence on, version 2): call after a
         partial load (--init_from) that may have carried an older one."""
         self.coinc_flag.fill_(1.0)
-        self.feat_version.fill_(2.0)
+        self.feat_version.fill_(float(FEAT_VERSION))
         self._sync_flags()
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
@@ -189,6 +239,7 @@ class McFeatures(nn.Module):
                                       missing_keys, unexpected_keys, error_msgs)
         self._coinc = bool(state_dict[prefix + "coinc_flag"])
         self._v2 = float(state_dict[prefix + "feat_version"]) >= 2
+        self._v3 = float(state_dict[prefix + "feat_version"]) >= 3
 
     def _profiles(self, hi: torch.Tensor, lo: torch.Tensor = None):
         """Coarse-to-fine chirp-mass profile. Coarse: every COARSE-th chirp
@@ -302,7 +353,8 @@ class McFeatures(nn.Module):
         """Arrival times, SNRs and phases of the best template [B, N_TRIG]
         (see module docstring), from the window stream."""
         B, dev = hi.shape[0], hi.device
-        nb, n = self.n_band, TRIG_OS * self.n_band
+        nb = self.n_band
+        n = fast_len(TRIG_OS * nb) if self._v3 else TRIG_OS * nb
         k = prof.argmax(-1)
         t = k * self.n_q + prof_q[torch.arange(B, device=dev), k].argmax(-1)
         H = torch.complex(self.win_re, self.win_im)[:, t].permute(1, 0, 2)          # [B,D,F]

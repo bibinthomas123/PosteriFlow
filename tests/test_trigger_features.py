@@ -65,3 +65,23 @@ def test_tokens_and_no_trigger_unchanged(mf):
     assert mf(x).shape == (2, 4, 192)
     plain = McFeatures("mc_bank_bbh.npz", 80, 4016)
     assert plain(x).shape == (2, 2, 192) and not hasattr(plain, "trig_mlp")
+
+
+def test_fast_lengths_and_doubling_maxpool():
+    """Feature version 3 speed-ups: the doubling max-filter equals
+    max_pool1d on the circularly padded axis exactly, FFT lengths are
+    2^a 3^b, and the profiles match version 2 (finer lag grid only)."""
+    from ahsd.models.mc_features import McFeatures, circ_maxpool, fast_len
+    assert [fast_len(n) for n in (4016, 8032, 6048, 32128)] == [4096, 8192, 6144, 32768]
+    a = torch.rand(5, 3, 1000)
+    for w in (1, 3, 12, 24):
+        ref = torch.nn.functional.max_pool1d(torch.nn.functional.pad(a.reshape(-1, 1, 1000), (w, w), mode="circular"),
+                                             2 * w + 1, stride=1).reshape(a.shape)
+        assert torch.equal(circ_maxpool(a, w), ref)
+    m3 = McFeatures("mc_bank_bbh.npz", 80, 4016)
+    m2 = McFeatures("mc_bank_bbh.npz", 80, 4016)
+    m2.feat_version.fill_(2.0); m2._sync_flags()
+    x = _data(m3, 300 * m3.n_q, np.full(3, 0.3), np.zeros(3), amp=12.0)
+    p3, p2 = m3._profiles(x)[0], m2._profiles(x)[0]
+    assert float(p3.max()) == pytest.approx(float(p2.max()), rel=1e-2)   # the peak; noise maxima move a little
+    assert m3.estimate(x).item() == pytest.approx(m2.estimate(x).item(), rel=2e-3)

@@ -284,7 +284,8 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
     stats = load_context_stats(meta["model_path"])
     ood_score = None
     if stats is not None:
-        ood_score = score_context(ctx[0].cpu().numpy(), stats)
+        # learned context only: a pivot model appends its estimates after it
+        ood_score = score_context(ctx[0, :net.context_dim].cpu().numpy(), stats)
         diagnostics["context_ood"] = ood_score
     diagnostics["verdict"] = confidence_verdict(ood_score, rail_frac,
                                                 prepared.warnings)

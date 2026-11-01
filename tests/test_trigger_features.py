@@ -118,3 +118,22 @@ def test_pivot_shift_is_consistent():
                   mc_bank="mc_bank_bbh.npz:trigger")
     old.load_state_dict(sd)
     assert old.flow.pivot_idx == [] and not bool(old.pivot)
+
+
+def test_sky_frame_model_samples_physical_params():
+    """sky_frame + pivot: the time pivot is the H1 arrival, samples come back
+    as physical ra / dec / geocent time, and the buffer survives a reload."""
+    pytest.importorskip("bilby")
+    from ahsd.models.lean_npe import LeanNPE, PARAM_NAMES
+    m = LeanNPE(psd_cond=True, encoder_type="coherent", mass_param="mc_q", dist_range=(80, 5000),
+                mc_bank="mc_bank_bbh.npz:trigger", pivot=True, sky_frame=True).eval()
+    assert m._pivot_names() == ["chirp_mass", "time_h1"]
+    x = _data(m.encoder.mc_feat, 300 * m.encoder.mc_feat.n_q, np.array([0.3, 0.305, 0.29]), np.zeros(3), amp=30.0)
+    with torch.no_grad():
+        s = m.sample_posterior(x, n_samples=50, asd_bands=torch.zeros(1, 3, 16))[0]
+    ra, dec, tc = s[:, PARAM_NAMES.index("ra")], s[:, PARAM_NAMES.index("dec")], s[:, PARAM_NAMES.index("geocent_time")]
+    assert ((ra >= 0) & (ra < 2 * np.pi)).all() and (dec.abs() <= np.pi / 2).all() and (tc.abs() < 1.7).all()
+    fresh = LeanNPE(psd_cond=True, encoder_type="coherent", mass_param="mc_q", dist_range=(80, 5000),
+                    mc_bank="mc_bank_bbh.npz:trigger")
+    fresh.load_state_dict(m.state_dict())
+    assert fresh.scaler.sky_frame and fresh._pivot_names() == ["chirp_mass", "time_h1"]

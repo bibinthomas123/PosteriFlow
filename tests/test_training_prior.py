@@ -169,3 +169,51 @@ def test_spin_convention_travels_with_the_checkpoint():
     legacy = LeanNPE(spin_signed=True)
     legacy.load_state_dict(sd)                               # pre-buffer checkpoint: magnitudes
     assert not legacy.scaler.spin_signed
+
+
+def _phys_batch(n=64, seed=0):
+    import torch
+    rng = np.random.default_rng(seed)
+    m1 = rng.uniform(10, 60, n); m2 = m1 * rng.uniform(0.3, 0.95, n)
+    th = np.stack([m1, m2, rng.uniform(200, 3000, n), rng.uniform(0.1, 6.2, n),
+                   np.arcsin(rng.uniform(-0.95, 0.95, n)), rng.uniform(0.2, 2.9, n),
+                   rng.uniform(0.1, 3.0, n), rng.uniform(0.1, 6.2, n), rng.uniform(-1.4, 1.4, n),
+                   rng.uniform(-0.8, 0.8, n), rng.uniform(-0.8, 0.8, n)], 1)
+    return torch.tensor(th, dtype=torch.float64)
+
+
+def test_sky_frame_round_trip_and_h1_time():
+    """(ra, dec, geocent_time) <-> (azimuth, cos_zenith, time_h1) is exact,
+    and time_h1 is the geocent time plus bilby's H1 delay."""
+    pytest.importorskip("bilby")
+    import torch, bilby
+    from ahsd.models.lean_npe import ParamScaler
+    from ahsd.data.parameter_sampler import GPS_REF
+    sc = ParamScaler(PARAM_NAMES, mass_param="mc_q", dist_range=(80, 5000), spin_signed=True, sky_frame=True)
+    sc.lo, sc.hi = sc.lo.double(), sc.hi.double()
+    th = _phys_batch()
+    back = sc.denormalize(sc.normalize(th))
+    assert torch.allclose(back, th, rtol=1e-6, atol=1e-6)
+    h1 = bilby.gw.detector.get_empty_interferometer("H1")
+    z = sc._to_internal(th)
+    for i in range(5):
+        d = h1.time_delay_from_geocenter(float(th[i, 3]), float(th[i, 4]), GPS_REF + float(th[i, 8]))
+        assert abs(float(z[i, 8]) - (float(th[i, 8]) + d)) < 2e-6
+
+
+@pytest.mark.parametrize("sky", [False, True])
+def test_log_abs_det_jacobian_matches_numeric(sky):
+    """The physical proposal density in importance sampling needs the exact
+    log|dy/dtheta| of normalize(): linear maps, log axes, (m1,m2)->(Mc,q)
+    and, with sky_frame, the sky rotation."""
+    if sky:
+        pytest.importorskip("bilby")
+    import torch
+    from ahsd.models.lean_npe import ParamScaler
+    sc = ParamScaler(PARAM_NAMES, mass_param="mc_q", dist_range=(80, 5000), spin_signed=True, sky_frame=sky)
+    sc.lo, sc.hi = sc.lo.double(), sc.hi.double()
+    th = _phys_batch(6, seed=1)
+    for i in range(len(th)):
+        J = torch.autograd.functional.jacobian(lambda v: sc.normalize(v[None])[0], th[i])
+        num = torch.linalg.slogdet(J)[1]
+        assert abs(float(num - sc.log_abs_det_jacobian(th[i][None])[0])) < 1e-6

@@ -491,6 +491,9 @@ def main():
                     help="v2 component dataset: remix noise/shift/distance on the fly "
                          "(builds a memmap cache under <data>/memmap on first use)")
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--sky_frame", action="store_true",
+                    help="flow coordinates: sky about the H1-L1 baseline (azimuth, cos zenith) and "
+                         "merger time at H1, instead of ra / dec / geocent time")
     ap.add_argument("--pivot", action="store_true",
                     help="flow models chirp mass (and merger time, with :trigger) as an offset "
                          "from the bank's estimate (needs --mass_param mc_q and --mc_bank)")
@@ -937,7 +940,7 @@ def main():
                     mf_bank=args.mf_bank,
                     pol_features=args.pol_features,
                     lowrate_len=args.lowrate_len, mc_bank=args.mc_bank,
-                    spin_signed=args.signed_spins, pivot=args.pivot,
+                    spin_signed=args.signed_spins, pivot=args.pivot, sky_frame=args.sky_frame,
                     flow_layers=args.flow_layers,
                     flow_hidden=args.flow_hidden,
                     flow_bins=args.flow_bins).to(device)
@@ -973,10 +976,12 @@ def main():
             model.scaler = ParamScaler(PARAM_NAMES, premerger=args.premerger,
                                        mass_param=args.mass_param,
                                        dist_range=tuple(args.dist_range),
-                                       spin_signed=args.signed_spins).to(device)
+                                       spin_signed=args.signed_spins, sky_frame=args.sky_frame).to(device)
             if old != tuple(args.dist_range):
                 log.warning(f"init_from: distance support {old} -> {tuple(args.dist_range)} Mpc; "
                             "the flow's distance coordinate must re-learn its map")
+        if bool(model.sky_frame) != args.sky_frame:
+            raise SystemExit("--init_from: the checkpoint's sky coordinates differ from --sky_frame")
         if bool(model.pivot) != args.pivot:
             model.pivot.fill_(float(args.pivot)); model._sync_pivot()
             log.warning(f"init_from: pivot -> {args.pivot}")
@@ -986,7 +991,7 @@ def main():
             model.scaler = ParamScaler(PARAM_NAMES, premerger=args.premerger,
                                        mass_param=args.mass_param,
                                        dist_range=tuple(model.dist_range.tolist()),
-                                       spin_signed=args.signed_spins).to(device)
+                                       spin_signed=args.signed_spins, sky_frame=args.sky_frame).to(device)
             log.warning(f"init_from: spin convention -> {'signed' if args.signed_spins else 'magnitude'}")
         log.info(f"fine-tuning from {args.init_from} "
                  f"(epoch {init.get('epoch')}, val_nll {init.get('val_nll'):.4f})")

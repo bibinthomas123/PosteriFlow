@@ -130,9 +130,24 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
         seconds = 4.0 + getattr(model, "lowrate_len", 0) / 512.0
         seg = raw_segment({d: raw[d] for d in found}, starts, gps, seconds=seconds)
         try:
-            is_res = result.importance_correct(seg, npool=args.npool, device=args.device or "cpu")
+            is_res = result.importance_correct(seg, npool=args.npool, device=args.device or "cpu", seed=0)
             rec["importance"] = {k: v for k, v in is_res.diagnostics["importance_sampling"].items()
                                  if k != "note"}
+            # replicate runs: a multimodal posterior can come out on different
+            # branches; disagreement beyond half a 90% width -> hand to dynesty
+            reps = [is_res] + [result.importance_correct(seg, npool=args.npool, device=args.device or "cpu",
+                                                         seed=k) for k in range(1, args.is_reps)]
+            if len(reps) > 1:
+                worst = 0.0
+                for pname in ("mass_1", "mass_2", "luminosity_distance"):
+                    j = PARAM_NAMES.index(pname)
+                    meds = [np.median(r_.samples[:, j]) for r_ in reps]
+                    w90 = np.mean([np.subtract(*np.quantile(r_.samples[:, j], [0.95, 0.05])) for r_ in reps])
+                    worst = max(worst, float(np.ptp(meds) / max(w90, 1e-12)))
+                rec["importance"]["replicate_spread"] = round(worst, 3)
+                rec["importance"]["consistent"] = worst < 0.5
+                print(f"  IS replicates: worst median spread {worst:.2f} of a 90% width "
+                      f"({'consistent' if worst < 0.5 else 'INCONSISTENT -> multimodal, use dynesty'})")
             print(f"  IS: ESS {rec['importance']['importance_ess']} "
                   f"({rec['importance']['efficiency']:.1%}), {rec['importance']['wall_s']} s")
         except Exception as e:
@@ -261,6 +276,8 @@ def main():
     ap.add_argument("--importance", action="store_true",
                     help="importance-sample each NPE posterior against the likelihood")
     ap.add_argument("--npool", type=int, default=16)
+    ap.add_argument("--is_reps", type=int, default=2,
+                    help="importance-sampling replicates (different seeds) for the consistency check")
     ap.add_argument("--dynesty-all", action="store_true",
                     help="dynesty for BNS/NSBH too (32 s likelihood: hours per event)")
     ap.add_argument("--samples", type=int, default=10000)

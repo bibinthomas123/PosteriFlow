@@ -402,6 +402,7 @@ class McFeatures(nn.Module):
         tm = lambda lag: torch.remainder(lag * dt, T_LEN / SR) - T_LEN / SR / 2
         l2, s2 = refine(c2)
         self.last_t = tm(ref).detach()       # merger-time estimate (s), for the pivot
+        self.last_t_h1 = tm(arr[:, 0]).detach()   # arrival at H1 (sky_frame pivot)
         feats = [tm(ref) / 1.5, torch.asinh((y1 ** 2).sum(-1).sqrt()), tm(l2.float()) / 1.5, torch.asinh(s2)]
         for j in range(z.shape[1]):
             feats += [tau[:, j], torch.asinh(y1[:, j]), torch.cos(phi[:, j]), torch.sin(phi[:, j])]

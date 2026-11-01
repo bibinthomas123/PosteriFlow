@@ -172,7 +172,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        model_path: Optional[str] = None,
                        npool: int = 4, f_min: Optional[float] = None,
                        approximant: Optional[str] = None,
-                       device: str = "cpu"):
+                       device: str = "cpu", seed: int = 0):
     """Reweight a PosteriorResult against the true likelihood.
 
     raw_strain: UNWHITENED strains keyed by detector, ending at the window end
@@ -276,7 +276,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         xs[:, [0, 1]] = x[:, [1, 0]]
         return np.logaddexp(gm.score_samples(x), gm.score_samples(xs))
 
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     tc_pool = theta[:, _J["geocent_time"]].copy()
     ph_pool = theta[:, _J["phase"]].copy()
 
@@ -324,6 +324,40 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     gm0 = GaussianMixture(n_components=10, covariance_type="full",
                           reg_covar=1e-5, random_state=0).fit(to_slow(theta))
 
+    def branches(x, k_max=4):
+        """Cluster labels of particles in slow space (BIC over 1..k_max
+        Gaussian components, fitted on a subsample): the posterior's separate
+        branches, e.g. GW200115's light-BH / anti-aligned-spin and heavier /
+        small-spin modes."""
+        z = (x - x.mean(0)) / (x.std(0) + 1e-12)
+        sub = z[rng.choice(len(z), size=min(len(z), 3000), replace=False)]
+        fits = [GaussianMixture(k, covariance_type="full", reg_covar=1e-4, random_state=0).fit(sub)
+                for k in range(1, k_max + 1)]
+        best = min(fits, key=lambda g: g.bic(sub))
+        return best.predict(z)
+
+    def resample(w, labels):
+        """Systematic resampling within each branch, branch counts set by
+        branch weight (residual allocation): unbiased, and a branch holding
+        weight >= 1/n is never lost to resampling noise, which is what
+        collapsed GW200115 onto one branch in some runs and the other in
+        others."""
+        out = []
+        cls = np.unique(labels)
+        W = np.array([w[labels == c].sum() for c in cls])
+        n_c = np.floor(W * n).astype(int)
+        rest = n - n_c.sum()
+        if rest > 0:
+            n_c[np.argsort(-(W * n - n_c))[:rest]] += 1
+        for c, k in zip(cls, n_c):
+            if k == 0:
+                continue
+            ids = np.where(labels == c)[0]
+            wc = w[ids] / w[ids].sum()
+            u = (rng.uniform() + np.arange(k)) / k
+            out.append(ids[np.searchsorted(np.cumsum(wc), u).clip(0, len(ids) - 1)])
+        return np.concatenate(out)
+
     def mh_moves(th, log_t1, log_g0, beta, scale):
         """Random-walk Metropolis moves leaving the tempered target
         t_b = g0^(1-b) (L pi)^b invariant (slow space; time and phase are
@@ -332,10 +366,20 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         NPE samples sat 16 nats below the peak and the ladder stalled at
         beta ~ 0.06 although every 1-D marginal agreed with dynesty."""
         x = to_slow(th)
-        chol = np.linalg.cholesky(np.cov(x.T) + 1e-9 * np.eye(x.shape[1]))
+        # proposal covariance per branch (a pooled covariance spans the gap
+        # between branches: steps too large inside each, ~0 acceptance)
+        labels = branches(x)
+        eye = 1e-9 * np.eye(x.shape[1])
+        chol_all = np.linalg.cholesky(np.cov(x.T) + eye)
+        chols = {c: (np.linalg.cholesky(np.cov(x[labels == c].T) + eye)
+                     if (labels == c).sum() > 3 * x.shape[1] else chol_all) for c in np.unique(labels)}
         acc_all = []
         for _ in range(N_MOVES):
-            xp = x + scale * rng.standard_normal(x.shape) @ chol.T
+            step = rng.standard_normal(x.shape)
+            for c, L in chols.items():
+                m = labels == c
+                step[m] = step[m] @ L.T
+            xp = x + scale * step
             thp = from_slow(xp, tc_pool, ph_pool, rng)
             thp[:, _J["geocent_time"]] = th[:, _J["geocent_time"]]
             thp[:, _J["phase"]] = th[:, _J["phase"]]
@@ -387,8 +431,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         # stage's proposal density is t_beta itself (unnormalized: the
         # weights are self-normalized), and pick_beta / the weights above
         # stay exact.
-        u = (rng.uniform() + np.arange(n)) / n
-        idx_r = np.searchsorted(np.cumsum(w), u).clip(0, len(w) - 1)
+        idx_r = resample(w, branches(to_slow(cur_theta)))
         cur_theta, log_t1, cur_log_g0, scale, acc = mh_moves(
             cur_theta[idx_r], log_t1[idx_r], cur_log_g0[idx_r], beta, scale)
         accs.append(round(acc, 3))

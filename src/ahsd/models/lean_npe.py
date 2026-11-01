@@ -45,6 +45,25 @@ PARAM_NAMES = [
 ]
 
 
+_SKY_GEOM = {}
+
+
+def _sky_geometry() -> dict:
+    """H1/L1 vertices, GMST at the training epoch (parameter_sampler.GPS_REF)
+    and an orthonormal frame with ez along the H1-L1 baseline (cached)."""
+    if not _SKY_GEOM:
+        import bilby
+        from bilby.gw.utils import greenwich_mean_sidereal_time
+        from ahsd.data.parameter_sampler import GPS_REF
+        h1, l1 = (bilby.gw.detector.get_empty_interferometer(d).geometry.vertex for d in ("H1", "L1"))
+        ez = (h1 - l1) / np.linalg.norm(h1 - l1)
+        ex = np.cross(ez, [0.0, 0.0, 1.0]); ex /= np.linalg.norm(ex)
+        ey = np.cross(ez, ex)
+        _SKY_GEOM.update(gmst=float(greenwich_mean_sidereal_time(GPS_REF)) % (2 * math.pi),
+                         ex=ex, ey=ey, ez=ez, v_h1=np.asarray(h1, float), c=299792458.0)
+    return _SKY_GEOM
+
+
 class ParamScaler:
     """Fixed, invertible map physical params <-> [-1, 1] (log-space for
     masses/distance, linear for angles/time/spins). Deterministic: no fitted
@@ -93,12 +112,17 @@ class ParamScaler:
         "geocent_time":        (-1.6, 1.6, False),
         "a1":                  (0.0, 1.0, False),
         "a2":                  (0.0, 1.0, False),
+        # sky_frame coordinates (see _sky_geometry): sky about the H1-L1
+        # baseline, merger time at H1 (geocent time + H1 delay <= 21 ms)
+        "azimuth":             (0.0, 2 * math.pi, False),
+        "cos_zenith":          (-1.0, 1.0, False),
+        "time_h1":             (-1.6, 1.6, False),
     }
 
     # Parameters whose range equals one full period: wrapping in normalized
     # space is EXACT (ra, phase: 2*pi; psi: pi). Flow samples that land past a
     # bound belong at the other end of the circle, not clamped at the edge.
-    CIRCULAR = ("ra", "phase", "psi")
+    CIRCULAR = ("ra", "phase", "psi", "azimuth")
 
     # Legacy luminosity-distance support. Labels outside it are CLAMPED by
     # normalize(), so a 15 Mpc BNS trains as "40 Mpc" and a 2750 Mpc event
@@ -109,7 +133,7 @@ class ParamScaler:
 
     def __init__(self, param_names: List[str] = PARAM_NAMES, premerger: bool = False,
                  mass_param: str = "m1m2", dist_range: Optional[tuple] = None,
-                 spin_signed: bool = False):
+                 spin_signed: bool = False, sky_frame: bool = False):
         """premerger=True widens geocent_time to cover early-warning events
         whose merger lies up to ~3 s past the window end (t_c up to +5 s).
         Must match between training and inference (stored in checkpoint args).
@@ -125,6 +149,7 @@ class ParamScaler:
         """
         self.dist_range = tuple(float(v) for v in (dist_range or self.LEGACY_DIST_RANGE))
         self.spin_signed = bool(spin_signed)
+        self.sky_frame = bool(sky_frame)
         if mass_param not in ("m1m2", "mc_q"):
             raise ValueError(f"mass_param must be 'm1m2' or 'mc_q', got {mass_param!r}")
         self.param_names = param_names
@@ -136,10 +161,14 @@ class ParamScaler:
             self.internal_names = ["chirp_mass", "mass_ratio"] + list(param_names[2:])
         else:
             self.internal_names = list(param_names)
+        if self.sky_frame:
+            ren = {"ra": "azimuth", "dec": "cos_zenith", "geocent_time": "time_h1"}
+            self.internal_names = [ren.get(n, n) for n in self.internal_names]
+            self._sky = _sky_geometry()
         lo, hi, lg = [], [], []
         for p in self.internal_names:
             l, h, g = self.RANGES[p]
-            if p == "geocent_time" and premerger:
+            if p in ("geocent_time", "time_h1") and premerger:
                 l, h = -1.6, 5.2
             if p == "luminosity_distance":
                 l, h = self.dist_range
@@ -176,6 +205,8 @@ class ParamScaler:
     # axis for 3-D input and breaks the m1>=m2 guarantee.
     def _to_internal(self, x: torch.Tensor) -> torch.Tensor:
         """physical (m1, m2, ...) -> the flow's coordinates."""
+        if self.sky_frame:
+            x = self._sky_to_frame(x)
         if self.mass_param == "m1m2":
             return x
         m1 = x[..., 0].clamp_min(1e-6)
@@ -191,14 +222,64 @@ class ParamScaler:
         then m1 = M/(1+q), m2 = qM/(1+q). q <= 1 gives m1 >= m2 exactly, which is
         why no max/min fold is needed downstream.
         """
-        if self.mass_param == "m1m2":
-            return z
-        mc = z[..., 0].clamp_min(1e-6)
-        q = z[..., 1].clamp(1e-4, 1.0)
-        M = mc * (1.0 + q).pow(1.2) / q.pow(0.6)
-        m1 = M / (1.0 + q)
-        m2 = M * q / (1.0 + q)
-        return torch.cat([m1.unsqueeze(-1), m2.unsqueeze(-1), z[..., 2:]], dim=-1)
+        if self.mass_param != "m1m2":
+            mc = z[..., 0].clamp_min(1e-6)
+            q = z[..., 1].clamp(1e-4, 1.0)
+            M = mc * (1.0 + q).pow(1.2) / q.pow(0.6)
+            m1 = M / (1.0 + q)
+            m2 = M * q / (1.0 + q)
+            z = torch.cat([m1.unsqueeze(-1), m2.unsqueeze(-1), z[..., 2:]], dim=-1)
+        return self._sky_from_frame(z) if self.sky_frame else z
+
+    # ---- sky frame: (ra, dec, geocent_time) <-> (azimuth, cos_zenith, time_h1)
+    # at the fixed training epoch GPS_REF (every training event was projected
+    # there; real events' ra is shifted by the pipeline as before). The H1-L1
+    # delay fixes cos_zenith, the sky ring is azimuth, and the merger time at
+    # H1 is what the data measures (geocent time differs by up to 21 ms with
+    # the sky, which spread the geocent posterior 9-28x dynesty's width).
+    def _sky_to_frame(self, x):
+        g = self._sky
+        ra, dec, tc = x[..., 3], x[..., 4], x[..., 8]
+        gha = g["gmst"] - ra
+        n = torch.stack([torch.cos(dec) * torch.cos(gha), -torch.cos(dec) * torch.sin(gha),
+                         torch.sin(dec)], dim=-1)
+        ex, ey, ez = (torch.as_tensor(g[k], dtype=x.dtype, device=x.device) for k in ("ex", "ey", "ez"))
+        cz = (n * ez).sum(-1).clamp(-1.0, 1.0)
+        az = torch.remainder(torch.atan2((n * ey).sum(-1), (n * ex).sum(-1)), 2 * math.pi)
+        vh = torch.as_tensor(g["v_h1"], dtype=x.dtype, device=x.device)
+        th1 = tc - (n * vh).sum(-1) / g["c"]
+        out = x.clone()
+        out[..., 3], out[..., 4], out[..., 8] = az, cz, th1
+        return out
+
+    def _sky_from_frame(self, z):
+        g = self._sky
+        az, cz, th1 = z[..., 3], z[..., 4].clamp(-1.0, 1.0), z[..., 8]
+        sz = (1 - cz ** 2).clamp_min(0).sqrt()
+        ex, ey, ez = (torch.as_tensor(g[k], dtype=z.dtype, device=z.device) for k in ("ex", "ey", "ez"))
+        n = (sz * torch.cos(az)).unsqueeze(-1) * ex + (sz * torch.sin(az)).unsqueeze(-1) * ey \
+            + cz.unsqueeze(-1) * ez
+        dec = torch.asin(n[..., 2].clamp(-1.0, 1.0))
+        ra = torch.remainder(g["gmst"] - torch.atan2(-n[..., 1], n[..., 0]), 2 * math.pi)
+        vh = torch.as_tensor(g["v_h1"], dtype=z.dtype, device=z.device)
+        tc = th1 + (n * vh).sum(-1) / g["c"]
+        out = z.clone()
+        out[..., 3], out[..., 4], out[..., 8] = ra, dec, tc
+        return out
+
+    def log_abs_det_jacobian(self, x: torch.Tensor) -> torch.Tensor:
+        """log|d y / d theta| of normalize() at physical theta [..., 11]: the
+        linear [-1, 1] maps, the log axes, the (m1, m2) -> (Mc, q) map
+        (|d(Mc, q)/d(m1, m2)| = Mc / m1^2) and the sky rotation
+        (d azimuth d cos_zenith = cos(dec) d ra d dec; the time shear is 1)."""
+        z = self._to_internal(x)
+        out = (math.log(2.0) - torch.log(self.hi - self.lo)).sum() + torch.where(
+            self.log_mask, -torch.log(z.clamp_min(1e-6)), torch.zeros_like(z)).sum(-1)
+        if self.mass_param == "mc_q":
+            out = out + torch.log(z[..., 0].clamp_min(1e-6)) - 2 * torch.log(x[..., 0].clamp_min(1e-6))
+        if self.sky_frame:
+            out = out + torch.log(torch.cos(x[..., 4]).clamp_min(1e-9))
+        return out
 
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
         """physical [batch, 11] -> [-1, 1]"""
@@ -370,7 +451,7 @@ class LeanNPE(nn.Module):
                  mf_token_fusion: str = "add", q_embed_dim: int = 0,
                  dist_range: Optional[tuple] = None, mf_bank: str = "mf_bank.npz",
                  pol_features: bool = False, lowrate_len: int = 0, mc_bank: str = "",
-                 spin_signed: bool = False, pivot: bool = False):
+                 spin_signed: bool = False, pivot: bool = False, sky_frame: bool = False):
         super().__init__()
         self.param_names = param_names
         self.premerger = premerger
@@ -404,7 +485,7 @@ class LeanNPE(nn.Module):
         self.mass_param = mass_param
         self.scaler = ParamScaler(param_names, premerger=premerger,
                                   mass_param=mass_param, dist_range=dist_range,
-                                  spin_signed=spin_signed)
+                                  spin_signed=spin_signed, sky_frame=sky_frame)
         # Persisted so a checkpoint carries its own distance support: any load
         # site (all of them build LeanNPE without dist_range) gets the trained
         # range from load_state_dict. Checkpoints that predate this buffer get
@@ -420,6 +501,8 @@ class LeanNPE(nn.Module):
         # scalar into the flow; a shared peak at zero is easier to learn. Shift
         # only (no rescale), so a wrong-mode estimate never excludes the truth.
         self.register_buffer("pivot", torch.tensor(float(bool(pivot))))
+        # flow coordinates for the sky and time (ParamScaler sky_frame)
+        self.register_buffer("sky_frame", torch.tensor(float(bool(sky_frame))))
 
         enc_kw = dict(encoder_kwargs or {})
         if encoder_type == "coherent":
@@ -462,7 +545,8 @@ class LeanNPE(nn.Module):
         mf = getattr(self.encoder, "mc_feat", None)
         if mf is None or "chirp_mass" not in self.scaler.internal_names:
             raise ValueError("pivot needs mass_param='mc_q' and a chirp-mass bank (mc_bank)")
-        return ["chirp_mass"] + (["geocent_time"] if getattr(mf, "trigger", False) else [])
+        t = "time_h1" if self.scaler.sky_frame else "geocent_time"
+        return ["chirp_mass"] + ([t] if getattr(mf, "trigger", False) else [])
 
     def _sync_pivot(self):
         self.flow.pivot_idx = [self.scaler.internal_names.index(n) for n in self._pivot_names()]
@@ -473,7 +557,8 @@ class LeanNPE(nn.Module):
         cols = []
         for n in self._pivot_names():
             j = self.scaler.internal_names.index(n)
-            v = mf.last_log_mc if n == "chirp_mass" else mf.last_t
+            v = {"chirp_mass": mf.last_log_mc, "geocent_time": getattr(mf, "last_t", None),
+                 "time_h1": getattr(mf, "last_t_h1", None)}[n]
             lo, hi = self.scaler.lo[j].to(v.device), self.scaler.hi[j].to(v.device)
             cols.append((2 * (v - lo) / (hi - lo) - 1).clamp(-1, 1))
         return torch.stack(cols, dim=1)
@@ -550,14 +635,16 @@ class LeanNPE(nn.Module):
             state_dict[prefix + "spin_signed"] = torch.tensor(0.0)
         if prefix + "pivot" not in state_dict:            # no pivot before 2026-11-01
             state_dict[prefix + "pivot"] = torch.tensor(0.0)
+        if prefix + "sky_frame" not in state_dict:        # ra/dec/geocent coordinates before
+            state_dict[prefix + "sky_frame"] = torch.tensor(0.0)
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                                       missing_keys, unexpected_keys, error_msgs)
         rng = tuple(float(v) for v in self.dist_range.tolist())
-        signed = bool(self.spin_signed)
-        if rng != self.scaler.dist_range or signed != self.scaler.spin_signed:
+        signed, sky = bool(self.spin_signed), bool(self.sky_frame)
+        if rng != self.scaler.dist_range or signed != self.scaler.spin_signed or sky != self.scaler.sky_frame:
             self.scaler = ParamScaler(self.param_names, premerger=self.premerger,
                                       mass_param=self.mass_param, dist_range=rng,
-                                      spin_signed=signed).to(self.dist_range.device)
+                                      spin_signed=signed, sky_frame=sky).to(self.dist_range.device)
         self._sync_pivot()
 
     def to(self, *args, **kwargs):

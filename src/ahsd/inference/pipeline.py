@@ -129,7 +129,7 @@ def _log_prob_physical(model: LeanNPE, y_norm: torch.Tensor,
 
     flow.log_prob returns the NEGATIVE log prob in normalized space; the
     change of variables to physical units adds the ParamScaler Jacobian
-    log|dy/dtheta| = sum_j [ log 2 - log(hi_j - lo_j) - (log theta_j if log-dim) ].
+    log|dy/dtheta| (ParamScaler.log_abs_det_jacobian).
     """
     # same density path as training (model.nll): forward transform + standard-
     # normal base with zero log_sigma; the generic flow.log_prob is not wired
@@ -137,12 +137,10 @@ def _log_prob_physical(model: LeanNPE, y_norm: torch.Tensor,
     neg_logq_y = model.flow.compute_psd_aware_nll(
         y_norm, full_ctx, torch.zeros_like(y_norm))
     theta = model.scaler.denormalize(y_norm)
-    span = model.scaler.hi - model.scaler.lo                      # [11]
-    jac = (np.log(2.0) - torch.log(span)).sum()                   # scalar, linear dims
-    log_theta = torch.where(model.scaler.log_mask,
-                            torch.log(theta.clamp_min(1e-6)),
-                            torch.zeros_like(theta))
-    return -neg_logq_y + jac - log_theta.sum(dim=1)
+    # full log|dy/dtheta|: linear maps, log axes, (m1,m2)->(Mc,q) and sky frame.
+    # (Before 2026-11-01 the mass term counted log m1 once instead of 2 log m1
+    # for mc_q models: the proposal density was off by a factor m1.)
+    return -neg_logq_y + model.scaler.log_abs_det_jacobian(theta)
 
 
 def _memory_mb() -> dict:

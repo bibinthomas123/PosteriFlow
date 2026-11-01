@@ -85,3 +85,36 @@ def test_fast_lengths_and_doubling_maxpool():
     p3, p2 = m3._profiles(x)[0], m2._profiles(x)[0]
     assert float(p3.max()) == pytest.approx(float(p2.max()), rel=1e-2)   # the peak; noise maxima move a little
     assert m3.estimate(x).item() == pytest.approx(m2.estimate(x).item(), rel=2e-3)
+
+
+def test_pivot_shift_is_consistent():
+    """pivot=True: the flow sees parameters minus the bank's estimates; the
+    inverse adds them back, so forward(inverse(z)) == z, and the density of
+    a parameter equals the flow density of its offset."""
+    from ahsd.models.lean_npe import LeanNPE
+    torch.manual_seed(0)
+    m = LeanNPE(psd_cond=True, encoder_type="coherent", mass_param="mc_q", dist_range=(80, 5000),
+                mc_bank="mc_bank_bbh.npz:trigger", pivot=True).eval()
+    assert m.flow.pivot_idx == [m.scaler.internal_names.index("chirp_mass"),
+                                m.scaler.internal_names.index("geocent_time")]
+    x = _data(m.encoder.mc_feat, 300 * m.encoder.mc_feat.n_q, np.full(3, 0.4), np.zeros(3), amp=30.0)
+    ab = torch.zeros(1, 3, 16)
+    with torch.no_grad():
+        ctx = m.encode(x, ab)
+        assert ctx.shape[1] == m.context_dim + 2
+        mc_hat = float(torch.exp(m.encoder.mc_feat.last_log_mc))
+        fc = m._full_context(ctx, torch.zeros(1, dtype=torch.long))
+        z = torch.randn(1, 11)
+        y, _ = m.flow.inverse(z, fc)
+        z2, _ = m.flow.forward(y, fc)
+        assert torch.allclose(z, z2, atol=1e-4)
+        s = m.sample_posterior(x, n_samples=5, asd_bands=ab)
+        assert torch.isfinite(s).all()
+    t_hat = float(m.encoder.mc_feat.last_t)
+    assert abs(t_hat - 0.4) < 2e-3 and mc_hat > 0
+    # an old checkpoint (no buffer) loads without the pivot
+    sd = {k: v for k, v in m.state_dict().items() if k != "pivot"}
+    old = LeanNPE(psd_cond=True, encoder_type="coherent", mass_param="mc_q", dist_range=(80, 5000),
+                  mc_bank="mc_bank_bbh.npz:trigger")
+    old.load_state_dict(sd)
+    assert old.flow.pivot_idx == [] and not bool(old.pivot)

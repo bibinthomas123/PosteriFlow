@@ -370,7 +370,7 @@ class LeanNPE(nn.Module):
                  mf_token_fusion: str = "add", q_embed_dim: int = 0,
                  dist_range: Optional[tuple] = None, mf_bank: str = "mf_bank.npz",
                  pol_features: bool = False, lowrate_len: int = 0, mc_bank: str = "",
-                 spin_signed: bool = False):
+                 spin_signed: bool = False, pivot: bool = False):
         super().__init__()
         self.param_names = param_names
         self.premerger = premerger
@@ -413,6 +413,13 @@ class LeanNPE(nn.Module):
                                                         dtype=torch.float32))
         # same for the spin convention (signed aligned components or magnitudes)
         self.register_buffer("spin_signed", torch.tensor(float(bool(spin_signed))))
+        # pivot (needs mc_q and the chirp-mass bank): the flow models chirp mass
+        # (and merger time, with trigger features) as an offset from the bank's
+        # estimate. Width x SNR rose ~3x from SNR 8 to 86 with 32 flow bins and
+        # with a 0.5% bank alike: the network has to carry a 1e-3-precise
+        # scalar into the flow; a shared peak at zero is easier to learn. Shift
+        # only (no rescale), so a wrong-mode estimate never excludes the truth.
+        self.register_buffer("pivot", torch.tensor(float(bool(pivot))))
 
         enc_kw = dict(encoder_kwargs or {})
         if encoder_type == "coherent":
@@ -446,15 +453,43 @@ class LeanNPE(nn.Module):
             dropout=0.0,
             temperature_scale=1.0,
         )
+        self._sync_pivot()
+
+    def _pivot_names(self):
+        """Internal coordinates the pivot shifts (empty when off/unsupported)."""
+        if not bool(self.pivot):
+            return []
+        mf = getattr(self.encoder, "mc_feat", None)
+        if mf is None or "chirp_mass" not in self.scaler.internal_names:
+            raise ValueError("pivot needs mass_param='mc_q' and a chirp-mass bank (mc_bank)")
+        return ["chirp_mass"] + (["geocent_time"] if getattr(mf, "trigger", False) else [])
+
+    def _sync_pivot(self):
+        self.flow.pivot_idx = [self.scaler.internal_names.index(n) for n in self._pivot_names()]
+
+    def _pivot_columns(self) -> torch.Tensor:
+        """The encoder's estimates in normalized flow coordinates [B, k]."""
+        mf = self.encoder.mc_feat
+        cols = []
+        for n in self._pivot_names():
+            j = self.scaler.internal_names.index(n)
+            v = mf.last_log_mc if n == "chirp_mass" else mf.last_t
+            lo, hi = self.scaler.lo[j].to(v.device), self.scaler.hi[j].to(v.device)
+            cols.append((2 * (v - lo) / (hi - lo) - 1).clamp(-1, 1))
+        return torch.stack(cols, dim=1)
 
     def _full_context(self, context: torch.Tensor, rank: torch.Tensor) -> torch.Tensor:
         """Concatenate the encoder context [B, context_dim] (+ the dedicated
         q-embedding, when enabled) with the queried signal's rank embedding
         [B, rank_dim] to form the flow's conditioning vector."""
-        parts = [context]
+        # pivot columns (if any) ride at the end of the context, through to
+        # the flow, which strips them and applies the shift
+        base, extra = context[:, :self.context_dim], context[:, self.context_dim:]
+        parts = [base]
         if self.q_embed_dim > 0:
-            parts.append(self.q_embed_head(context))
+            parts.append(self.q_embed_head(base))
         parts.append(self.rank_embed(rank))
+        parts.append(extra)
         return torch.cat(parts, dim=1)
 
     def encode(self, strain: torch.Tensor,
@@ -468,8 +503,12 @@ class LeanNPE(nn.Module):
         if amp is not None and strain.is_cuda:
             with torch.autocast("cuda", dtype=amp):
                 ctx = self.encoder(strain, asd_bands) if self.psd_cond else self.encoder(strain)
-            return ctx.float()
-        return self.encoder(strain, asd_bands) if self.psd_cond else self.encoder(strain)
+            ctx = ctx.float()
+        else:
+            ctx = self.encoder(strain, asd_bands) if self.psd_cond else self.encoder(strain)
+        if self.flow.pivot_idx:
+            ctx = torch.cat([ctx, self._pivot_columns().to(ctx.dtype)], dim=1)
+        return ctx
 
     def nll(self, strain: torch.Tensor, params_phys: torch.Tensor,
             rank: torch.Tensor, context: Optional[torch.Tensor] = None,
@@ -509,6 +548,8 @@ class LeanNPE(nn.Module):
             state_dict[key] = torch.tensor(ParamScaler.LEGACY_DIST_RANGE, dtype=torch.float32)
         if prefix + "spin_signed" not in state_dict:      # spin magnitudes before signed spins
             state_dict[prefix + "spin_signed"] = torch.tensor(0.0)
+        if prefix + "pivot" not in state_dict:            # no pivot before 2026-11-01
+            state_dict[prefix + "pivot"] = torch.tensor(0.0)
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                                       missing_keys, unexpected_keys, error_msgs)
         rng = tuple(float(v) for v in self.dist_range.tolist())
@@ -517,6 +558,7 @@ class LeanNPE(nn.Module):
             self.scaler = ParamScaler(self.param_names, premerger=self.premerger,
                                       mass_param=self.mass_param, dist_range=rng,
                                       spin_signed=signed).to(self.dist_range.device)
+        self._sync_pivot()
 
     def to(self, *args, **kwargs):
         """Move the model to a device/dtype and keep the (non-Parameter)

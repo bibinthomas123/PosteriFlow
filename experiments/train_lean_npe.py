@@ -291,14 +291,14 @@ def batch_nll(model, strain, params, nsig, asd_bands=None,
         # .contiguous(): the column slice is strided and MPS smooth_l1_loss
         # rejects non-contiguous inputs (CPU tolerates them)
         y0 = model.scaler.normalize(params[:, 0, :])[:, :2].contiguous()
-        loss = loss + aux_w * torch.nn.functional.smooth_l1_loss(aux_head(context), y0)
+        loss = loss + aux_w * torch.nn.functional.smooth_l1_loss(aux_head(context[:, :model.context_dim]), y0)
     if model.q_embed_dim > 0 and aux_q_embed_w > 0.0:
         # Same target/loss form as --aux_mass, but through the DEDICATED
         # embedding that is actually concatenated onto the flow's context
         # (see LeanNPE._full_context) -- this head is saved in the
         # checkpoint and live at inference, unlike aux_head above.
         y0q = model.scaler.normalize(params[:, 0, :])[:, :2].contiguous()
-        q_pred = model.q_pred_head(model.q_embed_head(context))
+        q_pred = model.q_pred_head(model.q_embed_head(context[:, :model.context_dim]))
         loss = loss + aux_q_embed_w * torch.nn.functional.smooth_l1_loss(q_pred, y0q)
     if return_context:
         return loss, context
@@ -491,6 +491,9 @@ def main():
                     help="v2 component dataset: remix noise/shift/distance on the fly "
                          "(builds a memmap cache under <data>/memmap on first use)")
     ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--pivot", action="store_true",
+                    help="flow models chirp mass (and merger time, with :trigger) as an offset "
+                         "from the bank's estimate (needs --mass_param mc_q and --mc_bank)")
     ap.add_argument("--mc_bank", default="",
                     help="dense chirp-mass matched-filter bank (models/assets/mc_bank_*.npz, "
                          "build_mc_bank.py): adds chirp-mass feature tokens to the encoder")
@@ -934,7 +937,7 @@ def main():
                     mf_bank=args.mf_bank,
                     pol_features=args.pol_features,
                     lowrate_len=args.lowrate_len, mc_bank=args.mc_bank,
-                    spin_signed=args.signed_spins,
+                    spin_signed=args.signed_spins, pivot=args.pivot,
                     flow_layers=args.flow_layers,
                     flow_hidden=args.flow_hidden,
                     flow_bins=args.flow_bins).to(device)
@@ -974,6 +977,9 @@ def main():
             if old != tuple(args.dist_range):
                 log.warning(f"init_from: distance support {old} -> {tuple(args.dist_range)} Mpc; "
                             "the flow's distance coordinate must re-learn its map")
+        if bool(model.pivot) != args.pivot:
+            model.pivot.fill_(float(args.pivot)); model._sync_pivot()
+            log.warning(f"init_from: pivot -> {args.pivot}")
         # likewise the spin convention comes from the dataset, not the init checkpoint
         if bool(model.spin_signed) != args.signed_spins:
             model.spin_signed.fill_(float(args.signed_spins))

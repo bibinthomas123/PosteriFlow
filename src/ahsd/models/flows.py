@@ -247,6 +247,11 @@ class NSFPosteriorFlow(nn.Module):
         # clamps there anyway), but it made the three bounds in this path --
         # normalize()'s [-1,1], tail_bound, and FLOW_NORM_BOUND -- disagree.
         self._out_clamp = float(max(self.tail_bounds_list))
+        # pivot shift (LeanNPE pivot=True): the last len(pivot_idx) context
+        # columns are per-event estimates of those (normalized) parameters;
+        # the transform sees x - estimate (unit Jacobian), so every caller of
+        # forward / inverse gets the shift without knowing about it
+        self.pivot_idx: List[int] = []
 
         self.logger.info(
             f"NSFPosteriorFlow initialized: {features} features, "
@@ -294,8 +299,19 @@ class NSFPosteriorFlow(nn.Module):
 
         self.logger.info(f"Autoregressive order set: position -> original feature index = {order}")
 
+    def _split_pivot(self, context):
+        """(context without pivot columns, pivots [B, k] or None)."""
+        k = len(self.pivot_idx)
+        if not k or context is None:
+            return context, None
+        return context[:, :-k], context[:, -k:]
+
     def forward(self, x: torch.Tensor, context: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward: x (params) → z (base distribution)"""
+        context, piv = self._split_pivot(context)
+        if piv is not None:
+            x = x.clone()
+            x[:, self.pivot_idx] = x[:, self.pivot_idx] - piv
         x = x[:, self._ar_perm]
         if self.context_features > 0 and context is not None:
             z, log_det = self.transform(x, context=context)
@@ -306,6 +322,7 @@ class NSFPosteriorFlow(nn.Module):
     def inverse(self, z: torch.Tensor, context: torch.Tensor = None,
                  n_overlaps: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Inverse: z (base) -> x (params). Deterministic, no ODE solver."""
+        context, piv = self._split_pivot(context)
 
         # Context NaN/Inf propagates through the transform into invalid spline
         # parameters and raises an assertion error, so sanitize first.
@@ -338,6 +355,9 @@ class NSFPosteriorFlow(nn.Module):
         # Clamp to this flow's own spline domain (max tail_bound), not the
         # module-level FLOW_NORM_BOUND — see _out_clamp in __init__.
         x = torch.clamp(x, -self._out_clamp, self._out_clamp)
+        if piv is not None:
+            x = x.clone()
+            x[:, self.pivot_idx] = x[:, self.pivot_idx] + piv
         return x, log_det
     
     def log_prob(self, x: torch.Tensor, context: torch.Tensor = None, temperature: Optional[float] = None) -> torch.Tensor:

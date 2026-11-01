@@ -315,6 +315,9 @@ class McFeatures(nn.Module):
         B = hi.shape[0]
         prof, pw, pc, prof_q = self._profiles(hi, lo)
         x_mc, x_snr, k = self._peak(prof)
+        # the bank's chirp-mass estimate, for LeanNPE's pivot (log Mc)
+        self.last_log_mc = ((x_mc + 1) / 2 * (self.log_hi - self.log_lo) + self.log_lo).detach()
+        self.last_t = None
         # profile around the peak, relative to it (replicate-padded at the edges)
         idx = (k.unsqueeze(1) + torch.arange(-W, W + 1, device=hi.device)).clamp(0, self.n_mc - 1)
         if self._v2:
@@ -398,6 +401,7 @@ class McFeatures(nn.Module):
         # sits at lag 0 of its circular frame, i.e. at the window start
         tm = lambda lag: torch.remainder(lag * dt, T_LEN / SR) - T_LEN / SR / 2
         l2, s2 = refine(c2)
+        self.last_t = tm(ref).detach()       # merger-time estimate (s), for the pivot
         feats = [tm(ref) / 1.5, torch.asinh((y1 ** 2).sum(-1).sqrt()), tm(l2.float()) / 1.5, torch.asinh(s2)]
         for j in range(z.shape[1]):
             feats += [tau[:, j], torch.asinh(y1[:, j]), torch.cos(phi[:, j]), torch.sin(phi[:, j])]

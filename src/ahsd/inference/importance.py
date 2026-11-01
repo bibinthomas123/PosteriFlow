@@ -232,14 +232,14 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     log_q = log_q - np.log(np.maximum(kde_tc(theta[:, jt]), 1e-30)) \
                   + np.log(2 * np.pi)
 
-    # ── adaptive tempered importance sampling ────────────────────────────
+    # ── adaptive tempered importance sampling (SMC) ──────────────────────
     # A wide amortized proposal cannot bridge a likelihood whose log varies
     # by hundreds of nats in one hop (measured: ESS ~1). Climb a beta-ladder:
     # at each rung pick the largest beta whose tempered weights keep
-    # ESS >= target, resample, refit a Gaussian-mixture proposal (in slow
-    # space: masses/distance in log), redraw, re-evaluate. The FINAL rung is
-    # plain self-normalized IS against a mixture whose density is known
-    # exactly — asymptotically exact, no approximation carried over.
+    # ESS >= target, resample, and move the particles with Metropolis steps
+    # that leave the tempered target invariant (sequential Monte Carlo;
+    # slow space: masses/distance in log). The last rung (beta = 1) is
+    # self-normalized IS from the previous tempered target.
     from sklearn.mixture import GaussianMixture
 
     SLOW = ["mass_1", "mass_2", "luminosity_distance", "ra", "dec",
@@ -315,19 +315,53 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 b = mid
         return max(a, lo + 1e-4)
 
-    target_frac, n_stage, MAX_STAGES = 0.20, n, 25
+    target_frac, MAX_STAGES, N_MOVES = 0.20, 40, 5
     # Path anchor: a mixture SURROGATE of the proposal, fitted on the flow
     # samples. Anchoring on the flow density itself fails: its razor tails
     # assign ~e^-10^4 to mixture draws and stall the ladder (measured).
     gm0 = GaussianMixture(n_components=10, covariance_type="full",
                           reg_covar=1e-5, random_state=0).fit(to_slow(theta))
+
+    def mh_moves(th, log_t1, log_g0, beta, scale):
+        """Random-walk Metropolis moves leaving the tempered target
+        t_b = g0^(1-b) (L pi)^b invariant (slow space; time and phase are
+        marginalized in L). A mixture refit alone cannot climb onto the
+        likelihood's narrow correlated ridge: on GW150914 the best of 400
+        NPE samples sat 16 nats below the peak and the ladder stalled at
+        beta ~ 0.06 although every 1-D marginal agreed with dynesty."""
+        x = to_slow(th)
+        chol = np.linalg.cholesky(np.cov(x.T) + 1e-9 * np.eye(x.shape[1]))
+        acc_all = []
+        for _ in range(N_MOVES):
+            xp = x + scale * rng.standard_normal(x.shape) @ chol.T
+            thp = from_slow(xp, tc_pool, ph_pool, rng)
+            thp[:, _J["geocent_time"]] = th[:, _J["geocent_time"]]
+            thp[:, _J["phase"]] = th[:, _J["phase"]]
+            xp = to_slow(thp)
+            lpp = prior.log_prob(thp)
+            t1p = np.full(len(thp), -np.inf)
+            ok = np.isfinite(lpp)
+            if ok.any():
+                t1p[ok] = eval_ll(thp[ok]) + lpp[ok]
+            g0p = gm_logpdf_sym(gm0, xp)
+            log_a = (1 - beta) * (g0p - log_g0) + beta * (t1p - log_t1)
+            acc = np.log(rng.uniform(size=len(x))) < np.where(np.isfinite(log_a), log_a, -np.inf)
+            th = np.where(acc[:, None], thp, th)
+            x = np.where(acc[:, None], xp, x)
+            log_t1 = np.where(acc, t1p, log_t1)
+            log_g0 = np.where(acc, g0p, log_g0)
+            acc_all.append(acc.mean())
+            # adapt towards ~25% acceptance
+            scale *= float(np.exp(acc.mean() - 0.25))
+        return th, log_t1, log_g0, scale, float(np.mean(acc_all))
+
     cur_theta, cur_log_g = theta, log_q
     cur_log_g0 = gm_logpdf_sym(gm0, to_slow(theta))
-    cur_log_pi = log_pi
     log_l = eval_ll(cur_theta)
-    beta_prev, betas = 0.0, []
+    log_t1 = log_l + log_pi              # log(L * pi)
+    beta_prev, betas, accs = 0.0, [], []
+    scale = 2.38 / np.sqrt(len(SLOW)) * 0.5
     for stage in range(MAX_STAGES):
-        log_t1 = log_l + cur_log_pi          # log(L * pi)
         beta = pick_beta(log_t1, cur_log_g0, cur_log_g, beta_prev, target_frac)
         betas.append(round(beta, 4))
         log_w = (1 - beta) * cur_log_g0 + beta * log_t1 - cur_log_g
@@ -342,38 +376,27 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         w /= w.sum()
         if beta >= 1.0:
             break
-        # rejuvenate: refit mixture on the tempered posterior, redraw
-        u = (rng.uniform() + np.arange(n_stage)) / n_stage
+        # SMC step: resample by the tempered weights, then Metropolis moves
+        # at this beta. The moved particles follow t_beta, so the next
+        # stage's proposal density is t_beta itself (unnormalized: the
+        # weights are self-normalized), and pick_beta / the weights above
+        # stay exact.
+        u = (rng.uniform() + np.arange(n)) / n
         idx_r = np.searchsorted(np.cumsum(w), u).clip(0, len(w) - 1)
-        xs = to_slow(cur_theta[idx_r])
-        xs += rng.standard_normal(xs.shape) * (xs.std(0, keepdims=True) * 0.05 + 1e-6)
-        gm = GaussianMixture(n_components=min(10, max(2, len(np.unique(idx_r)) // 30)),
-                             covariance_type="full", reg_covar=1e-5,
-                             random_state=0).fit(xs)
-        gm.covariances_ *= 1.69   # defensive widening (x1.3 per axis)
-        # refresh cached cholesky after widening
-        from sklearn.mixture._gaussian_mixture import _compute_precision_cholesky
-        gm.precisions_cholesky_ = _compute_precision_cholesky(
-            gm.covariances_, "full")
-        xn, _ = gm.sample(n_stage)
-        cur_theta = from_slow(np.asarray(xn), tc_pool, ph_pool, rng)
-        xs_cur = to_slow(cur_theta)
-        cur_log_g = gm_logpdf_sym(gm, xs_cur)
-        cur_log_g0 = gm_logpdf_sym(gm0, xs_cur)
-        cur_log_pi = prior.log_prob(cur_theta)
-        log_l = eval_ll(cur_theta)
+        cur_theta, log_t1, cur_log_g0, scale, acc = mh_moves(
+            cur_theta[idx_r], log_t1[idx_r], cur_log_g0[idx_r], beta, scale)
+        accs.append(round(acc, 3))
+        cur_log_g = (1 - beta) * cur_log_g0 + beta * log_t1
         beta_prev = beta
     pool.terminate()
     if beta < 1.0:
         raise RuntimeError(f"tempering did not reach beta=1 within {MAX_STAGES} "
                            f"stages (ladder: {betas}) — proposal cannot bridge "
                            "this likelihood; treat NPE result as final")
-
     theta = cur_theta
     ess = float(1.0 / np.sum(w ** 2))
-    u = (rng.uniform() + np.arange(n_stage)) / n_stage
+    u = (rng.uniform() + np.arange(n)) / n
     idx = np.searchsorted(np.cumsum(w), u).clip(0, len(w) - 1)
-    log_pi = cur_log_pi
 
     diag = {**result.diagnostics,
             "importance_sampling": {
@@ -382,6 +405,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "railed_excluded": int((~keep).sum()),
                 "importance_ess": round(ess, 1),
                 "beta_ladder": betas,
+                "mh_acceptance": accs,
                 "n_stages": len(betas),
                 "efficiency": round(ess / n, 4),
                 "wall_s": round(time.time() - t0, 1),
@@ -394,7 +418,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                         "for timing).",
             }}
     return PosteriorResult(
-        samples=theta[idx], log_prob=(log_l + log_pi)[idx],
+        samples=theta[idx], log_prob=log_t1[idx],
         param_names=list(result.param_names), trigger_gps=result.trigger_gps,
         truth=result.truth, prepared=result.prepared, diagnostics=diag,
         config={**result.config, "importance_corrected": True}, rail_mask=None)

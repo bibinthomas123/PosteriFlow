@@ -35,10 +35,12 @@ _MODEL_CACHE: dict = {}
 # classes), which biases distance per class and put GW170608 in an NSBH mode.
 # As in LVC analyses, the source class comes from the detection trigger and
 # selects the model; the mixed model remains for mixed-class overlaps.
+# v4 (2026-11-01): signed spins, matched-filter timing features, no delay
+# augmentation; BNS/NSBH read the 28 s before the window (multi-rate)
 CLASS_MODELS = {
-    "BBH": "model/lean_npe_bbh_v3/best_model.pth",
-    "NSBH": "model/lean_npe_nsbh_v3/best_model.pth",
-    "BNS": "model/lean_npe_bns_v3/best_model.pth",
+    "BBH": "model/lean_npe_bbh_v4/best_model.pth",
+    "NSBH": "model/lean_npe_nsbh_v4/best_model.pth",
+    "BNS": "model/lean_npe_bns_v4/best_model.pth",
 }
 MIXED_MODEL = "model/lean_npe_v3/best_model.pth"
 

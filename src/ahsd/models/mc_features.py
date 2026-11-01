@@ -90,6 +90,8 @@ class McFeatures(nn.Module):
         # travel with the bank name that every checkpoint load site passes on
         bank, _, opts = str(bank).partition(":")
         self.trigger = "trigger" in opts.split(",")
+        # "flowfeat": the per-(q, spin) bank peaks also go straight to the flow
+        self.flowfeat = "flowfeat" in opts.split(",")
         path = Path(bank)
         if not path.is_absolute() and path.parent == Path("."):
             path = Path(__file__).parent / "assets" / path
@@ -97,6 +99,8 @@ class McFeatures(nn.Module):
         assert int(b["band_lo"]) == band_lo and int(b["n_band"]) == n_band, \
             "mc bank band does not match the encoder band; rebuild with build_mc_bank.py"
         self.n_q = int(b["n_q"])
+        # (q, chi) of each slot of a chirp-mass group: labels are (mc, q, chi)
+        self.slot_q_chi = np.asarray(b["mc_q"])[: self.n_q, 1:3].astype(np.float32)
         self.dlog = float(b["dlog"])
         grid = np.log(b["mc_grid"].astype(np.float64))
         self.n_mc = len(grid)
@@ -340,9 +344,14 @@ class McFeatures(nn.Module):
         parts = [x_mc[:, None], x_snr[:, None], local, h2[:, None], x2[:, None],
                  w_mc[:, None], w_snr[:, None], c_mc[:, None], c_snr[:, None]]
         if self.n_q > 1:
+            slot = []
             for j in range(self.n_q):
                 q_mc, q_snr, _ = self._peak(prof_q[..., j])
                 parts += [q_mc[:, None], q_snr[:, None]]
+                slot += [q_mc, q_snr]
+            # per-slot (normalized log Mc, asinh SNR): which mass ratio / spin
+            # fits best, and how much better than the others (branch evidence)
+            self.last_slot = torch.stack(slot, dim=1).detach()
         f = torch.cat(parts, dim=1)
         tok = self.to_tokens(self.mlp(f)).reshape(B, self.n_tokens, -1) + self.type_embed
         if self.trigger:

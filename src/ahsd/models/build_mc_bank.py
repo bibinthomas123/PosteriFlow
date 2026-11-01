@@ -52,6 +52,11 @@ CLASSES = {
     # the 8-epoch A/B, 2026-11-01), and v4 data have anti-aligned spins
     "bbh_spin_fine": dict(mc=(4.2, 90.0), dlog=0.005, q=(0.9, 0.6, 0.35, 0.15),
                           chi=(-0.6, -0.3, 0.0, 0.3, 0.6, 0.85), approx="IMRPhenomXP"),
+    # signed NSBH bank: anti-aligned black-hole spins too (GW200115's light-BH
+    # branch has a1 ~ -0.7; the v4 data draw a1 in [-0.9, 0.9])
+    "nsbh_spin_signed": dict(mc=(1.35, 11.5), dlog=0.01, q=(0.4, 0.15, 0.06, 0.025),
+                             chi=(-0.8, -0.5, -0.2, 0.0, 0.3, 0.6, 0.85), chi_primary_only=True,
+                             approx="IMRPhenomD"),
     # spin-aware NSBH bank: black-hole spin only (neutron-star spins are
     # drawn from [0, 0.05]); NSBH mass ratios span 0.01-0.8
     "nsbh_spin": dict(mc=(1.35, 11.5), dlog=0.01, q=(0.4, 0.15, 0.06, 0.025),

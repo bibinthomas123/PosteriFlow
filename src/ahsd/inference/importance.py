@@ -159,6 +159,36 @@ def _eval_chunk(rows):
     return out
 
 
+def _bank_seeds(model, result, theta, rng, d_snr2: float = 9.0, per_slot: int = 400):
+    """NPE samples with (m1, m2, a1) moved to each plausible slot of the
+    chirp-mass bank (peak SNR^2 within d_snr2 of the best slot), jittered;
+    None when the model has no multi-slot bank."""
+    mf = getattr(model.encoder, "mc_feat", None)
+    if mf is None or getattr(mf, "n_q", 1) < 2 or result.prepared is None:
+        return None
+    from ahsd.inference.pipeline import model_asd_bands, model_input
+    dev = next(model.parameters()).device
+    x = torch.from_numpy(model_input(model, result.prepared)).unsqueeze(0).to(dev).float()
+    with torch.no_grad():
+        model.encode(x, model_asd_bands(model, result.prepared, dev))
+    sl = mf.last_slot[0].cpu().numpy().reshape(-1, 2)                 # (norm log Mc, asinh SNR)
+    snr2 = np.sinh(sl[:, 1]) ** 2
+    out = []
+    for j in np.where(snr2 >= snr2.max() - d_snr2)[0]:
+        mc = float(np.exp((sl[j, 0] + 1) / 2 * (mf.log_hi - mf.log_lo) + mf.log_lo))
+        q = float(mf.slot_q_chi[j, 0])
+        chi = float(mf.slot_q_chi[j, 1]) if mf.slot_q_chi.shape[1] > 1 else None
+        th = theta[rng.integers(0, len(theta), per_slot)].copy()
+        mcj = mc * np.exp(rng.normal(0, 0.01, per_slot))
+        qj = np.clip(q + rng.normal(0, 0.05, per_slot), 0.02, 1.0)
+        M = mcj * (1 + qj) ** 1.2 / qj ** 0.6
+        th[:, _J["mass_1"]], th[:, _J["mass_2"]] = M / (1 + qj), M * qj / (1 + qj)
+        if chi is not None:
+            th[:, _J["a1"]] = np.clip(chi + rng.normal(0, 0.1, per_slot), -0.89, 0.89)
+        out.append(th)
+    return np.concatenate(out) if out else None
+
+
 def segment_duration(raw: Dict[str, np.ndarray]) -> float:
     """Seconds covered by the raw strains (all detectors the same length)."""
     lens = {len(v) for v in raw.values()}
@@ -172,7 +202,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        model_path: Optional[str] = None,
                        npool: int = 4, f_min: Optional[float] = None,
                        approximant: Optional[str] = None,
-                       device: str = "cpu", seed: int = 0):
+                       device: str = "cpu", seed: int = 0, seed_bank: bool = False):
     """Reweight a PosteriorResult against the true likelihood.
 
     raw_strain: UNWHITENED strains keyed by detector, ending at the window end
@@ -402,7 +432,20 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         return th, log_t1, log_g0, scale, float(np.mean(acc_all))
 
     cur_theta, cur_log_g = theta, log_q
-    cur_log_g0 = gm_logpdf_sym(gm0, to_slow(theta))
+    seeds = _bank_seeds(model, result, theta, rng) if seed_bank else None
+    if seeds is not None and len(seeds):
+        # initial particles drawn from a mixture fitted to NPE samples plus
+        # bank-seeded copies (each plausible (q, spin) slot of the matched
+        # filter): a secondary branch the NPE smears over gets particles from
+        # the start. The mixture density is known, so the weights stay exact.
+        pool_x = to_slow(np.concatenate([theta, seeds]))
+        gms = GaussianMixture(n_components=min(16, 8 + len(seeds) // 200), covariance_type="full",
+                              reg_covar=1e-5, random_state=seed).fit(pool_x)
+        xn, _ = gms.sample(n)
+        cur_theta = from_slow(np.asarray(xn), tc_pool, ph_pool, rng)
+        cur_log_g = gm_logpdf_sym(gms, to_slow(cur_theta))
+        log_pi = prior.log_prob(cur_theta)
+    cur_log_g0 = gm_logpdf_sym(gm0, to_slow(cur_theta))
     log_l = eval_ll(cur_theta)
     if not np.isfinite(log_l).any():
         pool.terminate()

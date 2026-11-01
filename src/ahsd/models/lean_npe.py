@@ -526,9 +526,12 @@ class LeanNPE(nn.Module):
         self.lowrate_len = int(lowrate_len)
         self.rank_embed = nn.Embedding(max_signals, rank_dim)
 
+        # bank spec ":flowfeat": per-(q, spin) bank peaks straight into the flow
+        mf = getattr(self.encoder, "mc_feat", None)
+        self.n_flowfeat = 2 * mf.n_q if (mf is not None and mf.flowfeat and mf.n_q > 1) else 0
         self.flow = NSFPosteriorFlow(
             features=len(param_names),
-            context_features=context_dim + self.q_embed_dim + rank_dim,
+            context_features=context_dim + self.q_embed_dim + rank_dim + self.n_flowfeat,
             hidden_features=flow_hidden,
             num_layers=flow_layers,
             num_bins=flow_bins,
@@ -591,6 +594,9 @@ class LeanNPE(nn.Module):
             ctx = ctx.float()
         else:
             ctx = self.encoder(strain, asd_bands) if self.psd_cond else self.encoder(strain)
+        # [learned context | bank slot features | pivot columns]
+        if self.n_flowfeat:
+            ctx = torch.cat([ctx, self.encoder.mc_feat.last_slot.to(ctx.dtype)], dim=1)
         if self.flow.pivot_idx:
             ctx = torch.cat([ctx, self._pivot_columns().to(ctx.dtype)], dim=1)
         return ctx

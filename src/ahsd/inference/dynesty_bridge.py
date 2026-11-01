@@ -42,7 +42,9 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
                 trigger_offset: float = 0.0, nlive: int = 300, npool: int = 4,
                 prior=None, minimum_frequency: Optional[float] = None,
                 approximant: Optional[str] = None, mc_min: Optional[float] = None):
-    """Nested sampling on unwhitened 4 s strains keyed by detector.
+    """Nested sampling on unwhitened strains keyed by detector, ending at the
+    window end (centre + 2 s): the 4 s window, or the window plus the 28 s
+    before it for a multi-rate model (the segment the network read).
 
     center_gps: absolute GPS of the window center (GPS_REF for pipeline-
     generated data, the trigger GPS for real events).
@@ -62,12 +64,15 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
     wf = prior.waveform()
     approximant = approximant or wf["approximant"]
     time_halfwidth = 0.2
+    from ahsd.inference.importance import segment_duration
+    dur = segment_duration(raw)
+    start = center_gps + DURATION / 2 - dur
     if minimum_frequency is None:
         minimum_frequency = window_fmin(mc_min or prior.mc_min,
-                                        DURATION / 2 + trigger_offset - time_halfwidth)
+                                        dur - DURATION / 2 + trigger_offset - time_halfwidth)
     ifos = bilby.gw.detector.InterferometerList([])
     for det in DETECTORS:
-        if det not in raw:
+        if det not in raw or det not in psds:      # absent, or dropped (glitch)
             continue
         ifo = bilby.gw.detector.get_empty_interferometer(det)
         ifo.power_spectral_density = bilby.gw.detector.PowerSpectralDensity(
@@ -75,12 +80,12 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
             psd_array=np.asarray(psds[det]["psd"], dtype=float))
         ifo.strain_data.set_from_time_domain_strain(
             np.asarray(raw[det], dtype=np.float64), sampling_frequency=SAMPLE_RATE,
-            duration=DURATION, start_time=center_gps - DURATION / 2)
+            duration=dur, start_time=start)
         ifo.minimum_frequency = minimum_frequency
         ifos.append(ifo)
 
     wfg = bilby.gw.WaveformGenerator(
-        duration=DURATION, sampling_frequency=SAMPLE_RATE,
+        duration=dur, sampling_frequency=SAMPLE_RATE,
         frequency_domain_source_model=wf["source_model"],
         parameter_conversion=wf["parameter_conversion"],
         waveform_arguments={"waveform_approximant": approximant,

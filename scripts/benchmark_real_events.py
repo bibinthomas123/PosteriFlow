@@ -144,23 +144,25 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
     # dynesty references for BBH only: a 32 s BNS/NSBH likelihood takes hours
     if not args.skip_dynesty and (meta["type"] == "BBH" or args.dynesty_all):
         # ---- dynesty on the identical data ----
-        raw4 = {}
-        for det in found:
-            i0 = int(round((gps - starts[det]) * 4096)) - 8192
-            raw4[det] = np.asarray(raw[det][i0: i0 + 16384], dtype=np.float64)
+        # the segment the network read (4 s, or 32 s for multi-rate models)
+        from ahsd.inference.pipeline import load_model
+        from ahsd.inference.preprocessing import raw_segment
+        mdl, _ = load_model(rec["model"], device=args.device)
+        raw4 = raw_segment({d: raw[d] for d in found}, starts, gps,
+                           seconds=4.0 + getattr(mdl, "lowrate_len", 0) / 512.0)
         from ahsd.inference.priors import TrainingPrior
         from ahsd.inference.priors import chirp_mass, window_fmin
         prior = TrainingPrior.from_meta(result.config, meta["type"])
         mc_min = float(np.quantile(chirp_mass(npe[:, 0], npe[:, 1]), 0.005))
         kw = {"prior": prior, "mc_min": mc_min}
-        f_min = window_fmin(mc_min, 2.0 - 0.2)
+        f_min = window_fmin(mc_min, len(next(iter(raw4.values()))) / 4096 - 2.0 - 0.2)
         if f_min > 20.0:
             rec["caveats"].append(f"{meta['type']}: likelihood band starts at {f_min:.0f} Hz so "
                                   "the template fits the 4 s segment (the network sees the same band)")
         t0 = time.time()
         res = run_dynesty(raw4, prepared.psds, out / name / "bilby", name,
                           center_gps=gps, trigger_offset=0.0,
-                          nlive=args.nlive, **kw)
+                          nlive=args.nlive, npool=args.npool, **kw)
         rec["t_dynesty_s"] = round(time.time() - t0, 1)
         dyn_post = align_conventions(res.posterior, gps)
 

@@ -101,6 +101,10 @@ class ParameterSampler:
         # Off: magnitudes in [0, max], aligned only (datasets before 2026-11-01;
         # GW200115's black-hole spin is likely anti-aligned)
         self._signed_spins = bool(cfg.get("signed_spins", False))
+        # per-class waveform override, e.g. {"BBH": "IMRPhenomXPHM"} (higher
+        # modes break the distance-inclination degeneracy); default: the
+        # generator's per-class approximant
+        self._approximants = {k.upper(): v for k, v in (cfg.get("approximants") or {}).items()}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -134,6 +138,8 @@ class ParameterSampler:
         p["geocent_time"] = t_off          # NPE label: offset within window
         p["geocent_time_gps"] = GPS_REF + t_off  # absolute GPS for bilby
         p.update(self._sample_spins(event_type))
+        if event_type.upper() in self._approximants:
+            p["approximant"] = self._approximants[event_type.upper()]
         p.update(self._sample_tides(event_type))
         m1, m2 = p["mass_1"], p["mass_2"]
         p["chirp_mass"] = float((m1 * m2) ** 0.6 / (m1 + m2) ** 0.2)

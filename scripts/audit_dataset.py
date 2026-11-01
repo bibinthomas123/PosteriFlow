@@ -111,7 +111,12 @@ def audit_split(ds, split, cfg, dist_range):
     # ---- physical ranges ---------------------------------------------------
     hard(bool(np.all(np.isfinite(p))), "all parameters finite")
     hard(bool(np.all(m1 >= m2)), f"mass_1 >= mass_2 everywhere (violations {int((m1 < m2).sum())})")
-    for nm, lo, hi in (("a1", 0, 1), ("a2", 0, 1), ("theta_jn", 0, np.pi), ("psi", 0, np.pi),
+    # signed_spins datasets store the aligned components, in [-1, 1]
+    s_lo = -1 if cfg.get("signed_spins") else 0
+    if cfg.get("signed_spins"):
+        a1 = p[:, J["a1"]]
+        soft(0.3 < float((a1 < 0).mean()) < 0.7, f"signed spins: {float((a1 < 0).mean()):.0%} of a1 anti-aligned")
+    for nm, lo, hi in (("a1", s_lo, 1), ("a2", s_lo, 1), ("theta_jn", 0, np.pi), ("psi", 0, np.pi),
                        ("ra", 0, 2 * np.pi), ("phase", 0, 2 * np.pi), ("dec", -np.pi / 2, np.pi / 2)):
         v = p[:, J[nm]]
         hard(bool(np.all((v >= lo - 1e-6) & (v <= hi + 1e-6))), f"{nm} within [{lo:.3g}, {hi:.3g}]")

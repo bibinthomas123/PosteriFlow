@@ -252,6 +252,8 @@ class NSFPosteriorFlow(nn.Module):
         # the transform sees x - estimate (unit Jacobian), so every caller of
         # forward / inverse gets the shift without knowing about it
         self.pivot_idx: List[int] = []
+        # subset of pivot_idx also rescaled (scale columns follow the shifts)
+        self.pivot_scale_idx: List[int] = []
 
         self.logger.info(
             f"NSFPosteriorFlow initialized: {features} features, "
@@ -300,29 +302,35 @@ class NSFPosteriorFlow(nn.Module):
         self.logger.info(f"Autoregressive order set: position -> original feature index = {order}")
 
     def _split_pivot(self, context):
-        """(context without pivot columns, pivots [B, k] or None)."""
-        k = len(self.pivot_idx)
+        """(context without pivot columns, shifts [B, k] or None, scales [B, ks] or None)."""
+        k, ks = len(self.pivot_idx), len(self.pivot_scale_idx)
         if not k or context is None:
-            return context, None
-        return context[:, :-k], context[:, -k:]
+            return context, None, None
+        n = k + ks
+        piv = context[:, -n:]
+        return context[:, :-n], piv[:, :k], (piv[:, k:] if ks else None)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward: x (params) → z (base distribution)"""
-        context, piv = self._split_pivot(context)
+        context, piv, sc = self._split_pivot(context)
         if piv is not None:
             x = x.clone()
             x[:, self.pivot_idx] = x[:, self.pivot_idx] - piv
+            if sc is not None:
+                x[:, self.pivot_scale_idx] = x[:, self.pivot_scale_idx] / sc
         x = x[:, self._ar_perm]
         if self.context_features > 0 and context is not None:
             z, log_det = self.transform(x, context=context)
         else:
             z, log_det = self.transform(x)
+        if sc is not None:
+            log_det = log_det - torch.log(sc).sum(dim=1)
         return z, log_det
 
     def inverse(self, z: torch.Tensor, context: torch.Tensor = None,
                  n_overlaps: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """Inverse: z (base) -> x (params). Deterministic, no ODE solver."""
-        context, piv = self._split_pivot(context)
+        context, piv, sc = self._split_pivot(context)
 
         # Context NaN/Inf propagates through the transform into invalid spline
         # parameters and raises an assertion error, so sanitize first.
@@ -357,6 +365,9 @@ class NSFPosteriorFlow(nn.Module):
         x = torch.clamp(x, -self._out_clamp, self._out_clamp)
         if piv is not None:
             x = x.clone()
+            if sc is not None:
+                x[:, self.pivot_scale_idx] = x[:, self.pivot_scale_idx] * sc
+                log_det = log_det + torch.log(sc).sum(dim=1)
             x[:, self.pivot_idx] = x[:, self.pivot_idx] + piv
         return x, log_det
     

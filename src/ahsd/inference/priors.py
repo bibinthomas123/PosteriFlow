@@ -228,3 +228,29 @@ class TrainingPrior:
         priors["geocent_time"] = P.Uniform(center_time - time_halfwidth,
                                            center_time + time_halfwidth, "geocent_time")
         return priors
+
+
+def lvk_log_weights(theta: np.ndarray, prior: "TrainingPrior", a_max: float = 0.99) -> np.ndarray:
+    """log [pi_LVK / pi_train] per sample, for comparing with published
+    posteriors: LVK-style priors are uniform in detector-frame component
+    masses, p(d) ~ d^2, and isotropic spins of uniform magnitude, whose
+    aligned component has p(chi) = -ln(|chi| / a_max) / (2 a_max). Sky and
+    inclination priors are the same in both and cancel. Signed-spin models
+    only (magnitude models: the spin factor is not applied)."""
+    d = theta[:, _J["luminosity_distance"]]
+    lp = 2.0 * np.log(np.maximum(d, 1e-6))
+    if prior.signed_spins:
+        for k in ("a1", "a2"):
+            a = np.clip(np.abs(theta[:, _J[k]]), 1e-4, a_max * (1 - 1e-6))
+            lp = lp + np.log(-np.log(a / a_max))
+    dec, th = theta[:, _J["dec"]], theta[:, _J["theta_jn"]]
+    lp = lp + np.log(np.maximum(np.cos(dec), 1e-12)) + np.log(np.maximum(np.sin(th), 1e-12))
+    return lp - prior.log_prob(theta)
+
+
+def resample_weighted(theta: np.ndarray, log_w: np.ndarray, rng=None) -> np.ndarray:
+    """Resample samples by importance weights (non-finite weights dropped)."""
+    rng = rng or np.random.default_rng(0)
+    ok = np.isfinite(log_w)
+    w = np.exp(log_w[ok] - log_w[ok].max()); w /= w.sum()
+    return theta[ok][rng.choice(ok.sum(), size=ok.sum(), p=w)]

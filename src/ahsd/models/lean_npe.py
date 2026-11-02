@@ -553,6 +553,9 @@ class LeanNPE(nn.Module):
 
     def _sync_pivot(self):
         self.flow.pivot_idx = [self.scaler.internal_names.index(n) for n in self._pivot_names()]
+        mf = getattr(self.encoder, "mc_feat", None)
+        self.flow.pivot_scale_idx = (self.flow.pivot_idx[:1] if self.flow.pivot_idx and getattr(mf, "scale", False)
+                                     else [])
 
     def _pivot_columns(self) -> torch.Tensor:
         """The encoder's estimates in normalized flow coordinates [B, k]."""
@@ -564,6 +567,10 @@ class LeanNPE(nn.Module):
                  "time_h1": getattr(mf, "last_t_h1", None)}[n]
             lo, hi = self.scaler.lo[j].to(v.device), self.scaler.hi[j].to(v.device)
             cols.append((2 * (v - lo) / (hi - lo) - 1).clamp(-1, 1))
+        if self.flow.pivot_scale_idx:
+            j = self.scaler.internal_names.index("chirp_mass")
+            span = (self.scaler.hi[j] - self.scaler.lo[j]).to(cols[0].device)
+            cols.append((2 * mf.last_log_mc_scale / span).clamp(0.005, 1.0))
         return torch.stack(cols, dim=1)
 
     def _full_context(self, context: torch.Tensor, rank: torch.Tensor) -> torch.Tensor:

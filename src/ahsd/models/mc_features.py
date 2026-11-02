@@ -92,6 +92,8 @@ class McFeatures(nn.Module):
         self.trigger = "trigger" in opts.split(",")
         # "flowfeat": the per-(q, spin) bank peaks also go straight to the flow
         self.flowfeat = "flowfeat" in opts.split(",")
+        # "scale": the pivot also rescales chirp mass by the bank's width
+        self.scale = "scale" in opts.split(",")
         path = Path(bank)
         if not path.is_absolute() and path.parent == Path("."):
             path = Path(__file__).parent / "assets" / path
@@ -336,6 +338,18 @@ class McFeatures(nn.Module):
         h2 = (p2.gather(1, k2.unsqueeze(1)).squeeze(1).clamp_min(0)
               / prof.gather(1, k.unsqueeze(1)).squeeze(1).clamp_min(1e-6)).sqrt()
         x2 = self._norm(self.log_grid[k2]) - x_mc
+        # chirp-mass width (log units) for the scale-adaptive pivot: 3x the
+        # profile width from its curvature (ln L ~ SNR^2 / 2), widened to
+        # cover a plausible second peak (SNR^2 within 9), floor 1%
+        with torch.no_grad():
+            kk = k.clamp(1, self.n_mc - 2)
+            g = lambda o: prof.gather(1, (kk + o).unsqueeze(1)).squeeze(1)
+            curv = (g(-1) - 2 * g(0) + g(1)).clamp(max=-1e-6)
+            sig = torch.sqrt(-2.0 / curv) * self.dlog
+            snr2 = g(0).clamp_min(1e-6)
+            second = (h2 ** 2 * snr2 >= snr2 - 9.0).float() * x2.abs() * (self.log_hi - self.log_lo) / 2
+            self.last_log_mc_scale = torch.maximum(torch.maximum(3 * sig, second),
+                                                   torch.full_like(sig, 0.01)).detach()
         w_mc, w_snr, _ = self._peak(pw)
         if pc is not None:
             c_mc, c_snr, _ = self._peak(pc)

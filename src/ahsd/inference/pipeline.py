@@ -235,7 +235,8 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
     t0 = time.time()
     r = torch.full((1,), rank, dtype=torch.long, device=dev)
     full_ctx = net._full_context(ctx, r)                       # [1, C]
-    P = len(PARAM_NAMES)
+    names = list(net.param_names)         # 11, or 15 for a precessing model (spin directions)
+    P = len(names)
     samples = np.empty((num_samples, P), dtype=np.float64)
     logq = np.empty(num_samples, dtype=np.float64)
     railed = np.zeros(num_samples, dtype=bool)
@@ -302,7 +303,7 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
               "event": event, "event_type": event_type, "source": prepared.source,
               "detectors_present": prepared.detectors_present}
 
-    out = PosteriorResult(samples=samples, log_prob=logq, param_names=list(PARAM_NAMES),
+    out = PosteriorResult(samples=samples, log_prob=logq, param_names=names,
                           trigger_gps=prepared.trigger_gps, truth=truth,
                           prepared=prepared, diagnostics=diagnostics, config=config,
                           rail_mask=railed)

@@ -25,7 +25,19 @@ LABELS = {
     "theta_jn": r"$\theta_{JN}$ [rad]", "psi": r"$\psi$ [rad]",
     "phase": r"$\phi$ [rad]", "geocent_time": r"$t_c$ [s]",
     "a1": r"$a_1$", "a2": r"$a_2$",
+    "tilt_1": r"$\theta_1$ [rad]", "tilt_2": r"$\theta_2$ [rad]",
+    "phi_12": r"$\phi_{12}$ [rad]", "phi_jl": r"$\phi_{JL}$ [rad]",
 }
+
+
+def _param_grid(n: int):
+    """A 4-column grid with a panel per parameter (11, or 15 for a precessing
+    model); panels beyond n are hidden."""
+    rows = -(-n // 4)
+    fig, axes = plt.subplots(rows, 4, figsize=(15, 3 * rows))
+    for a in axes.flat[n:]:
+        a.axis("off")
+    return fig, axes
 
 _STYLE = {"axes.edgecolor": GRAY, "axes.labelcolor": INK, "xtick.color": INK,
           "ytick.color": INK, "axes.grid": True, "grid.color": "#e8ebef",
@@ -92,7 +104,7 @@ def marginals_plot(result, save: Optional[str] = None):
     red when present). Saves to `save` if given; returns the figure."""
     names = result.param_names
     with plt.rc_context(_STYLE):
-        fig, axes = plt.subplots(3, 4, figsize=(15, 9))
+        fig, axes = _param_grid(len(names))
         for j, n in enumerate(names):
             a = axes.flat[j]
             a.hist(result.samples[:, j], bins=60, color=BLUE, density=True,
@@ -103,7 +115,6 @@ def marginals_plot(result, save: Optional[str] = None):
                 a.axvline(result.truth[n], color=RED, lw=1.3, label="truth")
             a.set_title(LABELS.get(n, n), color=INK, fontsize=10)
             a.legend(frameon=False, fontsize=7)
-        axes.flat[-1].axis("off")
         fig.suptitle("Posterior marginals", color=INK)
         fig.tight_layout()
     if save:
@@ -116,7 +127,7 @@ def cdf_plot(result, save: Optional[str] = None):
     present). Saves to `save` if given; returns the figure."""
     names = result.param_names
     with plt.rc_context(_STYLE):
-        fig, axes = plt.subplots(3, 4, figsize=(15, 9))
+        fig, axes = _param_grid(len(names))
         for j, n in enumerate(names):
             a = axes.flat[j]
             xs = np.sort(result.samples[:, j])
@@ -125,7 +136,6 @@ def cdf_plot(result, save: Optional[str] = None):
                 a.axvline(result.truth[n], color=RED, lw=1.2)
             a.set_title(LABELS.get(n, n), color=INK, fontsize=10)
             a.set_ylim(0, 1)
-        axes.flat[-1].axis("off")
         fig.suptitle("Posterior CDFs (red = truth)", color=INK)
         fig.tight_layout()
     if save:

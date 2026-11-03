@@ -217,6 +217,10 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     from ahsd.inference.result import PosteriorResult
 
     t0 = time.time()
+    if len(result.param_names) > len(_J):
+        raise NotImplementedError(
+            "likelihood correction of a precessing posterior is not implemented: "
+            "its likelihood would treat the spins as aligned")
     model, _ = load_model(model_path or result.config["model_path"], device=device)
     caveats = []
     dur = segment_duration(raw_strain)

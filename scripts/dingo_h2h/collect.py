@@ -72,8 +72,15 @@ def main():
         for src in ("npe", "is"):
             if src in o:
                 rec[src] = {p: o[src][p] for p in PARAMS if p in o[src]}
-        t = RUNS / ev / "timing.json"
-        rec["dingo_timing"] = json.load(open(t)) if t.exists() else None
+        ts, ti = RUNS / ev / "timing_sampling.txt", RUNS / ev / "timing_is.txt"
+        if ts.exists() and ti.exists():
+            rec["dingo_timing"] = {"sampling_s": float(ts.read_text()), "importance_s": float(ti.read_text())}
+        else:   # first test event: one combined timing (its sampling step ran everything)
+            t = RUNS / ev / "timing.json"
+            rec["dingo_timing"] = None
+            if t.exists():
+                tj = json.load(open(t))
+                rec["dingo_timing"] = {"total_s": tj["sampling_s"] + tj["importance_s"]}
         d = dingo_result(ev)
         if d is None:
             rec["status"] = "no DINGO result"
@@ -102,7 +109,7 @@ def main():
             summary["per_param"][p][src] = {"n": len(have), "in90": in90, "median_abs_z": absz,
                                             "median_w90_over_dingo": ratio}
             print(f"{p:22s} {src:8s} {in90:6.0%} {absz:11.2f} {ratio:19.2f}")
-    t = [r["dingo_timing"] for r in ok if r.get("dingo_timing")]
+    t = [r["dingo_timing"] for r in ok if r.get("dingo_timing") and "sampling_s" in r["dingo_timing"]]
     if t:
         summary["dingo_wall_s_median"] = {k: float(np.median([x[k] for x in t]))
                                           for k in ("sampling_s", "importance_s")}

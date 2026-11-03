@@ -40,8 +40,10 @@ _MODEL_CACHE: dict = {}
 # 0.5% signed spin bank; NSBH: signed spin bank. BNS passes every gate.
 CLASS_MODELS = {
     "BBH": "model/lean_npe_bbh_v5/best_model.pth",
-    # v5ff: bank (q, spin) peaks also feed the flow; passes every gate and
-    # recovers GW200115's posterior ridge best (with bank-seeded IS)
+    # NSBH: signed spin bank WITHOUT the pivot (trained as "v5ff", but a
+    # comma in sbatch --export dropped ":flowfeat" and "--pivot"); passes
+    # every gate and recovers GW200115's posterior ridge best with
+    # bank-seeded IS (mode recall 0.75-1.0 vs 0.25-0.75 for v5 with pivot)
     "NSBH": "model/lean_npe_nsbh_v5ff/best_model.pth",
     "BNS": "model/lean_npe_bns_v5/best_model.pth",
 }

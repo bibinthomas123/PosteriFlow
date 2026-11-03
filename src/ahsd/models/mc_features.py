@@ -82,6 +82,12 @@ def circ_maxpool(a: torch.Tensor, w: int) -> torch.Tensor:
     return torch.maximum(m[..., :L], m[..., k - span:k - span + L])
 
 
+
+def _cgather(z, dim, index):
+    """gather on a complex tensor, done on its real and imaginary parts:
+    complex gather is not implemented on every backend (MPS)."""
+    return torch.complex(z.real.gather(dim, index), z.imag.gather(dim, index))
+
 class McFeatures(nn.Module):
     def __init__(self, bank: str, band_lo: int, n_band: int, lowrate_len: int = 0,
                  d_model: int = 192, n_tokens: int = 2):
@@ -408,7 +414,7 @@ class McFeatures(nn.Module):
             return lg.gather(1, v.argmax(-1, keepdim=True)).squeeze(1), v.amax(-1).clamp_min(0).sqrt()
         # per detector around the main peak: interpolated arrival lag, SNR, phase
         lags = (c1[:, None] + span) % n                                             # [B,S]
-        zz = z.gather(2, lags[:, None, :].expand(-1, z.shape[1], -1))                # [B,D,S]
+        zz = _cgather(z, 2, lags[:, None, :].expand(-1, z.shape[1], -1))           # [B,D,S]
         mag = zz.abs()
         a = mag.argmax(-1).clamp(1, span.numel() - 2)
         y0, y1, y2 = (mag.gather(2, (a + o)[..., None]).squeeze(-1) for o in (-1, 0, 1))
@@ -416,7 +422,7 @@ class McFeatures(nn.Module):
         arr = (c1[:, None] - w + a).float() + dk                                     # arrival lag per detector
         wgt = y1 ** 2 / (y1 ** 2).sum(-1, keepdim=True).clamp_min(1e-9)
         ref = (wgt * arr).sum(-1)                                                    # SNR^2-weighted arrival
-        zc = zz.gather(2, a[..., None]).squeeze(-1)
+        zc = _cgather(zz, 2, a[..., None]).squeeze(-1)
         # baseband ifft: undo the band-start frequency shift to get the phase
         phi = torch.angle(zc) + 2 * math.pi * self.band_lo * ((c1[:, None] - w + a) % n).float() / n
         tau = (arr - ref[:, None]) * dt / COINC_S                                    # in units of +-12 ms

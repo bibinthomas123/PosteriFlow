@@ -35,31 +35,43 @@ ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 PY = sys.executable
 
-# Matched-filter template tokens + the cross-detector polarization features
-# built on them (BBH and mixed). Every class also gets chirp-mass features
-# from a dense bank (models/mc_features.py; mc_bank_<cls>[_ctx].npz, built by
-# build_mc_bank.py when missing — too large for git). BNS and NSBH use the
-# multi-rate input (configs carry lowrate_seconds), so their banks include
-# context templates.
-MF_BBH = "--mf_tokens --mf_bank mf_bank_bbh.npz --pol_features"
-MC = {"bbh": "--mc_bank mc_bank_bbh.npz", "nsbh": "--mc_bank mc_bank_nsbh_ctx.npz",
-      "bns": "--mc_bank mc_bank_bns_ctx.npz"}
-BANKS = {"mc_bank_bbh.npz": ["--cls", "bbh"], "mc_bank_nsbh_ctx.npz": ["--cls", "nsbh", "--context"],
+# Class-model recipes (v5, measured in analysis/ci and analysis/modes): each
+# class reads chirp-mass features and matched-filter timing features
+# (":trigger") from a dense template bank (models/mc_features.py; banks built
+# by build_mc_bank.py when missing, too large for git), and the flow models
+# chirp mass and merger time relative to the bank's estimates (--pivot).
+#   bbh:  spin-aware signed bank on a 0.5% chirp-mass grid
+#   nsbh: signed black-hole-spin bank with context templates (GW200115's
+#         light-BH branch has a1 ~ -0.7), no pivot: the pivot gains 1 nat of
+#         val NLL (nsbh_ffpiv vs nsbh_ff) but an earlier pivot model recovered
+#         GW200115's modes worse (recall 0.25-0.75 vs 0.75-1.0); decided by
+#         scripts/mode_study.py, not by NLL
+#   bns:  context bank (BNS and NSBH read the multi-rate input)
+# Not used, each measured neutral or worse: polarization tokens (--pol_features),
+# sky frame, higher-mode data, multi-rate BBH, a scale pivot. Delay
+# augmentation is off: it blurred the timing features.
+MC = {"bbh": "--mc_bank mc_bank_bbh_spin_fine.npz:trigger --pivot",
+      "nsbh": "--mc_bank mc_bank_nsbh_spin_signed_ctx.npz:trigger",
+      "bns": "--mc_bank mc_bank_bns_ctx.npz:trigger --pivot"}
+BANKS = {"mc_bank_bbh_spin_fine.npz": ["--cls", "bbh_spin_fine"],
+         "mc_bank_nsbh_spin_signed_ctx.npz": ["--cls", "nsbh_spin_signed", "--context"],
          "mc_bank_bns_ctx.npz": ["--cls", "bns", "--context"]}
 # Batch 128 (the sbatch default). A/B on dataset_bbh_v3, 8 epochs: batch 512
 # (lr 6e-4) is 2.3x faster per epoch with the same calibration but learns
 # less per epoch (val NLL 1.27 vs 0.73 at epoch 8: 4x fewer optimizer
 # steps), so quality wins; the GPUs are used by training models in parallel.
-TRAIN = "--workers 12"
+TRAIN = "--workers 12 --delay_aug 0"
 
 # name, dataset, generation config, epochs, distance support (Mpc),
-# model flags, generation node, generation seed
+# model flags, generation node, generation seed. Step 4 deletes model/<name>
+# before training: never give a run the name of a production class model
+# (pipeline.CLASS_MODELS).
 MODELS = [
-    ("lean_npe_bbh_mc", "data/dataset_bbh_v3", "configs/data_config_bbh_v3.yaml", 40, (80, 5000),
-     f"{MF_BBH} {MC['bbh']}", "ant2", 2027),
-    ("lean_npe_nsbh_mr", "data/dataset_nsbh_mr", "configs/data_config_nsbh_v3.yaml", 40, (15, 1600),
+    ("lean_npe_bbh_v6", "data/dataset_bbh_v4", "configs/data_config_bbh_v4.yaml", 40, (80, 5000),
+     MC["bbh"], "ant2", 2027),
+    ("lean_npe_nsbh_v6", "data/dataset_nsbh_v4", "configs/data_config_nsbh_v4.yaml", 40, (15, 1600),
      MC["nsbh"], "ant7", 2049),
-    ("lean_npe_bns_mr", "data/dataset_bns_mr", "configs/data_config_bns_v3.yaml", 40, (7, 550),
+    ("lean_npe_bns_v6", "data/dataset_bns_v4", "configs/data_config_bns_v4.yaml", 40, (7, 550),
      MC["bns"], "ant7", 2048),
 ]
 N_SAMPLES = 200000
@@ -73,8 +85,11 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def sbatch(*args):
-    out = subprocess.run(["sbatch", "--parsable", *args], capture_output=True, text=True)
+def sbatch(*args, env=None):
+    """env: extra environment for the job (with --export=ALL). Values with
+    spaces or commas must travel this way: sbatch --export splits on commas."""
+    out = subprocess.run(["sbatch", "--parsable", *args], capture_output=True, text=True,
+                         env={**os.environ, **(env or {})})
     if out.returncode:
         raise RuntimeError(f"sbatch {' '.join(args)} failed: {out.stderr.strip()}")
     return out.stdout.strip().split(";")[0]
@@ -140,9 +155,9 @@ for name, data, config, epochs, (lo, hi), flags, node, seed in models:
         dep = [f"--dependency=afterok:{audit}"]
         log(f"submitted generation {gen} ({config} -> {data} on {node}) and audit {audit}")
     ids[name] = sbatch(*dep, "--gres=gpu:h100:1", f"--job-name={short}",
-                       f"--export=ALL,NAME={name},DATA={data},EPOCHS={epochs},"
-                       f"MODEL_FLAGS={flags or 'none'},EXTRA=--dist_range {lo} {hi} {TRAIN}",
-                       "scripts/slurm/train_lean_npe.sbatch")
+                       f"--export=ALL,NAME={name},DATA={data},EPOCHS={epochs}",
+                       "scripts/slurm/train_lean_npe.sbatch",
+                       env={"MODEL_FLAGS": flags or "none", "EXTRA": f"--dist_range {lo} {hi} {TRAIN}"})
     log(f"submitted {name} ({data}, {epochs} epochs, {lo}-{hi} Mpc, flags '{flags}') as {ids[name]}")
 
 deps = ":".join(list(ids.values()) + [str(j) for j in a.after_jobs])

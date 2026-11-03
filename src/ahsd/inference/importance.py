@@ -517,8 +517,45 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                         "samples retain PROPOSAL values (use the NPE result "
                         "for timing).",
             }}
+    out = theta[idx].copy()
+    # the Metropolis moves are unconstrained random walks: angles leave their
+    # range (the likelihood is periodic, so the weights are right). Fold them
+    # back, or quantiles, medians and plots of ra/psi/phase come out wrong.
+    from ahsd.models.lean_npe import ParamScaler
+    for j, name in enumerate(result.param_names):
+        if name in ParamScaler.CIRCULAR and name in ParamScaler.RANGES:
+            lo, hi = ParamScaler.RANGES[name][:2]
+            out[:, j] = lo + np.mod(out[:, j] - lo, hi - lo)
     return PosteriorResult(
-        samples=theta[idx], log_prob=log_t1[idx],
+        samples=out, log_prob=log_t1[idx],
         param_names=list(result.param_names), trigger_gps=result.trigger_gps,
         truth=result.truth, prepared=result.prepared, diagnostics=diag,
         config={**result.config, "importance_corrected": True}, rail_mask=None)
+
+
+def replicate_spread(results, param_names, names=("mass_1", "mass_2", "luminosity_distance")):
+    """Largest spread of replicate medians, in units of the mean 90% width,
+    over `names`. Independent-seed corrections of a multimodal posterior can
+    come out on different branches; a spread above 0.5 of a 90% width means
+    the correction is not reliable for that event (hand it to dynesty)."""
+    worst = 0.0
+    for pname in names:
+        j = list(param_names).index(pname)
+        meds = [np.median(r.samples[:, j]) for r in results]
+        w90 = np.mean([np.subtract(*np.quantile(r.samples[:, j], [0.95, 0.05])) for r in results])
+        worst = max(worst, float(np.ptp(meds) / max(w90, 1e-12)))
+    return worst
+
+
+def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, **kw):
+    """importance_correct with `reps` independent seeds. Returns the seed-0
+    corrected PosteriorResult; its diagnostics["importance_sampling"] gains
+    replicate_spread and consistent (spread < tol). kw go to
+    PosteriorResult.importance_correct (npool, device, ...)."""
+    runs = [result.importance_correct(raw_strain, seed=k, **kw) for k in range(max(1, reps))]
+    d = runs[0].diagnostics["importance_sampling"]
+    if len(runs) > 1:
+        spread = replicate_spread(runs, result.param_names)
+        d["replicate_spread"] = round(spread, 3)
+        d["consistent"] = spread < tol
+    return runs[0]

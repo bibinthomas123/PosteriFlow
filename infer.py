@@ -14,6 +14,14 @@ Simulated end-to-end validation (fresh injection through the SAME pipeline
 that generated the training data; truth overlaid on every plot):
     python infer.py --inject --seed 42 --output results/injection42
 
+By default the network posterior is then corrected against the exact
+likelihood (tempered sequential Monte Carlo, ahsd.inference.importance; a few
+minutes on CPU) and saved under <output>/importance. Two independent seeds are
+run; if they disagree the event is flagged for dynesty. The correction is what
+recovers inclination (and the distance tied to it) where the network alone is
+broad: on matched injections it reproduces dynesty's theta_jn intervals.
+--no-importance returns the network posterior only (seconds).
+
 Add --compare-dynesty to run bilby/dynesty on the identical data afterwards
 (minutes, not seconds).
 """
@@ -128,6 +136,12 @@ def main():
     ap.add_argument("--compare-dynesty", action="store_true",
                     help="also run bilby/dynesty on the same data (slow)")
     ap.add_argument("--nlive", type=int, default=300)
+    ap.add_argument("--importance", action=argparse.BooleanOptionalAction, default=True,
+                    help="correct the network posterior against the exact likelihood "
+                         "(default on; --no-importance for the network posterior only)")
+    ap.add_argument("--is-reps", type=int, default=2,
+                    help="independent seeds for the correction's consistency check")
+    ap.add_argument("--npool", type=int, default=8, help="likelihood worker processes")
     ap.add_argument("--no-plots", action="store_true")
     args = ap.parse_args()
 
@@ -135,13 +149,18 @@ def main():
 
     psds = load_psds(args.psd) if args.psd else None
     raw_for_dynesty, truth = None, None
+    is_raw = None          # (raw strain, segment starts, window centre GPS) for the correction
 
     if args.event:
         name = args.event
-        posterior = infer(event=args.event, psds=psds, num_samples=args.samples,
+        from ahsd.inference.preprocessing import fetch_gwosc, prepare_real
+        gps, raw, starts, srs, _ = fetch_gwosc(args.event, detectors=args.detectors)
+        prepared = prepare_real(raw, gps, starts, srs, psds=psds, seed=args.seed)
+        posterior = infer(strain=prepared, num_samples=args.samples,
                           event_type=args.event_type,
-                          rank=args.rank, model=args.model, detectors=args.detectors,
+                          rank=args.rank, model=args.model,
                           device=args.device, seed=args.seed)
+        is_raw = (raw, starts, gps)
     elif args.strain:
         if args.gps is None:
             ap.error("--gps is required with --strain")
@@ -156,6 +175,10 @@ def main():
                           num_samples=args.samples, rank=args.rank, event_type=args.event_type,
                           model=args.model, device=args.device, seed=args.seed)
         raw_for_dynesty = strain
+        if all(abs(sr - 4096.0) < 1e-6 for sr in srs.values()):
+            is_raw = (strain, starts, args.gps)
+        elif args.importance:
+            print("likelihood correction skipped: it needs 4096 Hz strain")
     else:
         name = f"injection{args.seed}"
         white, raw_for_dynesty, truth, snr, inj_psds = make_injection(args.seed)
@@ -166,6 +189,7 @@ def main():
                           event_type=args.event_type,
                           rank=args.rank, model=args.model, truth=truth,
                           device=args.device, seed=args.seed)
+        is_raw = (raw_for_dynesty, None, None)     # already the 4 s window
 
     out = Path(args.output or f"results/{name}")
 
@@ -193,6 +217,36 @@ def main():
           f"sampling {rt['sampling_s']}s | total {rt['total_s']}s")
     posterior.save(out, plots=not args.no_plots)
     print(f"saved -> {out}")
+
+    if args.importance and is_raw is not None and args.rank == 0:
+        from ahsd.inference.importance import corrected_with_check
+        from ahsd.inference.pipeline import load_model
+        from ahsd.inference.preprocessing import raw_segment
+        raw, starts, centre = is_raw
+        if starts is None:
+            seg = raw
+        else:   # the window, plus the 28 s before it for a multi-rate model
+            model, _ = load_model(posterior.config["model_path"], device=args.device)
+            seg = raw_segment(raw, starts, centre,
+                              seconds=4.0 + getattr(model, "lowrate_len", 0) / 512.0)
+        print(f"\ncorrecting against the exact likelihood ({args.is_reps} seeds, "
+              f"{args.npool} workers) — minutes ...")
+        try:
+            corrected = corrected_with_check(posterior, seg, reps=args.is_reps,
+                                             npool=args.npool, device=args.device or "cpu")
+            d = corrected.diagnostics["importance_sampling"]
+            corrected.summary()
+            print(f"correction: ESS {d.get('importance_ess')}  wall {d.get('wall_s')} s"
+                  + (f"  replicate spread {d['replicate_spread']:.2f} of a 90% width"
+                     if "replicate_spread" in d else ""))
+            if d.get("consistent") is False:
+                print("WARNING: the seeds disagree (multimodal posterior); the corrected "
+                      "result is not reliable for this event — run --compare-dynesty")
+            corrected.save(out / "importance", plots=not args.no_plots)
+            print(f"saved -> {out / 'importance'}")
+        except Exception as e:   # the network posterior above stands
+            print(f"likelihood correction failed ({type(e).__name__}: {e}); "
+                  "the network posterior above is unaffected")
 
     if args.compare_dynesty:
         if raw_for_dynesty is None:

@@ -340,6 +340,7 @@ def run_diagnostics(model, strain, params, nsig, device, n_events=256, n_post=12
     z = torch.randn(n * n_post, len(model.param_names), device=device)
     y, _ = model.flow.inverse(z, ctx_rep)
     samp = model.scaler.denormalize(y.reshape(n, n_post, -1))[..., :len(PARAM_NAMES)]  # [n, n_post, 11]
+    p0_full = p0                        # model's own dimension (15 for precessing) for normalize/flow
     p0 = p0[:, :len(PARAM_NAMES)]       # diagnostics on the eleven standard parameters
 
     d_med = samp[:, :, 2].median(dim=1).values
@@ -358,7 +359,7 @@ def run_diagnostics(model, strain, params, nsig, device, n_events=256, n_post=12
     #     flow (boundary railing + high-SNR under-coverage) long after the model
     #     stops improving. Gate/early-stop on these, not on NLL. ---
     noncirc = ~model.scaler.circ_mask
-    y_true = model.scaler.normalize(p0)                            # [n, 11]
+    y_true = model.scaler.normalize(p0_full)                       # [n, D]
     yw = model.scaler.wrap(y).reshape(n, n_post, -1)              # normalized, wrapped
     yt = y_true.unsqueeze(1)
     # SPURIOUS railing: pinned at a bound whose truth is NOT near that bound
@@ -367,7 +368,7 @@ def run_diagnostics(model, strain, params, nsig, device, n_events=256, n_post=12
     # base-space concentration: calibrated flow maps truths to N(0,I) -> 1.0;
     # >1 == overconfident (truths pushed into the base tails)
     z_true, _ = model.flow.forward(y_true, full_ctx)
-    base_conc = (z_true.pow(2).sum(1).mean() / len(PARAM_NAMES)).item()
+    base_conc = (z_true.pow(2).sum(1).mean() / len(model.param_names)).item()
     # science-param (m1,m2,dL) 90% coverage, all events + high-SNR subset
     sci = [PARAM_NAMES.index(x) for x in ("mass_1", "mass_2", "luminosity_distance")]
     in90 = ((p0 >= lo90) & (p0 <= hi90)).float()                  # [n, 11]

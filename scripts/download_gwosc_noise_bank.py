@@ -23,6 +23,9 @@ WIN_N = 16384     # 4 s window the training pipeline uses
 O3B_START, O3B_END = 1256655618, 1269363618
 O1_START, O1_END = 1126623617, 1136649617
 O2_START, O2_END = 1164556817, 1187733618
+# O3a (2019-04-01 to 2019-10-01): it was missing from RUN_RANGES, so the
+# bank had no O3a noise although most GWTC-2 events are O3a (scan 2026-11-03)
+O3A_START, O3A_END = 1238166018, 1253977218
 O4A_START, O4A_END = 1368979218, 1389456018
 O4B_START, O4B_END = 1396796418, 1422118818
 
@@ -33,6 +36,7 @@ O4B_START, O4B_END = 1396796418, 1422118818
 RUN_RANGES = {
     "O1":  (O1_START, O1_END),
     "O2":  (O2_START, O2_END),
+    "O3a": (O3A_START, O3A_END),
     "O3b": (O3B_START, O3B_END),
     "O4a": (O4A_START, O4A_END),
     "O4b":  (O4B_START, O4B_END),
@@ -43,9 +47,9 @@ RUN_RANGES = {
 # (measured 2026-10-31) -- O2-era Virgo noise was effectively absent.
 DET_RUN_RANGES = {("V1", "O2"): (1185580818, O2_END)}
 DET_RUNS = {
-    "H1": ("O1", "O2", "O3b", "O4a", "O4b"),
-    "L1": ("O1", "O2", "O3b", "O4a", "O4b"),
-    "V1": ("O2", "O3b", "O4a", "O4b"),
+    "H1": ("O1", "O2", "O3a", "O3b", "O4a", "O4b"),
+    "L1": ("O1", "O2", "O3a", "O3b", "O4a", "O4b"),
+    "V1": ("O2", "O3a", "O3b", "O4a", "O4b"),
 }
 
 def main():

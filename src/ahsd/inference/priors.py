@@ -116,6 +116,21 @@ class TrainingPrior:
         l1 = rng.uniform(*self.lambda_range, size=n) if self.event_type == "BNS" else z
         return l1, l2
 
+    def narrowed(self, samples: np.ndarray, q=(0.001, 0.999), pad: float = 0.2) -> "TrainingPrior":
+        """The same prior truncated to the NPE posterior's support (quantiles
+        q of the masses and distance, widened by `pad` in log), intersected
+        with the training support: dynesty then explores a far smaller box.
+        The NPE is calibrated and broad, so the truncation removes negligible
+        posterior mass; compare with an untruncated run when in doubt."""
+        import dataclasses
+        def rng(col, base):
+            lo, hi = np.quantile(samples[:, col], q)
+            lo, hi = lo * np.exp(-pad), hi * np.exp(pad)
+            return (max(base[0], float(lo)), min(base[1], float(hi)))
+        return dataclasses.replace(self, m1_range=rng(_J["mass_1"], self.m1_range),
+                                   m2_range=rng(_J["mass_2"], self.m2_range),
+                                   dist_range=rng(_J["luminosity_distance"], self.dist_range))
+
     @property
     def a1_lo(self) -> float:
         return -self.a1_max if self.signed_spins else 0.0

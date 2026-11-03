@@ -169,6 +169,9 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
         from ahsd.inference.priors import chirp_mass, window_fmin
         prior = TrainingPrior.from_meta(result.config, meta["type"])
         mc_min = float(np.quantile(chirp_mass(npe[:, 0], npe[:, 1]), 0.005))
+        if args.dynesty_narrow:
+            prior = prior.narrowed(npe)
+            rec["dynesty_prior_box"] = {"m1": prior.m1_range, "m2": prior.m2_range, "dL": prior.dist_range}
         kw = {"prior": prior, "mc_min": mc_min}
         f_min = window_fmin(mc_min, len(next(iter(raw4.values()))) / 4096 - 2.0 - 0.2)
         if f_min > 20.0:
@@ -278,6 +281,8 @@ def main():
     ap.add_argument("--npool", type=int, default=16)
     ap.add_argument("--is_reps", type=int, default=2,
                     help="importance-sampling replicates (different seeds) for the consistency check")
+    ap.add_argument("--dynesty_narrow", action="store_true",
+                    help="truncate dynesty's mass / distance prior to the NPE support (faster)")
     ap.add_argument("--dynesty-all", action="store_true",
                     help="dynesty for BNS/NSBH too (32 s likelihood: hours per event)")
     ap.add_argument("--samples", type=int, default=10000)

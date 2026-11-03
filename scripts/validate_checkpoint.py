@@ -329,7 +329,7 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
     figs = {}
     # coverage bars
     fig, axes = plt.subplots(1, 4, figsize=(15, 3.6), sharey=True)
-    xs = np.arange(P)
+    xs = np.arange(len(PARAM_NAMES))         # coverage is reported on the eleven standard parameters
     for a, lev in zip(axes, CI_LEVELS):
         a.bar(xs, [coverage[nm][f"{int(lev*100)}"] for nm in PARAM_NAMES],
               color=BLUE, width=0.62)

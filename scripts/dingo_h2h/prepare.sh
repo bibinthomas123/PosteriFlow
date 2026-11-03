@@ -29,7 +29,7 @@ label = $ev
 outdir = $ev
 channel-dict = {H1:GWOSC, L1:GWOSC}
 detectors = [H1, L1]
-psd-length = 128
+psd-length = ${PSD_LENGTH:-128}
 INI
   if nice -n 10 dingo_pipe "ini/$ev.ini" > "ini/$ev.build.log" 2>&1 \
      && nice -n 10 bash "$ev/submit/bash_$ev.sh" generation > "ini/$ev.gen.log" 2>&1 \

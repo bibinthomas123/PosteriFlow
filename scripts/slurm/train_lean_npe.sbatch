@@ -16,7 +16,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --exclude=ant7,ant8
 #SBATCH --cpus-per-task=20
-#SBATCH --mem=96G
+#SBATCH --mem=64G
 #SBATCH --time=1-00:00:00
 #SBATCH --output=logs/train-%x-%j.out
 set -euo pipefail

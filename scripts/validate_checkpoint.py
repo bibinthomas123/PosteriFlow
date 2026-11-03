@@ -247,14 +247,16 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
     n = min(n_events, len(ds))
     items = [ds[i] for i in range(n)]
     strain = torch.stack([x[0] for x in items])
-    theta = torch.stack([x[1][0] for x in items]).to(device)
+    # the model's own parameters (precessing models: 15; the cache may hold
+    # extra columns for an 11-parameter model)
+    theta = torch.stack([x[1][0][:len(model.param_names)] for x in items]).to(device)
     # PSD-conditioned models: use the domain's per-event sensitivity summary
     # (nonzero for the real-noise domain, ~0 for Gaussian/design).
     asd = torch.stack([x[4] for x in items]) if len(items[0]) > 4 else None
     # net SNR per event — needed by the sharpness diagnostics to resolve posterior
     # width against the information actually present in the data.
     snr = torch.stack([x[3] for x in items]).numpy().astype(float)
-    N, P = n, len(PARAM_NAMES)
+    N, P = n, len(model.param_names)
 
     ctx = []
     with torch.no_grad():
@@ -290,7 +292,9 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
             railed[i:i + 32] = spurious.any(dim=2).cpu().numpy()
             samples[i:i + 32] = model.scaler.denormalize(y).reshape(nb, K, P).cpu().numpy()
 
-    truth = theta.cpu().numpy()
+    # metrics on the eleven standard parameters
+    samples = samples[:, :, :len(PARAM_NAMES)]
+    truth = theta.cpu().numpy()[:, :len(PARAM_NAMES)]
     coverage = {name: {} for name in PARAM_NAMES}
     for j, name in enumerate(PARAM_NAMES):
         for lev in CI_LEVELS:

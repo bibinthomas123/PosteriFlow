@@ -62,10 +62,11 @@ def encode_edge_type(detected: list) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _param_vector(p: Dict) -> Dict:
-    """Extract the 11-parameter dict the NPE needs, plus tilt1/tilt2=0."""
+    """The 11 NPE parameters plus the spin directions (zero for aligned
+    spins; precessing datasets carry tilt_1/2, phi_12, phi_jl)."""
     return {
         name: float(p.get(name, 0.0)) for name in PARAM_NAMES
-    } | {"tilt1": 0.0, "tilt2": 0.0}
+    } | {k: float(p.get(k, 0.0)) for k in ("tilt_1", "tilt_2", "phi_12", "phi_jl")}
 
 
 def _network_snr(per_det_snr: Dict[str, float]) -> float:

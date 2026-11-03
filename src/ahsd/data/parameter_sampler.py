@@ -101,6 +101,9 @@ class ParameterSampler:
         # Off: magnitudes in [0, max], aligned only (datasets before 2026-11-01;
         # GW200115's black-hole spin is likely anti-aligned)
         self._signed_spins = bool(cfg.get("signed_spins", False))
+        # precessing: spin magnitudes in [0, max] with isotropic directions
+        # (tilt_i, phi_12, phi_jl); a1/a2 are then the magnitudes
+        self._precessing = bool(cfg.get("precessing", False))
         # per-class waveform override, e.g. {"BBH": "IMRPhenomXPHM"} (higher
         # modes break the distance-inclination degeneracy); default: the
         # generator's per-class approximant
@@ -194,6 +197,12 @@ class ParameterSampler:
         signed_spins the aligned components in [-max, max]."""
         et = event_type.upper()
         r1, r2 = {"BNS": (_SPIN_BNS, _SPIN_BNS), "NSBH": (_SPIN_BH, _SPIN_NS)}.get(et, (_SPIN_BBH, _SPIN_BBH))
+        if self._precessing:
+            return {"a1": float(self.rng.uniform(0, r1[1])), "a2": float(self.rng.uniform(0, r2[1])),
+                    "tilt_1": float(np.arccos(self.rng.uniform(-1, 1))),
+                    "tilt_2": float(np.arccos(self.rng.uniform(-1, 1))),
+                    "phi_12": float(self.rng.uniform(0, 2 * np.pi)),
+                    "phi_jl": float(self.rng.uniform(0, 2 * np.pi))}
         if self._signed_spins:
             return {"a1": float(self.rng.uniform(-r1[1], r1[1])),
                     "a2": float(self.rng.uniform(-r2[1], r2[1]))}

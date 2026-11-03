@@ -144,6 +144,7 @@ def validate_config(config: Dict) -> Dict:
         # signed aligned spins (a1/a2 in [-max, max])
         "signed_spins": bool(config.get("signed_spins", False)),
         "approximants": config.get("approximants") or {},
+        "precessing": bool(config.get("precessing", False)),
     }
 
     # Validate ranges

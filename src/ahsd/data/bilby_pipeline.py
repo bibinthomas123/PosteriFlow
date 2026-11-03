@@ -98,8 +98,12 @@ def _to_bilby_params(params: Dict) -> Dict:
     # bilby rebuilds a_i and tilt_i from chi_i when chi_i is present, so chi_i
     # must carry the tilt: chi_i = a_i cos(tilt_i) (with chi_i = a_i the sign
     # of an anti-aligned spin, tilt = pi, was silently lost)
-    p.setdefault("chi_1", p.get("a_1", 0.0) * float(np.cos(p["tilt_1"])))
-    p.setdefault("chi_2", p.get("a_2", 0.0) * float(np.cos(p["tilt_2"])))
+    # aligned spins only (tilt 0 or pi): with chi_i present bilby rebuilds the
+    # tilt from its sign, which would erase a precessing spin's direction
+    for i in (1, 2):
+        t = float(p[f"tilt_{i}"])
+        if min(abs(t), abs(t - np.pi)) < 1e-9:
+            p.setdefault(f"chi_{i}", p.get(f"a_{i}", 0.0) * float(np.cos(t)))
     # tidal deformabilities (BNS/NSBH source model); absent = point particles
     p.setdefault("lambda_1", 0.0)
     p.setdefault("lambda_2", 0.0)

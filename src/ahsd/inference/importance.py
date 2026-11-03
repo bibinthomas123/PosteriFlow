@@ -202,8 +202,15 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        model_path: Optional[str] = None,
                        npool: int = 4, f_min: Optional[float] = None,
                        approximant: Optional[str] = None,
-                       device: str = "cpu", seed: int = 0, seed_bank: Optional[bool] = None):
+                       device: str = "cpu", seed: int = 0, seed_bank: Optional[bool] = None,
+                       mode: str = "auto", min_efficiency: float = 0.01):
     """Reweight a PosteriorResult against the true likelihood.
+
+    mode: "dingo" -- one importance-sampling step, w = L pi / q, over the
+    network's samples (DINGO-IS, Dax et al. 2023), reported with its sample
+    efficiency ESS / N; "smc" -- tempered sequential Monte Carlo with
+    Metropolis moves; "auto" (default) -- the DINGO step if its efficiency
+    is at least min_efficiency, otherwise SMC.
 
     raw_strain: UNWHITENED strains keyed by detector, ending at the window end
     (centre + 2 s): the 4 s window, or for a multi-rate model the window plus
@@ -435,7 +442,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     # default: seed from the bank whenever it has several (q, spin) slots
     # (GW200115 mode recall vs dynesty 0.25-0.75 -> 0.75-1.0 with NSBH v5ff)
     if seed_bank is None:
-        seed_bank = getattr(getattr(model.encoder, "mc_feat", None), "n_q", 1) > 1
+        seed_bank = (mode != "dingo"
+                     and getattr(getattr(model.encoder, "mc_feat", None), "n_q", 1) > 1)
     seeds = _bank_seeds(model, result, theta, rng) if seed_bank else None
     if seeds is not None and len(seeds):
         # initial particles drawn from a mixture fitted to NPE samples plus
@@ -458,7 +466,16 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     log_t1 = log_l + log_pi              # log(L * pi)
     beta_prev, betas, accs = 0.0, [], []
     scale = 2.38 / np.sqrt(len(SLOW)) * 0.5
-    for stage in range(MAX_STAGES):
+    # DINGO-IS step: plain importance weights against the proposal the
+    # particles were drawn from; exact, and enough when the network posterior
+    # covers the likelihood well (efficiency = ESS / N)
+    lw0 = np.where(np.isfinite(log_t1 - cur_log_g), log_t1 - cur_log_g, -np.inf)
+    w0 = np.exp(lw0 - lw0[np.isfinite(lw0)].max()); w0 /= w0.sum()
+    dingo_eff = float(1.0 / np.sum(w0 ** 2) / n)
+    plain = mode == "dingo" or (mode == "auto" and dingo_eff >= min_efficiency)
+    if plain:
+        w, beta, betas = w0, 1.0, [1.0]
+    for stage in range(0 if plain else MAX_STAGES):
         beta = pick_beta(log_t1, cur_log_g0, cur_log_g, beta_prev, target_frac)
         betas.append(round(beta, 4))
         log_w = (1 - beta) * cur_log_g0 + beta * log_t1 - cur_log_g
@@ -506,6 +523,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 # mean the moves did not spread the resampled particles
                 "unique_frac": round(float(len(np.unique(theta[idx][:, 0]))) / n, 3),
                 "n_stages": len(betas),
+                "method": "dingo-is" if plain else "smc",
+                "dingo_efficiency": round(dingo_eff, 5),
                 "efficiency": round(ess / n, 4),
                 "wall_s": round(time.time() - t0, 1),
                 "approximant": approximant,

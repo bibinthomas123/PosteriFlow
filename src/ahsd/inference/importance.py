@@ -202,7 +202,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        model_path: Optional[str] = None,
                        npool: int = 4, f_min: Optional[float] = None,
                        approximant: Optional[str] = None,
-                       device: str = "cpu", seed: int = 0, seed_bank: bool = False):
+                       device: str = "cpu", seed: int = 0, seed_bank: Optional[bool] = None):
     """Reweight a PosteriorResult against the true likelihood.
 
     raw_strain: UNWHITENED strains keyed by detector, ending at the window end
@@ -432,6 +432,10 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         return th, log_t1, log_g0, scale, float(np.mean(acc_all))
 
     cur_theta, cur_log_g = theta, log_q
+    # default: seed from the bank whenever it has several (q, spin) slots
+    # (GW200115 mode recall vs dynesty 0.25-0.75 -> 0.75-1.0 with NSBH v5ff)
+    if seed_bank is None:
+        seed_bank = getattr(getattr(model.encoder, "mc_feat", None), "n_q", 1) > 1
     seeds = _bank_seeds(model, result, theta, rng) if seed_bank else None
     if seeds is not None and len(seeds):
         # initial particles drawn from a mixture fitted to NPE samples plus

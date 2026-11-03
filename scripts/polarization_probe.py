@@ -58,7 +58,7 @@ for e_i, (s, n) in enumerate(ev):
         sel.append((e_i, s))
 print(f"{len(sel)} wrap-free single BBH events in validation", flush=True)
 
-OLD, NEW, T = [], [], []
+OLD, NEW, T, SV = [], [], [], []
 with torch.no_grad():
     for b0 in range(0, len(sel), 128):
         chunk = sel[b0:b0 + 128]
@@ -71,9 +71,10 @@ with torch.no_grad():
         OLD.append(model.encoder._mf_features(xt).cpu().numpy())
         NEW.append(polarization_features(xt, bre, bim, band_lo).cpu().numpy())
         T.append(np.stack([par[s] for (_, s), k in zip(chunk, keep) if k]))
+        SV.append(np.sqrt((np.stack([np.asarray(sig[s], np.float64)[2] for _, s in chunk]) ** 2).sum(1))[keep])
         if sum(len(t) for t in T) >= a.n:
             break
-OLD, NEW, T = np.concatenate(OLD), np.concatenate(NEW), np.concatenate(T)
+OLD, NEW, T, SV = np.concatenate(OLD), np.concatenate(NEW), np.concatenate(T), np.concatenate(SV)
 truth_sky = np.stack([np.sin(T[:, J["dec"]]), np.cos(T[:, J["ra"]]), np.sin(T[:, J["ra"]]),
                       np.cos(2 * T[:, J["psi"]]), np.sin(2 * T[:, J["psi"]])], 1)
 targets = {"|cos theta_jn|": np.abs(np.cos(T[:, J["theta_jn"]])),
@@ -94,5 +95,25 @@ for tname, y in targets.items():
         row[sname] = float(r2_score(y[~tr], m.predict(F[~tr])))
     res[tname] = row
     print(f"{tname:16s} | " + " | ".join(f"{row.get(k, float('nan')):8.2f}" for k in sets), flush=True)
-json.dump({"n_events": int(n), "min_snr": a.min_snr, "held_out_r2": res},
+# Edge-on detection. The cross polarization ~ cos(i) is linear near edge-on and
+# flat near face-on, so inclination information concentrates on edge-on events;
+# a population R^2 dominated by (unmeasurable) face-on events can hide it.
+from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: E402
+from sklearn.metrics import roc_auc_score  # noqa: E402
+edge = np.abs(np.cos(T[:, J["theta_jn"]])) < 0.3
+v_bins = {"all": np.ones(n, bool), "V1 SNR<4": SV < 4, "V1 SNR 4-8": (SV >= 4) & (SV < 8), "V1 SNR>=8": SV >= 8}
+auc = {}
+print(f"\nedge-on (|cos i|<0.3) AUC, held out; edge-on fraction {edge.mean():.2f}")
+print(f"{'V1 bin':12s} {'n':>5s} | " + " | ".join(f"{k:>8s}" for k in sets))
+probs = {}
+for sname, F in sets.items():
+    m = HistGradientBoostingClassifier(max_iter=400, learning_rate=0.05, random_state=0).fit(F[tr], edge[tr])
+    probs[sname] = m.predict_proba(F)[:, 1]
+for b, mask in v_bins.items():
+    te = ~tr & mask
+    row = {k: (float(roc_auc_score(edge[te], pr[te])) if 0 < edge[te].sum() < te.sum() else float("nan"))
+           for k, pr in probs.items()}
+    auc[b] = {"n": int(te.sum()), **row}
+    print(f"{b:12s} {int(te.sum()):5d} | " + " | ".join(f"{row[k]:8.2f}" for k in sets), flush=True)
+json.dump({"n_events": int(n), "min_snr": a.min_snr, "held_out_r2": res, "edge_on_auc": auc},
           open(a.out, "w"), indent=1)

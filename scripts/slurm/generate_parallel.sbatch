@@ -1,5 +1,9 @@
 #!/bin/bash
 # Parallel dataset generation on a CPU node: one shard per core, merged into a
+# Memory scales with shards: multi-rate generation measured ~2.8 GB per shard
+# (60 shards peaked at 168 GB), so memory is requested per CPU (4 GB); a
+# fixed --mem under-sized it and jobs ran into the node limit (ant7 OOM,
+# 2026-11-03).
 # single dataset (see src/ahsd/data/scripts/generate_parallel.py).
 #
 #   sbatch --export=ALL,N=200000,OUT=data/dataset_v3 scripts/slurm/generate_parallel.sbatch
@@ -8,7 +12,7 @@
 #SBATCH --job-name=gen_parallel
 #SBATCH --partition=all
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
+#SBATCH --mem-per-cpu=4G
 #SBATCH --time=06:00:00
 #SBATCH --output=logs/gen_parallel-%j.out
 set -euo pipefail

@@ -127,6 +127,9 @@ def evaluate_bank(model, bank, device, n_samples=256, psd_bands=16):
     s = model.sample_posterior(strain, rank=0, n_samples=n_samples,
                                asd_bands=ab)                      # [N,K,11]
     truth = bank["truth"].to(s.device)
+    d = len(model.param_names)
+    if truth.shape[1] < d:          # precessing model: aligned-spin injections, directions 0
+        truth = torch.cat([truth, truth.new_zeros(truth.shape[0], d - truth.shape[1])], 1)
     m1, m2 = s[..., 0], s[..., 1]
     q = torch.minimum(m1, m2) / torch.maximum(m1, m2)
     mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2

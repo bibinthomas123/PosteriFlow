@@ -41,7 +41,8 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
                 outdir, label: str, center_gps: float = GPS_REF,
                 trigger_offset: float = 0.0, nlive: int = 300, npool: int = 4,
                 prior=None, minimum_frequency: Optional[float] = None,
-                approximant: Optional[str] = None, mc_min: Optional[float] = None):
+                approximant: Optional[str] = None, mc_min: Optional[float] = None,
+                sample: str = "rwalk", naccept: int = 20):
     """Nested sampling on unwhitened strains keyed by detector, ending at the
     window end (centre + 2 s): the 4 s window, or the window plus the 28 s
     before it for a multi-rate model (the segment the network read).
@@ -56,6 +57,11 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
     minimum_frequency: default = the band that fits the 4 s segment for the
     lightest chirp mass considered (mc_min, default the prior's smallest),
     so long BNS/NSBH templates do not wrap (priors.window_fmin).
+    sample / naccept: dynesty proposal. "rwalk" (walks=60, naccept=20) is the
+    setting every stored reference used. "acceptance-walk" (bilby's default
+    since 2.0) adapts the walk length to a target number of accepted steps.
+    The rwalk GW200115 run kept 5.4 of 30 cores busy (18%), so its 5.2 h were
+    walk and pool overhead, not likelihood cost (~3 ms per NSBH call).
     Returns the bilby result with posterior in absolute GPS time.
     """
     import bilby
@@ -100,7 +106,8 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
 
     return bilby.run_sampler(
         likelihood=like, priors=priors, sampler="dynesty", nlive=nlive,
-        dlogz=0.5, sample="rwalk", walks=60, naccept=20,
+        dlogz=0.5, sample=sample, naccept=naccept,
+        **({"walks": 60} if sample == "rwalk" else {}),
         conversion_function=wf["sampler_conversion"],
         outdir=str(outdir), label=label, resume=False, clean=True,
         save=True, plot=False, npool=npool)

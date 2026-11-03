@@ -180,7 +180,8 @@ def run_event(name: str, meta: dict, args, out: Path) -> dict:
         t0 = time.time()
         res = run_dynesty(raw4, prepared.psds, out / name / "bilby", name,
                           center_gps=gps, trigger_offset=0.0,
-                          nlive=args.nlive, npool=args.npool, **kw)
+                          nlive=args.nlive, npool=args.npool, sample=args.dynesty_sample,
+                          naccept=args.dynesty_naccept, **kw)
         rec["t_dynesty_s"] = round(time.time() - t0, 1)
         dyn_post = align_conventions(res.posterior, gps)
 
@@ -287,6 +288,10 @@ def main():
                     help="dynesty for BNS/NSBH too (32 s likelihood: hours per event)")
     ap.add_argument("--samples", type=int, default=10000)
     ap.add_argument("--nlive", type=int, default=300)
+    ap.add_argument("--dynesty_sample", default="rwalk", choices=["rwalk", "acceptance-walk", "act-walk"],
+                    help="dynesty proposal (rwalk = the setting of every stored reference)")
+    ap.add_argument("--dynesty_naccept", type=int, default=20,
+                    help="accepted steps per walk (bilby's acceptance-walk default is 60)")
     ap.add_argument("--outdir", default="results/real_event_benchmark")
     ap.add_argument("--device", default=None)
     ap.add_argument("--skip-dynesty", action="store_true")

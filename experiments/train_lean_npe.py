@@ -89,12 +89,15 @@ def load_split(data_dir: str, split: str, limit: int | None = None):
                 mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
                 return mc ** (5.0 / 6.0) / max(p.get("luminosity_distance", 1e9), 1.0)
             plist = sorted(plist, key=_loudness, reverse=True)
-            pv = np.zeros((MAX_SIGNALS, len(PARAM_NAMES)), dtype=np.float32)
+            # the eleven NPE parameters, then the spin directions (zero for
+            # aligned spins), as in the remix cache: precessing models read 15
+            names = PARAM_NAMES + ["tilt_1", "tilt_2", "phi_12", "phi_jl"]
+            pv = np.zeros((MAX_SIGNALS, len(names)), dtype=np.float32)
             n = min(len(plist), MAX_SIGNALS)
             ok = True
             for i in range(n):
-                for j, k in enumerate(PARAM_NAMES):
-                    v = plist[i].get(k)
+                for j, k in enumerate(names):
+                    v = plist[i].get(k, 0.0 if j >= len(PARAM_NAMES) else None)
                     if v is None:
                         ok = False
                         break

@@ -179,14 +179,22 @@ notebooks/        small end-to-end walkthrough (data → training → results)
 infer.py          inference CLI
 ```
 
+## Status (v5, 2026-11)
+
+Per-class models (BBH, BNS, NSBH) with matched-filter timing features and a
+chirp-mass pivot; importance sampling (SMC) corrects posteriors against the
+likelihood and hands multimodal events to dynesty. Measured against dynesty
+on the same simulated BBH events, the 90% chirp-mass width is 1.36x dynesty's
+(~1x below SNR 20, ~3x above SNR 35). Details and evidence: `architecture`,
+section 13.
+
 ## Roadmap
 
-1. Inclination and polarization from the new cross-detector features —
-   validated against dynesty on edge-on systems.
-2. Larger real-noise bank across O1–O4.
-3. Sharper chirp-mass posteriors for low-mass systems.
-4. Pre-merger (early-warning) training (`--premerger`).
-5. End-to-end overlap benchmark in real noise.
+1. BBH precision at high SNR (scale-adaptive pivot under test).
+2. Larger real-noise bank and glitch augmentation (real-noise gap).
+3. Multimodal posteriors: branch weights from importance sampling.
+4. Detector calibration marginalization; precession; heavier BBH (>100 Msun).
+5. Pre-merger (early-warning) training (`--premerger`).
 
 ## References
 

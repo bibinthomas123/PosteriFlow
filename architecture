@@ -20,6 +20,7 @@ Contents
   10. Models, checkpoints and compatibility
   11. Cluster pipeline           scripts/run_pipeline.py, scripts/slurm/
   12. Throughput
+  13. v5 models and measured results (2026-11)
 
 
 1. CONVENTIONS
@@ -600,3 +601,62 @@ Contents
     batch 128 bf16 + compile  416
     batch 512 fp32            612
     batch 512 bf16 + compile  888
+
+
+13. V5 MODELS AND MEASURED RESULTS (2026-11)
+============================================
+
+Class models (inference/pipeline.py CLASS_MODELS):
+  BBH   lean_npe_bbh_v5   4 s window; chirp-mass bank bbh_spin_fine (0.5% grid,
+                          aligned spins -0.6..0.85) with trigger features; pivot.
+                          No MF tokens / polarization features (permutation
+                          importance < 0.2 nats; dropping them is 12% faster).
+  BNS   lean_npe_bns_v5   window + 28 s context; bank bns_ctx + trigger; pivot.
+                          Passes every certification gate.
+  NSBH  lean_npe_nsbh_v5ff window + context; signed spin bank nsbh_spin_signed,
+                          trigger, NO pivot (best multimodal coverage; passes
+                          every gate; the name is historical, see git log).
+  All trained on v4 data: signed aligned spins, SNR counting the context
+  stream, delay augmentation off.
+
+Key mechanisms
+  Trigger features (bank spec ":trigger", mc_features._trigger): per-detector
+    arrival time, SNR and phase of the best template at 0.12 ms lags, and the
+    two strongest merger times. They carry merger time and sky position
+    (permutation importance: shuffling them raises the BBH NLL by 14 nats).
+  Pivot (--pivot, persisted buffer): the flow sees chirp mass and merger time
+    minus the bank's estimates (shift only; unit Jacobian; columns appended to
+    the context and stripped inside NSFPosteriorFlow).
+  Options travelling in the bank spec (no load-site changes): ":trigger",
+    ":flowfeat" (per-(q, spin) bank peaks into the flow), ":scale" (pivot also
+    rescales chirp mass). sbatch --export splits on commas: pass MODEL_FLAGS
+    through the environment, never inside --export.
+  Persisted buffers (no load-site changes): dist_range, spin_signed, pivot,
+    sky_frame; flow size comes from the checkpoint args at every load site.
+
+Inference
+  Importance sampling is sequential Monte Carlo: tempered, resampled within
+  posterior branches (BIC clusters), per-branch Metropolis moves, bank-seeded
+  initial particles for multi-slot banks, exact proposal Jacobian
+  (ParamScaler.log_abs_det_jacobian). Two seeds that disagree by > 0.5 of a
+  90% width flag a multimodal posterior: use dynesty (optionally truncated to
+  the NPE support, --dynesty_narrow). LVK-style prior reweighting:
+  priors.lvk_log_weights.
+
+Measured (simulated, matched against dynesty on the same 30 BBH events)
+  90% chirp-mass width NPE / dynesty: 1.36x median; ~1x at SNR 8-20, ~3x at
+  SNR 35+ (the remaining BBH gap; every representation change tried left it).
+  Coverage of the truth: 0.93 (dynesty 0.90).
+Real events
+  All 10 certification events within 0.1 s of the trigger; importance
+  sampling matches dynesty on unimodal events (GW150914 m1 39.0 vs 39.2,
+  distance 301 vs 357 Mpc with similar widths). GW200115 is multimodal under
+  our signed uniform spin prior (dynesty: m1 4.3, a1 -0.67); published values
+  use LVK's isotropic spin prior.
+  Catalogue (57 of 70 GWTC-1/2.1/3 events, SNR >= 10, LVK-prior reweighted):
+  published BBH chirp mass inside our 90% interval in 83% (NPE) / 88% (IS).
+
+Rejected by measurement: 32 flow bins, multi-rate BBH, sky-frame coordinates,
+higher-mode (XPHM) training data for inclination, a full real-noise fine-tune
+(closes the gap by losing Gaussian performance).
+

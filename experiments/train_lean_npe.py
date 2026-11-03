@@ -282,6 +282,7 @@ def batch_nll(model, strain, params, nsig, asd_bands=None,
     # every (event, rank) pair present, in ONE flow call: the same per-signal
     # NLLs as one call per rank (the loss is their mean either way), without
     # up to max_signals sequential flow passes per step
+    params = params[..., :len(model.param_names)]     # cache may hold extra columns
     R = params.shape[1]
     present = nsig.unsqueeze(1) > torch.arange(R, device=strain.device).unsqueeze(0)   # [B, R]
     ev, rank = present.nonzero(as_tuple=True)
@@ -317,7 +318,7 @@ def run_diagnostics(model, strain, params, nsig, device, n_events=256, n_post=12
     n = min(n_events, strain.shape[0])
     sub = strain[:n].to(device).float()
     ab = asd_bands[:n].to(device).float() if asd_bands is not None else None
-    p0 = params[:n, 0, :].to(device)
+    p0 = params[:n, 0, :len(model.param_names)].to(device)
     rank0 = torch.zeros(n, dtype=torch.long, device=device)
 
     ctx = []
@@ -333,9 +334,10 @@ def run_diagnostics(model, strain, params, nsig, device, n_events=256, n_post=12
     # posterior samples for distance metrics (all params' coverage at 50/90)
     full_ctx = model._full_context(ctx, rank0)
     ctx_rep = full_ctx.unsqueeze(1).expand(n, n_post, full_ctx.shape[1]).reshape(n * n_post, -1)
-    z = torch.randn(n * n_post, len(PARAM_NAMES), device=device)
+    z = torch.randn(n * n_post, len(model.param_names), device=device)
     y, _ = model.flow.inverse(z, ctx_rep)
-    samp = model.scaler.denormalize(y.reshape(n, n_post, -1))  # [n, n_post, 11]
+    samp = model.scaler.denormalize(y.reshape(n, n_post, -1))[..., :len(PARAM_NAMES)]  # [n, n_post, 11]
+    p0 = p0[:, :len(PARAM_NAMES)]       # diagnostics on the eleven standard parameters
 
     d_med = samp[:, :, 2].median(dim=1).values
     d_true = p0[:, 2]
@@ -832,6 +834,7 @@ def main():
     args.dataset_event_types = None
     args.lowrate_len = 0
     args.signed_spins = False
+    args.precessing = False
     dcfg_path = Path(args.data) / "dataset_config.yaml"
     if dcfg_path.exists():
         import yaml
@@ -843,6 +846,8 @@ def main():
         args.lowrate_len = int(dcfg.get("lowrate_seconds", 0) or 0) * int(dcfg.get("lowrate_rate", 512))
         # a1/a2 labels are signed aligned components in these datasets
         args.signed_spins = bool(dcfg.get("signed_spins", False))
+        # precessing datasets: the model also infers the spin directions
+        args.precessing = bool(dcfg.get("precessing", False))
         # source classes present (inference warns when an event falls outside)
         mix = dcfg.get("event_type_distribution") or {}
         args.dataset_event_types = sorted(t.upper() for t, p in mix.items()
@@ -941,6 +946,7 @@ def main():
                     pol_features=args.pol_features,
                     lowrate_len=args.lowrate_len, mc_bank=args.mc_bank,
                     spin_signed=args.signed_spins, pivot=args.pivot, sky_frame=args.sky_frame,
+                    precessing=args.precessing,
                     flow_layers=args.flow_layers,
                     flow_hidden=args.flow_hidden,
                     flow_bins=args.flow_bins).to(device)

@@ -217,3 +217,22 @@ def test_log_abs_det_jacobian_matches_numeric(sky):
         J = torch.autograd.functional.jacobian(lambda v: sc.normalize(v[None])[0], th[i])
         num = torch.linalg.slogdet(J)[1]
         assert abs(float(num - sc.log_abs_det_jacobian(th[i][None])[0])) < 1e-6
+
+
+def test_precessing_coordinates():
+    """Precessing models: tilt -> cos(tilt) round trip, circular azimuths,
+    and the Jacobian includes |sin tilt|."""
+    import torch
+    from ahsd.models.lean_npe import LeanNPE, ParamScaler, PRECESSION_NAMES
+    names = list(PARAM_NAMES) + PRECESSION_NAMES
+    sc = ParamScaler(names, mass_param="mc_q", dist_range=(80, 5000))
+    sc.lo, sc.hi = sc.lo.double(), sc.hi.double()
+    th = torch.cat([_phys_batch(6, 2).abs(), torch.tensor([[0.4, 2.0, 1.0, 5.0]] * 6, dtype=torch.float64)], 1)
+    th[:, 9:11] = th[:, 9:11].clamp(0.05, 0.9)
+    assert "cos_tilt_1" in sc.internal_names and "phi_jl" in sc.CIRCULAR
+    assert torch.allclose(sc.denormalize(sc.normalize(th)), th, atol=1e-6)
+    for i in range(3):
+        J = torch.autograd.functional.jacobian(lambda v: sc.normalize(v[None])[0], th[i])
+        assert abs(float(torch.linalg.slogdet(J)[1] - sc.log_abs_det_jacobian(th[i][None])[0])) < 1e-6
+    m = LeanNPE(psd_cond=True, encoder_type="coherent", mass_param="mc_q", dist_range=(80, 5000), precessing=True)
+    assert len(m.param_names) == 15 and m.flow.features == 15

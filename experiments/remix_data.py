@@ -50,6 +50,10 @@ def _lo_stack(dd):
     if "noise_lo" not in dd["H1"]:
         return None
     return np.stack([dd[d]["noise_lo"] for d in ("H1", "L1", "V1")])
+# spin directions (precessing datasets; zero for aligned spins), stored after
+# the 11 NPE parameters so 11-parameter models read the first 11 columns
+SPIN_DIR_NAMES = ["tilt_1", "tilt_2", "phi_12", "phi_jl"]
+CACHE_NAMES = PARAM_NAMES + SPIN_DIR_NAMES
 IDX_DIST = PARAM_NAMES.index("luminosity_distance")
 IDX_TIME = PARAM_NAMES.index("geocent_time")
 
@@ -128,7 +132,7 @@ def build_memmap_cache(data_dir: str, split: str, out_dir: str) -> dict:
     sig_mm = np.lib.format.open_memmap(out / "signals.npy", mode="w+",
                                        dtype=np.float16, shape=(n_sig, 3, W))
     par_mm = np.lib.format.open_memmap(out / "params.npy", mode="w+",
-                                       dtype=np.float32, shape=(n_sig, len(PARAM_NAMES)))
+                                       dtype=np.float32, shape=(n_sig, len(CACHE_NAMES)))
     events = []  # (sig_start, n_sig) per signal-event
     ni, si = 0, 0
     for fp in files:
@@ -157,7 +161,7 @@ def build_memmap_cache(data_dir: str, split: str, out_dir: str) -> dict:
             start = si
             for k in order:
                 sig_mm[si] = sigs[k]
-                par_mm[si] = [plist[k].get(p, 0.0) for p in PARAM_NAMES]
+                par_mm[si] = [plist[k].get(p, 0.0) for p in CACHE_NAMES]
                 si += 1
             events.append([start, len(plist)])
     noise_mm.flush(); sig_mm.flush(); par_mm.flush()
@@ -490,7 +494,7 @@ class RemixDataset(Dataset):
             strain = self.noise[noise_idx].astype(np.float32)
             recolor_filts = None
 
-        pv = np.zeros((MAX_SIGNALS, len(PARAM_NAMES)), dtype=np.float32)
+        pv = np.zeros((MAX_SIGNALS, self.params.shape[1]), dtype=np.float32)
         entries = []
         sig_sum = np.zeros_like(strain)
         for k in range(nsig):

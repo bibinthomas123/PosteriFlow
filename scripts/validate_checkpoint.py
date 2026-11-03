@@ -614,7 +614,7 @@ def main():
                     encoder_type=ckpt["args"].get("encoder_type", "conv"),
                     mass_param=ckpt["args"].get("mass_param", "m1m2"),
                     geom_phase_residual=ckpt["args"].get("geom_phase_residual", False),
-                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), mf_bank=ckpt["args"].get("mf_bank", "mf_bank.npz"), pol_features=ckpt["args"].get("pol_features", False), lowrate_len=ckpt["args"].get("lowrate_len", 0), mc_bank=ckpt["args"].get("mc_bank", "") or "", q_embed_dim=ckpt["args"].get("q_embed_dim", 0), flow_layers=ckpt["args"].get("flow_layers", 10), flow_hidden=ckpt["args"].get("flow_hidden", 256), flow_bins=ckpt["args"].get("flow_bins", 16))
+                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), mf_bank=ckpt["args"].get("mf_bank", "mf_bank.npz"), pol_features=ckpt["args"].get("pol_features", False), lowrate_len=ckpt["args"].get("lowrate_len", 0), mc_bank=ckpt["args"].get("mc_bank", "") or "", q_embed_dim=ckpt["args"].get("q_embed_dim", 0), flow_layers=ckpt["args"].get("flow_layers", 10), flow_hidden=ckpt["args"].get("flow_hidden", 256), flow_bins=ckpt["args"].get("flow_bins", 16), precessing=ckpt["args"].get("precessing", False))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"checkpoint: epoch {ckpt['epoch']}, val NLL {ckpt['val_nll']:.4f}")

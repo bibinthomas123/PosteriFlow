@@ -77,7 +77,7 @@ def load_model(path: str, device: Optional[str] = None):
                     mass_param=a.get("mass_param", "m1m2"),
                     geom_phase_residual=a.get("geom_phase_residual", False),
                     mf_tokens=a.get("mf_tokens", False),
-                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), lowrate_len=a.get("lowrate_len", 0), mc_bank=a.get("mc_bank", "") or "", q_embed_dim=a.get("q_embed_dim", 0), flow_layers=a.get("flow_layers", 10), flow_hidden=a.get("flow_hidden", 256), flow_bins=a.get("flow_bins", 16))
+                    mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), lowrate_len=a.get("lowrate_len", 0), mc_bank=a.get("mc_bank", "") or "", q_embed_dim=a.get("q_embed_dim", 0), flow_layers=a.get("flow_layers", 10), flow_hidden=a.get("flow_hidden", 256), flow_bins=a.get("flow_bins", 16), precessing=a.get("precessing", False))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     meta = {"model_path": str(path), "model_epoch": int(ckpt.get("epoch", -1)),

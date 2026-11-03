@@ -45,6 +45,8 @@ PARAM_NAMES = [
 ]
 
 
+PRECESSION_NAMES = ["tilt_1", "tilt_2", "phi_12", "phi_jl"]
+
 _SKY_GEOM = {}
 
 
@@ -117,12 +119,18 @@ class ParamScaler:
         "azimuth":             (0.0, 2 * math.pi, False),
         "cos_zenith":          (-1.0, 1.0, False),
         "time_h1":             (-1.6, 1.6, False),
+        # precessing models: spin directions (flow sees cos tilt, uniform
+        # under isotropic spins; the azimuths are circular)
+        "cos_tilt_1":          (-1.0, 1.0, False),
+        "cos_tilt_2":          (-1.0, 1.0, False),
+        "phi_12":              (0.0, 2 * math.pi, False),
+        "phi_jl":              (0.0, 2 * math.pi, False),
     }
 
     # Parameters whose range equals one full period: wrapping in normalized
     # space is EXACT (ra, phase: 2*pi; psi: pi). Flow samples that land past a
     # bound belong at the other end of the circle, not clamped at the edge.
-    CIRCULAR = ("ra", "phase", "psi", "azimuth")
+    CIRCULAR = ("ra", "phase", "psi", "azimuth", "phi_12", "phi_jl")
 
     # Legacy luminosity-distance support. Labels outside it are CLAMPED by
     # normalize(), so a 15 Mpc BNS trains as "40 Mpc" and a 2750 Mpc event
@@ -161,6 +169,9 @@ class ParamScaler:
             self.internal_names = ["chirp_mass", "mass_ratio"] + list(param_names[2:])
         else:
             self.internal_names = list(param_names)
+        self._tilt_idx = [i for i, n in enumerate(param_names) if n in ("tilt_1", "tilt_2")]
+        self.internal_names = [{"tilt_1": "cos_tilt_1", "tilt_2": "cos_tilt_2"}.get(n, n)
+                               for n in self.internal_names]
         if self.sky_frame:
             ren = {"ra": "azimuth", "dec": "cos_zenith", "geocent_time": "time_h1"}
             self.internal_names = [ren.get(n, n) for n in self.internal_names]
@@ -207,6 +218,9 @@ class ParamScaler:
         """physical (m1, m2, ...) -> the flow's coordinates."""
         if self.sky_frame:
             x = self._sky_to_frame(x)
+        if self._tilt_idx:
+            x = x.clone()
+            x[..., self._tilt_idx] = torch.cos(x[..., self._tilt_idx])
         if self.mass_param == "m1m2":
             return x
         m1 = x[..., 0].clamp_min(1e-6)
@@ -229,6 +243,9 @@ class ParamScaler:
             m1 = M / (1.0 + q)
             m2 = M * q / (1.0 + q)
             z = torch.cat([m1.unsqueeze(-1), m2.unsqueeze(-1), z[..., 2:]], dim=-1)
+        if self._tilt_idx:
+            z = z.clone()
+            z[..., self._tilt_idx] = torch.arccos(z[..., self._tilt_idx].clamp(-1.0, 1.0))
         return self._sky_from_frame(z) if self.sky_frame else z
 
     # ---- sky frame: (ra, dec, geocent_time) <-> (azimuth, cos_zenith, time_h1)
@@ -279,6 +296,8 @@ class ParamScaler:
             out = out + torch.log(z[..., 0].clamp_min(1e-6)) - 2 * torch.log(x[..., 0].clamp_min(1e-6))
         if self.sky_frame:
             out = out + torch.log(torch.cos(x[..., 4]).clamp_min(1e-9))
+        for j in self._tilt_idx:                         # |d cos(tilt) / d tilt|
+            out = out + torch.log(torch.sin(x[..., j]).abs().clamp_min(1e-9))
         return out
 
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
@@ -451,7 +470,8 @@ class LeanNPE(nn.Module):
                  mf_token_fusion: str = "add", q_embed_dim: int = 0,
                  dist_range: Optional[tuple] = None, mf_bank: str = "mf_bank.npz",
                  pol_features: bool = False, lowrate_len: int = 0, mc_bank: str = "",
-                 spin_signed: bool = False, pivot: bool = False, sky_frame: bool = False):
+                 spin_signed: bool = False, pivot: bool = False, sky_frame: bool = False,
+                 precessing: bool = False):
         super().__init__()
         self.param_names = param_names
         self.premerger = premerger
@@ -483,6 +503,11 @@ class LeanNPE(nn.Module):
         # mass_param only changes the flow's target coordinates; weights, shapes
         # and every physical-space interface are identical between the two.
         self.mass_param = mass_param
+        # precessing: four spin-direction parameters after the eleven
+        if precessing:
+            param_names = list(param_names) + PRECESSION_NAMES
+        self.param_names = param_names
+        self.precessing = bool(precessing)
         self.scaler = ParamScaler(param_names, premerger=premerger,
                                   mass_param=mass_param, dist_range=dist_range,
                                   spin_signed=spin_signed, sky_frame=sky_frame)

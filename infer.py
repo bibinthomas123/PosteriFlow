@@ -225,10 +225,18 @@ def main():
         raw, starts, centre = is_raw
         if starts is None:
             seg = raw
-        else:   # the window, plus the 28 s before it for a multi-rate model
+        else:
+            # at least 16 s ending at the window end: an early merger in the
+            # 4 s window would otherwise force the band up past the signal
+            # (importance.importance_correct, band_cut_frac); a multi-rate
+            # model also needs the 28 s before the window it read
             model, _ = load_model(posterior.config["model_path"], device=args.device)
-            seg = raw_segment(raw, starts, centre,
-                              seconds=4.0 + getattr(model, "lowrate_len", 0) / 512.0)
+            need = max(16.0, 4.0 + getattr(model, "lowrate_len", 0) / 512.0)
+            try:
+                seg = raw_segment(raw, starts, centre, seconds=need)
+            except ValueError:
+                seg = raw_segment(raw, starts, centre,
+                                  seconds=4.0 + getattr(model, "lowrate_len", 0) / 512.0)
         print(f"\ncorrecting against the exact likelihood ({args.is_reps} seeds, "
               f"{args.npool} workers) — minutes ...")
         try:
@@ -239,9 +247,14 @@ def main():
             print(f"correction: ESS {d.get('importance_ess')}  wall {d.get('wall_s')} s"
                   + (f"  replicate spread {d['replicate_spread']:.2f} of a 90% width"
                      if "replicate_spread" in d else ""))
+            for c in d.get("caveats", []):
+                print(f"caveat: {c}")
             if d.get("consistent") is False:
                 print("WARNING: the seeds disagree (multimodal posterior); the corrected "
                       "result is not reliable for this event — run --compare-dynesty")
+            elif d.get("reliable") is False:
+                print("WARNING: the corrected result is not reliable for this event "
+                      "(see caveat) — run --compare-dynesty")
             corrected.save(out / "importance", plots=not args.no_plots)
             print(f"saved -> {out / 'importance'}")
         except Exception as e:   # the network posterior above stands

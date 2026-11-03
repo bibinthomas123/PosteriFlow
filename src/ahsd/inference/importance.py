@@ -250,6 +250,19 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         mc_lo = float(np.quantile(chirp_mass(theta[:, _J["mass_1"]], theta[:, _J["mass_2"]]), 0.005))
         tc_lo = float(np.quantile(theta[:, _J["geocent_time"]], 0.005))
         f_min = window_fmin(mc_lo, dur - DURATION / 2 + tc_lo)
+    # A raised f_min can cut most of a heavy signal: on a 4 s segment with an
+    # early merger the band that fits starts above the merger frequency, the
+    # likelihood is nearly flat in mass and the particles drift to the prior's
+    # edge, the same way for every seed (measured: an SNR-10, M=94 injection
+    # with tc = -1.4 s gave f_min 85.6 Hz and m1 6 against a true 86). Flag it
+    # when the leading-order merger frequency of >10% of the proposal lies
+    # below f_min; pass a longer segment (data before the window) to fix it.
+    m_tot = theta[:, _J["mass_1"]] + theta[:, _J["mass_2"]]
+    band_cut = float(np.mean(4400.0 / m_tot < f_min))
+    if band_cut > 0.1:
+        caveats.append(f"likelihood band starts at {f_min:.0f} Hz, above the merger frequency "
+                       f"of {band_cut:.0%} of the proposal: the correction sees little of the "
+                       f"signal and is not reliable; pass a longer segment")
 
     # Marginalized-space correction: the likelihood integrates phase and tc
     # analytically, so the proposal density must be the corresponding
@@ -511,6 +524,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "wall_s": round(time.time() - t0, 1),
                 "approximant": approximant,
                 "f_min": round(f_min, 1),
+                "band_cut_frac": round(band_cut, 3),
+                "reliable": band_cut <= 0.1,
                 "caveats": caveats,
                 "note": "phase and geocent_time are analytically marginalized "
                         "in the weights; their columns in the corrected "
@@ -558,4 +573,5 @@ def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, **
         spread = replicate_spread(runs, result.param_names)
         d["replicate_spread"] = round(spread, 3)
         d["consistent"] = spread < tol
+        d["reliable"] = bool(d.get("reliable", True) and d["consistent"])
     return runs[0]

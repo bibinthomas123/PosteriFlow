@@ -233,9 +233,10 @@ class PosteriorResult:
     def importance_correct(self, raw_strain: Dict[str, np.ndarray],
                            center_gps: Optional[float] = None, npool: int = 4,
                            **kw):
-        """Exact reweighting against the true bilby likelihood (DINGO-IS
-        style); removes proposal bias (notably mass ratio) wherever the NPE
-        posterior covers the truth. See ahsd.inference.importance."""
+        """Exact correction against the true bilby likelihood (tempered
+        sequential Monte Carlo from the NPE proposal); removes proposal bias
+        (notably mass ratio) wherever the NPE posterior covers the truth. See
+        ahsd.inference.importance."""
         from ahsd.inference.importance import importance_correct
         from ahsd.inference.dynesty_bridge import GPS_REF
         center = center_gps if center_gps is not None else (

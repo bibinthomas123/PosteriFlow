@@ -1,7 +1,8 @@
 """
-Importance-sampling correction for LeanNPE posteriors (DINGO-IS style,
-Dax et al. 2023): the amortized posterior is a PROPOSAL; reweighting by
-    w = L(theta) * pi(theta) / q(theta | d) 
+Likelihood correction for LeanNPE posteriors: the amortized posterior is
+the PROPOSAL of a tempered sequential Monte Carlo sampler (branch-preserving
+resampling, Metropolis moves, bank-seeded particles). Weighting by
+    w = L(theta) * pi(theta) / q(theta | d)
 against the true bilby likelihood makes the result asymptotically exact —
 in particular it removes the mass-ratio prior-reversion bias wherever the
 proposal covers the truth (our q posteriors are wide, so it does).

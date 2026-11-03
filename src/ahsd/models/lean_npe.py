@@ -16,9 +16,8 @@ Every design choice here reverses a *measured* failure of OverlapNeuralPE
 2. ONE flat context vector with simple attention pooling. The 11-query
    per-parameter readout was measured to collapse (attention entropy pinned
    at 1.0, post-attention outputs cos-sim 0.9997); the diversity losses that
-   fought it only sculpted statistics. Flat conditioning is the
-   literature-standard (DINGO) and was never shown to be the actual
-   bottleneck.
+   fought it only sculpted statistics. Flat conditioning is standard for
+   flow-based NPE and was never shown to be the actual bottleneck.
 
 3. Signal-rank conditioning. The old loss trained the SAME context to
    predict every overlapping signal's parameters with no indication of which

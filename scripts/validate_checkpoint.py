@@ -96,7 +96,7 @@ _SNR_BINS = ((0, 12), (12, 20), (20, 35), (35, 60), (60, 10000))
 # the fallback for classes without a matched set.
 _DYNESTY_REF = {"chirp_mass": 0.00276, "mass_ratio": 0.2880}
 # An amortized estimator within this factor of a reference sampler's width is
-# doing well (DINGO reports near-parity). Generous, and still fails the current
+# doing well (published amortized estimators report near-parity). Generous, and still fails the current
 # generation by ~52x on Mc and ~1.8x on q.
 _SHARPNESS_TOL = 3.0
 # Parameters the "unmeasured" gate holds a model to. Excluded, because no

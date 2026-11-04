@@ -584,16 +584,38 @@ def replicate_spread(results, param_names, names=("mass_1", "mass_2", "luminosit
     return worst
 
 
-def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, **kw):
-    """importance_correct with `reps` independent seeds. Returns the seed-0
-    corrected PosteriorResult; its diagnostics["importance_sampling"] gains
-    replicate_spread and consistent (spread < tol). kw go to
-    PosteriorResult.importance_correct (npool, device, ...)."""
+def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, max_reps: int = 6, **kw):
+    """importance_correct with `reps` independent seeds; when they disagree
+    (replicate spread >= tol, typical of multimodal posteriors whose branch
+    weights vary from run to run), more seeds are run, up to `max_reps`, and
+    all runs are POOLED: each run is a consistent estimate of the posterior,
+    so pooling k of them reduces the run-to-run error by sqrt(k). The result
+    is reliable when that pooled error, spread / sqrt(k), is below tol;
+    otherwise it is flagged for nested sampling. Returns the (pooled)
+    PosteriorResult; diagnostics["importance_sampling"] gains
+    replicate_spread, reps_used, pooled_spread, consistent and reliable.
+    kw go to PosteriorResult.importance_correct (npool, device, ...)."""
+    import copy
     runs = [result.importance_correct(raw_strain, seed=k, **kw) for k in range(max(1, reps))]
     d = runs[0].diagnostics["importance_sampling"]
-    if len(runs) > 1:
+    if len(runs) < 2:
+        return runs[0]
+    spread = replicate_spread(runs, result.param_names)
+    while spread / np.sqrt(len(runs)) >= tol and len(runs) < max_reps:
+        runs.append(result.importance_correct(raw_strain, seed=len(runs), **kw))
         spread = replicate_spread(runs, result.param_names)
-        d["replicate_spread"] = round(spread, 3)
-        d["consistent"] = spread < tol
-        d["reliable"] = bool(d.get("reliable", True) and d["consistent"])
-    return runs[0]
+    pooled_spread = spread / np.sqrt(len(runs))
+    out = runs[0]
+    if len(runs) > reps:          # pool every run (equal weight: equal sample counts)
+        out = copy.copy(runs[0])
+        out.samples = np.concatenate([r.samples for r in runs])
+        out.log_prob = np.concatenate([r.log_prob for r in runs])
+        out.diagnostics = copy.deepcopy(runs[0].diagnostics)
+        d = out.diagnostics["importance_sampling"]
+        d["importance_ess"] = float(sum(r.diagnostics["importance_sampling"]["importance_ess"] for r in runs))
+    d["replicate_spread"] = round(spread, 3)
+    d["reps_used"] = len(runs)
+    d["pooled_spread"] = round(float(pooled_spread), 3)
+    d["consistent"] = bool(pooled_spread < tol)
+    d["reliable"] = bool(d.get("reliable", True) and d["consistent"])
+    return out

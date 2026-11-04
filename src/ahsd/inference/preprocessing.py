@@ -292,6 +292,33 @@ def compute_asd_bands(prepared: PreparedData, psd_bands: int = 16,
     return ab
 
 
+def likelihood_seconds(samples: np.ndarray, f_min: float = 20.0, minimum: float = 4.0,
+                       quantile: float = 0.005) -> float:
+    """Likelihood segment length (s) for a posterior's samples [N, >=2
+    masses first, PARAM_NAMES order], as LVK sizes analyses: the
+    leading-order chirp time from f_min of the lightest plausible chirp mass,
+    plus the time from the earliest plausible merger to the window end (2 s
+    minus the merger-time offset; 3.6 s if unknown) and 0.2 s, rounded up to
+    a power of two (>= minimum).
+
+    A fixed 16 s let a long, light template fit a transient in the 12 s
+    before the window: GW190513 with LVK PSDs went to chirp mass 7.0 (LVK
+    29.9) for every seed; with a 4 s segment it gives 31.6 [27.7, 35.7]."""
+    m1, m2 = samples[:, 0], samples[:, 1]
+    mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+    mc_lo = float(np.quantile(mc[np.isfinite(mc)], quantile))
+    tau = 5.0 / 256.0 * (np.pi * f_min) ** (-8.0 / 3.0) * (mc_lo * 4.925490947e-6) ** (-5.0 / 3.0)
+    to_end = 3.6
+    if samples.shape[1] > 8:
+        from ahsd.models.lean_npe import PARAM_NAMES
+        tc = samples[:, PARAM_NAMES.index("geocent_time")]
+        tc = tc[np.isfinite(tc)]
+        if len(tc):
+            to_end = DURATION / 2 - float(np.quantile(tc, quantile))
+    need = tau + to_end + 0.2
+    return float(max(minimum, 2.0 ** np.ceil(np.log2(need))))
+
+
 def raw_segment(strain: Dict[str, np.ndarray], segment_start_gps: Dict[str, float],
                 center_gps: float, seconds: float = DURATION) -> Dict[str, np.ndarray]:
     """Unwhitened strain ending at the window end (center + 2 s), `seconds`
@@ -306,6 +333,20 @@ def raw_segment(strain: Dict[str, np.ndarray], segment_start_gps: Dict[str, floa
             raise ValueError(f"{det}: data does not cover {seconds:.0f} s before the window end")
         out[det] = np.asarray(x[i1 - n:i1], np.float64)
     return out
+
+
+MIN_BEFORE_S, MIN_AFTER_S = 34.0, 4.0   # valid data a gappy detector must keep around the trigger
+
+
+def _finite_run_around(x: np.ndarray, i: int):
+    """(start, stop) of the contiguous finite stretch of x containing index i,
+    or None if x[i] is not finite."""
+    if not (0 <= i < len(x)) or not np.isfinite(x[i]):
+        return None
+    bad = ~np.isfinite(x)
+    lo = np.flatnonzero(bad[:i])
+    hi = np.flatnonzero(bad[i:])
+    return (int(lo[-1]) + 1 if len(lo) else 0, i + int(hi[0]) if len(hi) else len(x))
 
 
 def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
@@ -344,13 +385,27 @@ def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
             # (e.g. H1 during GW190425); treat them as absent so the window
             # gets the same white-noise fill as a dropped detector in
             # training, not a zeroed channel the model has never seen.
-            nan_frac = float(np.isnan(ts.value).mean())
+            x, t0, sr = ts.value, float(ts.t0.value), float(ts.sample_rate.value)
+            nan_frac = float(np.isnan(x).mean())
             if nan_frac > 0.01:
-                log.warning(f"{det}: {nan_frac:.0%} NaN in GWOSC data (not observing) — treated as absent")
-                continue
-            strain[det] = ts.value
-            starts[det] = float(ts.t0.value)
-            srs[det] = float(ts.sample_rate.value)
+                # A gap ANYWHERE in the fetched span used to drop the detector:
+                # GW190513's H1 has 25% NaN in the 80 s fetch but valid data
+                # around the event (LVK analysed it), and without H1 the
+                # correction locked onto a wrong low-mass mode. Keep the
+                # finite stretch around the trigger when it covers what the
+                # network and likelihood read (32 s before the window end).
+                cut = _finite_run_around(x, int(round((gps - t0) * sr)))
+                need_lo, need_hi = int(MIN_BEFORE_S * sr), int(MIN_AFTER_S * sr)
+                i_trig = int(round((gps - t0) * sr))
+                if cut is None or i_trig - cut[0] < need_lo or cut[1] - i_trig < need_hi:
+                    log.warning(f"{det}: {nan_frac:.0%} NaN in GWOSC data (not observing) — treated as absent")
+                    continue
+                log.warning(f"{det}: {nan_frac:.0%} NaN in the fetched span; using the "
+                            f"{(cut[1] - cut[0]) / sr:.0f} s of valid data around the trigger")
+                x, t0 = x[cut[0]:cut[1]], t0 + cut[0] / sr
+            strain[det] = x
+            starts[det] = t0
+            srs[det] = sr
             found.append(det)
         except Exception as e:
             log.warning(f"{det}: GWOSC fetch failed ({str(e)[:80]})")

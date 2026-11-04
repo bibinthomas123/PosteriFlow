@@ -117,6 +117,10 @@ def main():
                          help="simulated injection through the training pipeline")
     ap.add_argument("--gps", type=float, help="trigger GPS time (required with --strain)")
     ap.add_argument("--psd", help="directory of {det}_psd.txt/.npy (else measured/design)")
+    ap.add_argument("--psd-for", choices=("likelihood", "both"), default="likelihood",
+                    help="use --psd in the likelihood correction only (default: the network's "
+                         "input is whitened with the PSD measured from the data, as in training), "
+                         "or for the network input too")
     ap.add_argument("--event-type", default="BBH", choices=["BBH", "NSBH", "BNS"],
                     help="source class from the detection trigger; selects that "
                          "class's model unless --model is given (default BBH)")
@@ -148,6 +152,10 @@ def main():
     from ahsd.inference import infer
 
     psds = load_psds(args.psd) if args.psd else None
+    # published PSDs belong in the likelihood; the network was trained on PSDs
+    # measured from the data and degrades when whitened with others
+    # (ahsd.inference.result.PosteriorResult.importance_correct)
+    net_psds = psds if args.psd_for == "both" else None
     raw_for_dynesty, truth = None, None
     is_raw = None          # (raw strain, segment starts, window centre GPS) for the correction
 
@@ -155,7 +163,7 @@ def main():
         name = args.event
         from ahsd.inference.preprocessing import fetch_gwosc, prepare_real
         gps, raw, starts, srs, _ = fetch_gwosc(args.event, detectors=args.detectors)
-        prepared = prepare_real(raw, gps, starts, srs, psds=psds, seed=args.seed)
+        prepared = prepare_real(raw, gps, starts, srs, psds=net_psds, seed=args.seed)
         posterior = infer(strain=prepared, num_samples=args.samples,
                           event_type=args.event_type,
                           rank=args.rank, model=args.model,
@@ -170,7 +178,7 @@ def main():
             det, x, t0, sr = load_strain_file(f)
             strain[det], srs[det] = x, sr
             starts[det] = t0 if t0 is not None else args.gps - len(x) / sr / 2
-        posterior = infer(strain=strain, psds=psds, trigger_time=args.gps,
+        posterior = infer(strain=strain, psds=net_psds, trigger_time=args.gps,
                           segment_start=starts, sample_rates=srs,
                           num_samples=args.samples, rank=args.rank, event_type=args.event_type,
                           model=args.model, device=args.device, seed=args.seed)
@@ -221,17 +229,18 @@ def main():
     if args.importance and is_raw is not None and args.rank == 0:
         from ahsd.inference.importance import corrected_with_check
         from ahsd.inference.pipeline import load_model
-        from ahsd.inference.preprocessing import raw_segment
+        from ahsd.inference.preprocessing import likelihood_seconds, raw_segment
         raw, starts, centre = is_raw
         if starts is None:
             seg = raw
         else:
-            # at least 16 s ending at the window end: an early merger in the
-            # 4 s window would otherwise force the band up past the signal
-            # (importance.importance_correct, band_cut_frac); a multi-rate
-            # model also needs the 28 s before the window it read
+            # sized to the signal (LVK-style): the lightest plausible chirp
+            # time from 20 Hz plus the merger-to-window-end offset, so an
+            # early merger keeps its band, without the transients a fixed
+            # 16 s let in (GW190513); a multi-rate model also needs the 28 s
+            # before the window it read
             model, _ = load_model(posterior.config["model_path"], device=args.device)
-            need = max(16.0, 4.0 + getattr(model, "lowrate_len", 0) / 512.0)
+            need = max(likelihood_seconds(posterior.samples), 4.0 + getattr(model, "lowrate_len", 0) / 512.0)
             try:
                 seg = raw_segment(raw, starts, centre, seconds=need)
             except ValueError:
@@ -241,7 +250,8 @@ def main():
               f"{args.npool} workers) — minutes ...")
         try:
             corrected = corrected_with_check(posterior, seg, reps=args.is_reps,
-                                             npool=args.npool, device=args.device or "cpu")
+                                             npool=args.npool, device=args.device or "cpu",
+                                             psds=psds if args.event or args.strain else None)
             d = corrected.diagnostics["importance_sampling"]
             corrected.summary()
             print(f"correction: ESS {d.get('importance_ess')}  wall {d.get('wall_s')} s"

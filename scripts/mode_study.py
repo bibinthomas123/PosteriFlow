@@ -51,6 +51,17 @@ def main():
     ap.add_argument("--target_ess", type=float, default=0.50, help="ESS fraction kept per tempering stage")
     ap.add_argument("--reps", type=int, default=None, help="seeds per variant (default: script's)")
     ap.add_argument("--anchor_inflate", type=float, default=4.0, help="tempering-anchor covariance inflation")
+    ap.add_argument("--start", choices=("dynesty", "npe"), default="dynesty",
+                    help="--invariance start: dynesty's posterior, or the network's samples (a badly "
+                         "weighted population: how fast do the beta = 1 moves repair it?)")
+    ap.add_argument("--rounds", type=int, nargs="+", default=[2, 6])
+    ap.add_argument("--segment_z", action="store_true",
+                    help="posterior mass of each dynesty mode under OUR likelihood x prior: importance "
+                         "sampling per mode (mixture fitted on dynesty's samples of it, restricted to "
+                         "the mode's region) with the correction's likelihood setup")
+    ap.add_argument("--invariance", action="store_true",
+                    help="start the correction's beta = 1 moves from dynesty's posterior and score the "
+                         "modes after 2 and 6 rounds (drift = the two targets differ, or a move is wrong)")
     a = ap.parse_args()
     import bilby
     from sklearn.mixture import GaussianMixture
@@ -83,6 +94,87 @@ def main():
     model, _ = load_model(a.model, device="cpu")
     seg = raw_segment({d: raw[d] for d in prep.detectors_present}, starts, gps,
                       4.0 + getattr(model, "lowrate_len", 0) / 512.0)
+    if a.segment_z:
+        import multiprocessing as mp
+        from ahsd.inference import importance as I
+        from ahsd.inference.coords import SlowCoords
+        from ahsd.inference.priors import TrainingPrior, chirp_mass, window_fmin
+        prior = TrainingPrior.from_meta(res.config)
+        C = SlowCoords(prior)
+        th_n = res.samples
+        mc_lo = float(np.quantile(chirp_mass(th_n[:, 0], th_n[:, 1]), 0.005))
+        tc_lo = float(np.quantile(th_n[:, J("geocent_time")], 0.005))
+        f_min = window_fmin(mc_lo, I.segment_duration(seg) - 2.0 + tc_lo)
+        apx = prior.waveform()["approximant"]
+        pool = mp.get_context("spawn").Pool(a.npool, initializer=I._init_worker,
+                                            initargs=(seg, res.prepared.psds, res.trigger_gps, f_min, apx,
+                                                      prior.event_type))
+        ev = lambda t: np.concatenate(pool.map(I._eval_chunk, np.array_split(t, a.npool * 8)))  # noqa: E731
+        th = np.zeros((len(post), len(PARAM_NAMES)))
+        th[:, J("mass_1")], th[:, J("mass_2")] = m1d.values, m2d.values
+        for k in ("luminosity_distance", "ra", "dec", "theta_jn"):
+            th[:, J(k)] = post[k].values
+        th[:, J("psi")] = np.mod(post["psi"].values, np.pi)
+        th[:, J("a1")] = (post["chi_1"] if "chi_1" in post else post["a_1"]).values
+        th[:, J("a2")] = (post["chi_2"] if "chi_2" in post else post["a_2"]).values
+        lab_d = gm.predict(z(xd))
+        rng = np.random.default_rng(0)
+        from ahsd.inference.importance import _inflated
+        logz = {}
+        print(f"segment_z: f_min {f_min:.1f} Hz, {apx}, segment {I.segment_duration(seg):.0f} s", flush=True)
+        for k in modes:
+            xk = C.wrap(C.to_x(th[lab_d == k]))
+            g = _inflated(GaussianMixture(min(6, max(1, len(xk) // 60)), covariance_type="full",
+                                          reg_covar=1e-6, random_state=0).fit(xk), 1.5)
+            xs = C.fold_wrap(np.asarray(g.sample(12000)[0]))
+            ths = np.zeros((len(xs), len(PARAM_NAMES)))
+            v = C.from_x(xs)
+            ths[:, C.idx] = v
+            ths[:, 0], ths[:, 1] = np.maximum(v[:, 0], v[:, 1]), np.minimum(v[:, 0], v[:, 1])
+            ths[:, J("geocent_time")] = np.median(th_n[:, J("geocent_time")])
+            inside = gm.predict(z(feats(ths[:, 0], ths[:, 1], ths[:, J("a1")]))) == k
+            lp = prior.log_prob(ths)
+            ok = np.isfinite(lp) & inside
+            ll = np.full(len(ths), -np.inf)
+            ll[ok] = ev(ths[ok])
+            lw = ll + lp + C.log_jac(ths) - C.mixture_logpdf(g, xs)
+            f = np.isfinite(lw)
+            mx = lw[f].max()
+            w = np.exp(lw[f] - mx)
+            logz[k] = mx + np.log(w.sum() / len(lw))
+            print(f"  mode {k}: inside {inside.mean():.2f}  log Z {logz[k]:.2f}  IS ESS "
+                  f"{w.sum() ** 2 / (w ** 2).sum():.0f}/{len(lw)}", flush=True)
+        zz = np.array([logz[k] for k in modes])
+        frac = np.exp(zz - zz.max()) / np.exp(zz - zz.max()).sum()
+        print(f"OUR target, mass per mode: {np.round(frac, 3)}   dynesty: {np.round(dyn_p, 3)}", flush=True)
+        out["segment_z"] = {"ours": frac.tolist(), "dynesty": dyn_p}
+        pool.terminate()
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        json.dump(out, open(a.out, "w"), indent=2)
+        return
+    if a.invariance:
+        th = np.zeros((len(post), len(PARAM_NAMES)))
+        th[:, J("mass_1")], th[:, J("mass_2")] = m1d.values, m2d.values
+        for k in ("luminosity_distance", "ra", "dec", "theta_jn"):
+            th[:, J(k)] = post[k].values
+        th[:, J("psi")] = np.mod(post["psi"].values, np.pi)
+        th[:, J("a1")] = (post["chi_1"] if "chi_1" in post else post["a_1"]).values
+        th[:, J("a2")] = (post["chi_2"] if "chi_2" in post else post["a_2"]).values
+        if a.start == "npe":
+            th = res.samples[np.random.default_rng(0).choice(len(res.samples), size=len(th), replace=False)]
+        score(f"{a.start} (start)", z(feats(th[:, 0], th[:, 1], th[:, J("a1")])), gm, modes, dyn_p, out)
+        for rounds in a.rounds:
+            r = res.importance_correct(seg, npool=a.npool, device="cpu", seed=0, start_particles=th,
+                                       n_rejuvenate=rounds)
+            c = r.samples
+            score(f"moves x{rounds}", z(feats(c[:, 0], c[:, 1], c[:, J("a1")])), gm, modes, dyn_p, out)
+            dd = r.diagnostics["importance_sampling"]
+            print("   acceptance:", {k: dd.get(k) for k in ("ridge_acceptance", "ridge_acceptance_final",
+                                                          "independence_acceptance", "sky_jump_acceptance")},
+                  flush=True)
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        json.dump(out, open(a.out, "w"), indent=2)
+        return
     for name, sb in (("IS", False), ("IS bank-seeded", True)):
         for rep in (0, 1):
             try:

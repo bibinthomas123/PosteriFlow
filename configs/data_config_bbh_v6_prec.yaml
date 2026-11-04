@@ -35,7 +35,7 @@ event_type_distribution:
 # are clamped (the legacy 40-2200 Mpc support turned every BNS < 40 Mpc into
 # "40 Mpc" and made GW170729's 2750 Mpc unreachable; measured 2026-10-30).
 distance_ranges:                   # physically-motivated detectable ranges per type
-  BBH: [100.0, 4000.0]             # was 2000: GW170729 is at ~2750 Mpc
+  BBH: [100.0, 6000.0]             # was 4000 (as in v6): truncated every distant event (GW191230 at 4300)
   BNS: [10.0, 400.0]
   NSBH: [20.0, 1200.0]
 min_snr: 6.0

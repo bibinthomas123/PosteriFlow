@@ -85,6 +85,13 @@ def main():
                     lo, med, hi = np.quantile(post, [0.05, 0.5, 0.95])
                     rec[name] = {"in90": bool(lo <= truth <= hi), "logbias": float(np.log(med / truth)),
                                  "relw90": float((hi - lo) / truth)}
+                # inclination: 90% width of |cos theta_jn| over the prior's
+                # (uniform |cos| -> 0.9); edge-on is where the data inform it
+                ac = np.abs(np.cos(smp[i, :, J["theta_jn"]]))
+                lo, hi = np.quantile(ac, [0.05, 0.95])
+                act = abs(np.cos(t[J["theta_jn"]]))
+                rec["inc"] = {"abs_cos_true": float(act), "w90_over_prior": float((hi - lo) / 0.9),
+                              "in90": bool(lo <= act <= hi)}
                 rows.append(rec)
 
     def table(key, bins, label):
@@ -115,6 +122,19 @@ def main():
             c = float(np.mean([x["m1"]["in90"] for x in r])); b = float(np.median([x["m1"]["logbias"] for x in r]))
             res["low_q_by_snr"][f"{lo}-{hi}"] = {"n": len(r), "m1_cov90": c, "m1_logbias": b}
             print(f"  SNR {lo}-{hi}: n {len(r)}  m1 coverage {c:.2f}  m1 median log-bias {b:+.3f}")
+    res["inclination"] = {}
+    print("\ninclination: |cos theta_jn| 90% width / prior width, by true |cos| (all SNR | SNR >= 15)")
+    for lo, hi in ((0.0, 0.3), (0.3, 0.7), (0.7, 1.01)):
+        r = [x for x in rows if lo <= x["inc"]["abs_cos_true"] < hi]
+        rl = [x for x in r if x["snr"] >= 15]
+        if r:
+            w = float(np.median([x["inc"]["w90_over_prior"] for x in r]))
+            wl = float(np.median([x["inc"]["w90_over_prior"] for x in rl])) if rl else float("nan")
+            cv = float(np.mean([x["inc"]["in90"] for x in r]))
+            res["inclination"][f"{lo}-{hi}"] = {"n": len(r), "w90_over_prior": w, "w90_over_prior_snr15": wl,
+                                                "cov90": cv, "n_snr15": len(rl)}
+            print(f"  |cos| {lo:.1f}-{min(hi, 1):.1f}: n {len(r):4d}  width/prior {w:.2f} | {wl:.2f} (n {len(rl)})  "
+                  f"coverage {cv:.2f}")
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         json.dump(res, open(a.out, "w"), indent=1)

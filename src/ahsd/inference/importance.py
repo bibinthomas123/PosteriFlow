@@ -73,7 +73,8 @@ def symmetrized_log_q(theta_np, model, prepared, rank: int = 0,
 _WORKER = {}
 
 
-def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
+def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH",
+                 explicit_phase=False):
     """Multiprocessing pool initializer: build the bilby GW likelihood once per
     worker (phase- and time-marginalized analytically) and cache it + the noise
     log-likelihood in the module-level `_WORKER` dict for `_eval_chunk`."""
@@ -123,7 +124,8 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH"):
         center_gps - 1.6, center_gps + 1.6)
     like = bilby.gw.likelihood.GravitationalWaveTransient(
         interferometers=ifos, waveform_generator=wfg, priors=pri,
-        phase_marginalization=True, time_marginalization=True)
+        phase_marginalization=not explicit_phase, time_marginalization=True)
+    _WORKER["explicit_phase"] = bool(explicit_phase)
     _WORKER["like"] = like
     _WORKER["center"] = center_gps
     _WORKER["start"] = start
@@ -147,7 +149,10 @@ def _eval_chunk(rows):
             # replaces the prior by that delta itself in run_sampler); passing
             # the window centre shifts the search 2 s late and misses the
             # signal entirely
-            phase=0.0, geocent_time=_WORKER["start"],
+            # phase: marginalized analytically (exact for the dominant mode
+            # only) unless sampled explicitly (higher-mode waveforms)
+            phase=p["phase"] if _WORKER.get("explicit_phase") else 0.0,
+            geocent_time=_WORKER["start"],
             time_jitter=0.0,  # bilby time-marginalization bookkeeping param
             # signed aligned spins: magnitude and tilt pi when negative
             a_1=abs(p["a1"]), a_2=abs(p["a2"]),
@@ -283,7 +288,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        n_ind: int = 3, n_rejuvenate: int = 2, n_sky: int = 2,
                        sky_seeds: bool = True, n_sky_final: int = 12,
                        anchor_inflate: float = 4.0, anchor_sky_flat: bool = True,
-                       start_particles: Optional[np.ndarray] = None):
+                       start_particles: Optional[np.ndarray] = None,
+                       n_ridge: int = 2, n_ridge_final: int = 6,
+                       explicit_phase: Optional[bool] = None, anchor_flat_spins: bool = True):
     """Reweight a PosteriorResult against the true likelihood.
 
     raw_strain: UNWHITENED strains keyed by detector, ending at the window end
@@ -370,18 +377,23 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     # self-normalized IS from the previous tempered target.
     from sklearn.mixture import GaussianMixture
 
+    # Higher-mode waveforms: the analytic phase marginalization assumes the
+    # phase enters as one overall rotation, which holds for the dominant
+    # (2, 2) mode only (each (l, m) mode rotates by m * phase). Sample the
+    # phase as a coordinate then.
+    if explicit_phase is None:
+        explicit_phase = "HM" in str(approximant).upper()
     SLOW = ["mass_1", "mass_2", "luminosity_distance", "ra", "dec",
-            "theta_jn", "psi", "a1", "a2"]
-    sj = [_J[p] for p in SLOW]
-    LOGD = np.array([True, True, True, False, False, False, False, False, False])
+            "theta_jn", "psi", "a1", "a2"] + (["phase"] if explicit_phase else [])
 
     # Sampling coordinates: unbounded (logit / atanh) for every bounded
     # parameter, periodic angles wrapped, mixture densities wrapped and
     # symmetrized over the mass swap (ahsd.inference.coords). In the old
     # log coordinates the prior's hard edges made Gaussian-mixture proposals
     # and anchors degenerate (flat-likelihood check: final ESS 9 of 4000).
-    from ahsd.inference.coords import IDX as sj, SlowCoords
-    C = SlowCoords(prior)
+    from ahsd.inference.coords import SlowCoords
+    C = SlowCoords(prior, with_phase=explicit_phase)
+    sj = C.idx
 
     def log_jac(th):
         """log |d theta / d x| of the sampling coordinates: every physical
@@ -389,8 +401,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         return C.log_jac(th)
 
     def to_slow(th):
-        """Physical params -> wrapped unbounded 9-D sampling coordinates
-        (phase and time are marginalized and dropped)."""
+        """Physical params -> wrapped unbounded sampling coordinates (9-D:
+        phase and time are marginalized and dropped; 10-D with an explicit
+        phase)."""
         return C.wrap(C.to_x(th))
 
     def from_slow(x, tc_pool, ph_pool, rng):
@@ -403,7 +416,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         th[:, sj] = v
         k = rng.integers(0, len(tc_pool), len(x))
         th[:, _J["geocent_time"]] = tc_pool[k]   # NOT IS-corrected (marginalized)
-        th[:, _J["phase"]] = ph_pool[k]          # NOT IS-corrected (marginalized)
+        if not explicit_phase:
+            th[:, _J["phase"]] = ph_pool[k]      # NOT IS-corrected (marginalized)
         return th
 
     def gm_logpdf_sym(gm, x):
@@ -418,7 +432,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     ctx = mp.get_context("spawn")
     pool = ctx.Pool(npool, initializer=_init_worker,
                     initargs=(raw_strain, psds, center_gps, f_min, approximant,
-                              prior.event_type))
+                              prior.event_type, explicit_phase))
 
     def eval_ll(th):
         """Evaluate the log-likelihood for all rows of `th` in parallel across
@@ -470,8 +484,11 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         merged others), the rest unchanged."""
         ra, sd_ = x[:, 3], np.tanh(x[:, 4])
         cd_ = np.sqrt(np.maximum(1 - sd_ ** 2, 0.0))
-        return np.column_stack([x[:, :3], cd_ * np.cos(ra), cd_ * np.sin(ra), sd_, x[:, 5],
-                                np.cos(2 * x[:, 6]), np.sin(2 * x[:, 6]), x[:, 7:]])
+        cols = [x[:, :3], cd_ * np.cos(ra), cd_ * np.sin(ra), sd_, x[:, 5],
+                np.cos(2 * x[:, 6]), np.sin(2 * x[:, 6]), x[:, 7:9]]
+        if x.shape[1] > 9:                   # explicit phase, as an angle
+            cols += [np.cos(x[:, 9]), np.sin(x[:, 9])]
+        return np.column_stack(cols)
 
     def branches(x, k_max=6, classifier=False):
         """Cluster labels of particles in slow space (BIC over 1..k_max
@@ -494,7 +511,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     def resample(w, labels):
         return floored_resample(w, labels, n, branch_floor, rng)
 
-    ind, ind_acc, sky_acc = {"gm": None}, [], []
+    ind, ind_acc, sky_acc, ridge_acc = {"gm": None}, [], [], []
+    from ahsd.inference.ridgemoves import RidgeMove
+    ridge = RidgeMove()
     anchor = {"g": None}
     from ahsd.inference.skymoves import SkyJumps
     sky = SkyJumps([d for d in DETECTORS if d in raw_strain], center_gps, psds,
@@ -656,6 +675,30 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
             log_t1 = np.where(acc, t1p, log_t1)
             log_g0 = np.where(acc, g0p, log_g0)
             sky_acc.append(float(acc.mean()))
+        # Mass-ratio / spin ridge moves (ahsd.inference.ridgemoves): step eta
+        # at fixed chirp mass with chi1 set to keep the 1PN + 1.5PN phase,
+        # i.e. along the q - chi1 degeneracy a random walk only crosses.
+        for _ in range(n_ridge):
+            thp, corr = ridge.propose(th, rng)
+            xp = to_slow(thp)
+            fin = np.isfinite(xp).all(axis=1) & np.isfinite(corr)
+            g0p = np.full(len(xp), -np.inf)
+            if fin.any():
+                g0p[fin] = anchor_logpdf(xp[fin])
+            lpp = prior.log_prob(thp)
+            t1p = np.full(len(thp), -np.inf)
+            ok = np.isfinite(lpp) & fin
+            if ok.any():
+                t1p[ok] = eval_ll(thp[ok]) + lpp[ok] + log_jac(thp[ok])
+            with np.errstate(invalid="ignore"):
+                log_a = ((1 - beta) * (g0p - log_g0) + beta * (t1p - log_t1)
+                         - (log_jac(thp) - log_jac(th)) + corr)
+            acc = np.log(rng.uniform(size=len(x))) < np.where(np.isfinite(log_a), log_a, -np.inf)
+            th = np.where(acc[:, None], thp, th)
+            x = np.where(acc[:, None], xp, x)
+            log_t1 = np.where(acc, t1p, log_t1)
+            log_g0 = np.where(acc, g0p, log_g0)
+            ridge_acc.append(float(acc.mean()))
         return th, log_t1, log_g0, scale, float(np.mean(acc_all))
 
     def sky_moves_beta1(th, log_t1):
@@ -673,7 +716,21 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         sky_acc_final.append(float(acc.mean()))
         return np.where(acc[:, None], thp, th), np.where(acc, t1p, log_t1)
 
-    sky_acc_final = []
+    def ridge_moves_beta1(th, log_t1):
+        """One ridge MH step targeting L * pi (beta = 1)."""
+        thp, corr = ridge.propose(th, rng)
+        lpp = prior.log_prob(thp)
+        t1p = np.full(len(thp), -np.inf)
+        ok = np.isfinite(lpp) & np.isfinite(corr) & np.isfinite(to_slow(thp)).all(axis=1)
+        if ok.any():
+            t1p[ok] = eval_ll(thp[ok]) + lpp[ok] + log_jac(thp[ok])
+        with np.errstate(invalid="ignore"):
+            log_a = (t1p - log_t1) - (log_jac(thp) - log_jac(th)) + corr
+        acc = np.log(rng.uniform(size=len(th))) < np.where(np.isfinite(log_a), log_a, -np.inf)
+        ridge_acc_final.append(float(acc.mean()))
+        return np.where(acc[:, None], thp, th), np.where(acc, t1p, log_t1)
+
+    sky_acc_final, ridge_acc_final = [], []
     cur_theta, cur_log_g = theta, log_q + log_jac(theta)   # flow density, in x
     # default: seed from the bank whenever it has several (q, spin) slots
     # (GW200115 mode recall vs dynesty 0.25-0.75 -> 0.75-1.0 with NSBH v5ff)
@@ -723,7 +780,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         # ... and isotropic on the sky (coords.SkyFlatMixture): the network's
         # sky island is not favoured over the others it may have missed
         from ahsd.inference.coords import SkyFlatMixture
-        anchor["g"] = SkyFlatMixture(gm0, C)
+        anchor["g"] = SkyFlatMixture(gm0, C, flat_spins=anchor_flat_spins)
         anchor_logpdf = anchor["g"].logpdf
     else:
         anchor_logpdf = lambda x: gm_logpdf_sym(gm0, x)   # noqa: E731
@@ -818,6 +875,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     # an island was found late.
     for _ in range(n_sky_final if sky.ok else 0):
         rj_theta, rj_t1 = sky_moves_beta1(rj_theta, rj_t1)
+    for _ in range(n_ridge_final):
+        rj_theta, rj_t1 = ridge_moves_beta1(rj_theta, rj_t1)
     accs.append(round(acc, 3))
     pool.terminate()
     theta, log_t1 = rj_theta, rj_t1
@@ -837,6 +896,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "independence_acceptance": round(float(np.mean(ind_acc)), 3) if ind_acc else None,
                 "sky_jump_acceptance": round(float(np.mean(sky_acc)), 4) if sky_acc else None,
                 "sky_jump_acceptance_final": round(float(np.mean(sky_acc_final)), 4) if sky_acc_final else None,
+                "ridge_acceptance": round(float(np.mean(ridge_acc)), 4) if ridge_acc else None,
+                "ridge_acceptance_final": round(float(np.mean(ridge_acc_final)), 4) if ridge_acc_final else None,
                 # distinct particles among the returned samples: low values
                 # mean the moves did not spread the resampled particles
                 "unique_frac": round(float(len(np.unique(theta[idx][:, 0]))) / n, 3),
@@ -849,10 +910,15 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "band_cut_frac": round(band_cut, 3),
                 "reliable": band_cut <= 0.1,
                 "caveats": caveats,
-                "note": "phase and geocent_time are analytically marginalized "
-                        "in the weights; their columns in the corrected "
-                        "samples retain PROPOSAL values (use the NPE result "
-                        "for timing).",
+                "explicit_phase": bool(explicit_phase),
+                "note": ("geocent_time is analytically marginalized in the weights; "
+                         "its column retains PROPOSAL values (use the NPE result for "
+                         "timing). Phase is sampled explicitly (higher-mode waveform)."
+                         if explicit_phase else
+                         "phase and geocent_time are analytically marginalized "
+                         "in the weights; their columns in the corrected "
+                         "samples retain PROPOSAL values (use the NPE result "
+                         "for timing)."),
             }}
     out = theta[idx].copy()
     # the Metropolis moves are unconstrained random walks: angles leave their
@@ -884,7 +950,8 @@ def replicate_spread(results, param_names, names=("mass_1", "mass_2", "luminosit
     return worst
 
 
-def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, max_reps: int = 6, **kw):
+def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, max_reps: int = 6,
+                         max_spread: float = 1.0, **kw):
     """importance_correct with `reps` independent seeds; when they disagree
     (replicate spread >= tol, typical of multimodal posteriors whose branch
     weights vary from run to run), more seeds are run, up to `max_reps`, and
@@ -917,6 +984,25 @@ def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, ma
     d["replicate_spread"] = round(spread, 3)
     d["reps_used"] = len(runs)
     d["pooled_spread"] = round(float(pooled_spread), 3)
-    d["consistent"] = bool(pooled_spread < tol)
-    d["reliable"] = bool(d.get("reliable", True) and d["consistent"])
+    # Seeds more than ~one 90% width apart sat in different posterior modes:
+    # pooling them averages mode weights that are each run's accident, so the
+    # pooled spread is no stability measure (GW190513 with H1 missing: spread
+    # 1.04, pooled 0.43 -> "consistent", q 0.06 against LVK's 0.48)
+    d["consistent"] = bool(pooled_spread < tol and spread <= max_spread)
+    # The correction refines the network's posterior; it must not move the
+    # chirp mass (the network's best-measured parameter) outside the network's
+    # own support. GW190513 with LVK PSDs: network 90% [22.4, 35.7], every
+    # seed agreed on 7.0 (LVK 29.9) -- a consistent but wrong mode, which the
+    # replicate test cannot see.
+    def mc(smp):
+        with np.errstate(invalid="ignore"):
+            v = (smp[:, 0] * smp[:, 1]) ** 0.6 / (smp[:, 0] + smp[:, 1]) ** 0.2
+        return v[np.isfinite(v)]
+    inside = None
+    prop = getattr(result, "samples", None)
+    if prop is not None and len(mc(prop)) and len(mc(out.samples)):
+        lo, hi = np.quantile(mc(prop), [0.005, 0.995])
+        inside = bool(lo <= float(np.median(mc(out.samples))) <= hi)
+    d["mc_inside_proposal"] = inside
+    d["reliable"] = bool(d.get("reliable", True) and d["consistent"] and inside is not False)
     return out

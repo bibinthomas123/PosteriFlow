@@ -36,9 +36,14 @@ def main():
     ap.add_argument("--samples", type=int, default=6000)
     ap.add_argument("--npool", type=int, default=30)
     ap.add_argument("--no_is", action="store_true")
-    ap.add_argument("--segment_s", type=float, default=16.0, help="correction segment length (s)")
+    ap.add_argument("--segment_s", type=float, default=0.0,
+                    help="correction segment length (s); 0 = sized to the signal (LVK-style, "
+                         "preprocessing.likelihood_seconds)")
     ap.add_argument("--is_reps", type=int, default=2, help="correction seeds for the consistency check")
     ap.add_argument("--prefetch", action="store_true", help="only download the strain (login node)")
+    ap.add_argument("--lvk_psd_mode", choices=("likelihood", "both"), default="likelihood",
+                    help="where the LVK PSDs go: the correction's likelihood only (network input "
+                         "whitened with the estimated PSD it was trained on), or also the network input")
     ap.add_argument("--lvk_psd", default=None,
                     help="directory with <event>/<det>_psd.txt (scripts/dingo_h2h/fetch_lvk.py): use the "
                          "LVK analyses' PSDs instead of estimating them from the data")
@@ -48,7 +53,7 @@ def main():
     a = ap.parse_args()
     from ahsd.inference import infer
     from ahsd.inference.pipeline import load_model
-    from ahsd.inference.preprocessing import fetch_gwosc, prepare_real, raw_segment
+    from ahsd.inference.preprocessing import fetch_gwosc, likelihood_seconds, prepare_real, raw_segment
     from ahsd.inference.priors import TrainingPrior, lvk_log_weights, resample_weighted
     from ahsd.models.lean_npe import PARAM_NAMES
     J = PARAM_NAMES.index
@@ -100,8 +105,11 @@ def main():
                         arr = np.loadtxt(pf)
                         psds[det] = {"frequencies": arr[:, 0], "psd": arr[:, 1]}
                 rec["psd_source"] = f"LVK ({sorted(psds)})" if psds else "estimated (no LVK PSD)"
+                rec["psd_mode"] = a.lvk_psd_mode
                 psds = psds or None
-            prep = prepare_real(raw, gps, starts, srs, psds=psds, seed=0)
+            like_psds = psds
+            prep = prepare_real(raw, gps, starts, srs,
+                                psds=psds if a.lvk_psd_mode == "both" else None, seed=0)
             res = infer(strain=prep, event_type=cls, num_samples=a.samples, device="cpu", seed=0)
             prior = TrainingPrior.from_meta(res.config)
             sets = {"npe": res.samples}
@@ -112,14 +120,15 @@ def main():
                 # at least 16 s ending at the window end, as infer.py: a 4 s
                 # segment can force the band above an early merger's signal
                 try:
-                    seg = raw_segment(dets, starts, gps, max(a.segment_s, base_s))
+                    seg_s = a.segment_s or likelihood_seconds(res.samples)
+                    seg = raw_segment(dets, starts, gps, max(seg_s, base_s))
                 except ValueError:
                     seg = raw_segment(dets, starts, gps, base_s)
                 rec["is_segment_s"] = round(len(next(iter(seg.values()))) / 4096.0, 1)
                 try:
                     from ahsd.inference.importance import corrected_with_check
                     c = corrected_with_check(res, seg, reps=a.is_reps, npool=a.npool, device="cpu",
-                                             approximant=a.approximant)
+                                             approximant=a.approximant, psds=like_psds)
                     d = c.diagnostics["importance_sampling"]
                     sets["is"] = c.samples
                     rec["is_ess"] = d["importance_ess"]

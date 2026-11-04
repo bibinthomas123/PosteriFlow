@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--n_moves", type=int, default=15, help="random-walk moves per stage")
     ap.add_argument("--n_ind", type=int, default=3, help="independence moves per stage")
     ap.add_argument("--target_ess", type=float, default=0.50, help="ESS fraction kept per tempering stage")
+    ap.add_argument("--explicit_phase", action="store_true",
+                    help="sample the phase explicitly (as with higher-mode waveforms); also checks phase")
     a = ap.parse_args()
     from scipy.stats import ks_2samp
     from ahsd.data.bilby_pipeline import BilbyNoiseGenerator, get_default_psd
@@ -45,7 +47,7 @@ def main():
     flat = {d: {"frequencies": p["frequencies"], "psd": np.asarray(p["psd"]) * 1e30} for d, p in psds.items()}
     c = importance_correct(res, raw, flat, center_gps=GPS_REF, npool=a.npool, device="cpu", seed=0,
                            seed_bank=False, f_min=20.0, n_moves=a.n_moves, n_ind=a.n_ind,
-                           target_ess=a.target_ess)
+                           target_ess=a.target_ess, explicit_phase=a.explicit_phase or None)
     prior = TrainingPrior.from_meta(res.config)
     pr = prior.bilby_priors(GPS_REF, 0.2).sample(20000)
     names = list(res.param_names)
@@ -56,7 +58,7 @@ def main():
         print(f"network proposal {n:22s} {np.array2string(q, precision=1)}")
     print(f"{'param':22s} {'corrected 5/50/95%':>28s} {'prior 5/50/95%':>28s}   KS")
     worst = 0.0
-    for n in ("mass_1", "mass_2", "luminosity_distance"):
+    for n in ("mass_1", "mass_2", "luminosity_distance") + (("phase",) if a.explicit_phase else ()):
         x = c.samples[:, names.index(n)]
         y = np.asarray(pr[n])
         qx, qy = np.quantile(x, [.05, .5, .95]), np.quantile(y, [.05, .5, .95])

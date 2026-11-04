@@ -41,7 +41,14 @@ def _sigmoid(x):
 
 
 class SlowCoords:
-    def __init__(self, prior, eps: float = 1e-12):
+    def __init__(self, prior, eps: float = 1e-12, with_phase: bool = False):
+        # with_phase: the orbital phase is a sampled coordinate too (index 9,
+        # periodic 2 pi). Needed with higher-mode waveforms, for which the
+        # likelihood's analytic phase marginalization is not exact.
+        self.with_phase = bool(with_phase)
+        self.names = NAMES + (("phase",) if with_phase else ())
+        self.idx = [_J[n] for n in self.names]
+        self.periodic = {**self.PERIODIC, **({9: 2 * np.pi} if with_phase else {})}
         m_lo = min(prior.m1_range[0], prior.m2_range[0])
         m_hi = max(prior.m1_range[1], prior.m2_range[1])
         self.lm = (float(np.log(m_lo)), float(np.log(m_hi)))
@@ -57,7 +64,7 @@ class SlowCoords:
         """Physical [n, 11] -> unbounded slow coordinates [n, 9]."""
         e = self.eps
         c = lambda z: np.clip(z, e, 1 - e)
-        x = np.empty((len(th), len(NAMES)))
+        x = np.empty((len(th), len(self.names)))
         x[:, 0] = _logit(c(self._z(np.log(th[:, _J["mass_1"]]), self.lm)))
         x[:, 1] = _logit(c(self._z(np.log(th[:, _J["mass_2"]]), self.lm)))
         x[:, 2] = _logit(c(self._z(th[:, _J["luminosity_distance"]], self.d)))
@@ -67,6 +74,8 @@ class SlowCoords:
         x[:, 6] = th[:, _J["psi"]]
         x[:, 7] = _logit(c(self._z(th[:, _J["a1"]], self.a1)))
         x[:, 8] = _logit(c(self._z(th[:, _J["a2"]], self.a2)))
+        if self.with_phase:
+            x[:, 9] = th[:, _J["phase"]]
         return x
 
     def from_x(self, x: np.ndarray) -> np.ndarray:
@@ -83,6 +92,8 @@ class SlowCoords:
         v[:, 6] = x[:, 6]
         v[:, 7] = span(self.a1, _sigmoid(x[:, 7]))
         v[:, 8] = span(self.a2, _sigmoid(x[:, 8]))
+        if self.with_phase:
+            v[:, 9] = x[:, 9]
         return v
 
     # periodic coordinates (index -> period): kept in [0, period) after every
@@ -94,7 +105,7 @@ class SlowCoords:
 
     def wrap(self, x: np.ndarray) -> np.ndarray:
         x = x.copy()
-        for j, per in self.PERIODIC.items():
+        for j, per in self.periodic.items():
             x[:, j] = np.mod(x[:, j], per)
         return x
 
@@ -112,9 +123,9 @@ class SlowCoords:
             xs[:, [0, 1]] = x[:, [1, 0]]
             variants.append(xs)
         for v in variants:
-            for shifts in itertools.product((-1, 0, 1), repeat=len(self.PERIODIC)):
+            for shifts in itertools.product((-1, 0, 1), repeat=len(self.periodic)):
                 y = v.copy()
-                for (j, per), k in zip(self.PERIODIC.items(), shifts):
+                for (j, per), k in zip(self.periodic.items(), shifts):
                     y[:, j] = y[:, j] + k * per
                 terms.append(gm.score_samples(y))
         return np.logaddexp.reduce(np.stack(terms), axis=0)
@@ -141,9 +152,9 @@ class SlowCoords:
         xs[:, [0, 1]] = x_to[:, [1, 0]]
         terms = []
         for v in (x_to, xs):
-            for shifts in itertools.product((-1, 0, 1), repeat=len(self.PERIODIC)):
+            for shifts in itertools.product((-1, 0, 1), repeat=len(self.periodic)):
                 y = v.copy()
-                for (j, per), k in zip(self.PERIODIC.items(), shifts):
+                for (j, per), k in zip(self.periodic.items(), shifts):
                     y[:, j] = y[:, j] + k * per
                 r = (y - x_from) / scale
                 terms.append(-0.5 * np.einsum("ni,ij,nj->n", r, prec, r))
@@ -180,12 +191,22 @@ class SkyFlatMixture:
     then favours that island at every intermediate temperature. The
     conditional keeps the network's information on masses, spins and the
     extrinsic parameters given each sky position. Exact density and sampler
-    (Gaussian conditionals; ra images summed as in mixture_logpdf)."""
-    S = [3, 4]                      # ra, atanh(sin dec)
-    R = [0, 1, 2, 5, 6, 7, 8]
+    (Gaussian conditionals; ra images summed as in mixture_logpdf).
 
-    def __init__(self, gm, coords: SlowCoords):
+    flat_spins: the two aligned spins are flat (prior marginal) too, and the
+    masses follow the mixture's conditional given the spins. On GW200115 the
+    posterior is one curved mass-ratio / spin ridge; the network put 81% on
+    one end, a mixture of its samples favoured that end at every intermediate
+    temperature, and the correction kept ~60% there (dynesty 15%) for every
+    seed. Spins are not touched by the m1 <-> m2 swap, so the density stays
+    exact (the folded joint's marginal over S is the mixture's)."""
+    S = [3, 4]                      # ra, atanh(sin dec)
+
+    def __init__(self, gm, coords: SlowCoords, flat_spins: bool = False):
         self.gm, self.c = gm, coords
+        self.S = [3, 4] + ([7, 8] if flat_spins else [])
+        self.d = gm.means_.shape[1]
+        self.R = [i for i in range(self.d) if i not in self.S]
         S, R = self.S, self.R
         cov = gm.covariances_
         self.mu_s, self.mu_r = gm.means_[:, S], gm.means_[:, R]
@@ -207,12 +228,18 @@ class SkyFlatMixture:
             y[:, 0] = y[:, 0] + k * 2 * np.pi
             d = y[:, None, :] - self.mu_s[None]
             m = np.einsum("nki,kij,nkj->nk", d, self.css_inv, d)
-            out.append(self.logw - 0.5 * (m + self.css_logdet + 2 * np.log(2 * np.pi)))
+            out.append(self.logw - 0.5 * (m + self.css_logdet + len(self.S) * np.log(2 * np.pi)))
         return np.stack(out, -1)
 
     def log_sky_prior(self, x):
+        """Prior marginal of the flat coordinates S in sampling coordinates:
+        isotropic sky; spins uniform -> logistic in their logit coordinate."""
         t = np.tanh(x[:, 4])
-        return -np.log(2 * np.pi) + np.log(0.5) + np.log1p(-t ** 2)
+        out = -np.log(2 * np.pi) + np.log(0.5) + np.log1p(-t ** 2)
+        for j in self.S[2:]:
+            a = np.abs(x[:, j])
+            out = out - a - 2 * np.log1p(np.exp(-a))
+        return out
 
     def logpdf(self, x):
         x = self.c.wrap(x)
@@ -221,7 +248,11 @@ class SkyFlatMixture:
         return self.log_sky_prior(x) + self.c.mixture_logpdf(self.gm, x) - log_fs
 
     def sample(self, n, rng):
-        xs = np.column_stack([rng.uniform(0, 2 * np.pi, n), np.arctanh(rng.uniform(-1, 1, n) * (1 - 1e-12))])
+        cols = [rng.uniform(0, 2 * np.pi, n), np.arctanh(rng.uniform(-1, 1, n) * (1 - 1e-12))]
+        for _ in self.S[2:]:
+            u = rng.uniform(1e-12, 1 - 1e-12, n)
+            cols.append(np.log(u) - np.log1p(-u))
+        xs = np.column_stack(cols)
         lr = self._log_resp(xs).reshape(n, -1)
         p = np.exp(lr - lr.max(1, keepdims=True))
         p /= p.sum(1, keepdims=True)
@@ -231,6 +262,6 @@ class SkyFlatMixture:
         ys[:, 0] = ys[:, 0] + img * 2 * np.pi
         mean = self.mu_r[comp] + np.einsum("nij,nj->ni", self.gain[comp], ys - self.mu_s[comp])
         xr = mean + np.einsum("nij,nj->ni", self.cond_chol[comp], rng.standard_normal((n, len(self.R))))
-        x = np.empty((n, 9))
+        x = np.empty((n, self.d))
         x[:, self.S], x[:, self.R] = xs, xr
         return self.c.fold_wrap(x)

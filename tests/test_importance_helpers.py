@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from ahsd.inference.importance import replicate_spread
 from ahsd.models.lean_npe import PARAM_NAMES, ParamScaler
@@ -256,7 +257,8 @@ def test_inflated_mixture_scales_every_covariance():
     assert np.isclose(np.mean(np.exp(g4.score_samples(s) - g4.score_samples(s))), 1.0)
 
 
-def test_sky_flat_mixture_density_matches_its_sampler():
+@pytest.mark.parametrize("flat_spins", [False, True])
+def test_sky_flat_mixture_density_matches_its_sampler(flat_spins):
     """Draws of SkyFlatMixture follow its logpdf: importance weights
     logpdf / logpdf of its own draws are ~1 for a reference density, checked
     via the isotropic sky marginal and a self-normalized IS identity."""
@@ -270,8 +272,11 @@ def test_sky_flat_mixture_density_matches_its_sampler():
     x0[:, 3] = rng.normal(0.5, 0.2, len(x0))      # a network blob on the sky
     x0[:, 4] = rng.normal(-0.3, 0.1, len(x0))
     gm = GaussianMixture(6, covariance_type="full", reg_covar=1e-5, random_state=0).fit(c.wrap(x0))
-    g = SkyFlatMixture(gm, c)
+    g = SkyFlatMixture(gm, c, flat_spins=flat_spins)
     s = g.sample(30000, rng)
+    if flat_spins:      # spins uniform on their prior ranges
+        v = c.from_x(s)
+        assert kstest(v[:, 7], "uniform", args=(p.a1_lo, p.a1_max - p.a1_lo)).statistic < 0.015
     assert kstest(np.tanh(s[:, 4]), "uniform", args=(-1, 2)).statistic < 0.015      # isotropic
     assert kstest(s[:, 3], "uniform", args=(0, 2 * np.pi)).statistic < 0.015
     # normalized density: E_g[ q / g ] = 1 for a normalized q (the wrapped mixture)
@@ -283,3 +288,59 @@ def test_sky_flat_mixture_density_matches_its_sampler():
     # E_q[g / q], does not hold: q cannot cover an isotropic sky.)
     r2 = np.exp(lq - lg)
     assert abs(np.mean(r2) - 1) < 0.05, np.mean(r2)
+
+
+def test_slow_coords_with_phase_round_trip_and_prior_mixture():
+    """10-D coordinates (explicit phase, periodic 2 pi): round trip, and a
+    mixture fitted in them still reproduces the prior by IS."""
+    from sklearn.mixture import GaussianMixture
+    from ahsd.inference.coords import SlowCoords
+    p = _bbh_prior()
+    c = SlowCoords(p, with_phase=True)
+    assert len(c.names) == 10 and c.periodic[9] == 2 * np.pi
+    rng = np.random.default_rng(0)
+    th = p.sample(3000, rng)
+    x = c.to_x(th)
+    assert x.shape[1] == 10 and np.allclose(c.from_x(x), th[:, c.idx], atol=1e-8)
+    gm = GaussianMixture(12, covariance_type="full", reg_covar=1e-5, random_state=0).fit(
+        c.wrap(c.to_x(p.sample(20000, rng))))
+    xs = c.fold_wrap(gm.sample(30000)[0])
+    v = c.from_x(xs)
+    ths = np.zeros((len(xs), len(PARAM_NAMES)))
+    ths[:, c.idx] = v
+    lw = p.log_prob(ths) + c.log_jac(ths) - c.mixture_logpdf(gm, xs)
+    f = np.isfinite(lw)
+    w = np.exp(lw[f] - lw[f].max())
+    assert w.sum() ** 2 / (w ** 2).sum() > 0.4 * f.sum()
+    ph = ths[f, PARAM_NAMES.index("phase")]
+    o = np.argsort(ph)
+    med = np.interp(0.5, np.cumsum(w[o]) / w.sum(), ph[o])
+    assert abs(med - np.pi) < 0.15, med
+
+
+def test_correction_outside_the_network_chirp_mass_is_unreliable():
+    """A correction whose chirp mass leaves the network's 99% support (a
+    consistent wrong mode, e.g. GW190513 with LVK PSDs) is flagged."""
+    from ahsd.inference.importance import corrected_with_check
+    j1, j2 = PARAM_NAMES.index("mass_1"), PARAM_NAMES.index("mass_2")
+
+    class R:
+        param_names = PARAM_NAMES
+
+        def __init__(self, shift):
+            rng = np.random.default_rng(0)
+            self.samples = np.abs(rng.normal(size=(4000, len(PARAM_NAMES)))) + 1
+            self.samples[:, j1], self.samples[:, j2] = 36 + rng.normal(size=4000), 30 + rng.normal(size=4000)
+            self.shift = shift
+
+        def importance_correct(self, raw, seed=0, **kw):
+            s = self.samples.copy()
+            s[:, j1] *= self.shift
+            s[:, j2] *= self.shift
+            return SimpleNamespace(samples=s, log_prob=np.zeros(len(s)),
+                                   diagnostics={"importance_sampling": {"importance_ess": 100.0}})
+
+    ok = corrected_with_check(R(1.0), None).diagnostics["importance_sampling"]
+    bad = corrected_with_check(R(0.25), None).diagnostics["importance_sampling"]
+    assert ok["mc_inside_proposal"] and ok["reliable"]
+    assert bad["mc_inside_proposal"] is False and bad["reliable"] is False

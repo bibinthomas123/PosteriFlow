@@ -232,16 +232,25 @@ class PosteriorResult:
 
     def importance_correct(self, raw_strain: Dict[str, np.ndarray],
                            center_gps: Optional[float] = None, npool: int = 4,
-                           **kw):
+                           psds: Optional[Dict] = None, **kw):
         """Exact correction against the true bilby likelihood (tempered
         sequential Monte Carlo from the NPE proposal); removes proposal bias
         (notably mass ratio) wherever the NPE posterior covers the truth. See
-        ahsd.inference.importance."""
+        ahsd.inference.importance.
+
+        psds: the likelihood's noise PSDs (default: those the network's input
+        was whitened with). Pass published PSDs here, not to the network: the
+        network is trained on PSDs estimated from the data, and whitening its
+        input with others moved it off its training distribution (catalogue:
+        chirp-mass width 1.3 -> 3.0x LVK, distance 90% coverage 96% -> 50%),
+        while the corrected posterior gains from the better PSD (chirp-mass
+        width 0.75 -> 0.99x LVK). Detectors without a PSD here are left out
+        of the likelihood."""
         from ahsd.inference.importance import importance_correct
         from ahsd.inference.dynesty_bridge import GPS_REF
         center = center_gps if center_gps is not None else (
             self.trigger_gps if self.trigger_gps is not None else GPS_REF)
-        return importance_correct(self, raw_strain, self.prepared.psds,
+        return importance_correct(self, raw_strain, psds if psds else self.prepared.psds,
                                   center_gps=center, npool=npool, **kw)
 
     def compare_to_dynesty(self, raw_strain: Dict[str, np.ndarray],

@@ -518,6 +518,10 @@ def main():
                     help="per-event probability of real noise instead of Gaussian (needs --noise_bank)")
     ap.add_argument("--init_from", default=None,
                     help="checkpoint to fine-tune from (loads weights; fresh optimizer/schedule)")
+    ap.add_argument("--resume", default=None,
+                    help="last_model.pth of an interrupted run with the SAME arguments: restores "
+                         "weights, optimizer, LR schedule position, epoch counter and best-model "
+                         "bookkeeping, and continues (runs longer than one 24 h job)")
     ap.add_argument("--det_dropout", type=float, default=0.0,
                     help="per-event probability of keeping only a random detector "
                          "subset (dropped -> unit white noise, matching the "
@@ -1145,7 +1149,23 @@ def main():
     have_calibrated = False
     history = []
     global_step = 0
-    for epoch in range(1, args.epochs + 1):
+    start_epoch = 1
+    if args.resume:
+        ck = torch.load(args.resume, map_location="cpu", weights_only=False)
+        if "optimizer_state" not in ck:
+            raise SystemExit(f"--resume: {args.resume} has no optimizer state (written by a "
+                             "trainer without resume support); use --init_from")
+        model.load_state_dict(ck["model_state_dict"])
+        opt.load_state_dict(ck["optimizer_state"])
+        sched.load_state_dict(ck["scheduler_state"])
+        ts = ck["trainer_state"]
+        best_select_cal, best_select_any = ts["best_select_cal"], ts["best_select_any"]
+        best_tier_cal, have_calibrated = ts["best_tier_cal"], ts["have_calibrated"]
+        history, global_step = ts["history"], ts["global_step"]
+        start_epoch = int(ck["epoch"]) + 1
+        log.info(f"resumed from {args.resume}: continuing at epoch {start_epoch}/{args.epochs}, "
+                 f"step {global_step}")
+    for epoch in range(start_epoch, args.epochs + 1):
         if hasattr(train_ds, "set_epoch"):
             train_ds.set_epoch(epoch)
         model.train()
@@ -1288,13 +1308,20 @@ def main():
         # simulated-data performance, so both count equally.
         select = val_nll if va_real is None else 0.5 * (val_nll + rec["real_val_nll_diag"])
 
-        def _save(path):
+        def _save(path, resumable=False):
             """Write the current checkpoint (weights, epoch, val_nll,
-            diagnostics, args) to `path`."""
-            torch.save({
-                "model_state_dict": model.state_dict(), "epoch": epoch,
-                "val_nll": val_nll, "diagnostics": diag, "args": vars(args),
-            }, path)
+            diagnostics, args) to `path`; resumable=True also stores the
+            optimizer, LR schedule and best-model bookkeeping (--resume)."""
+            ck = {"model_state_dict": model.state_dict(), "epoch": epoch,
+                  "val_nll": val_nll, "diagnostics": diag, "args": vars(args)}
+            if resumable:
+                ck["optimizer_state"] = opt.state_dict()
+                ck["scheduler_state"] = sched.state_dict()
+                ck["trainer_state"] = {
+                    "best_select_cal": best_select_cal, "best_select_any": best_select_any,
+                    "best_tier_cal": best_tier_cal, "have_calibrated": have_calibrated,
+                    "history": history, "global_step": global_step}
+            torch.save(ck, path)
 
         # CALIBRATION GATE. A lower val NLL does NOT mean a better model: late
         # training goes overconfident (boundary railing + high-SNR under-
@@ -1322,7 +1349,7 @@ def main():
             if not have_calibrated and select < best_select_any:
                 best_select_any = select
                 _save(outdir / "best_model.pth")   # provisional (uncalibrated) fallback
-        _save(outdir / "last_model.pth")
+        _save(outdir / "last_model.pth", resumable=True)
         if args.ckpt_every and epoch % args.ckpt_every == 0:
             _save(outdir / f"epoch_{epoch:04d}.pth")
         with open(outdir / "history.json", "w") as f:

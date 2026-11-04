@@ -36,6 +36,8 @@ def main():
     ap.add_argument("--samples", type=int, default=6000)
     ap.add_argument("--npool", type=int, default=30)
     ap.add_argument("--no_is", action="store_true")
+    ap.add_argument("--segment_s", type=float, default=16.0, help="correction segment length (s)")
+    ap.add_argument("--is_reps", type=int, default=2, help="correction seeds for the consistency check")
     ap.add_argument("--prefetch", action="store_true", help="only download the strain (login node)")
     a = ap.parse_args()
     from ahsd.inference import infer
@@ -81,12 +83,23 @@ def main():
             sets = {"npe": res.samples}
             if not a.no_is:
                 model, _ = load_model(res.config["model_path"], device="cpu")
-                seg = raw_segment({d: raw[d] for d in prep.detectors_present}, starts, gps,
-                                  4.0 + getattr(model, "lowrate_len", 0) / 512.0)
+                dets = {d: raw[d] for d in prep.detectors_present}
+                base_s = 4.0 + getattr(model, "lowrate_len", 0) / 512.0
+                # at least 16 s ending at the window end, as infer.py: a 4 s
+                # segment can force the band above an early merger's signal
                 try:
-                    c = res.importance_correct(seg, npool=a.npool, device="cpu", seed=0)
+                    seg = raw_segment(dets, starts, gps, max(a.segment_s, base_s))
+                except ValueError:
+                    seg = raw_segment(dets, starts, gps, base_s)
+                rec["is_segment_s"] = round(len(next(iter(seg.values()))) / 4096.0, 1)
+                try:
+                    from ahsd.inference.importance import corrected_with_check
+                    c = corrected_with_check(res, seg, reps=a.is_reps, npool=a.npool, device="cpu")
+                    d = c.diagnostics["importance_sampling"]
                     sets["is"] = c.samples
-                    rec["is_ess"] = c.diagnostics["importance_sampling"]["importance_ess"]
+                    rec["is_ess"] = d["importance_ess"]
+                    rec["is_diag"] = {k: d.get(k) for k in ("f_min", "band_cut_frac", "replicate_spread",
+                                                            "consistent", "reliable", "efficiency", "wall_s")}
                 except Exception as ex:
                     rec["is_error"] = f"{type(ex).__name__}: {str(ex)[:120]}"
             for k, s in sets.items():

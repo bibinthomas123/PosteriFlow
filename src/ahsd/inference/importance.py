@@ -437,7 +437,13 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
             ok = np.isfinite(lpp)
             if ok.any():
                 t1p[ok] = eval_ll(thp[ok]) + lpp[ok]
-            g0p = gm_logpdf_sym(gm0, xp)
+            # a large step in log mass / distance can overflow to inf; such
+            # rows are rejected (sklearn refuses non-finite input: GW200129
+            # failed with "Input X contains infinity")
+            fin = np.isfinite(xp).all(axis=1)
+            g0p = np.full(len(xp), -np.inf)
+            if fin.any():
+                g0p[fin] = gm_logpdf_sym(gm0, xp[fin])
             log_a = (1 - beta) * (g0p - log_g0) + beta * (t1p - log_t1)
             acc = np.log(rng.uniform(size=len(x))) < np.where(np.isfinite(log_a), log_a, -np.inf)
             th = np.where(acc[:, None], thp, th)

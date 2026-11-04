@@ -39,6 +39,12 @@ def main():
     ap.add_argument("--segment_s", type=float, default=16.0, help="correction segment length (s)")
     ap.add_argument("--is_reps", type=int, default=2, help="correction seeds for the consistency check")
     ap.add_argument("--prefetch", action="store_true", help="only download the strain (login node)")
+    ap.add_argument("--lvk_psd", default=None,
+                    help="directory with <event>/<det>_psd.txt (scripts/dingo_h2h/fetch_lvk.py): use the "
+                         "LVK analyses' PSDs instead of estimating them from the data")
+    ap.add_argument("--approximant", default=None, help="waveform model of the correction's likelihood "
+                                                        "(default: the training class model)")
+    ap.add_argument("--events", default=None, help="file with event names to restrict to (one per line)")
     a = ap.parse_args()
     from ahsd.inference import infer
     from ahsd.inference.pipeline import load_model
@@ -51,6 +57,9 @@ def main():
     runs = ("GWTC-1-confident", "GWTC-2.1-confident", "GWTC-3-confident")
     ev = sorted([e for e in cat if e["observing_run"] in runs and e.get("mass_1_source", 0) > 0
                  and e.get("network_snr", 0) >= a.min_snr], key=lambda e: e["gps_time"])
+    if a.events:
+        keep = {l.strip() for l in open(a.events) if l.strip() and not l.startswith("#")}
+        ev = [e for e in ev if e["event_name"] in keep or e["event_name"].split("_")[0] in keep]
     ev = ev[a.part::a.nparts]
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     print(f"{len(ev)} events in part {a.part}/{a.nparts}", flush=True)
@@ -77,7 +86,20 @@ def main():
             print(e["event_name"], "no data:", str(ex)[:80], flush=True)
             continue
         try:
-            prep = prepare_real(raw, gps, starts, srs, seed=0)
+            psds = None
+            if a.lvk_psd:
+                d_ev = Path(a.lvk_psd) / e["event_name"]
+                if not d_ev.exists():
+                    d_ev = Path(a.lvk_psd) / e["event_name"].split("_")[0]
+                psds = {}
+                for det in raw:
+                    f = d_ev / f"{det}_psd.txt"
+                    if f.exists():
+                        arr = np.loadtxt(f)
+                        psds[det] = {"frequencies": arr[:, 0], "psd": arr[:, 1]}
+                rec["psd_source"] = f"LVK ({sorted(psds)})" if psds else "estimated (no LVK PSD)"
+                psds = psds or None
+            prep = prepare_real(raw, gps, starts, srs, psds=psds, seed=0)
             res = infer(strain=prep, event_type=cls, num_samples=a.samples, device="cpu", seed=0)
             prior = TrainingPrior.from_meta(res.config)
             sets = {"npe": res.samples}
@@ -94,7 +116,8 @@ def main():
                 rec["is_segment_s"] = round(len(next(iter(seg.values()))) / 4096.0, 1)
                 try:
                     from ahsd.inference.importance import corrected_with_check
-                    c = corrected_with_check(res, seg, reps=a.is_reps, npool=a.npool, device="cpu")
+                    c = corrected_with_check(res, seg, reps=a.is_reps, npool=a.npool, device="cpu",
+                                             approximant=a.approximant)
                     d = c.diagnostics["importance_sampling"]
                     sets["is"] = c.samples
                     rec["is_ess"] = d["importance_ess"]

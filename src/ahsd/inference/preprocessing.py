@@ -335,6 +335,30 @@ def raw_segment(strain: Dict[str, np.ndarray], segment_start_gps: Dict[str, floa
     return out
 
 
+def _cached_gwosc(det: str, t0: float, t1: float):
+    """A GWOSC strain file for `det` covering [t0, t1] from the local download
+    cache (no network), cropped and at SAMPLE_RATE; None if none is cached."""
+    import re
+    try:
+        from astropy.utils.data import download_file, get_cached_urls
+        from gwpy.timeseries import TimeSeries
+    except ImportError:
+        return None
+    pat = re.compile(rf"/{det[0]}-{det}_(?:GWOSC|LOSC)_[^/]*?-(\d+)-(\d+)\.hdf5$")
+    for url in get_cached_urls():
+        m = pat.search(url)
+        if not m or not (int(m[1]) <= t0 and int(m[1]) + int(m[2]) >= t1):
+            continue
+        try:
+            ts = TimeSeries.read(download_file(url, cache=True), format="hdf5.gwosc").crop(t0, t1)
+            if abs(float(ts.sample_rate.value) - SAMPLE_RATE) > 1e-6:
+                ts = ts.resample(SAMPLE_RATE)
+            return ts
+        except Exception:
+            continue
+    return None
+
+
 MIN_BEFORE_S, MIN_AFTER_S = 34.0, 4.0   # valid data a gappy detector must keep around the trigger
 
 
@@ -350,7 +374,8 @@ def _finite_run_around(x: np.ndarray, i: int):
 
 
 def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
-                fetch_seconds: int = FETCH_SECONDS):
+                fetch_seconds: int = FETCH_SECONDS, strict: bool = False,
+                required: Optional[List[str]] = None):
     """Download raw strain around a GWOSC event name or GPS time.
 
     Returns (trigger_gps, strain dict, segment_start dict, sample_rate dict,
@@ -368,7 +393,7 @@ def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
         gps = float(event_or_gps)
 
     dets = detectors or DETECTORS
-    strain, starts, srs, found = {}, {}, {}, []
+    strain, starts, srs, found, failed = {}, {}, {}, [], []
     for det in dets:
         try:
             for attempt in range(3):          # GWOSC downloads fail transiently
@@ -379,7 +404,15 @@ def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
                     break
                 except Exception:
                     if attempt == 2:
-                        raise
+                        # gwpy asks the GWOSC API for the file list on every
+                        # fetch, even when the files are cached; when the API
+                        # is down (2026-11-04: timeouts from every node) read a
+                        # cached file covering the span directly
+                        ts = _cached_gwosc(det, gps - fetch_seconds / 2, gps + fetch_seconds / 2)
+                        if ts is None:
+                            raise
+                        log.warning(f"{det}: GWOSC unreachable; using the locally cached file")
+                        break
                     time.sleep(5 * (attempt + 1))
             # GWOSC serves non-observing detectors as NaN-filled segments
             # (e.g. H1 during GW190425); treat them as absent so the window
@@ -409,8 +442,20 @@ def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
             found.append(det)
         except Exception as e:
             log.warning(f"{det}: GWOSC fetch failed ({str(e)[:80]})")
+            failed.append(det)
     if not found:
         raise RuntimeError(f"no open data available around GPS {gps}")
+    # strict: a failed download of a detector that is needed (`required`;
+    # default all) is an error. With GWOSC unreachable a detector that was
+    # not observing (no cached file ever) looks the same as a failure, so the
+    # caller names the detectors the analysis needs (e.g. those LVK analysed)
+    if required is not None:
+        failed = [d for d in failed if d in required]
+    if strict and failed:
+        # a download ERROR is not a non-observing detector: analysing without
+        # it silently degrades the result (2026-11-04: GWOSC timeouts on the
+        # compute nodes left three events with Virgo alone)
+        raise RuntimeError(f"GWOSC fetch failed for {failed}; retry (prefetch on a node with internet)")
     return gps, strain, starts, srs, found
 
 

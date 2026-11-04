@@ -71,7 +71,7 @@ def main():
     if a.prefetch:
         for e in ev:
             try:
-                fetch_gwosc(e["gps_time"]); print("fetched", e["event_name"], flush=True)
+                fetch_gwosc(e["gps_time"], strict=True); print("fetched", e["event_name"], flush=True)
             except Exception as ex:
                 print("fetch failed", e["event_name"], str(ex)[:80], flush=True)
         return
@@ -86,7 +86,13 @@ def main():
                "luminosity_distance": e["luminosity_distance"]}
         rec = {"event": e["event_name"], "class": cls, "snr": e["network_snr"], "published_det": pub}
         try:
-            gps, raw, starts, srs, found = fetch_gwosc(e["gps_time"])
+            need = None
+            if a.lvk_psd:      # the detectors LVK analysed (those with an LVK PSD)
+                d_need = Path(a.lvk_psd) / e["event_name"]
+                if not d_need.exists():
+                    d_need = Path(a.lvk_psd) / e["event_name"].split("_")[0]
+                need = [p.name.split("_")[0] for p in d_need.glob("*_psd.txt")] or None
+            gps, raw, starts, srs, found = fetch_gwosc(e["gps_time"], strict=True, required=need)
         except Exception as ex:          # not cached (compute nodes have no GWOSC): retry later
             print(e["event_name"], "no data:", str(ex)[:80], flush=True)
             continue

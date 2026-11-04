@@ -42,7 +42,8 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
                 trigger_offset: float = 0.0, nlive: int = 300, npool: int = 4,
                 prior=None, minimum_frequency: Optional[float] = None,
                 approximant: Optional[str] = None, mc_min: Optional[float] = None,
-                sample: str = "rwalk", naccept: int = 20):
+                sample: str = "rwalk", naccept: int = 20, sampler: str = "dynesty",
+                sampler_kwargs: Optional[Dict] = None):
     """Nested sampling on unwhitened strains keyed by detector, ending at the
     window end (centre + 2 s): the 4 s window, or the window plus the 28 s
     before it for a multi-rate model (the segment the network read).
@@ -104,10 +105,17 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
         phase_marginalization=True, distance_marginalization=True,
         time_marginalization=True)
 
+    # sampler: "dynesty" (the reference every stored run used), or another
+    # bilby sampler for benchmarks (e.g. "nessai", "bilby_mcmc"), with its
+    # own settings in sampler_kwargs
+    if sampler == "dynesty":
+        kw = dict(nlive=nlive, dlogz=0.5, sample=sample, naccept=naccept,
+                  **({"walks": 60} if sample == "rwalk" else {}))
+    else:
+        kw = {}
+    kw.update(sampler_kwargs or {})
     return bilby.run_sampler(
-        likelihood=like, priors=priors, sampler="dynesty", nlive=nlive,
-        dlogz=0.5, sample=sample, naccept=naccept,
-        **({"walks": 60} if sample == "rwalk" else {}),
+        likelihood=like, priors=priors, sampler=sampler, **kw,
         conversion_function=wf["sampler_conversion"],
         outdir=str(outdir), label=label, resume=False, clean=True,
         save=True, plot=False, npool=npool)

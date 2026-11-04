@@ -518,6 +518,13 @@ def main():
                     help="per-event probability of real noise instead of Gaussian (needs --noise_bank)")
     ap.add_argument("--init_from", default=None,
                     help="checkpoint to fine-tune from (loads weights; fresh optimizer/schedule)")
+    ap.add_argument("--dist_resample", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="each epoch draw every signal's distance afresh from the dataset's uniform "
+                         "prior on [LO, HI] (exact relabel; SNR-selected signal kept above "
+                         "--dist_resample_min_snr) instead of the +-30%% rescale, so the training "
+                         "labels follow the TrainingPrior exactly")
+    ap.add_argument("--dist_resample_min_snr", type=float, default=6.0,
+                    help="the dataset's generation SNR cut (min_snr)")
     ap.add_argument("--resume", default=None,
                     help="last_model.pth of an interrupted run with the SAME arguments: restores "
                          "weights, optimizer, LR schedule position, epoch counter and best-model "
@@ -892,7 +899,8 @@ def main():
                                 delay_aug=args.delay_aug,
                                 delay_aug_candidates=args.delay_aug_candidates,
                                 return_event_idx=bool(args.offline_distill_cache),
-                                dist_range=args.dist_range)
+                                dist_range=args.dist_range,
+                                dist_resample=args.dist_resample, min_snr=args.dist_resample_min_snr)
         log.info(f"remix train events={len(train_ds)} (noise pool={train_ds.n_noise}, "
                  f"p_real={args.real_noise_prob}, det_dropout={args.det_dropout}, "
                  f"era_weights={era_weights}, det_keep_weights={det_keep_weights}, "

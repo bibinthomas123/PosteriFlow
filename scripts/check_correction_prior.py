@@ -47,6 +47,9 @@ def main():
     names = list(res.param_names)
     print(f"ESS {c.diagnostics['importance_sampling']['importance_ess']:.0f}; stages "
           f"{c.diagnostics['importance_sampling']['n_stages']}")
+    for n in ("mass_1", "mass_2", "luminosity_distance"):
+        q = np.quantile(res.samples[:, names.index(n)], [.05, .5, .95])
+        print(f"network proposal {n:22s} {np.array2string(q, precision=1)}")
     print(f"{'param':22s} {'corrected 5/50/95%':>28s} {'prior 5/50/95%':>28s}   KS")
     worst = 0.0
     for n in ("mass_1", "mass_2", "luminosity_distance"):

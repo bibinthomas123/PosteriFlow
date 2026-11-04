@@ -198,7 +198,8 @@ class RemixDataset(Dataset):
                  basin_oversample: int = 0,
                  delay_aug: float = 0.0, delay_aug_candidates: int = 64,
                  return_event_idx: bool = False,
-                 dist_range: tuple | None = None):
+                 dist_range: tuple | None = None,
+                 dist_resample: tuple | None = None, min_snr: float = 6.0):
         cache = Path(cache_dir)
         self.cache_dir = cache
         self.noise = np.load(cache / "noise.npy", mmap_mode="r")
@@ -252,6 +253,18 @@ class RemixDataset(Dataset):
                   f"{delay_aug_candidates} sky candidates")
         self.shift_max_samp = int(time_shift_max * sample_rate)
         self.dist_lo, self.dist_hi = dist_scale_range
+        # dist_resample = (lo, hi): instead of the +-30% rescale, every epoch
+        # draws each signal's distance afresh from the dataset's uniform prior
+        # on [lo, hi] (amplitude x d_old/d_new, exact relabel). The rescale
+        # made the labels' distribution taper outside ~[1.33 lo, 0.75 hi],
+        # so the network's prior was not the TrainingPrior the correction and
+        # the LVK reweighting assume. The signal the generator's SNR cut
+        # selected (approximated as the event's highest-SNR signal; exact for
+        # single-signal events) is drawn only where it stays above min_snr --
+        # uniform on [lo, min(hi, d_old * snr_old / min_snr)] -- so labels
+        # follow prior x selection exactly, as generated.
+        self.dist_resample = tuple(dist_resample) if dist_resample else None
+        self.min_snr = float(min_snr)
         # must match the model's ParamScaler distance support (LeanNPE dist_range)
         self.dist_guard_lo, self.dist_guard_hi = _dist_guard_window(dist_range=dist_range)
         self.remix = remix
@@ -497,6 +510,13 @@ class RemixDataset(Dataset):
         pv = np.zeros((MAX_SIGNALS, self.params.shape[1]), dtype=np.float32)
         entries = []
         sig_sum = np.zeros_like(strain)
+        k_gate = -1
+        if self.remix and self.dist_resample is not None:
+            # design-whitened SNR of each stored signal: the generator's
+            # selection statistic (unit-variance whitened noise -> L2 norm)
+            snr0 = [float(np.sqrt((np.asarray(self.signals[start + k][:, :T_LEN], np.float64) ** 2).sum()))
+                    for k in range(nsig)]
+            k_gate = int(np.argmax(snr0))
         for k in range(nsig):
             sig = self.signals[start + k].astype(np.float32)
             par = self.params[start + k].copy()
@@ -508,11 +528,23 @@ class RemixDataset(Dataset):
                         sig = np.concatenate([hi, lo], axis=-1)
                     else:
                         sig = self.sky_remap.remap(sig, par, rng_sig)
-                # distance rescale (exact relabel), clamped to scaler range
-                s = float(rng_sig.uniform(self.dist_lo, self.dist_hi))
-                d_new = par[IDX_DIST] / s
-                if not (self.dist_guard_lo < d_new < self.dist_guard_hi):
-                    s, d_new = 1.0, par[IDX_DIST]
+                if self.dist_resample is not None:
+                    # fresh distance from the prior (x selection for the gated signal)
+                    lo_d, hi_d = self.dist_resample
+                    top = hi_d
+                    if k == k_gate and snr0[k] > 0:
+                        top = min(hi_d, par[IDX_DIST] * snr0[k] / self.min_snr)
+                    if top > lo_d:
+                        d_new = float(rng_sig.uniform(lo_d, top))
+                        s = float(par[IDX_DIST] / d_new)
+                    else:
+                        s, d_new = 1.0, par[IDX_DIST]
+                else:
+                    # distance rescale (exact relabel), clamped to scaler range
+                    s = float(rng_sig.uniform(self.dist_lo, self.dist_hi))
+                    d_new = par[IDX_DIST] / s
+                    if not (self.dist_guard_lo < d_new < self.dist_guard_hi):
+                        s, d_new = 1.0, par[IDX_DIST]
                 sig = sig * s
                 par[IDX_DIST] = d_new
                 # circular time shift, same across detectors

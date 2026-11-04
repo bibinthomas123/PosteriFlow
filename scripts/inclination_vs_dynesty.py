@@ -38,6 +38,7 @@ ap.add_argument("--model", default=str(ROOT / "model/lean_npe_v3/best_model.pth"
 ap.add_argument("--nlive", type=int, default=500)
 ap.add_argument("--npool", type=int, default=8)
 ap.add_argument("--outdir", default=str(ROOT / "results/inclination_dynesty"))
+ap.add_argument("--seed", type=int, default=None, help="dynesty random seed (independent reruns)")
 a = ap.parse_args()
 
 theta, (ra, dec, psi) = CONFIGS[a.index]
@@ -70,6 +71,9 @@ with torch.no_grad():
     npe = model.sample_posterior(x, n_samples=5000, asd_bands=ab)[0].numpy()
 np.save(out / "npe_samples.npy", npe)
 
+if a.seed is not None:
+    from bilby.core.utils import random as bilby_random
+    bilby_random.seed(a.seed)
 t0 = time.time()
 res = run_dynesty(raw, psds, out / "bilby", f"ev{a.index:02d}", center_gps=GPS_REF,
                   trigger_offset=0.0, nlive=a.nlive, npool=a.npool,

@@ -40,7 +40,11 @@ def main():
     ap.add_argument("--samples", type=int, default=5000)
     ap.add_argument("--npool", type=int, default=8)
     ap.add_argument("--reps", type=int, default=2)
+    ap.add_argument("--defensive", type=float, default=0.2, help="prior share of the initial mixture")
+    ap.add_argument("--n_ind", type=int, default=3, help="independence moves per stage")
     ap.add_argument("--outdir", default=str(ROOT / "results/inclination_is"))
+    ap.add_argument("--target_ess", type=float, default=0.50, help="ESS fraction kept per tempering stage")
+    ap.add_argument("--n_moves", type=int, default=15, help="random-walk moves per stage")
     a = ap.parse_args()
 
     theta, (ra, dec, psi) = CONFIGS[a.index]
@@ -83,8 +87,12 @@ def main():
     t0 = time.time()
     reps = []
     for k in range(a.reps):
-        c = res.importance_correct(raw, npool=a.npool, device="cpu", seed=k)
+        c = res.importance_correct(raw, npool=a.npool, device="cpu", seed=k,
+                                   defensive=a.defensive, n_ind=a.n_ind,
+                                   target_ess=a.target_ess, n_moves=a.n_moves)
         reps.append({**summary(c.samples), "ess": c.diagnostics["importance_sampling"].get("importance_ess")})
+        np.savez(out / f"seed{k}.npz", samples=c.samples, log_target=c.log_prob)
+        json.dump(c.diagnostics["importance_sampling"], open(out / f"seed{k}_diag.json", "w"), indent=1, default=float)
     rec["is"] = reps
     rec["is_wall_s"] = round(time.time() - t0, 1)
     json.dump(rec, open(out / "summary.json", "w"), indent=1)

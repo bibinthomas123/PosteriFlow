@@ -48,6 +48,9 @@ def main():
     ap.add_argument("--samples", type=int, default=8000)
     ap.add_argument("--npool", type=int, default=30)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--target_ess", type=float, default=0.50, help="ESS fraction kept per tempering stage")
+    ap.add_argument("--reps", type=int, default=None, help="seeds per variant (default: script's)")
+    ap.add_argument("--anchor_inflate", type=float, default=4.0, help="tempering-anchor covariance inflation")
     a = ap.parse_args()
     import bilby
     from sklearn.mixture import GaussianMixture
@@ -83,7 +86,8 @@ def main():
     for name, sb in (("IS", False), ("IS bank-seeded", True)):
         for rep in (0, 1):
             try:
-                c = res.importance_correct(seg, npool=a.npool, device="cpu", seed=rep, seed_bank=sb).samples
+                c = res.importance_correct(seg, npool=a.npool, device="cpu", seed=rep, seed_bank=sb,
+                                           target_ess=a.target_ess, anchor_inflate=a.anchor_inflate).samples
                 score(f"{name} seed{rep}", z(feats(c[:, 0], c[:, 1], c[:, J("a1")])), gm, modes, dyn_p, out)
             except Exception as e:
                 out[f"{name} seed{rep}"] = {"error": f"{type(e).__name__}: {str(e)[:150]}"}

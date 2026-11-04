@@ -26,6 +26,9 @@ def main():
     ap.add_argument("--model", default=str(ROOT / "model/lean_npe_bbh_v5/best_model.pth"))
     ap.add_argument("--npool", type=int, default=16)
     ap.add_argument("--samples", type=int, default=4000)
+    ap.add_argument("--n_moves", type=int, default=15, help="random-walk moves per stage")
+    ap.add_argument("--n_ind", type=int, default=3, help="independence moves per stage")
+    ap.add_argument("--target_ess", type=float, default=0.50, help="ESS fraction kept per tempering stage")
     a = ap.parse_args()
     from scipy.stats import ks_2samp
     from ahsd.data.bilby_pipeline import BilbyNoiseGenerator, get_default_psd
@@ -41,7 +44,8 @@ def main():
     res = infer(strain=raw, psds=psds, model=a.model, num_samples=a.samples, device="cpu", seed=0)
     flat = {d: {"frequencies": p["frequencies"], "psd": np.asarray(p["psd"]) * 1e30} for d, p in psds.items()}
     c = importance_correct(res, raw, flat, center_gps=GPS_REF, npool=a.npool, device="cpu", seed=0,
-                           seed_bank=False, f_min=20.0)
+                           seed_bank=False, f_min=20.0, n_moves=a.n_moves, n_ind=a.n_ind,
+                           target_ess=a.target_ess)
     prior = TrainingPrior.from_meta(res.config)
     pr = prior.bilby_priors(GPS_REF, 0.2).sample(20000)
     names = list(res.param_names)

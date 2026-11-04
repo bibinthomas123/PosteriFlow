@@ -119,6 +119,37 @@ class SlowCoords:
                 terms.append(gm.score_samples(y))
         return np.logaddexp.reduce(np.stack(terms), axis=0)
 
+    def fold_wrap(self, x: np.ndarray) -> np.ndarray:
+        """Map a proposed point to the sampling space: periodic angles wrapped
+        and the two mass coordinates sorted (x0 >= x1; with one common box,
+        logit(log m) is monotone, so this is m1 >= m2)."""
+        x = self.wrap(x)
+        a, b = x[:, 0].copy(), x[:, 1].copy()
+        x[:, 0], x[:, 1] = np.maximum(a, b), np.minimum(a, b)
+        return x
+
+    def rw_logpdf(self, x_from: np.ndarray, x_to: np.ndarray, prec: np.ndarray,
+                  logdet: float, scale: float) -> np.ndarray:
+        """log density of proposing the folded, wrapped point x_to from x_from
+        with a Gaussian random walk of covariance scale^2 * inv(prec): the step
+        lands on any image of x_to (mass swap x periodic shifts -1/0/+1), so
+        the density sums over them. Needed for the Hastings ratio when the
+        step covariance depends on the current point (per-branch steps)."""
+        import itertools
+        d = x_to.shape[1]
+        xs = x_to.copy()
+        xs[:, [0, 1]] = x_to[:, [1, 0]]
+        terms = []
+        for v in (x_to, xs):
+            for shifts in itertools.product((-1, 0, 1), repeat=len(self.PERIODIC)):
+                y = v.copy()
+                for (j, per), k in zip(self.PERIODIC.items(), shifts):
+                    y[:, j] = y[:, j] + k * per
+                r = (y - x_from) / scale
+                terms.append(-0.5 * np.einsum("ni,ij,nj->n", r, prec, r))
+        return (np.logaddexp.reduce(np.stack(terms), axis=0)
+                - 0.5 * logdet - d * np.log(scale) - 0.5 * d * np.log(2 * np.pi))
+
     def log_jac(self, th: np.ndarray) -> np.ndarray:
         """log |d theta / d x| summed over the transformed parameters; -inf
         on a boundary (where the physical density has no support anyway)."""
@@ -136,3 +167,70 @@ class SlowCoords:
                 z = self._z(th[:, _J[n]], box)
                 out += np.log(box[1] - box[0]) + np.log(z) + np.log1p(-z)
         return np.where(np.isfinite(out), out, -np.inf)
+
+
+class SkyFlatMixture:
+    """Isotropic sky x a Gaussian mixture's conditional for the other
+    coordinates given the sky (sampling coordinates of SlowCoords):
+
+        g(x) = pi_sky(ra, x_dec) * gm(x_rest | ra, x_dec).
+
+    Used as the correction's tempering anchor: the network's sky can sit on
+    the wrong island (a cycle-slip image), and a mixture fitted to its samples
+    then favours that island at every intermediate temperature. The
+    conditional keeps the network's information on masses, spins and the
+    extrinsic parameters given each sky position. Exact density and sampler
+    (Gaussian conditionals; ra images summed as in mixture_logpdf)."""
+    S = [3, 4]                      # ra, atanh(sin dec)
+    R = [0, 1, 2, 5, 6, 7, 8]
+
+    def __init__(self, gm, coords: SlowCoords):
+        self.gm, self.c = gm, coords
+        S, R = self.S, self.R
+        cov = gm.covariances_
+        self.mu_s, self.mu_r = gm.means_[:, S], gm.means_[:, R]
+        css = cov[:, S][:, :, S]
+        self.css_inv = np.linalg.inv(css)
+        self.css_logdet = np.linalg.slogdet(css)[1]
+        crs = cov[:, R][:, :, S]
+        self.gain = np.einsum("kij,kjl->kil", crs, self.css_inv)              # [K, r, s]
+        cond = cov[:, R][:, :, R] - np.einsum("kij,klj->kil", self.gain, crs)
+        self.cond_chol = np.linalg.cholesky(cond + 1e-12 * np.eye(len(R)))
+        self.logw = np.log(gm.weights_)
+
+    def _log_resp(self, xs):
+        """log w_k N(xs + image; mu_k^s, C_k^ss) for ra images -1, 0, +1:
+        [n, K, 3]."""
+        out = []
+        for k in (-1, 0, 1):
+            y = xs.copy()
+            y[:, 0] = y[:, 0] + k * 2 * np.pi
+            d = y[:, None, :] - self.mu_s[None]
+            m = np.einsum("nki,kij,nkj->nk", d, self.css_inv, d)
+            out.append(self.logw - 0.5 * (m + self.css_logdet + 2 * np.log(2 * np.pi)))
+        return np.stack(out, -1)
+
+    def log_sky_prior(self, x):
+        t = np.tanh(x[:, 4])
+        return -np.log(2 * np.pi) + np.log(0.5) + np.log1p(-t ** 2)
+
+    def logpdf(self, x):
+        x = self.c.wrap(x)
+        lr = self._log_resp(x[:, self.S])
+        log_fs = np.logaddexp.reduce(lr.reshape(len(x), -1), axis=1)
+        return self.log_sky_prior(x) + self.c.mixture_logpdf(self.gm, x) - log_fs
+
+    def sample(self, n, rng):
+        xs = np.column_stack([rng.uniform(0, 2 * np.pi, n), np.arctanh(rng.uniform(-1, 1, n) * (1 - 1e-12))])
+        lr = self._log_resp(xs).reshape(n, -1)
+        p = np.exp(lr - lr.max(1, keepdims=True))
+        p /= p.sum(1, keepdims=True)
+        pick = (rng.uniform(size=(n, 1)) > np.cumsum(p, 1)).sum(1).clip(0, p.shape[1] - 1)
+        comp, img = pick // 3, pick % 3 - 1
+        ys = xs.copy()
+        ys[:, 0] = ys[:, 0] + img * 2 * np.pi
+        mean = self.mu_r[comp] + np.einsum("nij,nj->ni", self.gain[comp], ys - self.mu_s[comp])
+        xr = mean + np.einsum("nij,nj->ni", self.cond_chol[comp], rng.standard_normal((n, len(self.R))))
+        x = np.empty((n, 9))
+        x[:, self.S], x[:, self.R] = xs, xr
+        return self.c.fold_wrap(x)

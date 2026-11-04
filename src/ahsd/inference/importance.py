@@ -190,6 +190,81 @@ def _bank_seeds(model, result, theta, rng, d_snr2: float = 9.0, per_slot: int = 
     return np.concatenate(out) if out else None
 
 
+def _wq(v, w, qs=(0.1, 0.5, 0.9)):
+    o = np.argsort(v)
+    c = np.cumsum(w[o])
+    return [float(v[o][min(np.searchsorted(c, q * c[-1]), len(v) - 1)]) for q in qs]
+
+
+def _stage_summary(beta, theta, w, labels):
+    """Weighted distance / dec quantiles and branch weights of one SMC stage."""
+    cls = np.unique(labels)
+    return {"beta": round(float(beta), 4),
+            "ess_frac": round(float(1.0 / np.sum(w ** 2) / len(w)), 4),
+            "dL_q": [round(x, 1) for x in _wq(theta[:, _J["luminosity_distance"]], w)],
+            "dec_q": [round(x, 3) for x in _wq(theta[:, _J["dec"]], w)],
+            # weighted mass in dec bins (sky islands show up as separate bins)
+            "dec_hist": [round(float(v), 3) for v in np.histogram(
+                theta[:, _J["dec"]], bins=[-1.6, -0.9, 0.1, 1.6], weights=w)[0]],
+            "branch_w": [round(float(w[labels == c].sum()), 3) for c in cls],
+            "branch_dL": [round(float(np.median(theta[labels == c, _J["luminosity_distance"]])), 0) for c in cls]}
+
+
+def _inflated(gm, k: float):
+    """Copy of a fitted full-covariance GaussianMixture with every component
+    covariance multiplied by k (same weights and means)."""
+    import copy
+    from sklearn.mixture._gaussian_mixture import _compute_precision_cholesky
+    g = copy.deepcopy(gm)
+    g.covariances_ = gm.covariances_ * float(k)
+    g.precisions_cholesky_ = _compute_precision_cholesky(g.covariances_, "full")
+    g.precisions_ = np.array([np.linalg.inv(c) for c in g.covariances_])
+    return g
+
+
+def floored_resample(w, labels, n, branch_floor, rng):
+    """Systematic resampling within each branch, with a FLOOR on every
+    branch's particle count; the resampled particles carry their
+    branch's weight (log W_c / n_c) instead of uniform weights.
+
+    Allocating counts in proportion to branch weight loses any branch
+    whose weight dips below ~1/n at an intermediate temperature, and it
+    never comes back: the anchor g0^(1-beta) favours wherever the network
+    put its mass, so a true mode the network missed is suppressed mid-
+    ladder and regains its weight only near beta = 1. Seeds then landed
+    on one mode or the other (edge-on injection: distance 260 vs 410
+    Mpc; GW200115). With a floor every branch stays populated, and the
+    carried weights keep the particle set an exact representation of
+    the tempered target (Metropolis moves leave it invariant, so they
+    act on weighted particles just as well). Returns (indices, log
+    weights)."""
+    cls = np.unique(labels)
+    W = np.array([w[labels == c].sum() for c in cls])
+    live = W > 1e-12 * W.sum()
+    n_live = int(live.sum())
+    floor = min(max(1, int(branch_floor * n)), n // (2 * n_live)) if n_live > 1 else 0
+    n_c = np.zeros(len(cls), int)
+    n_c[live] = floor
+    free = n - n_c.sum()
+    share = np.where(live, W, 0.0) / W[live].sum() * free
+    n_c += np.floor(share).astype(int)
+    rest = n - n_c.sum()
+    if rest > 0:      # largest remainders, live branches only
+        frac = np.where(live, share - np.floor(share), -1.0)
+        n_c[np.argsort(-frac)[:rest]] += 1
+    out, lws = [], []
+    for c, k, Wc in zip(cls, n_c, W):
+        if k == 0:
+            continue
+        ids = np.where(labels == c)[0]
+        wc = w[ids] / w[ids].sum()
+        u = (rng.uniform() + np.arange(k)) / k
+        out.append(ids[np.searchsorted(np.cumsum(wc), u).clip(0, len(ids) - 1)])
+        lws.append(np.full(k, np.log(Wc / W.sum()) - np.log(k)))
+    lw = np.concatenate(lws)
+    return np.concatenate(out), lw - np.log(np.exp(lw - lw.max()).sum()) - lw.max()
+
+
 def segment_duration(raw: Dict[str, np.ndarray]) -> float:
     """Seconds covered by the raw strains (all detectors the same length)."""
     lens = {len(v) for v in raw.values()}
@@ -203,7 +278,12 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                        model_path: Optional[str] = None,
                        npool: int = 4, f_min: Optional[float] = None,
                        approximant: Optional[str] = None,
-                       device: str = "cpu", seed: int = 0, seed_bank: Optional[bool] = None):
+                       device: str = "cpu", seed: int = 0, seed_bank: Optional[bool] = None,
+                       defensive: float = 0.2, target_ess: float = 0.50, n_moves: int = 15, branch_floor: float = 0.05,
+                       n_ind: int = 3, n_rejuvenate: int = 2, n_sky: int = 2,
+                       sky_seeds: bool = True, n_sky_final: int = 12,
+                       anchor_inflate: float = 4.0, anchor_sky_flat: bool = True,
+                       start_particles: Optional[np.ndarray] = None):
     """Reweight a PosteriorResult against the true likelihood.
 
     raw_strain: UNWHITENED strains keyed by detector, ending at the window end
@@ -295,46 +375,41 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     sj = [_J[p] for p in SLOW]
     LOGD = np.array([True, True, True, False, False, False, False, False, False])
 
+    # Sampling coordinates: unbounded (logit / atanh) for every bounded
+    # parameter, periodic angles wrapped, mixture densities wrapped and
+    # symmetrized over the mass swap (ahsd.inference.coords). In the old
+    # log coordinates the prior's hard edges made Gaussian-mixture proposals
+    # and anchors degenerate (flat-likelihood check: final ESS 9 of 4000).
+    from ahsd.inference.coords import IDX as sj, SlowCoords
+    C = SlowCoords(prior)
+
     def log_jac(th):
-        """log |d theta / d x| for the log coordinates of the slow space
-        (masses and distance): x = log theta, so a physical density p(theta)
-        is p(theta) * m1 * m2 * d_L in x. The Metropolis walk is symmetric
-        in x and the mixture surrogates are x densities, so the likelihood x
-        prior and the flow density must carry this factor too. Without it the
-        sampler targeted L pi / (m1 m2 d_L): negligible on loud events (it
-        matched dynesty on GW150914), but at low SNR it pulled particles to
-        small masses and distances (joint overlap test, 2026-11-04)."""
-        return (np.log(th[:, _J["mass_1"]]) + np.log(th[:, _J["mass_2"]])
-                + np.log(th[:, _J["luminosity_distance"]]))
+        """log |d theta / d x| of the sampling coordinates: every physical
+        density (likelihood x prior, flow) is converted to them with it."""
+        return C.log_jac(th)
 
     def to_slow(th):
-        """Map physical params to the 9-D "slow" IS space (masses/distance in
-        log), dropping the analytically-marginalized phase and time."""
-        x = th[:, sj].astype(np.float64).copy()
-        x[:, LOGD] = np.log(x[:, LOGD])
-        return x
+        """Physical params -> wrapped unbounded 9-D sampling coordinates
+        (phase and time are marginalized and dropped)."""
+        return C.wrap(C.to_x(th))
 
     def from_slow(x, tc_pool, ph_pool, rng):
-        """Inverse of `to_slow`: exponentiate log-dims, enforce m1 >= m2, and
-        re-attach time/phase by resampling the marginalized pools."""
+        """Inverse of `to_slow` (angles wrapped, m1 >= m2 enforced), with
+        time/phase re-attached from the marginalized pools."""
         th = np.zeros((len(x), len(PARAM_NAMES)))
-        xx = x.copy()
-        xx[:, LOGD] = np.exp(xx[:, LOGD])
-        # enforce the m1 >= m2 convention (mixture density symmetrized below)
-        m1 = np.maximum(xx[:, 0], xx[:, 1]); m2 = np.minimum(xx[:, 0], xx[:, 1])
-        xx[:, 0], xx[:, 1] = m1, m2
-        th[:, sj] = xx
+        v = C.from_x(C.wrap(x))
+        m1 = np.maximum(v[:, 0], v[:, 1]); m2 = np.minimum(v[:, 0], v[:, 1])
+        v[:, 0], v[:, 1] = m1, m2
+        th[:, sj] = v
         k = rng.integers(0, len(tc_pool), len(x))
         th[:, _J["geocent_time"]] = tc_pool[k]   # NOT IS-corrected (marginalized)
         th[:, _J["phase"]] = ph_pool[k]          # NOT IS-corrected (marginalized)
         return th
 
     def gm_logpdf_sym(gm, x):
-        """Gaussian-mixture log-density symmetrized under the m1<->m2 label
-        swap (the mixture is fit in slow space where mass ordering is enforced)."""
-        xs = x.copy()
-        xs[:, [0, 1]] = x[:, [1, 0]]
-        return np.logaddexp(gm.score_samples(x), gm.score_samples(xs))
+        """Mixture density of wrapped, mass-sorted sampling points (periodic
+        images and the m1 <-> m2 swap summed)."""
+        return C.mixture_logpdf(gm, x)
 
     rng = np.random.default_rng(seed)
     tc_pool = theta[:, _J["geocent_time"]].copy()
@@ -351,14 +426,14 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         return np.concatenate(pool.map(_eval_chunk,
                                        np.array_split(th, max(npool * 8, 8))))
 
-    def pick_beta(log_t1, log_t0, log_g_s, lo, target_frac):
+    def pick_beta(log_t1, log_t0, log_g_s, lo, target_frac, lw_carry=0.0):
         """Geometric path: log target_b = (1-b) log_t0 + b log_t1, where
         t0 = original flow proposal and t1 = L * pi. Largest b with
         ESS >= target under the current stage proposal g_s."""
         def ess_at(b):
             """Fractional effective sample size of the tempered weights at
             inverse-temperature `b` under the current stage proposal."""
-            lw = (1 - b) * log_t0 + b * log_t1 - log_g_s
+            lw = lw_carry + (1 - b) * log_t0 + b * log_t1 - log_g_s
             m = np.isfinite(lw)
             if m.sum() < 10:
                 return 0.0
@@ -377,46 +452,60 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
 
     # 15 moves per stage: with 5 the particles stayed too close to their
     # resampled parents (GW200115: m1 90% width 0.4 vs dynesty's 1.5)
-    target_frac, MAX_STAGES, N_MOVES = 0.20, 40, 15
+    # ESS 0.5 per stage (not 0.2): with 20% the ~7-stage ladder left the
+    # final particles descended from a few early ancestors, and the mass of
+    # each posterior branch depended on which island those sat on (edge-on
+    # injection: cycle-slip island 27-92% across seeds vs ~6%); with 50%,
+    # ~12 stages, 3.5-17%
+    target_frac, MAX_STAGES, N_MOVES = float(target_ess), 80, int(n_moves)
     # Path anchor: a mixture SURROGATE of the proposal, fitted on the flow
     # samples. Anchoring on the flow density itself fails: its razor tails
     # assign ~e^-10^4 to mixture draws and stall the ladder (measured).
     gm0 = GaussianMixture(n_components=10, covariance_type="full",
                           reg_covar=1e-5, random_state=0).fit(to_slow(theta))
 
-    def branches(x, k_max=4):
+    def cluster_features(x):
+        """Clustering space: the sky as a unit vector and psi as the angle
+        2 psi (the raw ra cut at 0 / 2 pi split islands near ra = 0 and
+        merged others), the rest unchanged."""
+        ra, sd_ = x[:, 3], np.tanh(x[:, 4])
+        cd_ = np.sqrt(np.maximum(1 - sd_ ** 2, 0.0))
+        return np.column_stack([x[:, :3], cd_ * np.cos(ra), cd_ * np.sin(ra), sd_, x[:, 5],
+                                np.cos(2 * x[:, 6]), np.sin(2 * x[:, 6]), x[:, 7:]])
+
+    def branches(x, k_max=6, classifier=False):
         """Cluster labels of particles in slow space (BIC over 1..k_max
         Gaussian components, fitted on a subsample): the posterior's separate
         branches, e.g. GW200115's light-BH / anti-aligned-spin and heavier /
-        small-spin modes."""
-        z = (x - x.mean(0)) / (x.std(0) + 1e-12)
+        small-spin modes, or an edge-on source's sky islands. classifier=True
+        also returns the labelling as a fixed function of a point (for
+        state-dependent proposals)."""
+        f = cluster_features(x)
+        mu, sd = f.mean(0), f.std(0) + 1e-12
+        z = (f - mu) / sd
         sub = z[rng.choice(len(z), size=min(len(z), 3000), replace=False)]
         fits = [GaussianMixture(k, covariance_type="full", reg_covar=1e-4, random_state=0).fit(sub)
                 for k in range(1, k_max + 1)]
         best = min(fits, key=lambda g: g.bic(sub))
+        if classifier:
+            return best.predict(z), (lambda y: best.predict((cluster_features(y) - mu) / sd))
         return best.predict(z)
 
     def resample(w, labels):
-        """Systematic resampling within each branch, branch counts set by
-        branch weight (residual allocation): unbiased, and a branch holding
-        weight >= 1/n is never lost to resampling noise, which is what
-        collapsed GW200115 onto one branch in some runs and the other in
-        others."""
-        out = []
-        cls = np.unique(labels)
-        W = np.array([w[labels == c].sum() for c in cls])
-        n_c = np.floor(W * n).astype(int)
-        rest = n - n_c.sum()
-        if rest > 0:
-            n_c[np.argsort(-(W * n - n_c))[:rest]] += 1
-        for c, k in zip(cls, n_c):
-            if k == 0:
-                continue
-            ids = np.where(labels == c)[0]
-            wc = w[ids] / w[ids].sum()
-            u = (rng.uniform() + np.arange(k)) / k
-            out.append(ids[np.searchsorted(np.cumsum(wc), u).clip(0, len(ids) - 1)])
-        return np.concatenate(out)
+        return floored_resample(w, labels, n, branch_floor, rng)
+
+    ind, ind_acc, sky_acc = {"gm": None}, [], []
+    anchor = {"g": None}
+    from ahsd.inference.skymoves import SkyJumps
+    sky = SkyJumps([d for d in DETECTORS if d in raw_strain], center_gps, psds,
+                   f_lo=f_min or 20.0)
+
+    def log_dd_dx(th):
+        """log |d d_L / d x_d| of the distance's sampling coordinate."""
+        lo, hi = C.d
+        z = (th[:, _J["luminosity_distance"]] - lo) / (hi - lo)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.log(hi - lo) + np.log(z) + np.log1p(-z)
 
     def mh_moves(th, log_t1, log_g0, beta, scale):
         """Random-walk Metropolis moves leaving the tempered target
@@ -427,14 +516,48 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         beta ~ 0.06 although every 1-D marginal agreed with dynesty."""
         x = to_slow(th)
         # proposal covariance per branch (a pooled covariance spans the gap
-        # between branches: steps too large inside each, ~0 acceptance)
-        labels = branches(x)
+        # between branches: steps too large inside each, ~0 acceptance).
+        # The branch is that of the CURRENT point at every step, and the
+        # Hastings ratio carries q(x | x') / q(x' | x) whenever x and x' sit
+        # in different branches. Without it the kernel is not reversible: a
+        # particle's covariance was fixed by its starting branch, and on a
+        # toy target with two step sizes the region with the larger steps
+        # was drained (P 0.38 -> 0.14; tests/test_importance_helpers.py).
+        # On a posterior ridge that the clustering cuts into segments
+        # (GW200115's m1-q-spin degeneracy) particles cross branches all
+        # the time, and mass collected in the narrow segments.
+        labels, classify = branches(x, classifier=True)
         eye = 1e-9 * np.eye(x.shape[1])
-        chol_all = np.linalg.cholesky(np.cov(x.T) + eye)
-        chols = {c: (np.linalg.cholesky(np.cov(x[labels == c].T) + eye)
+        # Proposed masses are SORTED (m1 >= m2) after each step, i.e. the walk
+        # is folded across m1 = m2. A folded walk is symmetric (detailed
+        # balance holds without a correction term) only if the step
+        # distribution is invariant under swapping the two mass coordinates;
+        # a raw sample covariance is not, and the kernel then does not leave
+        # the target invariant (flat-likelihood check: masses biased low).
+        # Average each covariance with its mass-swapped copy.
+        def swap_sym(c):
+            pc = c.copy()
+            pc[[0, 1], :] = pc[[1, 0], :]
+            pc[:, [0, 1]] = pc[:, [1, 0]]
+            return 0.5 * (c + pc)
+        chol_all = np.linalg.cholesky(swap_sym(np.cov(x.T)) + eye)
+        chols = {c: (np.linalg.cholesky(swap_sym(np.cov(x[labels == c].T)) + eye)
                      if (labels == c).sum() > 3 * x.shape[1] else chol_all) for c in np.unique(labels)}
+        # precision and log-determinant of each branch's step covariance
+        precs = {c: np.linalg.inv(L @ L.T) for c, L in chols.items()}
+        logdets = {c: 2.0 * np.sum(np.log(np.diag(L))) for c, L in chols.items()}
+
+        def log_q(x_from, x_to, lab_from):
+            out = np.empty(len(x_from))
+            for c in chols:
+                m = lab_from == c
+                if m.any():
+                    out[m] = C.rw_logpdf(x_from[m], x_to[m], precs[c], logdets[c], scale)
+            return out
+
         acc_all = []
         for _ in range(N_MOVES):
+            labels = classify(x)
             step = rng.standard_normal(x.shape)
             for c, L in chols.items():
                 m = labels == c
@@ -455,8 +578,16 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
             fin = np.isfinite(xp).all(axis=1)
             g0p = np.full(len(xp), -np.inf)
             if fin.any():
-                g0p[fin] = gm_logpdf_sym(gm0, xp[fin])
+                g0p[fin] = anchor_logpdf(xp[fin])
             log_a = (1 - beta) * (g0p - log_g0) + beta * (t1p - log_t1)
+            # Hastings correction where the step changed branch (same branch:
+            # the folded, wrapped walk is symmetric and the terms cancel)
+            lab_p = np.full(len(xp), -1)
+            lab_p[fin] = classify(xp[fin])
+            cross = fin & (lab_p != labels) & np.isfinite(log_a)
+            if cross.any():
+                log_a[cross] += (log_q(xp[cross], x[cross], lab_p[cross])
+                                 - log_q(x[cross], xp[cross], labels[cross]))
             acc = np.log(rng.uniform(size=len(x))) < np.where(np.isfinite(log_a), log_a, -np.inf)
             th = np.where(acc[:, None], thp, th)
             x = np.where(acc[:, None], xp, x)
@@ -465,70 +596,232 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
             acc_all.append(acc.mean())
             # adapt towards ~25% acceptance
             scale *= float(np.exp(acc.mean() - 0.25))
+        # Independence moves from the broad initial mixture (bank seeds +
+        # defensive prior draws: it covers every branch). Random-walk steps
+        # never cross between separated branches, so after resampling a
+        # branch's weight was frozen at whatever resampling noise gave it --
+        # GW200115's branch weights changed from seed to seed. A proposal
+        # drawn independently of the current point lets particles move
+        # between branches in proportion to their target mass (exact MH).
+        gm_i = ind["gm"]
+        for _ in range(n_ind):
+            xi = np.asarray(gm_i.sample(len(x))[0])[rng.permutation(len(x))]
+            thp = from_slow(xi, tc_pool, ph_pool, rng)
+            thp[:, _J["geocent_time"]] = th[:, _J["geocent_time"]]
+            thp[:, _J["phase"]] = th[:, _J["phase"]]
+            xp = to_slow(thp)
+            fin = np.isfinite(xp).all(axis=1)
+            lqp = np.full(len(xp), -np.inf)
+            g0p = np.full(len(xp), -np.inf)
+            if fin.any():
+                lqp[fin] = gm_logpdf_sym(gm_i, xp[fin])
+                g0p[fin] = anchor_logpdf(xp[fin])
+            lqc = gm_logpdf_sym(gm_i, x)
+            lpp = prior.log_prob(thp)
+            t1p = np.full(len(thp), -np.inf)
+            ok = np.isfinite(lpp) & fin
+            if ok.any():
+                t1p[ok] = eval_ll(thp[ok]) + lpp[ok] + log_jac(thp[ok])
+            log_a = (1 - beta) * (g0p - log_g0) + beta * (t1p - log_t1) - (lqp - lqc)
+            acc = np.log(rng.uniform(size=len(x))) < np.where(np.isfinite(log_a), log_a, -np.inf)
+            th = np.where(acc[:, None], thp, th)
+            x = np.where(acc[:, None], xp, x)
+            log_t1 = np.where(acc, t1p, log_t1)
+            log_g0 = np.where(acc, g0p, log_g0)
+            ind_acc.append(float(acc.mean()))
+        # Sky-mode jumps (ahsd.inference.skymoves): reflect the sky through
+        # the detector plane (or rotate it about the baseline for two
+        # detectors), with (psi, d_L) drawn to match the detector responses.
+        # Exact MH: forward/reverse proposal densities of (psi, d_L) in the
+        # sampling coordinates and the sky map's Jacobian.
+        for _ in range(n_sky if sky.ok else 0):
+            thp, lq_f, log_j = sky.propose(th, rng)
+            lq_r = sky.log_q(thp, th)
+            xp = to_slow(thp)
+            fin = np.isfinite(xp).all(axis=1)
+            g0p = np.full(len(xp), -np.inf)
+            if fin.any():
+                g0p[fin] = anchor_logpdf(xp[fin])
+            lpp = prior.log_prob(thp)
+            t1p = np.full(len(thp), -np.inf)
+            ok = np.isfinite(lpp) & fin
+            if ok.any():
+                t1p[ok] = eval_ll(thp[ok]) + lpp[ok] + log_jac(thp[ok])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                log_a = ((1 - beta) * (g0p - log_g0) + beta * (t1p - log_t1)
+                         + (lq_r + log_dd_dx(th)) - (lq_f + log_dd_dx(thp)) + log_j)
+            acc = np.log(rng.uniform(size=len(x))) < np.where(np.isfinite(log_a), log_a, -np.inf)
+            th = np.where(acc[:, None], thp, th)
+            x = np.where(acc[:, None], xp, x)
+            log_t1 = np.where(acc, t1p, log_t1)
+            log_g0 = np.where(acc, g0p, log_g0)
+            sky_acc.append(float(acc.mean()))
         return th, log_t1, log_g0, scale, float(np.mean(acc_all))
 
+    def sky_moves_beta1(th, log_t1):
+        """One sky-jump MH step targeting L * pi (beta = 1)."""
+        thp, lq_f, log_j = sky.propose(th, rng)
+        lq_r = sky.log_q(thp, th)
+        lpp = prior.log_prob(thp)
+        t1p = np.full(len(thp), -np.inf)
+        ok = np.isfinite(lpp) & np.isfinite(to_slow(thp)).all(axis=1)
+        if ok.any():
+            t1p[ok] = eval_ll(thp[ok]) + lpp[ok] + log_jac(thp[ok])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log_a = (t1p - log_t1) + (lq_r + log_dd_dx(th)) - (lq_f + log_dd_dx(thp)) + log_j
+        acc = np.log(rng.uniform(size=len(th))) < np.where(np.isfinite(log_a), log_a, -np.inf)
+        sky_acc_final.append(float(acc.mean()))
+        return np.where(acc[:, None], thp, th), np.where(acc, t1p, log_t1)
+
+    sky_acc_final = []
     cur_theta, cur_log_g = theta, log_q + log_jac(theta)   # flow density, in x
     # default: seed from the bank whenever it has several (q, spin) slots
     # (GW200115 mode recall vs dynesty 0.25-0.75 -> 0.75-1.0 with NSBH v5ff)
     if seed_bank is None:
         seed_bank = getattr(getattr(model.encoder, "mc_feat", None), "n_q", 1) > 1
     seeds = _bank_seeds(model, result, theta, rng) if seed_bank else None
+    if defensive > 0:
+        # Defensive importance sampling: a share of PRIOR draws in the initial
+        # mixture. Where the likelihood is weak (masses on a quiet event, the
+        # mass ratio) the corrected posterior must approach the prior, but
+        # weights cannot create particles where the network posterior has
+        # none: with a flat likelihood the m1 median stayed at 11 against the
+        # prior's 22 (scripts/check_correction_prior.py). The mixture density
+        # is known, so the weights stay exact.
+        k = int(round(len(theta) * defensive / max(1e-9, 1 - defensive)))
+        pdraw = prior.sample(k, rng)
+        seeds = pdraw if seeds is None else np.concatenate([seeds, pdraw])
+    if sky_seeds and sky.ok:
+        # mirror-image copies of the network samples (the other sky island of
+        # each, with matched psi and distance), so an island the network
+        # missed is populated from the first stage and covered by the anchor
+        # (reflections and rotations about every baseline: the network's sky
+        # may sit on a cycle-slip island, not on a mirror of the true one)
+        sub = theta[rng.choice(len(theta), size=len(theta), replace=True)]
+        mir = sky.propose(sub, rng)[0]
+        mir = mir[np.isfinite(prior.log_prob(mir))]
+        seeds = mir if seeds is None else np.concatenate([seeds, mir])
     if seeds is not None and len(seeds):
         # initial particles drawn from a mixture fitted to NPE samples plus
         # bank-seeded copies (each plausible (q, spin) slot of the matched
         # filter): a secondary branch the NPE smears over gets particles from
         # the start. The mixture density is known, so the weights stay exact.
         pool_x = to_slow(np.concatenate([theta, seeds]))
-        gms = GaussianMixture(n_components=min(16, 8 + len(seeds) // 200), covariance_type="full",
+        gms = GaussianMixture(n_components=min(24, 8 + len(seeds) // 200), covariance_type="full",
                               reg_covar=1e-5, random_state=seed).fit(pool_x)
-        xn, _ = gms.sample(n)
+        # Tempering ANCHOR and initial draws: the mixture with every
+        # covariance inflated by anchor_inflate. With the fitted mixture
+        # itself the intermediate targets g0^(1-b) (L pi)^b were dominated by
+        # wherever the network put its mass (log-density contrast ~10 nats
+        # between its blob and a sky island or ridge segment it missed), so
+        # such regions were populated too late to be weighted correctly:
+        # seeds disagreed on an edge-on injection's sky islands (main island
+        # 16% / 83% / 15%) and GW200115's m1-q-spin ridge collapsed onto one
+        # segment. Inflating by k divides that contrast by k.
+        gm0 = _inflated(gms, anchor_inflate) if anchor_inflate > 1 else gms
+    if anchor_sky_flat and sky.ok:
+        # ... and isotropic on the sky (coords.SkyFlatMixture): the network's
+        # sky island is not favoured over the others it may have missed
+        from ahsd.inference.coords import SkyFlatMixture
+        anchor["g"] = SkyFlatMixture(gm0, C)
+        anchor_logpdf = anchor["g"].logpdf
+    else:
+        anchor_logpdf = lambda x: gm_logpdf_sym(gm0, x)   # noqa: E731
+    if (seeds is not None and len(seeds)) or anchor["g"] is not None:
+        xn = anchor["g"].sample(n, rng) if anchor["g"] is not None else np.asarray(gm0.sample(n)[0])
         cur_theta = from_slow(np.asarray(xn), tc_pool, ph_pool, rng)
-        cur_log_g = gm_logpdf_sym(gms, to_slow(cur_theta))
+        cur_log_g = anchor_logpdf(to_slow(cur_theta))
         log_pi = prior.log_prob(cur_theta)
-    cur_log_g0 = gm_logpdf_sym(gm0, to_slow(cur_theta))
+        # The broad mixture is also the tempering ANCHOR. The path
+        # t_b = g0^(1-b) (L pi)^b with g0 fitted to the network samples alone
+        # inherits their razor-thin tails: where the network puts no mass
+        # (high masses on a quiet event) g0^(1-b) suppresses the target until
+        # b ~ 1, and the last step cannot repopulate it. More Metropolis moves
+        # made it worse (flat-likelihood check: m1 median 14.6 -> 11.4 vs the
+        # prior's 22.2) because they followed those excluding targets more
+        # faithfully. With the broad anchor no intermediate target excludes
+        # any part of the prior. (gm0 is the inflated mixture set above.)
+    # the independence moves draw from the broadest available mixture
+    ind["gm"] = gms if (seeds is not None and len(seeds)) else gm0
+    cur_log_g0 = anchor_logpdf(to_slow(cur_theta))
     log_l = eval_ll(cur_theta)
     if not np.isfinite(log_l).any():
         pool.terminate()
         raise RuntimeError(f"likelihood is -inf for every sample: the {approximant} "
                            "waveform failed (model not available in this LAL installation?)")
     log_t1 = log_l + log_pi + log_jac(cur_theta)   # log(L * pi), in x
-    beta_prev, betas, accs = 0.0, [], []
+    beta_prev, betas, accs, trace = 0.0, [], [], []
+    lw_carry = np.zeros(n)               # log weights carried through resampling
     scale = 2.38 / np.sqrt(len(SLOW)) * 0.5
-    for stage in range(MAX_STAGES):
-        beta = pick_beta(log_t1, cur_log_g0, cur_log_g, beta_prev, target_frac)
-        betas.append(round(beta, 4))
-        log_w = (1 - beta) * cur_log_g0 + beta * log_t1 - cur_log_g
-        fin = np.isfinite(log_w)
-        log_w = np.where(fin, log_w, -np.inf)
-        w = np.exp(log_w - log_w[fin].max())
-        w = np.where(np.isfinite(w), w, 0.0)
-        if w.sum() == 0:
-            pool.terminate()
-            raise RuntimeError("importance weights vanished at "
-                               f"beta={beta:.3f} — no likelihood support")
-        w /= w.sum()
-        if beta >= 1.0:
-            break
-        # SMC step: resample by the tempered weights, then Metropolis moves
-        # at this beta. The moved particles follow t_beta, so the next
-        # stage's proposal density is t_beta itself (unnormalized: the
-        # weights are self-normalized), and pick_beta / the weights above
-        # stay exact.
-        idx_r = resample(w, branches(to_slow(cur_theta)))
-        cur_theta, log_t1, cur_log_g0, scale, acc = mh_moves(
-            cur_theta[idx_r], log_t1[idx_r], cur_log_g0[idx_r], beta, scale)
-        accs.append(round(acc, 3))
-        cur_log_g = (1 - beta) * cur_log_g0 + beta * log_t1
-        beta_prev = beta
-    pool.terminate()
+    if start_particles is not None:
+        # diagnostic: skip the tempering and start the beta = 1 moves from
+        # given particles (e.g. a reference posterior): any drift of their
+        # distribution under the moves exposes a kernel that does not leave
+        # the posterior invariant
+        cur_theta = np.asarray(start_particles, float)
+        log_t1 = eval_ll(cur_theta) + prior.log_prob(cur_theta) + log_jac(cur_theta)
+        cur_log_g0 = anchor_logpdf(to_slow(cur_theta))
+        n = len(cur_theta)
+        w = np.full(n, 1.0 / n)
+        beta, betas = 1.0, [1.0]
+    else:
+        for stage in range(MAX_STAGES):
+            beta = pick_beta(log_t1, cur_log_g0, cur_log_g, beta_prev, target_frac, lw_carry)
+            betas.append(round(beta, 4))
+            log_w = lw_carry + (1 - beta) * cur_log_g0 + beta * log_t1 - cur_log_g
+            fin = np.isfinite(log_w)
+            log_w = np.where(fin, log_w, -np.inf)
+            w = np.exp(log_w - log_w[fin].max())
+            w = np.where(np.isfinite(w), w, 0.0)
+            if w.sum() == 0:
+                pool.terminate()
+                raise RuntimeError("importance weights vanished at "
+                                   f"beta={beta:.3f} — no likelihood support")
+            w /= w.sum()
+            trace.append(_stage_summary(beta, cur_theta, w, branches(to_slow(cur_theta))))
+            if beta >= 1.0:
+                break
+            # SMC step: resample by the tempered weights, then Metropolis moves
+            # at this beta. The moved particles follow t_beta, so the next
+            # stage's proposal density is t_beta itself (unnormalized: the
+            # weights are self-normalized), and pick_beta / the weights above
+            # stay exact.
+            idx_r, lw_carry = resample(w, branches(to_slow(cur_theta)))
+            cur_theta, log_t1, cur_log_g0, scale, acc = mh_moves(
+                cur_theta[idx_r], log_t1[idx_r], cur_log_g0[idx_r], beta, scale)
+            accs.append(round(acc, 3))
+            cur_log_g = (1 - beta) * cur_log_g0 + beta * log_t1
+            beta_prev = beta
     if beta < 1.0:
+        pool.terminate()
         raise RuntimeError(f"tempering did not reach beta=1 within {MAX_STAGES} "
                            f"stages (ladder: {betas}) — proposal cannot bridge "
                            "this likelihood; treat NPE result as final")
-    theta = cur_theta
     ess = float(1.0 / np.sum(w ** 2))
+    # Final resampling, then REJUVENATION: Metropolis moves at beta = 1 leave
+    # the posterior invariant and spread the resampled copies out again.
+    # Without them the returned samples stood on a handful of distinct
+    # values in tightly coupled directions: on an edge-on injection the
+    # median distance moved by 80-190 Mpc from seed to seed (dynesty's sigma
+    # ~65 Mpc), whatever the proposal settings.
     u = (rng.uniform() + np.arange(n)) / n
-    idx = np.searchsorted(np.cumsum(w), u).clip(0, len(w) - 1)
+    idx0 = np.searchsorted(np.cumsum(w), u).clip(0, len(w) - 1)
+    rj_theta, rj_t1 = cur_theta[idx0], log_t1[idx0]
+    rejuv_trace = []
+    for _ in range(max(1, n_rejuvenate)):
+        rj_theta, rj_t1, _g0, scale, acc = mh_moves(
+            rj_theta, rj_t1, cur_log_g0[idx0], 1.0, scale)
+        rejuv_trace.append(_stage_summary(1.0, rj_theta, np.full(n, 1.0 / n), branches(to_slow(rj_theta))))
+    # Island balancing: sky jumps alone at beta = 1 (one likelihood call
+    # each). They move particles between sky islands in proportion to the
+    # islands' posterior mass (exact MH), which the tempering cannot do once
+    # an island was found late.
+    for _ in range(n_sky_final if sky.ok else 0):
+        rj_theta, rj_t1 = sky_moves_beta1(rj_theta, rj_t1)
+    accs.append(round(acc, 3))
+    pool.terminate()
+    theta, log_t1 = rj_theta, rj_t1
+    idx = np.arange(n)                   # the rejuvenated set IS the sample
 
     diag = {**result.diagnostics,
             "importance_sampling": {
@@ -537,10 +830,17 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
                 "railed_excluded": int((~keep).sum()),
                 "importance_ess": round(ess, 1),
                 "beta_ladder": betas,
+                # per stage: weighted quantiles of distance / sky and the
+                # weight of each slow-space branch (where a mode is lost)
+                "stage_trace": trace,
                 "mh_acceptance": accs,
+                "independence_acceptance": round(float(np.mean(ind_acc)), 3) if ind_acc else None,
+                "sky_jump_acceptance": round(float(np.mean(sky_acc)), 4) if sky_acc else None,
+                "sky_jump_acceptance_final": round(float(np.mean(sky_acc_final)), 4) if sky_acc_final else None,
                 # distinct particles among the returned samples: low values
                 # mean the moves did not spread the resampled particles
                 "unique_frac": round(float(len(np.unique(theta[idx][:, 0]))) / n, 3),
+                "rejuv_trace": rejuv_trace,
                 "n_stages": len(betas),
                 "efficiency": round(ess / n, 4),
                 "wall_s": round(time.time() - t0, 1),
@@ -605,14 +905,15 @@ def corrected_with_check(result, raw_strain, reps: int = 2, tol: float = 0.5, ma
         runs.append(result.importance_correct(raw_strain, seed=len(runs), **kw))
         spread = replicate_spread(runs, result.param_names)
     pooled_spread = spread / np.sqrt(len(runs))
-    out = runs[0]
-    if len(runs) > reps:          # pool every run (equal weight: equal sample counts)
-        out = copy.copy(runs[0])
-        out.samples = np.concatenate([r.samples for r in runs])
-        out.log_prob = np.concatenate([r.log_prob for r in runs])
-        out.diagnostics = copy.deepcopy(runs[0].diagnostics)
-        d = out.diagnostics["importance_sampling"]
-        d["importance_ess"] = float(sum(r.diagnostics["importance_sampling"]["importance_ess"] for r in runs))
+    # pool every run (equal weight: equal sample counts). Consistent runs are
+    # pooled too: each is a valid estimate, so discarding one wasted half the
+    # likelihood evaluations
+    out = copy.copy(runs[0])
+    out.samples = np.concatenate([r.samples for r in runs])
+    out.log_prob = np.concatenate([r.log_prob for r in runs])
+    out.diagnostics = copy.deepcopy(runs[0].diagnostics)
+    d = out.diagnostics["importance_sampling"]
+    d["importance_ess"] = float(sum(r.diagnostics["importance_sampling"]["importance_ess"] for r in runs))
     d["replicate_spread"] = round(spread, 3)
     d["reps_used"] = len(runs)
     d["pooled_spread"] = round(float(pooled_spread), 3)

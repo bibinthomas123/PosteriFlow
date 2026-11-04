@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNS = ROOT / "results/dingo_h2h"
 OURS = ROOT / "results/catalog_v5"
 OUT = ROOT / "analysis/dingo_h2h"
+LVK = ROOT / "results/dingo_h2h/lvk"
 PARAMS = ("chirp_mass", "mass_ratio", "luminosity_distance")
 
 
@@ -54,7 +55,46 @@ def dingo_result(ev):
     return s, w, out
 
 
+def lvk_judge(ok):
+    """Every method against the LVK posterior of the same event: offset of the
+    median in LVK standard deviations, 90% width relative to LVK's, and
+    whether the LVK median lies in the method's 90% interval."""
+    out = {}
+    print("\nagainst the LVK posteriors (median over events):")
+    print(f"{'param':22s} {'method':8s} {'n':>3s} {'|offset|/sd':>11s} {'w90/LVK':>8s} {'LVK med in 90%':>15s}")
+    for p in PARAMS:
+        out[p] = {}
+        for src in ("dingo", "npe", "is"):
+            off, wr, cont = [], [], []
+            for r in ok:
+                f = LVK / r["event"] / "lvk_posterior.npz"
+                if not f.exists() or src not in r or p not in r[src]:
+                    continue
+                v = np.load(f, allow_pickle=True)[p]
+                if v is None or not np.all(np.isfinite(v)):
+                    continue
+                v = np.asarray(v, float)
+                lmed, lsd = np.median(v), v.std()
+                llo, lhi = np.quantile(v, [0.05, 0.95])
+                m = r[src][p]
+                off.append(abs(m["med"] - lmed) / max(lsd, 1e-12))
+                wr.append((m["hi"] - m["lo"]) / max(lhi - llo, 1e-12))
+                cont.append(m["lo"] <= lmed <= m["hi"])
+            if off:
+                out[p][src] = {"n": len(off), "median_abs_offset_sd": float(np.median(off)),
+                               "median_w90_over_lvk": float(np.median(wr)), "lvk_median_in90": float(np.mean(cont))}
+                print(f"{p:22s} {src:8s} {len(off):3d} {np.median(off):11.2f} {np.median(wr):8.2f} {np.mean(cont):15.0%}")
+    return out
+
+
 def main():
+    import argparse
+    global RUNS, OURS
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--run", default="dingo_h2h", help="DINGO run folder under results/")
+    ap.add_argument("--ours", default="catalog_v5", help="our catalogue folder under results/")
+    a = ap.parse_args()
+    RUNS, OURS = ROOT / "results" / a.run, ROOT / "results" / a.ours
     OUT.mkdir(parents=True, exist_ok=True)
     events = [l.strip() for l in open(ROOT / "scripts/dingo_h2h/events.txt")
               if l.strip() and not l.startswith("#")]
@@ -121,8 +161,10 @@ def main():
     skipped = [(r["event"], r["status"]) for r in rows if r["status"] != "ok"]
     if skipped:
         print("\nnot compared:", ", ".join(f"{e} ({s})" for e, s in skipped))
-    json.dump({"summary": summary, "events": rows}, open(OUT / "summary.json", "w"), indent=1)
-    print(f"\n-> {OUT / 'summary.json'}")
+    summary["vs_lvk"] = lvk_judge(ok)
+    tag = f"{RUNS.name}__{OURS.name}"
+    json.dump({"summary": summary, "events": rows}, open(OUT / f"summary_{tag}.json", "w"), indent=1)
+    print(f"\n-> {OUT / f'summary_{tag}.json'}")
 
 
 if __name__ == "__main__":

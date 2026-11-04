@@ -76,11 +76,13 @@ def main():
         if (d / "lvk_posterior.npz").exists():
             summary[ev] = "ok (cached)"
             continue
-        if ev not in files:
+        # releases name some events in full (GW190412 -> GW190412_053044)
+        match = ev if ev in files else next((k for k in files if k.startswith(ev + "_")), None)
+        if match is None:
             summary[ev] = "no release file"
             print(ev, summary[ev], flush=True)
             continue
-        _, url, key = files[ev]
+        _, url, key = files[match]
         f = tmp / key
         subprocess.run(["wget", "-q", "-c", "-O", str(f), url], check=True)
         d.mkdir(exist_ok=True)

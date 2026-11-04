@@ -4,7 +4,10 @@
 #   bash scripts/dingo_h2h/prepare.sh [event ...]      (default: events.txt)
 set -u
 cd "$(dirname "$0")/../.."
-ROOT=$PWD; OUT=$ROOT/results/dingo_h2h; mkdir -p "$OUT/ini"
+ROOT=$PWD; OUT=$ROOT/results/${DINGO_RUN:-dingo_h2h}; mkdir -p "$OUT/ini"
+# LVK_PSD=1: use the PSDs of the LVK analyses (scripts/dingo_h2h/fetch_lvk.py)
+# instead of DINGO's own Welch estimate from the data around the event
+LVK=$ROOT/results/dingo_h2h/lvk
 M=${DINGO_MODEL:-$HOME/dingo_models/aligned/quasicircular_aligned_spin/6000mpc_hm_HL}
 export PATH=$HOME/miniforge3/envs/dingo/bin:$PATH
 EVENTS=${*:-$(grep -v '^#' "$ROOT/scripts/dingo_h2h/events.txt")}
@@ -31,6 +34,16 @@ channel-dict = {H1:GWOSC, L1:GWOSC}
 detectors = [H1, L1]
 psd-length = ${PSD_LENGTH:-128}
 INI
+  if [ "${LVK_PSD:-0}" = 1 ]; then
+    if [ -f "$LVK/$ev/H1_psd.txt" ] && [ -f "$LVK/$ev/L1_psd.txt" ]; then
+      echo "psd-dict = {H1: $LVK/$ev/H1_psd.txt, L1: $LVK/$ev/L1_psd.txt}" >> "ini/$ev.ini"
+      # the LVK analyses' distance prior (DINGO's network was trained uniform
+      # in d_L; its importance sampling reweights to this target prior)
+      echo "prior-dict-updates = {luminosity_distance: bilby.gw.prior.UniformSourceFrame(minimum=100, maximum=6000, name='luminosity_distance', cosmology='Planck15')}" >> "ini/$ev.ini"
+    else
+      echo "$ev: SKIPPED (no LVK PSD)"; continue
+    fi
+  fi
   if nice -n 10 dingo_pipe "ini/$ev.ini" > "ini/$ev.build.log" 2>&1 \
      && nice -n 10 bash "$ev/submit/bash_$ev.sh" generation > "ini/$ev.gen.log" 2>&1 \
      && ls "$ev"/data/*event_data.hdf5 > /dev/null 2>&1; then

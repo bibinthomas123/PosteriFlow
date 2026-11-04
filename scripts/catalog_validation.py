@@ -93,9 +93,11 @@ def main():
                     d_ev = Path(a.lvk_psd) / e["event_name"].split("_")[0]
                 psds = {}
                 for det in raw:
-                    f = d_ev / f"{det}_psd.txt"
-                    if f.exists():
-                        arr = np.loadtxt(f)
+                    # NOT `f`: that is this event's output file, and reusing
+                    # it wrote every record over the last detector's LVK PSD
+                    pf = d_ev / f"{det}_psd.txt"
+                    if pf.exists():
+                        arr = np.loadtxt(pf)
                         psds[det] = {"frequencies": arr[:, 0], "psd": arr[:, 1]}
                 rec["psd_source"] = f"LVK ({sorted(psds)})" if psds else "estimated (no LVK PSD)"
                 psds = psds or None

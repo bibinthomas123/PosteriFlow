@@ -61,6 +61,21 @@ def extract(h5path, out_dir):
         return run, sorted(g["psds"].keys()), len(q)
 
 
+def intact(d: Path) -> bool:
+    """Cached products load as numbers (a catalogue_validation bug once wrote
+    event records over PSD files)."""
+    if not (d / "lvk_posterior.npz").exists():
+        return False
+    try:
+        for f in d.glob("*_psd.txt"):
+            a = np.loadtxt(f)
+            if a.ndim != 2 or a.shape[1] != 2:
+                return False
+    except ValueError:
+        return False
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="keep the downloaded release files")
@@ -73,7 +88,7 @@ def main():
     summary = {}
     for ev in events:
         d = OUT / ev
-        if (d / "lvk_posterior.npz").exists():
+        if intact(d):
             summary[ev] = "ok (cached)"
             continue
         # releases name some events in full (GW190412 -> GW190412_053044)

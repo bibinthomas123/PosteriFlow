@@ -15,6 +15,7 @@ n=0
 for d in */data/.ok; do
   ev=${d%%/*}
   ls "$ev"/result/*importance_sampling*.hdf5 >/dev/null 2>&1 && continue
+  [ -f "$ev/.submitted" ] && continue          # already queued: never submit twice
   S=$ev/submit/bash_$ev.sh
   L=$(grep -oE "${ev}_data0_[0-9-]+_sampling\"" "$S" | head -1 | tr -d '"')
   I=$(grep -oE "${ev}_data0_[0-9-]+_importance_sampling(_part0)?\"" "$S" | head -1 | tr -d '"')
@@ -26,6 +27,7 @@ for d in */data/.ok; do
   sbatch --parsable --dependency=afterok:$s -p vl-parcio -c 48 --mem=96G -t 05:55:00 -J dI_$ev \
       -o "$LOGS/dingoI-$RUN-$ev-%j.out" \
       --wrap "cd $PWD && export PATH=$B:\$PATH && t0=\$(date +%s) && bash $S $I ${M:+&& bash $S $M}; echo \$((\$(date +%s)-t0)) > $ev/timing_is.txt" >/dev/null
+  touch "$ev/.submitted"
   n=$((n + 1))
 done
 echo "submitted $n events from results/$RUN"

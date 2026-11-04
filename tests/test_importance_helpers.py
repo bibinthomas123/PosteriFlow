@@ -69,3 +69,72 @@ def test_unstable_runs_are_flagged_after_max_reps():
     out = corrected_with_check(_fake_result([0.0, 10.0]), None, max_reps=6)
     d = out.diagnostics["importance_sampling"]
     assert d["reps_used"] == 6 and d["consistent"] is False and d["reliable"] is False
+
+
+def test_training_prior_sampler_matches_its_density():
+    from ahsd.inference.priors import TrainingPrior
+    rng = np.random.default_rng(0)
+    for cls in ("BBH", "NSBH", "BNS"):
+        p = TrainingPrior.for_class(cls, signed_spins=True)
+        th = p.sample(20000, rng)
+        assert np.isfinite(p.log_prob(th)).all(), cls        # every draw inside the support
+    p = TrainingPrior.for_class("BBH")
+    m1 = p.sample(200000, rng)[:, PARAM_NAMES.index("mass_1")]
+    lo, hi = p.m1_range
+    assert abs(np.median(m1) - np.sqrt(lo * hi)) / np.sqrt(lo * hi) < 0.02   # log-uniform m1
+
+
+def _bbh_prior():
+    from ahsd.inference.priors import TrainingPrior
+    return TrainingPrior.for_class("BBH", signed_spins=True)
+
+
+def test_slow_coords_round_trip_and_jacobian():
+    from ahsd.inference.coords import IDX, SlowCoords
+    p = _bbh_prior()
+    c = SlowCoords(p)
+    th = p.sample(2000, np.random.default_rng(1))
+    x = c.to_x(th)
+    assert np.isfinite(x).all()
+    back = c.from_x(x)
+    assert np.allclose(back, th[:, IDX], rtol=1e-8, atol=1e-8)
+    # the map is diagonal: log|dtheta/dx| = sum of per-coordinate log derivatives
+    h = 1e-6
+    num = np.zeros(len(th))
+    for j in range(x.shape[1]):
+        xp, xm = x.copy(), x.copy()
+        xp[:, j] += h
+        xm[:, j] -= h
+        num += np.log(np.abs((c.from_x(xp)[:, j] - c.from_x(xm)[:, j]) / (2 * h)))
+    assert np.allclose(num, c.log_jac(th), atol=1e-4)
+
+
+def test_mixture_in_unbounded_coords_reproduces_the_prior():
+    """Importance weights pi(theta) |dtheta/dx| / g(x) from a Gaussian mixture
+    fitted to prior draws in these coordinates must recover the prior; in the
+    bounded (log) coordinates the same test gave an ESS of 9 / 40000."""
+    from sklearn.mixture import GaussianMixture
+    from ahsd.inference.coords import SlowCoords
+    p = _bbh_prior()
+    c = SlowCoords(p)
+    rng = np.random.default_rng(0)
+    gm = GaussianMixture(16, covariance_type="full", reg_covar=1e-5, random_state=0).fit(
+        c.to_x(p.sample(20000, rng)))
+    x = gm.sample(40000)[0]
+    v = c.from_x(x)
+    th = np.zeros((len(x), len(PARAM_NAMES)))
+    from ahsd.inference.coords import IDX
+    th[:, IDX] = v
+    m1, m2 = np.maximum(th[:, 0], th[:, 1]), np.minimum(th[:, 0], th[:, 1])
+    th[:, 0], th[:, 1] = m1, m2
+    th[:, IDX[3]] = np.mod(th[:, IDX[3]], 2 * np.pi)      # ra and psi wrapped
+    th[:, IDX[6]] = np.mod(th[:, IDX[6]], np.pi)
+    lg = c.mixture_logpdf(gm, c.to_x(th))
+    lw = p.log_prob(th) + c.log_jac(th) - lg
+    f = np.isfinite(lw)
+    w = np.exp(lw[f] - lw[f].max())
+    ess = w.sum() ** 2 / (w ** 2).sum()
+    o = np.argsort(th[f, 0])
+    med = np.interp(0.5, np.cumsum(w[o]) / w.sum(), th[f, 0][o])
+    assert ess > 0.5 * len(w), ess
+    assert abs(med - np.sqrt(5 * 100)) / np.sqrt(5 * 100) < 0.05, med

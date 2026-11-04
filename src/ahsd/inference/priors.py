@@ -131,6 +131,38 @@ class TrainingPrior:
                                    m2_range=rng(_J["mass_2"], self.m2_range),
                                    dist_range=rng(_J["luminosity_distance"], self.dist_range))
 
+    def sample(self, n: int, rng) -> np.ndarray:
+        """n draws [n, 11] from this prior (the density log_prob evaluates;
+        geocent_time and phase are drawn uniformly too). Used for defensive
+        importance sampling: a share of prior draws in the correction's initial
+        mixture guarantees coverage where the network posterior is too narrow."""
+        th = np.zeros((n, len(_J)))
+        (m1_lo, m1_hi), (m2_lo, m2_hi) = self.m1_range, self.m2_range
+        if self.event_type == "BBH":
+            lm1 = rng.uniform(np.log(m1_lo), np.log(m1_hi), n)
+            m1 = np.exp(lm1)
+            m2 = np.exp(rng.uniform(np.log(m2_lo), np.log(np.minimum(m1, m2_hi))))
+        elif self.event_type == "NSBH":
+            m1 = np.exp(rng.uniform(np.log(m1_lo), np.log(m1_hi), n))
+            m2 = rng.uniform(m2_lo, m2_hi, n)
+        else:
+            m1 = rng.uniform(m1_lo, m1_hi, n)
+            m2 = rng.uniform(m2_lo, np.minimum(m1, m2_hi))
+        th[:, _J["mass_1"]], th[:, _J["mass_2"]] = np.maximum(m1, m2), np.minimum(m1, m2)
+        d_lo, d_hi = self.dist_range
+        u = rng.uniform(0, 1, n)
+        th[:, _J["luminosity_distance"]] = (d_lo + u * (d_hi - d_lo) if self.dist_shape != "comoving_d2"
+                                            else (d_lo ** 3 + u * (d_hi ** 3 - d_lo ** 3)) ** (1 / 3))
+        th[:, _J["ra"]] = rng.uniform(0, 2 * np.pi, n)
+        th[:, _J["dec"]] = np.arcsin(rng.uniform(-1, 1, n))
+        th[:, _J["theta_jn"]] = np.arccos(rng.uniform(-1, 1, n))
+        th[:, _J["psi"]] = rng.uniform(0, np.pi, n)
+        th[:, _J["phase"]] = rng.uniform(0, 2 * np.pi, n)
+        th[:, _J["geocent_time"]] = rng.uniform(-TC_HALF_WIDTH, TC_HALF_WIDTH, n)
+        th[:, _J["a1"]] = rng.uniform(self.a1_lo, self.a1_max, n)
+        th[:, _J["a2"]] = rng.uniform(self.a2_lo, self.a2_max, n)
+        return th
+
     @property
     def a1_lo(self) -> float:
         return -self.a1_max if self.signed_spins else 0.0

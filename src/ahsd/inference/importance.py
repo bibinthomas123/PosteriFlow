@@ -295,6 +295,18 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     sj = [_J[p] for p in SLOW]
     LOGD = np.array([True, True, True, False, False, False, False, False, False])
 
+    def log_jac(th):
+        """log |d theta / d x| for the log coordinates of the slow space
+        (masses and distance): x = log theta, so a physical density p(theta)
+        is p(theta) * m1 * m2 * d_L in x. The Metropolis walk is symmetric
+        in x and the mixture surrogates are x densities, so the likelihood x
+        prior and the flow density must carry this factor too. Without it the
+        sampler targeted L pi / (m1 m2 d_L): negligible on loud events (it
+        matched dynesty on GW150914), but at low SNR it pulled particles to
+        small masses and distances (joint overlap test, 2026-11-04)."""
+        return (np.log(th[:, _J["mass_1"]]) + np.log(th[:, _J["mass_2"]])
+                + np.log(th[:, _J["luminosity_distance"]]))
+
     def to_slow(th):
         """Map physical params to the 9-D "slow" IS space (masses/distance in
         log), dropping the analytically-marginalized phase and time."""
@@ -436,7 +448,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
             t1p = np.full(len(thp), -np.inf)
             ok = np.isfinite(lpp)
             if ok.any():
-                t1p[ok] = eval_ll(thp[ok]) + lpp[ok]
+                t1p[ok] = eval_ll(thp[ok]) + lpp[ok] + log_jac(thp[ok])
             # a large step in log mass / distance can overflow to inf; such
             # rows are rejected (sklearn refuses non-finite input: GW200129
             # failed with "Input X contains infinity")
@@ -455,7 +467,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
             scale *= float(np.exp(acc.mean() - 0.25))
         return th, log_t1, log_g0, scale, float(np.mean(acc_all))
 
-    cur_theta, cur_log_g = theta, log_q
+    cur_theta, cur_log_g = theta, log_q + log_jac(theta)   # flow density, in x
     # default: seed from the bank whenever it has several (q, spin) slots
     # (GW200115 mode recall vs dynesty 0.25-0.75 -> 0.75-1.0 with NSBH v5ff)
     if seed_bank is None:
@@ -479,7 +491,7 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         pool.terminate()
         raise RuntimeError(f"likelihood is -inf for every sample: the {approximant} "
                            "waveform failed (model not available in this LAL installation?)")
-    log_t1 = log_l + log_pi              # log(L * pi)
+    log_t1 = log_l + log_pi + log_jac(cur_theta)   # log(L * pi), in x
     beta_prev, betas, accs = 0.0, [], []
     scale = 2.38 / np.sqrt(len(SLOW)) * 0.5
     for stage in range(MAX_STAGES):

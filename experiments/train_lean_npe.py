@@ -1005,16 +1005,17 @@ def main():
                 log.info(f"init_from: zero-padding {wk} "
                          f"{tuple(sd[wk].shape)} -> {tuple(cur.shape)}")
                 sd[wk] = torch.cat([sd[wk], pad], dim=1)
-        # A different chirp-mass bank (e.g. the dense q x chi bank) changes the
-        # bank-feature MLP's input width; those layers start fresh, the rest of
-        # the network keeps its weights.
+        # Input layers whose width depends on a feature definition start fresh
+        # when that definition changes (a different chirp-mass bank, e.g. the
+        # dense q x chi bank; a different number of PSD bands); the rest of the
+        # network keeps its weights.
         cur_sd = model.state_dict()
-        resized = [k for k in list(sd) if k.startswith("encoder.mc_feat.mlp.0.")
-                   or k.startswith("encoder.mc_feat.mlp.1.")]
+        resizable = ("encoder.mc_feat.mlp.0.", "encoder.mc_feat.mlp.1.", "encoder.noise_mlp.0.")
+        resized = [k for k in list(sd) if k.startswith(resizable)]
         resized = [k for k in resized if k in cur_sd and sd[k].shape != cur_sd[k].shape]
         for k in resized:
             log.info(f"init_from: {k} {tuple(sd[k].shape)} -> {tuple(cur_sd[k].shape)} "
-                     "(bank changed; freshly initialized)")
+                     "(feature width changed; freshly initialized)")
             del sd[k]
         missing, unexpected = model.load_state_dict(sd, strict=False)
         mcf = getattr(getattr(model, "encoder", None), "mc_feat", None)

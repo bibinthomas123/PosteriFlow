@@ -53,7 +53,8 @@ def main():
     if not lv.exists():
         lv = next(Path(a.lvk).glob(a.event + "*"))
     ev_name = lv.name
-    gps, raw, starts, srs, _ = fetch_gwosc(ev_name, strict=True)
+    need = [p.name.split("_")[0] for p in lv.glob("*_psd.txt")]      # detectors LVK analysed
+    gps, raw, starts, srs, _ = fetch_gwosc(ev_name, strict=True, required=need)
     psds = {}
     for det in raw:
         f = lv / f"{det}_psd.txt"

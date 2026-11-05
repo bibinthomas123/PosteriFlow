@@ -40,6 +40,17 @@ SR, T_LEN = 4096, 16384
 F_LO, F_HI = 20.0, 1024.0
 
 
+def shift_to_centre(x: torch.Tensor, arrival_s: torch.Tensor, sr: float = 4096.0) -> torch.Tensor:
+    """Circularly delay each detector of x [B, D, T] by -arrival_s [B, D]
+    (seconds from the window centre), exactly (frequency-domain phase ramp,
+    sub-sample shifts included), so each arrival lands at the centre."""
+    T = x.shape[-1]
+    X = torch.fft.rfft(x.float(), dim=-1)
+    f = torch.fft.rfftfreq(T, d=1.0 / sr).to(x.device)
+    ramp = torch.exp(2j * math.pi * f[None, None, :] * arrival_s.to(x.device).float()[..., None])
+    return torch.fft.irfft(X * ramp, n=T, dim=-1).to(x.dtype)
+
+
 class CoherentEncoder(LeanStrainEncoder):
     """Geometry-aware strain encoder: the norm-free conv/transformer base
     (`LeanStrainEncoder`) plus an explicit inter-detector geometry branch
@@ -380,12 +391,19 @@ class CoherentEncoder(LeanStrainEncoder):
             pf = polarization_features(strain, self.mf_re, self.mf_im, self.band_lo)
             ptok = self.pol_to_tokens(self.pol_mlp(pf)).reshape(-1, self.n_pol_tokens, self.d_model)
             gtok = torch.cat([gtok, ptok + self.pol_type_embed], dim=1)
+        stem_in = strain
         if self.mc_bank:
             # after geom_dropout: always present
             gtok = torch.cat([gtok, self.mc_feat(strain, lo)], dim=1)
+            if getattr(self.mc_feat, "align", False):
+                # bank option 'align': the stem (and energy windows) read each
+                # detector shifted so its matched-filter arrival is at the window
+                # centre; geometry, MF and trigger features above keep the
+                # original timing (they carry the delays and merger time)
+                stem_in = shift_to_centre(strain, self.mc_feat.last_arr)
         if lo is not None:
             gtok = torch.cat([gtok, self._lowrate_tokens(lo)], dim=1)
-        feats, _ = self._compute_feats(strain, asd_bands, extra_tokens=gtok)
+        feats, _ = self._compute_feats(stem_in, asd_bands, extra_tokens=gtok)
         return self.out_proj(feats)
 
     def _lowrate_tokens(self, lo):

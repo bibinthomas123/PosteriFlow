@@ -49,6 +49,7 @@ def main():
                          "LVK analyses' PSDs instead of estimating them from the data")
     ap.add_argument("--approximant", default=None, help="waveform model of the correction's likelihood "
                                                         "(default: the training class model)")
+    ap.add_argument("--model", default=None, help="checkpoint (default: the class model, pipeline.CLASS_MODELS)")
     ap.add_argument("--events", default=None, help="file with event names to restrict to (one per line)")
     a = ap.parse_args()
     from ahsd.inference import infer
@@ -116,7 +117,7 @@ def main():
             like_psds = psds
             prep = prepare_real(raw, gps, starts, srs,
                                 psds=psds if a.lvk_psd_mode == "both" else None, seed=0)
-            res = infer(strain=prep, event_type=cls, num_samples=a.samples, device="cpu", seed=0)
+            res = infer(strain=prep, event_type=cls, model=a.model, num_samples=a.samples, device="cpu", seed=0)
             prior = TrainingPrior.from_meta(res.config)
             sets = {"npe": res.samples}
             if not a.no_is:

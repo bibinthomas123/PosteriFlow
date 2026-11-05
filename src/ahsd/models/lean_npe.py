@@ -553,9 +553,13 @@ class LeanNPE(nn.Module):
         # bank spec ":flowfeat": per-(q, spin) bank peaks straight into the flow
         mf = getattr(self.encoder, "mc_feat", None)
         self.n_flowfeat = 2 * mf.n_q if (mf is not None and mf.flowfeat and mf.n_q > 1) else 0
+        # bank spec ":multipeak": rank r gets the r-th located signal's peak
+        # (log Mc, SNR, merger time) as flow input and as its pivot
+        self.multipeak = bool(mf is not None and getattr(mf, "multipeak", False))
+        self.n_peakfeat = 3 if self.multipeak else 0
         self.flow = NSFPosteriorFlow(
             features=len(param_names),
-            context_features=context_dim + self.q_embed_dim + rank_dim + self.n_flowfeat,
+            context_features=context_dim + self.q_embed_dim + rank_dim + self.n_flowfeat + self.n_peakfeat,
             hidden_features=flow_hidden,
             num_layers=flow_layers,
             num_bins=flow_bins,
@@ -581,14 +585,20 @@ class LeanNPE(nn.Module):
         self.flow.pivot_scale_idx = (self.flow.pivot_idx[:1] if self.flow.pivot_idx and getattr(mf, "scale", False)
                                      else [])
 
-    def _pivot_columns(self) -> torch.Tensor:
-        """The encoder's estimates in normalized flow coordinates [B, k]."""
+    def _pivot_columns(self, peak: Optional[int] = None) -> torch.Tensor:
+        """The encoder's estimates in normalized flow coordinates [B, k]
+        (peak: index into the multipeak peaks; None = the main estimate)."""
         mf = self.encoder.mc_feat
         cols = []
         for n in self._pivot_names():
             j = self.scaler.internal_names.index(n)
-            v = {"chirp_mass": mf.last_log_mc, "geocent_time": getattr(mf, "last_t", None),
-                 "time_h1": getattr(mf, "last_t_h1", None)}[n]
+            if peak is None:
+                v = {"chirp_mass": mf.last_log_mc, "geocent_time": getattr(mf, "last_t", None),
+                     "time_h1": getattr(mf, "last_t_h1", None)}[n]
+            else:
+                if n == "time_h1":
+                    raise NotImplementedError("multipeak pivots with sky_frame")
+                v = {"chirp_mass": mf.last_peak_log_mc[:, peak], "geocent_time": mf.last_peak_t[:, peak]}[n]
             lo, hi = self.scaler.lo[j].to(v.device), self.scaler.hi[j].to(v.device)
             cols.append((2 * (v - lo) / (hi - lo) - 1).clamp(-1, 1))
         if self.flow.pivot_scale_idx:
@@ -608,7 +618,19 @@ class LeanNPE(nn.Module):
         if self.q_embed_dim > 0:
             parts.append(self.q_embed_head(base))
         parts.append(self.rank_embed(rank))
-        parts.append(extra)
+        if self.multipeak:
+            # extra = [slots | K peaks x 3 | K peaks x n_pivot]: keep the slots,
+            # then the queried rank's own peak features and pivot columns
+            from ahsd.models.mc_features import N_PEAKS
+            npv = len(self.flow.pivot_idx)
+            slots = extra[:, :self.n_flowfeat]
+            pk = extra[:, self.n_flowfeat:self.n_flowfeat + 3 * N_PEAKS].reshape(-1, N_PEAKS, 3)
+            pv = extra[:, self.n_flowfeat + 3 * N_PEAKS:].reshape(-1, N_PEAKS, npv)
+            sel = rank.clamp(max=N_PEAKS - 1)
+            idx = torch.arange(len(sel), device=sel.device)
+            parts += [slots, pk[idx, sel], pv[idx, sel]]
+        else:
+            parts.append(extra)
         return torch.cat(parts, dim=1)
 
     def encode(self, strain: torch.Tensor,
@@ -628,6 +650,15 @@ class LeanNPE(nn.Module):
         # [learned context | bank slot features | pivot columns]
         if self.n_flowfeat:
             ctx = torch.cat([ctx, self.encoder.mc_feat.last_slot.to(ctx.dtype)], dim=1)
+        if self.multipeak:
+            from ahsd.models.mc_features import N_PEAKS
+            if self.flow.pivot_scale_idx:
+                raise NotImplementedError("multipeak with a pivot scale")
+            mf = self.encoder.mc_feat
+            ctx = torch.cat([ctx, mf.last_peaks.reshape(len(ctx), -1).to(ctx.dtype)], dim=1)
+            if self.flow.pivot_idx:
+                ctx = torch.cat([ctx] + [self._pivot_columns(k).to(ctx.dtype) for k in range(N_PEAKS)], dim=1)
+            return ctx
         if self.flow.pivot_idx:
             ctx = torch.cat([ctx, self._pivot_columns().to(ctx.dtype)], dim=1)
         return ctx

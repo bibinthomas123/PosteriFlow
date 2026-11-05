@@ -39,7 +39,7 @@ _MODEL_CACHE: dict = {}
 # as offsets from the bank's estimates); BBH: no MF tokens / polarization,
 # 0.5% signed spin bank; NSBH: signed spin bank. BNS passes every gate.
 CLASS_MODELS = {
-    "BBH": "model/lean_npe_bbh_v5/best_model.pth",
+    "BBH": "model/lean_npe_bbh_v6/best_model.pth",
     # NSBH: signed spin bank WITHOUT the pivot (trained as "v5ff", but a
     # comma in sbatch --export dropped ":flowfeat" and "--pivot"); passes
     # every gate and recovers GW200115's posterior ridge best with

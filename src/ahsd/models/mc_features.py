@@ -55,6 +55,22 @@ CHUNK_ELEMS = 4e7         # complex elements per matched-filter chunk (GPU memor
 FEAT_VERSION = 3          # feature definition of new models (see __init__)
 
 
+N_PEAKS = 4                 # multipeak: signals located per event
+PEAK_SEP_S = 0.05           # multipeak: separate signals' merger times differ by > 50 ms
+
+
+def _lag_mask(exclude: torch.Tensor, n: int, duration: float) -> torch.Tensor:
+    """[B, n] True where a lag (merger time lag * duration / n from the window
+    start, circular) lies within PEAK_SEP_S of any merger time in exclude
+    [B, k] (seconds from the window centre; NaN = none)."""
+    t = torch.arange(n, device=exclude.device, dtype=torch.float32) * (duration / n)   # from window start
+    e = torch.remainder(exclude.float() + T_LEN / SR / 2, duration)                   # [B, k]
+    dd = torch.remainder(t[None, None, :] - e[..., None], duration)
+    dd = torch.minimum(dd, duration - dd)                                              # [B, k, n]
+    m = (dd < PEAK_SEP_S) & torch.isfinite(exclude)[..., None]
+    return m.any(1)
+
+
 def fast_len(n: int) -> int:
     """Smallest 2^a 3^b >= n: an FFT length cuFFT runs without Bluestein."""
     best = 1 << (n - 1).bit_length()
@@ -96,8 +112,28 @@ class McFeatures(nn.Module):
         # travel with the bank name that every checkpoint load site passes on
         bank, _, opts = str(bank).partition(":")
         self.trigger = "trigger" in opts.split(",")
+        # "align" (needs trigger): the encoder's convolutional stem reads the
+        # strain shifted so each detector's matched-filter arrival sits at the
+        # window centre (CoherentEncoder.forward). The shifts are deterministic
+        # functions of the data and reach the network as the trigger tokens,
+        # so nothing is lost; the stem no longer has to learn every merger
+        # position and inter-detector delay (cf. GNPE, Dax et al. 2022, which
+        # samples the shifts and iterates instead)
+        self.align = "align" in opts.split(",")
+        if self.align and not self.trigger:
+            raise ValueError("mc_bank option 'align' needs 'trigger'")
         # "flowfeat": the per-(q, spin) bank peaks also go straight to the flow
         self.flowfeat = "flowfeat" in opts.split(",")
+        # "multipeak" (needs trigger): chirp mass and merger time of up to
+        # N_PEAKS separate signals (merger times > 50 ms apart), found by
+        # repeating the search with the lags of the peaks found so far masked
+        # out. LeanNPE gives rank k the k-th peak as its pivot and features:
+        # with one shared pivot (the loudest peak's) every quieter overlapping
+        # signal's chirp mass came out near the prior (34-54% error vs 2-5%
+        # for the loudest; scripts/overlap_capacity.py, 2026-11-04)
+        self.multipeak = "multipeak" in opts.split(",")
+        if self.multipeak and not self.trigger:
+            raise ValueError("mc_bank option 'multipeak' needs 'trigger'")
         # "scale": the pivot also rescales chirp mass by the bank's width
         self.scale = "scale" in opts.split(",")
         path = Path(bank)
@@ -168,7 +204,7 @@ class McFeatures(nn.Module):
             self.trig_type_embed = nn.Parameter(torch.zeros(d_model))
 
     def _peak_snr2(self, d: torch.Tensor, H: torch.Tensor, n: int, scale: float,
-                   duration: float) -> torch.Tensor:
+                   duration: float, exclude: torch.Tensor = None) -> torch.Tensor:
         """Network peak SNR^2 per template. d [B,D,F] one-sided spectrum;
         H [D,K,F] shared templates or [B,D,K,F] per-event templates (unit
         norm); complex ifft over n points spanning `duration` s (phase-
@@ -188,6 +224,8 @@ class McFeatures(nn.Module):
             nf = fast_len(n)
             scale2 = (scale * nf / n) ** 2
             n = nf
+        if exclude is not None and not (self._v3 and self._coinc):
+            raise NotImplementedError("lag exclusion (multipeak) needs feature version 3 with coincidence")
         chunk = max(1, int(CHUNK_ELEMS / max(B * Dn * max(n, F), 1)))
         w = max(1, int(round(COINC_S * n / duration)))
         out = []
@@ -197,8 +235,10 @@ class McFeatures(nn.Module):
             if self._v3:
                 a = torch.fft.ifft(prod, n=n, dim=-1).abs().square_()            # [B,D,kc,n]
                 if self._coinc:
-                    a = circ_maxpool(a, w)
-                    out.append(a.sum(1).amax(-1) * scale2)
+                    a = circ_maxpool(a, w).sum(1)                                  # [B,kc,n]
+                    if exclude is not None:
+                        a = a.masked_fill(_lag_mask(exclude, n, duration)[:, None, :], 0.0)
+                    out.append(a.amax(-1) * scale2)
                 else:
                     out.append(a.amax(-1).sum(1) * scale2)
                 continue
@@ -253,7 +293,8 @@ class McFeatures(nn.Module):
         self._v2 = float(state_dict[prefix + "feat_version"]) >= 2
         self._v3 = float(state_dict[prefix + "feat_version"]) >= 3
 
-    def _profiles(self, hi: torch.Tensor, lo: torch.Tensor = None):
+    def _profiles(self, hi: torch.Tensor, lo: torch.Tensor = None, exclude: torch.Tensor = None,
+                  d_win: torch.Tensor = None):
         """Coarse-to-fine chirp-mass profile. Coarse: every COARSE-th chirp
         mass (all mass ratios), plain lag resolution. Fine: the 2*FINE+1 grid
         chirp masses around the best coarse one, 2x oversampled window lags.
@@ -262,7 +303,8 @@ class McFeatures(nn.Module):
         Returns (prof [B,n_mc], window part, context part, per-q fine profile
         [B,n_mc,n_q]); grid points never evaluated hold -1."""
         B, dev = hi.shape[0], hi.device
-        d = torch.fft.rfft(hi.float(), dim=-1)[..., self.band_lo:self.band_lo + self.n_band]
+        d = (d_win if d_win is not None else
+             torch.fft.rfft(hi.float(), dim=-1)[..., self.band_lo:self.band_lo + self.n_band])
         Hw = torch.complex(self.win_re, self.win_im)                     # [D,K,F]
         sw1 = self.n_band / math.sqrt(T_LEN / 2.0)
         use_c = self.use_ctx and lo is not None
@@ -276,7 +318,7 @@ class McFeatures(nn.Module):
         # ---- coarse ----
         cidx = torch.arange(0, self.n_mc, self.coarse, device=dev)
         tidx = (cidx[:, None] * nq + torch.arange(nq, device=dev)).reshape(-1)
-        cw = self._peak_snr2(d, Hw[:, tidx], self.n_band, sw1, T_LEN / SR).reshape(B, -1, nq)
+        cw = self._peak_snr2(d, Hw[:, tidx], self.n_band, sw1, T_LEN / SR, exclude).reshape(B, -1, nq)
         cc = (self._peak_snr2(dc, Hc[:, tidx], nc, sc, L / 512.0).reshape(B, -1, nq)
               if use_c else torch.zeros_like(cw))
         coarse = (cw + cc).amax(-1)                                       # [B, n_coarse]
@@ -286,7 +328,7 @@ class McFeatures(nn.Module):
         midx = start[:, None] + torch.arange(min(2 * FINE + 1, self.n_mc), device=dev)   # [B, M]
         fidx = (midx[:, :, None] * nq + torch.arange(nq, device=dev)).reshape(B, -1)     # [B, M*nq]
         gw = Hw[:, fidx].permute(1, 0, 2, 3)                              # [B,D,M*nq,F]
-        fw = self._peak_snr2(d, gw, 2 * self.n_band, 2 * sw1, T_LEN / SR).reshape(B, -1, nq)
+        fw = self._peak_snr2(d, gw, 2 * self.n_band, 2 * sw1, T_LEN / SR, exclude).reshape(B, -1, nq)
         if use_c:
             fc = self._peak_snr2(dc, Hc[:, fidx].permute(1, 0, 2, 3), nc, sc, L / 512.0).reshape(B, -1, nq)
         else:
@@ -378,7 +420,81 @@ class McFeatures(nn.Module):
             tf = self._trigger(hi, prof, prof_q)
             ttok = self.trig_to_tokens(self.trig_mlp(tf)).reshape(B, N_TRIG_TOKENS, -1)
             tok = torch.cat([tok, ttok + self.trig_type_embed], dim=1)
+        if self.multipeak:
+            self._multipeak(hi, x_mc, x_snr)
         return tok
+
+    @torch.no_grad()
+    def _locate(self, d: torch.Tensor, prof: torch.Tensor, prof_q: torch.Tensor, exclude: torch.Tensor):
+        """Best template of a profile on window spectrum d [B, D, F]: its index
+        [B], network merger time (s from the window centre) [B] and each
+        detector's arrival time (s from the window start) [B, D], from the
+        8x-oversampled SNR series with lags near `exclude` masked out."""
+        B, dev = d.shape[0], d.device
+        nb = self.n_band
+        n = fast_len(TRIG_OS * nb) if self._v3 else TRIG_OS * nb
+        k = prof.argmax(-1)
+        t = k * self.n_q + prof_q[torch.arange(B, device=dev), k].argmax(-1)
+        H = torch.complex(self.win_re, self.win_im)[:, t].permute(1, 0, 2)          # [B,D,F]
+        a2 = torch.fft.ifft(d * H.conj(), n=n, dim=-1).abs() ** 2                   # [B,D,n]
+        w = max(1, int(round(COINC_S * n * SR / T_LEN)))
+        pooled = torch.nn.functional.max_pool1d(
+            torch.nn.functional.pad(a2.reshape(-1, 1, n), (w, w), mode="circular"),
+            2 * w + 1, stride=1).reshape(a2.shape).sum(1)
+        if exclude is not None:
+            pooled = pooled.masked_fill(_lag_mask(exclude, n, T_LEN / SR), 0.0)
+        c = pooled.argmax(-1)
+        span = torch.arange(-w, 3 * w + 1, device=dev)
+        lags = (c[:, None] + span) % n                                              # [B,S]
+        mag = a2.gather(2, lags[:, None, :].expand(-1, a2.shape[1], -1))           # [B,D,S]
+        arr_lag = lags.gather(1, mag.argmax(-1))                                    # [B,D]
+        dt = T_LEN / SR / n
+        arr = torch.remainder(arr_lag.float() * dt, T_LEN / SR)                     # s from window start
+        wgt = mag.amax(-1) / mag.amax(-1).sum(-1, keepdim=True).clamp_min(1e-12)
+        t_net = torch.remainder((wgt * arr).sum(-1), T_LEN / SR) - T_LEN / SR / 2
+        return t, t_net, arr
+
+    def _peel(self, d: torch.Tensor, t: torch.Tensor, arr: torch.Tensor) -> torch.Tensor:
+        """Subtract template t [B] at each detector's arrival time arr [B, D]
+        (s from the window start), with its least-squares complex amplitude,
+        from window spectrum d [B, D, F] (CLEAN-style peeling: a loud signal's
+        matched-filter sidelobes otherwise outshine a quieter overlapping one)."""
+        nb = self.n_band
+        H = torch.complex(self.win_re, self.win_im)[:, t].permute(1, 0, 2)          # [B,D,F] unit norm
+        f = (self.band_lo + torch.arange(nb, device=d.device, dtype=torch.float32)) / (T_LEN / SR)
+        ph = torch.exp(-2j * math.pi * f[None, None, :] * arr[..., None])           # delay to arrival
+        tmpl = H * ph
+        amp = (d * tmpl.conj()).sum(-1, keepdim=True) / (tmpl.abs() ** 2).sum(-1, keepdim=True).clamp_min(1e-30)
+        return d - amp * tmpl
+
+    @torch.no_grad()
+    def _multipeak(self, hi: torch.Tensor, x_mc0: torch.Tensor, x_snr0: torch.Tensor):
+        """last_peaks [B, N_PEAKS, 3]: (normalized log Mc, asinh SNR, merger
+        time / 1.5 s) of separate signals, loudest first; peak 0 is the main
+        search's. Each further peak repeats the coarse-to-fine search on the
+        data with the signals found so far subtracted (peeling) and the lags
+        near their merger times masked out."""
+        B, dev = hi.shape[0], hi.device
+        d = torch.fft.rfft(hi.float(), dim=-1)[..., self.band_lo:self.band_lo + self.n_band]
+        times = torch.full((B, N_PEAKS), float("nan"), device=dev)
+        prof, _, _, prof_q = self._profiles(hi, None)
+        t0, _, arr0 = self._locate(d, prof, prof_q, None)
+        times[:, 0] = self.last_t
+        d = self._peel(d, t0, arr0)
+        peaks = [torch.stack([x_mc0, x_snr0, self.last_t / 1.5], 1)]
+        log_mc = [self.last_log_mc]
+        for j in range(1, N_PEAKS):
+            prof, _, _, prof_q = self._profiles(hi, None, exclude=times[:, :j], d_win=d)
+            x_mc, x_snr, _ = self._peak(prof)
+            tj, tnet, arr = self._locate(d, prof, prof_q, times[:, :j])
+            times[:, j] = tnet
+            peaks.append(torch.stack([x_mc, x_snr, tnet / 1.5], 1))
+            log_mc.append((x_mc + 1) / 2 * (self.log_hi - self.log_lo) + self.log_lo)
+            if j < N_PEAKS - 1:
+                d = self._peel(d, tj, arr)
+        self.last_peaks = torch.stack(peaks, 1).detach()          # [B, K, 3]
+        self.last_peak_log_mc = torch.stack(log_mc, 1).detach()   # [B, K]
+        self.last_peak_t = times.detach()                         # [B, K]
 
     @torch.no_grad()
     def _trigger(self, hi: torch.Tensor, prof: torch.Tensor, prof_q: torch.Tensor):
@@ -432,6 +548,7 @@ class McFeatures(nn.Module):
         l2, s2 = refine(c2)
         self.last_t = tm(ref).detach()       # merger-time estimate (s), for the pivot
         self.last_t_h1 = tm(arr[:, 0]).detach()   # arrival at H1 (sky_frame pivot)
+        self.last_arr = tm(arr).detach()          # [B, D] arrival per detector (s from centre)
         feats = [tm(ref) / 1.5, torch.asinh((y1 ** 2).sum(-1).sqrt()), tm(l2.float()) / 1.5, torch.asinh(s2)]
         for j in range(z.shape[1]):
             feats += [tau[:, j], torch.asinh(y1[:, j]), torch.cos(phi[:, j]), torch.sin(phi[:, j])]

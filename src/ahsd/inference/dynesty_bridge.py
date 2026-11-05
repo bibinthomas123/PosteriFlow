@@ -100,10 +100,14 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
                             "minimum_frequency": minimum_frequency})
 
     priors = build_priors(center_gps + trigger_offset, time_halfwidth, prior=prior)
+    # analytic phase marginalization is exact for the dominant (2, 2) mode
+    # only; with higher modes the phase is sampled (as the correction does).
+    # A phase-marginalized XHM run gave GW190412 a mass-ratio posterior 0.11x
+    # LVK's width, 4.5 sd off
     like = bilby.gw.likelihood.GravitationalWaveTransient(
         interferometers=ifos, waveform_generator=wfg, priors=priors,
-        phase_marginalization=True, distance_marginalization=True,
-        time_marginalization=True)
+        phase_marginalization="HM" not in str(approximant).upper(),
+        distance_marginalization=True, time_marginalization=True)
 
     # sampler: "dynesty" (the reference every stored run used), or another
     # bilby sampler for benchmarks (e.g. "nessai", "bilby_mcmc"), with its

@@ -52,6 +52,14 @@ CLASSES = {
     # the 8-epoch A/B, 2026-11-01), and v4 data have anti-aligned spins
     "bbh_spin_fine": dict(mc=(4.2, 90.0), dlog=0.005, q=(0.9, 0.6, 0.35, 0.15),
                           chi=(-0.6, -0.3, 0.0, 0.3, 0.6, 0.85), approx="IMRPhenomXP"),
+    # dense BBH bank (2026-11-04): 24 (q, chi) slots left a chirp-mass error
+    # floor of 1.5-2% at any SNR (error x SNR 0.21 -> 1.69 from SNR 10 to 87;
+    # events far from a slot 2x worse): the best slot compensates an off-grid
+    # q / spin with a shifted chirp mass. 10 q x 12 equal aligned spins.
+    "bbh_spin_dense": dict(mc=(4.2, 90.0), dlog=0.005,
+                           q=(0.95, 0.8, 0.65, 0.52, 0.42, 0.33, 0.25, 0.18, 0.12, 0.08),
+                           chi=(-0.75, -0.6, -0.45, -0.3, -0.15, 0.0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9),
+                           approx="IMRPhenomXP"),
     # signed NSBH bank: anti-aligned black-hole spins too (GW200115's light-BH
     # branch has a1 ~ -0.7; the v4 data draw a1 in [-0.9, 0.9])
     "nsbh_spin_signed": dict(mc=(1.35, 11.5), dlog=0.01, q=(0.4, 0.15, 0.06, 0.025),

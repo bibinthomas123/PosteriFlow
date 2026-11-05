@@ -117,13 +117,16 @@ def build_bank():
 
 
 @torch.no_grad()
-def evaluate_bank(model, bank, device, n_samples=256, psd_bands=16):
-    """Collapse signature per bank row. Restores the model's training mode."""
+def evaluate_bank(model, bank, device, n_samples=256, psd_bands=None):
+    """Collapse signature per bank row. Restores the model's training mode.
+    psd_bands defaults to the model's own band count."""
     was_training = model.training
     model.eval()
     strain = bank["strain"].to(device)
-    ab = (torch.zeros(strain.shape[0], 3, psd_bands, device=device)
-          if getattr(model, "psd_cond", False) else None)
+    ab = None
+    if getattr(model, "psd_cond", False):
+        bands = model.encoder.psd_bands if psd_bands is None else psd_bands
+        ab = torch.zeros(strain.shape[0], 3, bands, device=device)
     s = model.sample_posterior(strain, rank=0, n_samples=n_samples,
                                asd_bands=ab)                      # [N,K,11]
     truth = bank["truth"].to(s.device)

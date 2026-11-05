@@ -98,6 +98,21 @@ def load_model(path: str, device: Optional[str] = None):
     return model, meta
 
 
+def ra_rotation(prepared: PreparedData) -> float:
+    """Radians to ADD to the network's ra to get the true ra of a real event.
+
+    Training injects every signal at one epoch (parameter_sampler.GPS_REF), so the
+    network really reports position relative to the Earth at that epoch. A real
+    event at another time has the same detector response at ra + GMST(t) -
+    GMST(GPS_REF). Measured 2026-11-05: ra error 1.43 rad -> 0.05 rad with this
+    (analysis/distance_realdata/). Simulated data is already at GPS_REF: 0."""
+    if prepared.source != "real" or prepared.trigger_gps is None:
+        return 0.0
+    from bilby.gw.utils import greenwich_mean_sidereal_time as gmst
+    from ahsd.data.parameter_sampler import GPS_REF
+    return float(np.fmod(gmst(prepared.trigger_gps) - gmst(GPS_REF), 2 * np.pi))
+
+
 def model_input(model: LeanNPE, prepared: PreparedData) -> np.ndarray:
     """The strain row the model reads: the 4 s window, followed for multi-rate
     models by the low-rate context stream before it."""
@@ -259,6 +274,10 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
     j1, j2 = PARAM_NAMES.index("mass_1"), PARAM_NAMES.index("mass_2")
     m1, m2 = samples[:, j1].copy(), samples[:, j2].copy()
     samples[:, j1], samples[:, j2] = np.maximum(m1, m2), np.minimum(m1, m2)
+    # report the sky at the event's own time (logq is unchanged: a pure rotation;
+    # importance.symmetrized_log_q undoes it to evaluate the flow)
+    jra = PARAM_NAMES.index("ra")
+    samples[:, jra] = np.mod(samples[:, jra] + ra_rotation(prepared), 2 * np.pi)
 
     # ---- diagnostics ----
     rail_frac = float(railed.mean())

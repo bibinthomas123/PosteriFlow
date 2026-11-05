@@ -277,15 +277,35 @@ class TrainingPrior:
         return priors
 
 
-def lvk_log_weights(theta: np.ndarray, prior: "TrainingPrior", a_max: float = 0.99) -> np.ndarray:
+_COMOVING = None
+
+
+def comoving_log_pdf(d: np.ndarray) -> np.ndarray:
+    """log p(d_L), unnormalised, for a source-frame rate uniform in comoving volume
+    (Planck15): dVc/dz / (1+z) / (d d_L/dz), bilby's UniformSourceFrame. It is the
+    prior of the LVK *_cosmo.h5 posteriors and of the DINGO runs compared against."""
+    global _COMOVING
+    if _COMOVING is None:
+        from astropy.cosmology import Planck15
+        z = np.linspace(1e-4, 3.0, 6000)
+        dl = Planck15.luminosity_distance(z).value
+        dvc = Planck15.differential_comoving_volume(z).value
+        _COMOVING = dl, np.log(dvc / (1 + z) / np.gradient(dl, z))
+    return np.interp(d, *_COMOVING)
+
+
+def lvk_log_weights(theta: np.ndarray, prior: "TrainingPrior", a_max: float = 0.99,
+                    distance: str = "comoving") -> np.ndarray:
     """log [pi_LVK / pi_train] per sample, for comparing with published
     posteriors: LVK-style priors are uniform in detector-frame component
-    masses, p(d) ~ d^2, and isotropic spins of uniform magnitude, whose
-    aligned component has p(chi) = -ln(|chi| / a_max) / (2 a_max). Sky and
-    inclination priors are the same in both and cancel. Signed-spin models
-    only (magnitude models: the spin factor is not applied)."""
+    masses, distance uniform in comoving volume (`distance="comoving"`, the
+    published *_cosmo.h5 samples; "d2" for p(d) ~ d^2), and isotropic spins of
+    uniform magnitude, whose aligned component has p(chi) = -ln(|chi| / a_max)
+    / (2 a_max). Sky and inclination priors are the same in both and cancel.
+    Signed-spin models only (magnitude models: the spin factor is not applied)."""
     d = theta[:, _J["luminosity_distance"]]
-    lp = 2.0 * np.log(np.maximum(d, 1e-6))
+    lp = (comoving_log_pdf(d) if distance == "comoving"
+          else 2.0 * np.log(np.maximum(d, 1e-6)))
     if prior.signed_spins:
         for k in ("a1", "a2"):
             a = np.clip(np.abs(theta[:, _J[k]]), 1e-4, a_max * (1 - 1e-6))

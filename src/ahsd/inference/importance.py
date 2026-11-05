@@ -41,8 +41,11 @@ def symmetrized_log_q(theta_np, model, prepared, rank: int = 0,
                       device: str = "cpu", batch: int = 2048) -> np.ndarray:
     """Flow density of SORTED samples: log[q(m1,m2,..) + q(m2,m1,..)],
     physical units. theta_np: [N, 11]."""
-    from ahsd.inference.pipeline import _log_prob_physical
+    from ahsd.inference.pipeline import _log_prob_physical, ra_rotation
 
+    # samples report the true sky; the flow's variable is the sky at training epoch
+    theta_np = theta_np.copy()
+    theta_np[:, _J["ra"]] = np.mod(theta_np[:, _J["ra"]] - ra_rotation(prepared), 2 * np.pi)
     theta = torch.from_numpy(theta_np.astype(np.float32))
     from ahsd.inference.pipeline import model_asd_bands, model_input
     strain = torch.from_numpy(model_input(model, prepared)).unsqueeze(0).to(device).float()

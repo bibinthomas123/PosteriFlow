@@ -512,8 +512,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         return floored_resample(w, labels, n, branch_floor, rng)
 
     ind, ind_acc, sky_acc, ridge_acc = {"gm": None}, [], [], []
-    from ahsd.inference.ridgemoves import RidgeMove
-    ridge = RidgeMove()
+    from ahsd.inference.ridgemoves import DistanceInclinationMove, RidgeMove
+    # ridge moves: mass-ratio / spin, and distance / inclination
+    ridges = (RidgeMove(), DistanceInclinationMove())
     anchor = {"g": None}
     from ahsd.inference.skymoves import SkyJumps
     sky = SkyJumps([d for d in DETECTORS if d in raw_strain], center_gps, psds,
@@ -678,8 +679,10 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         # Mass-ratio / spin ridge moves (ahsd.inference.ridgemoves): step eta
         # at fixed chirp mass with chi1 set to keep the 1PN + 1.5PN phase,
         # i.e. along the q - chi1 degeneracy a random walk only crosses.
-        for _ in range(n_ridge):
-            thp, corr = ridge.propose(th, rng)
+        # Distance / inclination ridge moves: step cos(theta_jn) at fixed
+        # dominant-mode amplitude _amp(cos theta_jn) / d_L.
+        for _, mv in [(i, m) for i in range(n_ridge) for m in ridges]:
+            thp, corr = mv.propose(th, rng)
             xp = to_slow(thp)
             fin = np.isfinite(xp).all(axis=1) & np.isfinite(corr)
             g0p = np.full(len(xp), -np.inf)
@@ -716,9 +719,9 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
         sky_acc_final.append(float(acc.mean()))
         return np.where(acc[:, None], thp, th), np.where(acc, t1p, log_t1)
 
-    def ridge_moves_beta1(th, log_t1):
-        """One ridge MH step targeting L * pi (beta = 1)."""
-        thp, corr = ridge.propose(th, rng)
+    def ridge_moves_beta1(th, log_t1, mv):
+        """One ridge MH step (move `mv`) targeting L * pi (beta = 1)."""
+        thp, corr = mv.propose(th, rng)
         lpp = prior.log_prob(thp)
         t1p = np.full(len(thp), -np.inf)
         ok = np.isfinite(lpp) & np.isfinite(corr) & np.isfinite(to_slow(thp)).all(axis=1)
@@ -876,7 +879,8 @@ def importance_correct(result, raw_strain: Dict[str, np.ndarray],
     for _ in range(n_sky_final if sky.ok else 0):
         rj_theta, rj_t1 = sky_moves_beta1(rj_theta, rj_t1)
     for _ in range(n_ridge_final):
-        rj_theta, rj_t1 = ridge_moves_beta1(rj_theta, rj_t1)
+        for mv in ridges:
+            rj_theta, rj_t1 = ridge_moves_beta1(rj_theta, rj_t1, mv)
     accs.append(round(acc, 3))
     pool.terminate()
     theta, log_t1 = rj_theta, rj_t1

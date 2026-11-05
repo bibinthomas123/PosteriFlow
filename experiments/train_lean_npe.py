@@ -245,7 +245,8 @@ def profile_training(model, loader, opt, sched, args, device, aux_head):
         strain, params, nsig = (x.to(device, non_blocking=True) for x in batch[:3])
         asd = batch[4].to(device, non_blocking=True).float() if args.psd_cond else None
         loss = batch_nll(model, strain.float(), params, nsig, asd_bands=asd,
-                         aux_head=aux_head, aux_w=args.aux_mass, aux_q_embed_w=args.aux_q_embed)
+                         aux_head=aux_head, aux_w=args.aux_mass, aux_q_embed_w=args.aux_q_embed,
+                         snr_weight=(args.snr_weight, args.snr_weight_ref, args.snr_weight_max))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -264,7 +265,8 @@ def profile_training(model, loader, opt, sched, args, device, aux_head):
 
 
 def batch_nll(model, strain, params, nsig, asd_bands=None,
-              aux_head=None, aux_w=0.0, aux_q_embed_w=0.0, return_context=False):
+              aux_head=None, aux_w=0.0, aux_q_embed_w=0.0, return_context=False,
+              snr_weight=None):
     """Mean per-signal NLL for a batch of events. Encoder runs ONCE per event;
     the flow is queried once per signal rank present in the batch.
 
@@ -291,6 +293,21 @@ def batch_nll(model, strain, params, nsig, asd_bands=None,
     ev, rank = present.nonzero(as_tuple=True)
     nll = model.nll(None, params[ev, rank, :], rank, context=context[ev])
     loss = nll.mean()
+    mf = getattr(model.encoder, "mc_feat", None)
+    if snr_weight is not None and snr_weight[0] > 0 and getattr(mf, "last_net_snr", None) is not None:
+        # Weight each event by its MATCHED-FILTER SNR (the bank's peak, a
+        # function of the data alone): the minimizer of E_x[w(x) KL(p||q)]
+        # is still the posterior for every x with w(x) > 0, so the target
+        # is unchanged; only the network's capacity shifts toward loud
+        # events, which are rare under a uniform distance prior and where
+        # chirp-mass precision saturated (width x SNR 2.4 -> 6.0 from SNR 8
+        # to 35+; not cured by input representation or encoder width).
+        # Weighting by the TRUE SNR would depend on theta and bias it.
+        alpha, ref, wmax = snr_weight
+        w_ev = (mf.last_net_snr.to(nll.dtype) / ref).clamp_min(1e-3) ** alpha
+        w_ev = w_ev.clamp(1.0 / wmax, wmax)
+        w = w_ev[ev]
+        loss = (w * nll).sum() / w.sum()
     if aux_head is not None and aux_w > 0.0:
         # .contiguous(): the column slice is strided and MPS smooth_l1_loss
         # rejects non-contiguous inputs (CPU tolerates them)
@@ -616,6 +633,12 @@ def main():
                          "attractor, analysis/attractor_basin addendum), so the encoder "
                          "must source q from the conv/chirp pathway instead of the "
                          "geometry-cell shortcut. Try 0.5.")
+    ap.add_argument("--snr_weight", type=float, default=0.0,
+                    help="weight each training event's NLL by (matched-filter SNR / ref)^alpha "
+                         "(data-only statistic: the optimal posterior is unchanged); 0 = off. "
+                         "Validation NLL stays unweighted")
+    ap.add_argument("--snr_weight_ref", type=float, default=12.0)
+    ap.add_argument("--snr_weight_max", type=float, default=6.0, help="weights clipped to [1/max, max]")
     ap.add_argument("--aux_mass", type=float, default=0.0,
                     help="weight of an auxiliary mass-regression loss on the encoder "
                          "context (SmoothL1 to the rank-0 normalized mass coords; "
@@ -1204,7 +1227,9 @@ def main():
             nsig = nsig.to(device, non_blocking=True)
             loss, context = batch_nll(model, strain, params, nsig, asd_bands=asd,
                                       aux_head=aux_head, aux_w=args.aux_mass,
-                                      aux_q_embed_w=args.aux_q_embed, return_context=True)
+                                      aux_q_embed_w=args.aux_q_embed, return_context=True,
+                                      snr_weight=(args.snr_weight, args.snr_weight_ref,
+                                                  args.snr_weight_max))
             cons_loss_val = None
             if cons_pool is not None:
                 group_events = cons_rng.choice(

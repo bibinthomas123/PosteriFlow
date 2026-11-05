@@ -33,7 +33,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ahsd.data.bilby_pipeline import BilbyPreprocessor, get_default_psd
+from ahsd.data.bilby_pipeline import BilbyPreprocessor, get_default_psd, highpass_gain
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +130,11 @@ def _whiten_real_segment(x: np.ndarray, sr_in: float, trigger_offset_s: float,
     if asd_vals is None:
         asd = ts.asd(fftlength=ASD_FFTLENGTH, overlap=ASD_OVERLAP, method="median")
         asd_freqs, asd_vals = asd.frequencies.value, asd.value
+    else:
+        # a supplied ASD describes unfiltered strain; the data here is filtered
+        # and every ASD below is post-filter, as the measured one is
+        asd_freqs = np.asarray(asd_freqs, float)
+        asd_vals = np.asarray(asd_vals, float) * highpass_gain(asd_freqs, SAMPLE_RATE, HIGHPASS_HZ)
 
     v = ts.value
     n = len(v)
@@ -225,7 +230,10 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
             out_lo[i] = np.nan_to_num(lo, nan=0.0, posinf=0.0, neginf=0.0)
         asds[det] = asd_win
         freqs_win = np.fft.rfftfreq(T_LEN, 1.0 / SAMPLE_RATE)
-        psd_out[det] = {"frequencies": freqs_win, "psd": (asd_win.astype(np.float64)) ** 2}
+        # asds stay post-filter (asd_bands, whitening); psds describe the unfiltered
+        # strain the likelihood reads, so the filter's gain comes out
+        gain = np.maximum(highpass_gain(freqs_win, SAMPLE_RATE, HIGHPASS_HZ), 1e-3)
+        psd_out[det] = {"frequencies": freqs_win, "psd": (asd_win.astype(np.float64) / gain) ** 2}
         present.append(det)
 
     if not present:

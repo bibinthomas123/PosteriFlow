@@ -330,6 +330,12 @@ class RemixDataset(Dataset):
                     self.recolor[d].append(filt)
                     m = re.search(r"_(\d+)_strain", f.name)
                     self._seg_era[d].append(_era_of(int(m.group(1))) if m else "other")
+            # The bank ASDs were measured after the 15 Hz highpass, stored signals
+            # never passed through it: applied at signal recolouring only, because
+            # asd_bands must keep matching compute_asd_bands on real events.
+            from ahsd.data.bilby_pipeline import highpass_gain
+            self._hp_gain = highpass_gain(np.fft.rfftfreq(T_LEN, 1.0 / SR), SR).astype(np.float32)
+            self._hp_gain_lo = (highpass_gain(self._lo_freq, SR).astype(np.float32) if self.lo_len else None)
             counts = {d: len(v) for d, v in self.real_bank.items()}
             if min(counts.values()) == 0:
                 raise ValueError(f"real-noise bank incomplete under {bank_dir}: {counts}")
@@ -576,11 +582,11 @@ class RemixDataset(Dataset):
             # the chosen segment's whitening (exact: whitening is diagonal in
             # frequency, so it commutes with the scale/shift applied above)
             for di in range(3):
-                sig_sum[di, :T_LEN] = np.fft.irfft(np.fft.rfft(sig_sum[di, :T_LEN]) * recolor_filts[di],
+                sig_sum[di, :T_LEN] = np.fft.irfft(np.fft.rfft(sig_sum[di, :T_LEN]) * recolor_filts[di] * self._hp_gain,
                                                    n=T_LEN).astype(np.float32)
             if self.lo_len:
                 for di, f_lo in enumerate(self._last_recolor_lo):
-                    sig_sum[di, T_LEN:] = np.fft.irfft(np.fft.rfft(sig_sum[di, T_LEN:]) * f_lo,
+                    sig_sum[di, T_LEN:] = np.fft.irfft(np.fft.rfft(sig_sum[di, T_LEN:]) * f_lo * self._hp_gain_lo,
                                                        n=self.lo_len).astype(np.float32)
         strain += sig_sum
 

@@ -509,6 +509,33 @@ class BilbyNoiseGenerator:
 # Whitening
 # ─────────────────────────────────────────────────────────────────────────────
 
+HIGHPASS_HZ = 15.0
+_HP_GAIN = {}
+
+
+def highpass_gain(freqs: np.ndarray, sample_rate: int = 4096,
+                  corner: float = HIGHPASS_HZ) -> np.ndarray:
+    """Amplitude response of gwpy's TimeSeries.highpass(corner) on `freqs`.
+
+    That filter (cheby1, 2 dB passband ripple, applied forwards and backwards)
+    is far from flat: 0.63 near 50 Hz, 0.8 near 100 Hz, 1 only above ~400 Hz.
+    An ASD measured from filtered strain is therefore gain x true ASD. Whitening
+    filtered data with it cancels the gain, but a signal or likelihood that never
+    passed through the filter must account for it (2026-11-05: training signals
+    were recoloured without it, so ~1.4x too loud, and the network read every
+    real event ~1.4x too far; analysis/distance_realdata/)."""
+    key = (int(sample_rate), float(corner))
+    if key not in _HP_GAIN:
+        from gwpy.timeseries import TimeSeries
+        n = 2 ** 19
+        impulse = np.zeros(n)
+        impulse[n // 2] = 1.0
+        out = TimeSeries(impulse, sample_rate=sample_rate).highpass(corner).value
+        _HP_GAIN[key] = (np.fft.rfftfreq(n, 1.0 / sample_rate), np.abs(np.fft.rfft(out)))
+    f, g = _HP_GAIN[key]
+    return np.interp(freqs, f, g)
+
+
 class BilbyPreprocessor:
     """
     Whiten strain using bilby's matched-filter normalisation:

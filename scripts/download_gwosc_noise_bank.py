@@ -105,7 +105,10 @@ def main():
         try:
             ts = TimeSeries.fetch_open_data(det, gps, gps + SEG, sample_rate=SR, cache=False)
             ts = ts.highpass(15)
-            asd = ts.asd(fftlength=8, overlap=4)  # measured ASD of this segment
+            # measured ASD of this segment, AFTER the highpass: gain x true ASD, not
+            # flat below ~400 Hz (see bilby_pipeline.highpass_gain; RemixDataset
+            # applies the gain when it recolours signals)
+            asd = ts.asd(fftlength=8, overlap=4)
             asd_freq = asd.frequencies.value
             asd_val = asd.value
 

@@ -66,3 +66,54 @@ def test_move_leaves_the_prior_invariant():
     assert np.mean(acc_all) > 0.05
     for k in ("mass_1", "mass_2", "a1"):
         assert ks_2samp(th[:, J[k]], ref[:, J[k]]).statistic < 0.03, k
+
+
+def test_distance_inclination_move_keeps_amplitude():
+    from ahsd.inference.ridgemoves import DistanceInclinationMove, _amp
+    rng = np.random.default_rng(3)
+    th = _prior().sample(3000, rng)
+    out, corr = DistanceInclinationMove().propose(th, rng)
+    ok = np.isfinite(corr)
+    assert ok.mean() > 0.8
+    k0 = _amp(np.cos(th[ok, J["theta_jn"]])) / th[ok, J["luminosity_distance"]]
+    k1 = _amp(np.cos(out[ok, J["theta_jn"]])) / out[ok, J["luminosity_distance"]]
+    assert np.allclose(k0, k1, rtol=1e-10)
+    other = [j for n, j in J.items() if n not in ("theta_jn", "luminosity_distance")]
+    assert np.array_equal(out[:, other], th[:, other])
+
+
+def test_distance_inclination_jacobian_matches_finite_differences():
+    from ahsd.inference.ridgemoves import _amp, log_jac_k
+    rng = np.random.default_rng(4)
+    th = _prior().sample(20, rng)
+    for t in th[:10]:
+        x0 = np.array([t[J["theta_jn"]], t[J["luminosity_distance"]]])
+
+        def u(x):
+            c = np.cos(x[0])
+            return np.array([c, _amp(c) / x[1]])
+        h = 1e-6 * np.maximum(np.abs(x0), 1e-3)
+        jac = np.column_stack([(u(x0 + e) - u(x0 - e)) / (2 * e[i]) for i, e in enumerate(np.diag(h))])
+        assert np.isclose(np.log(abs(np.linalg.det(jac))), log_jac_k(x0[0], x0[1]), atol=1e-4)
+
+
+def test_distance_inclination_move_leaves_the_prior_invariant():
+    """MH with the move, target = training prior: theta_jn and d_L stay
+    distributed as the prior's."""
+    from scipy.stats import ks_2samp
+    from ahsd.inference.ridgemoves import DistanceInclinationMove
+    p = _prior()
+    rng = np.random.default_rng(5)
+    th = p.sample(6000, rng)
+    ref = p.sample(20000, rng)
+    mv = DistanceInclinationMove()
+    acc_all = []
+    for _ in range(40):
+        tp, corr = mv.propose(th, rng)
+        la = p.log_prob(tp) - p.log_prob(th) + corr
+        acc = np.log(rng.uniform(size=len(th))) < np.where(np.isfinite(la), la, -np.inf)
+        th = np.where(acc[:, None], tp, th)
+        acc_all.append(acc.mean())
+    assert np.mean(acc_all) > 0.05
+    for k in ("theta_jn", "luminosity_distance"):
+        assert ks_2samp(th[:, J[k]], ref[:, J[k]]).statistic < 0.03, k

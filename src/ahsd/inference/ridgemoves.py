@@ -98,3 +98,55 @@ class RidgeMove:
         out[:, _J["mass_1"]], out[:, _J["mass_2"]], out[:, _J["a1"]] = n1, n2, d1
         corr = -(log_jac_u(n1, n2, d1, f_ref) - log_jac_u(m1, m2, c1, f_ref))
         return out, np.where(ok & np.isfinite(corr), corr, -np.inf)
+
+
+def _amp(c):
+    """Inclination factor of the dominant-mode amplitude, sqrt(A+^2 + Ax^2) * d:
+    A+ = (1 + c^2) / 2, Ax = c (c = cos theta_jn)."""
+    return np.sqrt((0.5 * (1.0 + c * c)) ** 2 + c * c)
+
+
+def log_jac_k(theta_jn, d):
+    """log |d (c, K) / d (theta_jn, d_L)|, c = cos theta_jn, K = _amp(c) / d
+    (triangular: c does not depend on d)."""
+    c = np.cos(theta_jn)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.log(np.abs(np.sin(theta_jn))) + np.log(_amp(c)) - 2.0 * np.log(d)
+
+
+class DistanceInclinationMove:
+    """Distance / inclination ridge move.
+
+    For a fixed signal shape the detected amplitude scales as _amp(cos
+    theta_jn) / d_L, so tilting a binary while bringing it closer leaves the
+    data almost unchanged: the posterior is a curved ridge in (theta_jn, d_L).
+    A random walk crosses it rather than following it, and the correction
+    truncated its inclined, nearby end (GW190412: lower 5% of |cos theta_jn|
+    0.47 against 0.20 from per-island importance sampling; distance median 736
+    against 667 Mpc).
+
+    The move is a symmetric random walk in c = cos theta_jn at fixed
+    K = _amp(c) / d_L, i.e. in the coordinates u = (c, K) with every other
+    parameter fixed; exact Metropolis-Hastings once the Jacobian
+    |d u / d (theta_jn, d_L)| enters the acceptance (`log_jac_k`). Steps may
+    cross c = 0 (face-on <-> face-away). The step size is drawn independently
+    of the point."""
+    SIGMAS = (0.03, 0.1, 0.25)
+
+    def propose(self, th, rng):
+        """Returns (th', log_a correction) with the same convention as
+        RidgeMove.propose: correction = -[log|du/dtheta|(th') - log|du/dtheta|(th)]."""
+        n = len(th)
+        t, d = th[:, _J["theta_jn"]], th[:, _J["luminosity_distance"]]
+        c = np.cos(t)
+        K = _amp(c) / d
+        sig = np.asarray(self.SIGMAS)[rng.integers(0, len(self.SIGMAS), n)]
+        c2 = c + sig * rng.standard_normal(n)
+        ok = np.abs(c2) < 1.0
+        c2 = np.clip(c2, -1 + 1e-12, 1 - 1e-12)
+        t2 = np.arccos(c2)
+        d2 = _amp(c2) / K
+        out = th.copy()
+        out[:, _J["theta_jn"]], out[:, _J["luminosity_distance"]] = t2, d2
+        corr = -(log_jac_k(t2, d2) - log_jac_k(t, d))
+        return out, np.where(ok & np.isfinite(corr), corr, -np.inf)

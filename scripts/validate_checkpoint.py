@@ -439,7 +439,7 @@ def matched_dynesty(model, device, path, n_post=2000):
             "mc_cov90": cov(mc, z["mc_true"]), "q_cov90": cov(q, z["q_true"])}
 
 
-def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",), matched=None):
+def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",), matched=None, path=None):
     """Evaluate all CI acceptance gates over the Gaussian/real-domain metrics
     and the GWTC real-event results; returns the list of gate records."""
     gates = []
@@ -532,6 +532,9 @@ def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",), match
         b_ok, b_detail = basin_gate(basin)
         gates.append(gate("basin probe (τ≈+7ms heavy cell): q>0.95 < 0.30 & rail < 0.20",
                           b_ok, b_detail))
+    if path is not None:
+        from ahsd.evaluation.path_audit import path_gates
+        gates.extend(gate(*g) for g in path_gates(path))
     return gates
 
 
@@ -758,12 +761,24 @@ def main():
     if ref is not None:
         print(f"matched dynesty comparison ({ref}) ...")
         matched = matched_dynesty(model, device, ref)
-    gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows, trained=trained, matched=matched)
+    path = None
+    if "BBH" in trained and not args.skip_gw150914:
+        print("real-path injections (amplitude, sky, distance) ...")
+        try:
+            from ahsd.evaluation.path_audit import real_path_injections
+            sources = []
+            for name, _, pub, gps in [e for e in REAL_EVENTS if e[1] == "BBH"]:
+                z = 1 + _redshift(pub["dL"])
+                sources.append((gps if gps is not None else name, pub["m1"] * z, pub["m2"] * z))
+            path = real_path_injections(args.model, sources, device=device)
+        except Exception as e:
+            print(f"real-path injections failed ({type(e).__name__}: {e})")
+    gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows, trained=trained, matched=matched, path=path)
     ok = html_report(out / "report.html", meta, gaus, gfigs, real, rfigs, gw, gates)
 
     with open(out / "report.json", "w") as f:
         json.dump({"meta": meta, "gaussian": gaus, "real": real, "gw150914": gw,
-                   "basin_probe": basin_rows, "matched_dynesty": matched, "gates": gates},
+                   "basin_probe": basin_rows, "matched_dynesty": matched, "real_path": path, "gates": gates},
                   f, indent=2, default=float)
     for g in gates:
         print(f"  {'PASS' if g['pass'] else 'FAIL'}  {g['gate']}  ({g['detail']})")

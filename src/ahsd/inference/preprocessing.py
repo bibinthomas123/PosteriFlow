@@ -29,7 +29,7 @@ import logging
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -52,6 +52,17 @@ ASD_OVERLAP = 4
 GLITCH_SIGMA = 50.0         # whitened excursion above any signal in the training
                             # sets (per-sample peak max 47.5σ, BBH at SNR 524;
                             # Gaussian max ≈ 4.5σ): a detector above it is absent
+# Short glitches on open data, gated in fetch_gwosc so the network and the likelihood
+# correction read the same strain: (detector, GPS of the peak whitened excursion).
+# GW170817 L1 (137 sigma about 1 s before the merger). Against the optical position,
+# network alone, 2026-11-06: L1 dropped 2.37 rad and about 17000 deg2, L1 gated 0.10 rad
+# and about 1150 deg2; injections at SNR 15 with all detectors 0.27 rad, gap in L1 0.43,
+# no L1 1.09, calibrated throughout (analysis/distance_realdata/audit_open_checks.py).
+# The model never trained on gaps; this list is for measured short glitches only.
+KNOWN_GLITCHES = (("L1", 1187008881.382),)
+GATE_HALF_S = 0.2           # zero within this of the glitch
+GATE_TAPER_S = 0.1          # back to one over this
+GATE_KEEP_BELOW_HZ = 10.0   # kept, so the cut adds no low-frequency leakage: raw strain is dominated by it
 
 
 @dataclass
@@ -192,6 +203,7 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
     GLITCH_SIGMA is replaced by white noise, as a dropped detector is in
     training, provided another detector remains (GW170817: L1 glitch at 137σ
     gave chirp mass 1.38 and merger -0.58 s; without L1, 1.205 and +0.10 s).
+    Measured short glitches are gated before this, see KNOWN_GLITCHES.
     """
     t0 = time.time()
     rng = np.random.default_rng(seed)
@@ -381,9 +393,30 @@ def _finite_run_around(x: np.ndarray, i: int):
     return (int(lo[-1]) + 1 if len(lo) else 0, i + int(hi[0]) if len(hi) else len(x))
 
 
+def gate_glitch(x: np.ndarray, centre: int, sr: float) -> np.ndarray:
+    """Remove content above GATE_KEEP_BELOW_HZ around sample `centre`, tapered."""
+    from scipy.signal import butter, sosfiltfilt
+    low = sosfiltfilt(butter(4, GATE_KEEP_BELOW_HZ, fs=sr, output="sos"), np.nan_to_num(x))
+    half, tp = int(GATE_HALF_S * sr), int(GATE_TAPER_S * sr)
+    w = np.ones(len(x))
+    edge = np.sin(0.5 * np.pi * np.arange(tp) / tp) ** 2
+    w[centre - half:centre + half] = 0.0
+    w[centre + half:centre + half + tp] = edge
+    w[centre - half - tp:centre - half] = edge[::-1]
+    return low + (x - low) * w
+
+
+def known_glitches_in(strain: Dict[str, np.ndarray], starts: Dict[str, float],
+                      srs: Dict[str, float]) -> List[Tuple[str, float]]:
+    """KNOWN_GLITCHES inside this data, with the taper's margin to its ends."""
+    margin = GATE_HALF_S + GATE_TAPER_S
+    return [(d, g) for d, g in KNOWN_GLITCHES
+            if d in strain and starts[d] + margin < g < starts[d] + len(strain[d]) / srs[d] - margin]
+
+
 def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
                 fetch_seconds: int = FETCH_SECONDS, strict: bool = False,
-                required: Optional[List[str]] = None):
+                required: Optional[List[str]] = None, gate_known_glitches: bool = True):
     """Download raw strain around a GWOSC event name or GPS time.
 
     Returns (trigger_gps, strain dict, segment_start dict, sample_rate dict,
@@ -453,6 +486,10 @@ def fetch_gwosc(event_or_gps, detectors: Optional[List[str]] = None,
             failed.append(det)
     if not found:
         raise RuntimeError(f"no open data available around GPS {gps}")
+    if gate_known_glitches:
+        for d, g in known_glitches_in(strain, starts, srs):
+            strain[d] = gate_glitch(np.asarray(strain[d], np.float64), int(round((g - starts[d]) * srs[d])), srs[d])
+            log.warning(f"{d}: known glitch at GPS {g} gated")
     # strict: a failed download of a detector that is needed (`required`;
     # default all) is an error. With GWOSC unreachable a detector that was
     # not observing (no cached file ever) looks the same as a failure, so the

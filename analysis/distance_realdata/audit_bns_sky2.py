@@ -111,7 +111,7 @@ def injections(model, cls, name, m1, m2, n, device, drop=None, cut=False):
     from ahsd.evaluation.path_audit import SR, TAPER_S, detector_signal
     from ahsd.inference.pipeline import infer
     from ahsd.inference.preprocessing import fetch_gwosc, prepare_real
-    g, raw, starts, srs, _ = fetch_gwosc(name, strict=False)
+    g, raw, starts, srs, _ = fetch_gwosc(name, strict=False, gate_known_glitches=False)
     t = g + OFFSET
     noise = prepare_real(raw, t, starts, srs, seed=0)
     dets = list(noise.detectors_present)

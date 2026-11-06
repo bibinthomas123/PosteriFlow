@@ -51,3 +51,38 @@ def test_raw_segment_for_importance_sampling():
     assert seg["H1"][-1] == (SEC / 2 + 2) * SR - 1          # ends at the window end
     with pytest.raises(ValueError):
         raw_segment(x, {"H1": GPS - SEC / 2, "L1": GPS - SEC / 2}, GPS, seconds=60)
+
+
+def _noisy(n=4096 * 40, seed=0):
+    rng = np.random.default_rng(seed)
+    t = np.arange(n) / 4096.0
+    return rng.standard_normal(n) + 200.0 * np.sin(2 * np.pi * 2.0 * t)   # raw strain: low frequencies dominate
+
+
+def test_gate_removes_the_glitch_and_keeps_the_rest():
+    from ahsd.inference.preprocessing import GATE_HALF_S, GATE_TAPER_S, gate_glitch
+    x = _noisy()
+    c = 20 * 4096
+    amp = 1e4
+    glitched = x.copy()
+    glitched[c - 50:c + 50] += amp * np.sin(2 * np.pi * 100.0 * np.arange(100) / 4096.0)
+    out = gate_glitch(glitched, c, 4096.0)
+    h, tp = int(GATE_HALF_S * 4096), int(GATE_TAPER_S * 4096)
+    slow = 200.0 * np.sin(2 * np.pi * 2.0 * np.arange(len(x)) / 4096.0)
+    # inside: the slow content, plus the glitch's own part below 10 Hz (about 5% here),
+    # which the 15 Hz highpass removes downstream
+    assert np.abs((out - slow)[c - h:c + h]).max() < 0.1 * amp
+    # outside the gate and its taper: exactly the input
+    np.testing.assert_allclose(out[:c - h - tp], glitched[:c - h - tp], atol=1e-9)
+    np.testing.assert_allclose(out[c + h + tp:], glitched[c + h + tp:], atol=1e-9)
+
+
+def test_known_glitches_only_inside_the_data():
+    from ahsd.inference.preprocessing import KNOWN_GLITCHES, known_glitches_in
+    d, g = KNOWN_GLITCHES[0]
+    x = {d: np.zeros(4096 * 80)}
+    assert known_glitches_in(x, {d: g - 40.0}, {d: 4096.0}) == [(d, g)]
+    assert known_glitches_in(x, {d: g + 1.0}, {d: 4096.0}) == []            # another time
+    assert known_glitches_in(x, {d: g - 80.05}, {d: 4096.0}) == []          # taper past the end
+    assert known_glitches_in({"H1": x[d]}, {"H1": g - 40.0}, {"H1": 4096.0}) == []   # another detector
+

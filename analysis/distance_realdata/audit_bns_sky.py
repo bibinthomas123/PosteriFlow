@@ -68,7 +68,7 @@ def injections(model, sources, n, cls, device, samples):
     rng = np.random.default_rng(0)
     out = []
     for name, m1, m2 in sources:
-        g, raw, starts, srs, _ = fetch_gwosc(name, strict=False)
+        g, raw, starts, srs, _ = fetch_gwosc(name, strict=False, gate_known_glitches=False)
         t = g + 20.0
         noise = prepare_real(raw, t, starts, srs, seed=0)
         dets = list(noise.detectors_present)

@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from ahsd.models.lean_npe import LeanNPE, PARAM_NAMES
-from ahsd.inference.preprocessing import (PreparedData, prepare_real,
+from ahsd.inference.preprocessing import (PreparedData, prepare_real, known_glitches_in,
                                           prepare_simulated, fetch_gwosc)
 from ahsd.inference.result import PosteriorResult
 
@@ -217,6 +217,8 @@ def infer(strain: Optional[Dict[str, np.ndarray]] = None,
                                                    detectors=detectors)
         fetch_s = time.time() - t0
         prepared = prepare_real(raw, gps, starts, srs, psds=psds, seed=seed)
+        prepared.warnings += [f"{d}: known glitch at GPS {g} gated; the model never trained on gaps"
+                              for d, g in known_glitches_in(raw, starts, srs)]
         prepared.timings["gwosc_fetch_s"] = round(fetch_s, 2)
     elif strain is not None and source in ("auto", "real") and trigger_time is not None:
         prepared = prepare_real(strain, trigger_time,

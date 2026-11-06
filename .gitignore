@@ -152,7 +152,11 @@ htmlcov/
 test_*.py
 diagonse_*.py
 check*_.py
-paper
+# paper: sources only, not builds or the AASTeX samples
+paper/*.blg
+paper/leannpe.pdf
+paper/sample701.*
+paper/AuthorChargeInfographic.png
 # ============================================================================
 # Claude Code
 # ============================================================================

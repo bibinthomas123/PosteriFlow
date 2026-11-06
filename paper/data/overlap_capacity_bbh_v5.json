@@ -1,0 +1,198 @@
+{
+ "model": "model/lean_npe_bbh_v5/best_model.pth",
+ "max_signals": 5,
+ "per_k": {
+  "1": {
+   "rank0": {
+    "cov90_headline": 0.909,
+    "cov90_m1": 0.917,
+    "cov90_m2": 0.887,
+    "cov90_dL": 0.917,
+    "mc_frac_err": 0.0237,
+    "dl_frac_err": 0.2361,
+    "median_snr": 12.7
+   }
+  },
+  "2": {
+   "rank0": {
+    "cov90_headline": 0.836,
+    "cov90_m1": 0.827,
+    "cov90_m2": 0.86,
+    "cov90_dL": 0.873,
+    "mc_frac_err": 0.0412,
+    "dl_frac_err": 0.2652,
+    "median_snr": 18.0
+   },
+   "rank1": {
+    "cov90_headline": 0.922,
+    "cov90_m1": 0.96,
+    "cov90_m2": 0.9,
+    "cov90_dL": 0.897,
+    "mc_frac_err": 0.3672,
+    "dl_frac_err": 0.3778,
+    "median_snr": 9.6
+   }
+  },
+  "3": {
+   "rank0": {
+    "cov90_headline": 0.845,
+    "cov90_m1": 0.823,
+    "cov90_m2": 0.847,
+    "cov90_dL": 0.85,
+    "mc_frac_err": 0.0386,
+    "dl_frac_err": 0.2345,
+    "median_snr": 29.9
+   },
+   "rank1": {
+    "cov90_headline": 0.91,
+    "cov90_m1": 0.907,
+    "cov90_m2": 0.893,
+    "cov90_dL": 0.917,
+    "mc_frac_err": 0.3428,
+    "dl_frac_err": 0.4254,
+    "median_snr": 12.1
+   },
+   "rank2": {
+    "cov90_headline": 0.911,
+    "cov90_m1": 0.9,
+    "cov90_m2": 0.88,
+    "cov90_dL": 0.937,
+    "mc_frac_err": 0.3952,
+    "dl_frac_err": 0.3637,
+    "median_snr": 8.2
+   }
+  },
+  "4": {
+   "rank0": {
+    "cov90_headline": 0.839,
+    "cov90_m1": 0.853,
+    "cov90_m2": 0.85,
+    "cov90_dL": 0.84,
+    "mc_frac_err": 0.0478,
+    "dl_frac_err": 0.2377,
+    "median_snr": 31.6
+   },
+   "rank1": {
+    "cov90_headline": 0.881,
+    "cov90_m1": 0.873,
+    "cov90_m2": 0.833,
+    "cov90_dL": 0.903,
+    "mc_frac_err": 0.3781,
+    "dl_frac_err": 0.395,
+    "median_snr": 15.2
+   },
+   "rank2": {
+    "cov90_headline": 0.902,
+    "cov90_m1": 0.887,
+    "cov90_m2": 0.877,
+    "cov90_dL": 0.897,
+    "mc_frac_err": 0.4157,
+    "dl_frac_err": 0.4788,
+    "median_snr": 10.6
+   },
+   "rank3": {
+    "cov90_headline": 0.859,
+    "cov90_m1": 0.87,
+    "cov90_m2": 0.767,
+    "cov90_dL": 0.813,
+    "mc_frac_err": 0.4744,
+    "dl_frac_err": 0.3654,
+    "median_snr": 8.3
+   }
+  },
+  "5": {
+   "rank0": {
+    "cov90_headline": 0.85,
+    "cov90_m1": 0.857,
+    "cov90_m2": 0.85,
+    "cov90_dL": 0.873,
+    "mc_frac_err": 0.0691,
+    "dl_frac_err": 0.2424,
+    "median_snr": 36.8
+   },
+   "rank1": {
+    "cov90_headline": 0.874,
+    "cov90_m1": 0.9,
+    "cov90_m2": 0.85,
+    "cov90_dL": 0.867,
+    "mc_frac_err": 0.366,
+    "dl_frac_err": 0.4528,
+    "median_snr": 19.1
+   },
+   "rank2": {
+    "cov90_headline": 0.885,
+    "cov90_m1": 0.9,
+    "cov90_m2": 0.86,
+    "cov90_dL": 0.85,
+    "mc_frac_err": 0.4267,
+    "dl_frac_err": 0.5401,
+    "median_snr": 12.7
+   },
+   "rank3": {
+    "cov90_headline": 0.849,
+    "cov90_m1": 0.803,
+    "cov90_m2": 0.73,
+    "cov90_dL": 0.777,
+    "mc_frac_err": 0.5382,
+    "dl_frac_err": 0.5414,
+    "median_snr": 10.4
+   },
+   "rank4": {
+    "cov90_headline": 0.73,
+    "cov90_m1": 0.723,
+    "cov90_m2": 0.763,
+    "cov90_dL": 0.607,
+    "mc_frac_err": 0.4045,
+    "dl_frac_err": 0.6087,
+    "median_snr": 7.8
+   }
+  },
+  "6": {
+   "rank0": {
+    "cov90_headline": 0.861,
+    "cov90_m1": 0.857,
+    "cov90_m2": 0.89,
+    "cov90_dL": 0.903,
+    "mc_frac_err": 0.0814,
+    "dl_frac_err": 0.2477,
+    "median_snr": 37.1
+   },
+   "rank1": {
+    "cov90_headline": 0.879,
+    "cov90_m1": 0.863,
+    "cov90_m2": 0.853,
+    "cov90_dL": 0.9,
+    "mc_frac_err": 0.3672,
+    "dl_frac_err": 0.4195,
+    "median_snr": 21.8
+   },
+   "rank2": {
+    "cov90_headline": 0.889,
+    "cov90_m1": 0.903,
+    "cov90_m2": 0.863,
+    "cov90_dL": 0.867,
+    "mc_frac_err": 0.4888,
+    "dl_frac_err": 0.4659,
+    "median_snr": 13.8
+   },
+   "rank3": {
+    "cov90_headline": 0.843,
+    "cov90_m1": 0.847,
+    "cov90_m2": 0.76,
+    "cov90_dL": 0.723,
+    "mc_frac_err": 0.5227,
+    "dl_frac_err": 0.8193,
+    "median_snr": 10.8
+   },
+   "rank4": {
+    "cov90_headline": 0.737,
+    "cov90_m1": 0.667,
+    "cov90_m2": 0.767,
+    "cov90_dL": 0.623,
+    "mc_frac_err": 0.4392,
+    "dl_frac_err": 0.67,
+    "median_snr": 9.2
+   }
+  }
+ }
+}

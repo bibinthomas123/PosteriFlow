@@ -542,6 +542,13 @@ def main():
                          "labels follow the TrainingPrior exactly")
     ap.add_argument("--dist_resample_min_snr", type=float, default=6.0,
                     help="the dataset's generation SNR cut (min_snr)")
+    ap.add_argument("--real_gate", action="store_true",
+                    help="distance redraw gates on the SNR in the drawn noise, not at design sensitivity")
+    ap.add_argument("--single_signal", action="store_true", help="train and validate on one-signal events only")
+    ap.add_argument("--mc_range", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="train and validate on this detector-frame chirp-mass band only")
+    ap.add_argument("--encoder_d_model", type=int, default=0, help="encoder width (0: default 192)")
+    ap.add_argument("--encoder_layers", type=int, default=0, help="encoder transformer layers (0: default 3)")
     ap.add_argument("--resume", default=None,
                     help="last_model.pth of an interrupted run with the SAME arguments: restores "
                          "weights, optimizer, LR schedule position, epoch counter and best-model "
@@ -923,7 +930,9 @@ def main():
                                 delay_aug_candidates=args.delay_aug_candidates,
                                 return_event_idx=bool(args.offline_distill_cache),
                                 dist_range=args.dist_range,
-                                dist_resample=args.dist_resample, min_snr=args.dist_resample_min_snr)
+                                dist_resample=args.dist_resample, min_snr=args.dist_resample_min_snr,
+                                single_signal=args.single_signal, mc_range=args.mc_range,
+                                real_gate=args.real_gate)
         log.info(f"remix train events={len(train_ds)} (noise pool={train_ds.n_noise}, "
                  f"p_real={args.real_noise_prob}, det_dropout={args.det_dropout}, "
                  f"era_weights={era_weights}, det_keep_weights={det_keep_weights}, "
@@ -936,6 +945,15 @@ def main():
 
     # validation is always FIXED (stored strain, no remixing) for comparability
     va_s, va_p, va_n, va_snr = load_split(args.data, "validation")
+    if args.single_signal or args.mc_range:
+        keep = torch.ones(len(va_n), dtype=torch.bool)
+        if args.single_signal:
+            keep &= va_n == 1
+        if args.mc_range:
+            m1, m2 = va_p[:, 0, 0], va_p[:, 0, 1]
+            mc = (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+            keep &= (mc >= args.mc_range[0]) & (mc < args.mc_range[1])
+        va_s, va_p, va_n, va_snr = va_s[keep], va_p[keep], va_n[keep], va_snr[keep]
     log.info(f"val events={va_s.shape[0]}")
 
     # Fixed REAL-NOISE validation variant: same validation events, noise
@@ -951,7 +969,8 @@ def main():
             _bc(args.data, "validation", str(vcache))
         vds = _RD(str(vcache), remix=False, seed=1234,
                   real_noise_dir=args.noise_bank, real_noise_prob=1.0,
-                  return_asd_bands=args.psd_cond, psd_bands=args.psd_bands)
+                  return_asd_bands=args.psd_cond, psd_bands=args.psd_bands,
+                  single_signal=args.single_signal, mc_range=args.mc_range)
         # Materialize only what the diagnostics actually read. This set feeds
         # run_diagnostics ONLY (the full val NLL comes from the Gaussian
         # val_loader), and run_diagnostics looks at its first n_events, so
@@ -970,7 +989,10 @@ def main():
         log.info(f"real-noise validation materialized: {n_keep} of {len(vds)} events "
                  f"(diagnostics read {args.diag_events})")
 
+    args.encoder_kwargs = {k: v for k, v in (("d_model", args.encoder_d_model),
+                                             ("n_layers", args.encoder_layers)) if v} or None
     model = LeanNPE(premerger=args.premerger,
+                    encoder_kwargs=args.encoder_kwargs,
                     psd_cond=args.psd_cond, psd_bands=args.psd_bands,
                     encoder_type=args.encoder_type,
                     mass_param=args.mass_param,

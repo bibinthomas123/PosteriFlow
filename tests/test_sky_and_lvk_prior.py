@@ -65,3 +65,14 @@ def test_comoving_prior_matches_bilby_and_is_below_d2_far_out():
     assert np.allclose(ours - ours[0], bil - bil[0], atol=0.01)
     d2 = 2 * np.log(d)
     assert (ours - ours[0])[-1] < (d2 - d2[0])[-1] - 0.5   # favours far sources less than d^2
+
+
+def test_wider_encoder_round_trips_through_saved_args():
+    """A load site rebuilds a wider encoder from args alone."""
+    from ahsd.models.lean_npe import LeanNPE
+    a = {"encoder_kwargs": {"d_model": 240, "n_layers": 4}}
+    m = LeanNPE(encoder_type="coherent", psd_cond=True, encoder_kwargs=a["encoder_kwargs"])
+    n = LeanNPE(encoder_type="coherent", psd_cond=True, encoder_kwargs=a.get("encoder_kwargs"))
+    n.load_state_dict(m.state_dict())
+    x = torch.randn(2, 3, 16384)
+    assert n.encode(x, torch.zeros(2, 3, 16)).shape[0] == 2

@@ -199,7 +199,9 @@ class RemixDataset(Dataset):
                  delay_aug: float = 0.0, delay_aug_candidates: int = 64,
                  return_event_idx: bool = False,
                  dist_range: tuple | None = None,
-                 dist_resample: tuple | None = None, min_snr: float = 6.0):
+                 dist_resample: tuple | None = None, min_snr: float = 6.0,
+                 single_signal: bool = False, mc_range: tuple | None = None,
+                 real_gate: bool = False):
         cache = Path(cache_dir)
         self.cache_dir = cache
         self.noise = np.load(cache / "noise.npy", mmap_mode="r")
@@ -225,6 +227,18 @@ class RemixDataset(Dataset):
         # copy remixes independently (fresh noise/shift/rescale) since the
         # augmentation RNG is seeded by the epoch SLOT, not the event.
         self._index_map = np.arange(len(self.events))
+        # optional population restrictions (network-accuracy experiments)
+        self.real_gate = bool(real_gate)
+        if single_signal or mc_range:
+            ev = np.asarray(self.events)
+            keep = np.ones(len(ev), bool)
+            if single_signal:
+                keep &= ev[:, 1] == 1
+            if mc_range:
+                m = np.asarray(self.params[ev[:, 0], :2], np.float64)
+                mc = (m[:, 0] * m[:, 1]) ** 0.6 / (m[:, 0] + m[:, 1]) ** 0.2
+                keep &= (mc >= mc_range[0]) & (mc < mc_range[1])
+            self._index_map = np.flatnonzero(keep)
         if basin_oversample and remix:
             tau = self._tau_hl_cached(cache)
             rank0 = np.array([e[0] for e in self.events])
@@ -523,6 +537,13 @@ class RemixDataset(Dataset):
             snr0 = [float(np.sqrt((np.asarray(self.signals[start + k][:, :T_LEN], np.float64) ** 2).sum()))
                     for k in range(nsig)]
             k_gate = int(np.argmax(snr0))
+            if self.real_gate and recolor_filts is not None:
+                # gate on the SNR this signal has in this noise, not at design
+                # sensitivity (where real-noise samples sit about 3x lower)
+                sg = np.asarray(self.signals[start + k_gate][:, :T_LEN], np.float64)
+                rec = np.fft.irfft(np.fft.rfft(sg, axis=-1) * np.stack(recolor_filts) * self._hp_gain,
+                                   n=T_LEN, axis=-1)
+                snr0[k_gate] = float(np.sqrt((rec ** 2).sum()))
         for k in range(nsig):
             sig = self.signals[start + k].astype(np.float32)
             par = self.params[start + k].copy()
@@ -542,6 +563,10 @@ class RemixDataset(Dataset):
                         top = min(hi_d, par[IDX_DIST] * snr0[k] / self.min_snr)
                     if top > lo_d:
                         d_new = float(rng_sig.uniform(lo_d, top))
+                        s = float(par[IDX_DIST] / d_new)
+                    elif self.real_gate and k == k_gate:
+                        # cannot reach the gate in this noise: its closest distance
+                        d_new = lo_d
                         s = float(par[IDX_DIST] / d_new)
                     else:
                         s, d_new = 1.0, par[IDX_DIST]

@@ -234,3 +234,34 @@ def test_likelihood_stops_below_the_data_lowpass():
     from ahsd.inference.priors import LIKELIHOOD_FMAX
     assert LIKELIHOOD_FMAX <= LOWPASS_HZ[0]
 
+
+def test_recolouring_holds_the_filter_above_the_data_lowpass():
+    """The clamp at Nyquist must not reach signals; below the limit nothing changes."""
+    import sys
+    sys.path.insert(0, "experiments")
+    from remix_data import hold_above_band
+    f = np.fft.rfftfreq(16384, 1 / 4096)
+    filt = np.where(f < 1700, 1.0 + f / 2000, 50.0).astype(np.float32)
+    out = hold_above_band(filt, f)
+    np.testing.assert_array_equal(out[f < 1700], filt[f < 1700])
+    assert out[f >= 1700].max() < 2.0 and len(set(out[f >= 1700].tolist())) == 1
+    assert filt[-1] == 50.0                     # asd_bands keeps the measured filter
+
+
+def test_noise_holdout_is_disjoint_and_spans_every_run():
+    """Held-out segments are never trained on, cover each observing run, and the split
+    needs only the fraction, so training and certification agree."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, "experiments")
+    from remix_data import _era_of, noise_split_files
+    gps = list(range(1126000000, 1137000000, 200000)) + list(range(1238000000, 1269000000, 200000))
+    files = [Path(f"H1_{g}_strain.npy") for g in gps]
+    tr, va = noise_split_files(files, 0.1, "train"), noise_split_files(files, 0.1, "val")
+    assert not set(tr) & set(va) and set(tr) | set(va) == set(files)
+    assert abs(len(va) / len(files) - 0.1) < 0.02
+    era = lambda fs: {_era_of(int(f.name.split("_")[1])) for f in fs}
+    assert era(va) == era(files)
+    assert noise_split_files(files, 0.0, "train") == files and noise_split_files(files, 0.1, None) == files
+    assert va == noise_split_files(list(reversed(files))[::-1], 0.1, "val")
+

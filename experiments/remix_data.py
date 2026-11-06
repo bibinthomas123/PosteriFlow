@@ -98,6 +98,39 @@ def _loudness(m1, m2, d):
     return mc ** (5.0 / 6.0) / max(d, 1.0)
 
 
+# GWOSC 4 kHz data is low-passed: its measured ASD falls to 1-3% by 1900 Hz, so design/ASD
+# hits the clamp there. A real signal is low-passed with the noise and that cancels in
+# whitening, so its true filter stays near the in-band value. Left at the clamp, up to 2.8%
+# of recoloured BNS and NSBH signals had over 10% of their power above 1700 Hz
+# (analysis/distance_realdata/audit_small_checks.py, 2026-11-06).
+RECOLOR_HOLD_HZ = (1500.0, 1700.0)
+
+
+def hold_above_band(filt: np.ndarray, freqs: np.ndarray) -> np.ndarray:
+    """Re-colouring filter for signals: above RECOLOR_HOLD_HZ, its median just below.
+    The noise bands (asd_bands) keep the measured filter, as inference computes them."""
+    lo, hi = RECOLOR_HOLD_HZ
+    out = np.array(filt, copy=True)
+    out[freqs >= hi] = np.median(filt[(freqs >= lo) & (freqs < hi)])
+    return out
+
+
+def noise_split_files(files: list, holdout: float, split: str | None) -> list:
+    """Bank segments of one detector for `split` ("train", "val", or None for all). Every
+    (1/holdout)-th segment in GPS order within each observing run is held out, whole, so
+    held-out noise spans every run and training never sees it. Deterministic, so training
+    and certification agree from the fraction alone."""
+    if not holdout or split is None:
+        return list(files)
+    stride = int(round(1.0 / holdout))
+    by_era: dict = {}
+    for f in sorted(files, key=lambda p: Path(p).name):
+        m = re.search(r"_(\d+)_strain", Path(f).name)
+        by_era.setdefault(_era_of(int(m.group(1))) if m else "other", []).append(f)
+    held = {f for seg in by_era.values() for f in seg[stride // 2::stride]}
+    return [f for f in files if (f in held) == (split == "val")]
+
+
 def build_memmap_cache(data_dir: str, split: str, out_dir: str) -> dict:
     """Convert {data_dir}/{split}/batch_*.pkl into memmaps under out_dir.
 
@@ -201,7 +234,8 @@ class RemixDataset(Dataset):
                  dist_range: tuple | None = None,
                  dist_resample: tuple | None = None, min_snr: float = 6.0,
                  single_signal: bool = False, mc_range: tuple | None = None,
-                 real_gate: bool = False):
+                 real_gate: bool = False, noise_holdout: float = 0.0,
+                 noise_split: str | None = None):
         cache = Path(cache_dir)
         self.cache_dir = cache
         self.noise = np.load(cache / "noise.npy", mmap_mode="r")
@@ -330,9 +364,11 @@ class RemixDataset(Dataset):
             design = {d: np.load(bank_dir / f"design_asd_{d}.npy") for d in ("H1", "L1", "V1")}
             self.real_bank = {d: [] for d in ("H1", "L1", "V1")}
             self.recolor = {d: [] for d in ("H1", "L1", "V1")}  # parallel filters
+            self.recolor_sig = {d: [] for d in ("H1", "L1", "V1")}  # the same, as signals see them
+            freqs_rec = np.fft.rfftfreq(T_LEN, 1.0 / sample_rate)
             self._seg_era = {d: [] for d in ("H1", "L1", "V1")}  # parallel era labels
             for d in ("H1", "L1", "V1"):
-                for f in sorted(bank_dir.glob(f"{d}_*_strain.npy")):
+                for f in noise_split_files(sorted(bank_dir.glob(f"{d}_*_strain.npy")), noise_holdout, noise_split):
                     asd_f = Path(str(f).replace("_strain", "_asd"))
                     if not asd_f.exists():
                         continue
@@ -342,6 +378,7 @@ class RemixDataset(Dataset):
                                    1.0 / recolor_clamp, recolor_clamp).astype(np.float32)
                     self.real_bank[d].append(strain)
                     self.recolor[d].append(filt)
+                    self.recolor_sig[d].append(hold_above_band(filt, freqs_rec))
                     m = re.search(r"_(\d+)_strain", f.name)
                     self._seg_era[d].append(_era_of(int(m.group(1))) if m else "other")
             # The bank ASDs were measured after the 15 Hz highpass, stored signals
@@ -466,7 +503,7 @@ class RemixDataset(Dataset):
         (and hence asd_bands, which is a function of the segment's recolor
         filter) identical across views, so only the fine noise instantiation
         varies -- the real-noise analogue of force_design=True."""
-        crops, filts, lo_filts = [], [], []
+        crops, filts, lo_filts, sig_filts = [], [], [], []
         for d in ("H1", "L1", "V1"):
             k = seg_override[d] if seg_override is not None else self._draw_seg(d, rng)
             seg = self.real_bank[d][k]
@@ -484,6 +521,7 @@ class RemixDataset(Dataset):
                     c = -c[::-1].copy()
             crops.append(c)
             filts.append(self.recolor[d][k])
+            sig_filts.append(self.recolor_sig[d][k])
             if self.lo_len and (d, k) not in self._recolor_lo:
                 f_hi = np.fft.rfftfreq(T_LEN, 1.0 / SR)
                 self._recolor_lo[(d, k)] = np.interp(self._lo_freq, f_hi, self.recolor[d][k]).astype(np.float32)
@@ -491,6 +529,7 @@ class RemixDataset(Dataset):
                 lo_filts.append(self._recolor_lo[(d, k)])
         # context-stream re-colouring filters of this draw (read by _remix_event)
         self._last_recolor_lo = lo_filts
+        self._last_recolor_sig = sig_filts
         return np.stack(crops), filts
 
     def _remix_event(self, start, nsig, rng_sig, rng_noise,
@@ -541,7 +580,7 @@ class RemixDataset(Dataset):
                 # gate on the SNR this signal has in this noise, not at design
                 # sensitivity (where real-noise samples sit about 3x lower)
                 sg = np.asarray(self.signals[start + k_gate][:, :T_LEN], np.float64)
-                rec = np.fft.irfft(np.fft.rfft(sg, axis=-1) * np.stack(recolor_filts) * self._hp_gain,
+                rec = np.fft.irfft(np.fft.rfft(sg, axis=-1) * np.stack(self._last_recolor_sig) * self._hp_gain,
                                    n=T_LEN, axis=-1)
                 snr0[k_gate] = float(np.sqrt((rec ** 2).sum()))
         for k in range(nsig):
@@ -607,7 +646,7 @@ class RemixDataset(Dataset):
             # the chosen segment's whitening (exact: whitening is diagonal in
             # frequency, so it commutes with the scale/shift applied above)
             for di in range(3):
-                sig_sum[di, :T_LEN] = np.fft.irfft(np.fft.rfft(sig_sum[di, :T_LEN]) * recolor_filts[di] * self._hp_gain,
+                sig_sum[di, :T_LEN] = np.fft.irfft(np.fft.rfft(sig_sum[di, :T_LEN]) * self._last_recolor_sig[di] * self._hp_gain,
                                                    n=T_LEN).astype(np.float32)
             if self.lo_len:
                 for di, f_lo in enumerate(self._last_recolor_lo):

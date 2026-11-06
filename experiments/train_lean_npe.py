@@ -539,6 +539,9 @@ def main():
                     help="torch.compile the encoder (CUDA only)")
     ap.add_argument("--profile_steps", type=int, default=0,
                     help="time N training steps (data wait vs GPU step), print, and exit")
+    ap.add_argument("--noise_holdout", type=float, default=0.0,
+                    help="fraction of noise-bank segments never trained on; real-noise validation "
+                         "and certification use only those")
     ap.add_argument("--noise_bank", default=None,
                     help="real-noise bank dir (e.g. data/noise_bank); enables real-noise mixing")
     ap.add_argument("--real_noise_prob", type=float, default=0.0,
@@ -932,6 +935,7 @@ def main():
             log.info(f"multi-rate input: 4 s window + {args.lowrate_len} context samples")
         train_ds = RemixDataset(str(cache), remix=True,
                                 real_noise_dir=args.noise_bank,
+                                noise_holdout=args.noise_holdout, noise_split="train",
                                 real_noise_prob=args.real_noise_prob,
                                 det_dropout=args.det_dropout,
                                 return_asd_bands=args.psd_cond,
@@ -982,6 +986,7 @@ def main():
             _bc(args.data, "validation", str(vcache))
         vds = _RD(str(vcache), remix=False, seed=1234,
                   real_noise_dir=args.noise_bank, real_noise_prob=1.0,
+                  noise_holdout=args.noise_holdout, noise_split="val",
                   return_asd_bands=args.psd_cond, psd_bands=args.psd_bands,
                   single_signal=args.single_signal, mc_range=args.mc_range)
         # Materialize only what the diagnostics actually read. This set feeds

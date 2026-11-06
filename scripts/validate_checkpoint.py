@@ -644,8 +644,12 @@ def main():
     if args.noise_bank and Path(args.noise_bank).exists():
         try:
             print("Real-noise validation ...")
+            # noise the model never trained on, when it was trained with a hold-out
+            holdout = float(ckpt["args"].get("noise_holdout", 0.0) or 0.0)
+            print(f"real-noise segments: {'held out, ' + format(holdout, '.0%') if holdout else 'the training bank (no hold-out)'}")
             ds_r = RemixDataset(str(vcache), remix=False, seed=1234,
                                 real_noise_dir=args.noise_bank, real_noise_prob=1.0,
+                                noise_holdout=holdout, noise_split="val" if holdout else None,
                                 return_asd_bands=model.psd_cond,
                                 psd_bands=model.encoder.psd_bands if model.psd_cond else 16)
             real, rfigs = evaluate_domain(model, ds_r, args.n_events, args.n_post,

@@ -40,6 +40,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats as sps
 
+from ahsd.evaluation.snr_gap import nll_by_snr, snr_gap_gate
 from ahsd.models.lean_npe import LeanNPE, PARAM_NAMES
 
 BLUE, GRAY, INK, RED = "#3b6fd4", "#9aa4b2", "#3a3f47", "#c65a49"
@@ -315,6 +316,7 @@ def evaluate_domain(model, ds, n_events, n_post, device, tag):
     metrics = {
         "n_events": N, "n_post": K,
         "nll": float(nll_t.mean()),
+        "nll_by_snr": nll_by_snr(nll_t.cpu().numpy(), snr),
         "shuffle_delta_nll": float(nll_s.mean() - nll_t.mean()),
         "dist_corr": float(np.corrcoef(np.log(d_med), np.log(truth[:, jd]))[0, 1]),
         "distance_by_type": distance_by_type(samples[:, :, jd], truth, model),
@@ -523,9 +525,9 @@ def run_gates(gaus, real, gw_ok, gw_summary, basin=None, trained=("BBH",), match
         bad = [n for n in PARAM_NAMES if abs(real["coverage"][n]["90"] - 0.90) > 0.07]
         gates.append(gate("real-noise 90% coverage within ±0.07 (≤2 exceptions)",
                           len(bad) <= 2, f"violations: {bad or 'none'}"))
-        gates.append(gate("real vs gaussian NLL gap < 3 nats",
-                          abs(real["nll"] - gaus["nll"]) < 3,
-                          f"gaussian {gaus['nll']:.2f} vs real {real['nll']:.2f}"))
+        gates.append(gate(*snr_gap_gate(gaus["nll_by_snr"], real["nll_by_snr"])))
+        gates.append(gate("[diagnostic] raw real vs gaussian NLL (real events are quieter, see snr_gap.py)",
+                          True, f"gaussian {gaus['nll']:.2f} vs real {real['nll']:.2f}"))
     gates.append(gate("real-event smoke tests (GWTC events of the trained classes, |t_c|<0.1s)", gw_ok, gw_summary))
     if basin is not None:
         from ahsd.evaluation.basin_probe import basin_gate
@@ -621,7 +623,7 @@ def main():
                     encoder_type=ckpt["args"].get("encoder_type", "conv"),
                     mass_param=ckpt["args"].get("mass_param", "m1m2"),
                     geom_phase_residual=ckpt["args"].get("geom_phase_residual", False),
-                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), mf_bank=ckpt["args"].get("mf_bank", "mf_bank.npz"), pol_features=ckpt["args"].get("pol_features", False), lowrate_len=ckpt["args"].get("lowrate_len", 0), mc_bank=ckpt["args"].get("mc_bank", "") or "", q_embed_dim=ckpt["args"].get("q_embed_dim", 0), flow_layers=ckpt["args"].get("flow_layers", 10), flow_hidden=ckpt["args"].get("flow_hidden", 256), flow_bins=ckpt["args"].get("flow_bins", 16), precessing=ckpt["args"].get("precessing", False))
+                    mf_tokens=ckpt["args"].get("mf_tokens", False), mf_shape_norm=ckpt["args"].get("mf_shape_norm", False), mf_token_fusion=ckpt["args"].get("mf_token_fusion", "add"), mf_bank=ckpt["args"].get("mf_bank", "mf_bank.npz"), pol_features=ckpt["args"].get("pol_features", False), lowrate_len=ckpt["args"].get("lowrate_len", 0), mc_bank=ckpt["args"].get("mc_bank", "") or "", q_embed_dim=ckpt["args"].get("q_embed_dim", 0), flow_layers=ckpt["args"].get("flow_layers", 10), encoder_kwargs=ckpt["args"].get("encoder_kwargs"), flow_hidden=ckpt["args"].get("flow_hidden", 256), flow_bins=ckpt["args"].get("flow_bins", 16), precessing=ckpt["args"].get("precessing", False))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     print(f"checkpoint: epoch {ckpt['epoch']}, val NLL {ckpt['val_nll']:.4f}")
@@ -762,15 +764,19 @@ def main():
         print(f"matched dynesty comparison ({ref}) ...")
         matched = matched_dynesty(model, device, ref)
     path = None
-    if "BBH" in trained and not args.skip_gw150914:
+    if not args.skip_gw150914:
         print("real-path injections (amplitude, sky, distance) ...")
         try:
             from ahsd.evaluation.path_audit import real_path_injections
+            cls = next(c for c in ("BBH", "NSBH", "BNS") if c in trained)
             sources = []
-            for name, _, pub, gps in [e for e in REAL_EVENTS if e[1] == "BBH"]:
+            for name, _, pub, gps in [e for e in REAL_EVENTS if e[1] == cls]:
                 z = 1 + _redshift(pub["dL"])
                 sources.append((gps if gps is not None else name, pub["m1"] * z, pub["m2"] * z))
-            path = real_path_injections(args.model, sources, device=device)
+            # class models have two events each, and only injections a second detector
+            # carries count for sky, which GW190425 (L1 and a weak V1) seldom gives
+            path = real_path_injections(args.model, sources, device=device, event_type=cls,
+                                        n_per_event=2 if cls == "BBH" else 10)
         except Exception as e:
             print(f"real-path injections failed ({type(e).__name__}: {e})")
     gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows, trained=trained, matched=matched, path=path)

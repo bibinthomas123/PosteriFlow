@@ -99,3 +99,110 @@ def test_certification_training_path_matches_inference():
     a = (w1 - w0).astype(float)
     b = training_path_signal(h, "H1", asd)
     assert AMP_RANGE[0] <= (a * b).sum() / (a * a).sum() <= AMP_RANGE[1]
+
+
+def test_gap_gate_compares_equal_snr_not_raw_means():
+    """Real events are quieter, so a large raw gap with small matched gaps must pass."""
+    from ahsd.evaluation.snr_gap import nll_by_snr, snr_gap_gate
+    rng = np.random.default_rng(0)
+    nll_of = lambda snr: 5.0 - 6.0 * np.log(snr)        # one curve: NLL set by SNR alone
+    sg = rng.uniform(10, 40, 4000)
+    sr = sg * 0.4                                       # same events, quieter
+    sr = sr[sr >= 6]
+    g, r = nll_by_snr(nll_of(sg), sg), nll_by_snr(nll_of(sr), sr)
+    assert nll_of(sr).mean() - nll_of(sg).mean() > 3
+    name, ok, detail = snr_gap_gate(g, r)
+    assert ok, detail
+    # the same quiet events with a real penalty must fail
+    assert not snr_gap_gate(g, nll_by_snr(nll_of(sr) + 4.0, sr))[1]
+
+
+def test_gap_gate_fails_when_nothing_was_measured():
+    from ahsd.evaluation.snr_gap import nll_by_snr, snr_gap_gate
+    few = nll_by_snr(np.zeros(5), np.full(5, 15.0))
+    name, ok, detail = snr_gap_gate(few, few)
+    assert not ok and "no bin" in detail
+
+
+@pytest.mark.parametrize("cls,m1,m2", [("NSBH", 8.0, 1.4), ("BNS", 1.5, 1.3)])
+def test_long_signal_is_cut_not_wrapped(cls, m1, m2):
+    """Merger at the centre of 8 s, inspiral before it, nothing wrapped in after it."""
+    pytest.importorskip("lal")
+    from ahsd.evaluation.path_audit import detector_signal
+    p = dict(mass_1=m1, mass_2=m2, luminosity_distance=100.0, ra=1.0, dec=0.3, theta_jn=0.5,
+             psi=0.2, phase=0.1)
+    h = detector_signal(p, "H1", 1187008882.4, event_type=cls)
+    assert len(h) == 8 * 4096
+    peak = int(np.argmax(np.abs(h)))
+    assert abs(peak - 4 * 4096) < 0.05 * 4096
+    assert h[0] == 0.0                                       # tapered start
+    assert np.abs(h[5 * 4096:]).max() < 1e-2 * np.abs(h).max()
+    assert np.abs(h[4096:3 * 4096]).max() > 1e-3 * np.abs(h).max()   # inspiral kept
+
+
+@pytest.mark.parametrize("cls,m1,m2", [("NSBH", 8.0, 1.4), ("BNS", 1.5, 1.3)])
+def test_context_models_get_the_inspiral_through_the_context_stream(cls, m1, m2):
+    """Merger 34 s in, 4 s after it: inspiral covers the window and the 28 s before it."""
+    pytest.importorskip("lal")
+    from ahsd.evaluation.path_audit import CONTEXT_BEFORE_S, detector_signal
+    p = dict(mass_1=m1, mass_2=m2, luminosity_distance=100.0, ra=1.0, dec=0.3, theta_jn=0.5,
+             psi=0.2, phase=0.1)
+    h = detector_signal(p, "H1", 1187008882.4, event_type=cls, before_s=CONTEXT_BEFORE_S)
+    assert len(h) == (CONTEXT_BEFORE_S + 4) * 4096
+    assert abs(int(np.argmax(np.abs(h))) - CONTEXT_BEFORE_S * 4096) < 0.05 * 4096
+    assert np.abs(h[2 * 4096:6 * 4096]).max() > 0                    # earliest context has signal
+    assert np.abs(h[-3 * 4096:]).max() < 1e-2 * np.abs(h).max()      # nothing wrapped
+
+
+def test_searched_fraction_separates_inside_from_excluded():
+    from ahsd.evaluation.path_audit import searched_fraction
+    rng = np.random.default_rng(0)
+    ra = rng.normal(2.0, 0.05, 20000)
+    dec = rng.normal(0.3, 0.05, 20000)
+    assert searched_fraction(ra, dec, 2.0, 0.3) < 0.5
+    assert searched_fraction(ra, dec, 5.0, -0.8) > 0.95
+
+
+def test_searched_fraction_is_calibrated_for_a_broad_posterior():
+    """Truth drawn from the same uniform sky: the mean is 0.5 although nothing localizes."""
+    from ahsd.evaluation.path_audit import searched_fraction
+    rng = np.random.default_rng(1)
+    v = []
+    for _ in range(300):
+        ra, dec = rng.uniform(0, 2 * np.pi, 5000), np.arcsin(rng.uniform(-1, 1, 5000))
+        v.append(searched_fraction(ra, dec, rng.uniform(0, 2 * np.pi), np.arcsin(rng.uniform(-1, 1))))
+    assert abs(np.mean(v) - 0.5) < 0.05
+
+
+def _gates(**kw):
+    from ahsd.evaluation.path_audit import path_gates
+    r = dict(n=20, n_sky=10, amplitude=1.0, ra_error=0.3, searched=0.55, distance=1.0)
+    r.update(kw)
+    return {name.split(" on ")[0]: ok for name, ok, _ in path_gates(r)}
+
+
+def test_sky_gates_pass_a_good_model():
+    assert all(_gates().values())
+
+
+def test_sky_gate_fails_when_too_few_injections_count():
+    """An unmeasured sky must not pass, even with a small error."""
+    assert not _gates(n_sky=3)["right ascension"]
+    assert not _gates(n_sky=0, ra_error=float("nan"))["right ascension"]
+
+
+def test_sky_gates_fail_a_wrong_sky():
+    assert not _gates(ra_error=1.1)["right ascension"]
+    assert not _gates(searched=0.85)["sky calibration"]
+
+
+def test_searched_fraction_is_calibrated_for_a_narrow_posterior():
+    from ahsd.evaluation.path_audit import searched_fraction
+    rng = np.random.default_rng(2)
+    v = []
+    for _ in range(300):
+        c = rng.uniform(1, 5), rng.uniform(-0.8, 0.8)
+        draw = lambda n: (rng.normal(c[0], 0.1, n), rng.normal(c[1], 0.1, n))
+        tr, td = draw(1)
+        v.append(searched_fraction(*draw(5000), float(tr[0]), float(td[0])))
+    assert abs(np.mean(v) - 0.5) < 0.05

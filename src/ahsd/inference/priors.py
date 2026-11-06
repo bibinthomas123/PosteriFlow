@@ -52,6 +52,12 @@ def window_fmin(mc_min: float, t_merger: float, f_lower: float = F_LOWER) -> flo
     return float(max(f_lower, f))
 
 
+# Upper limit of every likelihood. GWOSC 4 kHz data is low-passed: above about 1700 Hz its
+# ASD falls to 1-3% of the 300 Hz level. Real signals are filtered with the noise; an
+# unfiltered template divided by that ASD is inflated: optimal SNR x1.5 for BNS, x1.3 for
+# NSBH, x1.000 for a 35+30 BBH (analysis/distance_realdata/audit_nyquist.py, 2026-11-06).
+LIKELIHOOD_FMAX = 1700.0
+
 # per class: (mass_1 range, mass_2 range, a1 max, a2 max)
 _CLASS = {
     "BBH": (ps._MASS_BBH, ps._MASS_BBH, ps._SPIN_BBH[1], ps._SPIN_BBH[1]),

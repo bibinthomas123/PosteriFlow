@@ -74,7 +74,7 @@ class JointLikelihood:
     def __init__(self, raw, psds, center_gps, f_min, approximant, event_type="BBH"):
         import bilby
         from ahsd.inference.importance import segment_duration
-        from ahsd.inference.priors import TrainingPrior
+        from ahsd.inference.priors import LIKELIHOOD_FMAX, TrainingPrior
         self.prior = TrainingPrior.for_class(event_type)
         wf = self.prior.waveform()
         self.center = float(center_gps)
@@ -92,6 +92,7 @@ class JointLikelihood:
                 np.asarray(raw[det], np.float64), sampling_frequency=SAMPLE_RATE,
                 duration=dur, start_time=start)
             ifo.minimum_frequency = f_min
+            ifo.maximum_frequency = LIKELIHOOD_FMAX
             f = ifo.frequency_array
             m = ifo.frequency_mask & (f >= f_min)
             psd = ifo.power_spectral_density_array[m]

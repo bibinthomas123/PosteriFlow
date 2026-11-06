@@ -82,7 +82,7 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH",
     worker (phase- and time-marginalized analytically) and cache it + the noise
     log-likelihood in the module-level `_WORKER` dict for `_eval_chunk`."""
     import bilby
-    from ahsd.inference.priors import TrainingPrior
+    from ahsd.inference.priors import LIKELIHOOD_FMAX, TrainingPrior
     prior = TrainingPrior.for_class(event_type)
     wf = prior.waveform()
     # tides are nuisance parameters, not NPE outputs: each likelihood
@@ -108,6 +108,7 @@ def _init_worker(raw, psds, center_gps, f_min, approximant, event_type="BBH",
             np.asarray(raw[det], np.float64), sampling_frequency=SAMPLE_RATE,
             duration=dur, start_time=start)
         ifo.minimum_frequency = f_min
+        ifo.maximum_frequency = LIKELIHOOD_FMAX
         ifos.append(ifo)
     wfg = bilby.gw.WaveformGenerator(
         duration=dur, sampling_frequency=SAMPLE_RATE,

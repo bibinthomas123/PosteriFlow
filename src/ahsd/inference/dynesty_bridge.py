@@ -66,7 +66,7 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
     Returns the bilby result with posterior in absolute GPS time.
     """
     import bilby
-    from ahsd.inference.priors import TrainingPrior, window_fmin
+    from ahsd.inference.priors import LIKELIHOOD_FMAX, TrainingPrior, window_fmin
     prior = prior or TrainingPrior.for_class("BBH")
     wf = prior.waveform()
     approximant = approximant or wf["approximant"]
@@ -89,6 +89,7 @@ def run_dynesty(raw: Dict[str, np.ndarray], psds: Dict[str, dict],
             np.asarray(raw[det], dtype=np.float64), sampling_frequency=SAMPLE_RATE,
             duration=dur, start_time=start)
         ifo.minimum_frequency = minimum_frequency
+        ifo.maximum_frequency = LIKELIHOOD_FMAX
         ifos.append(ifo)
 
     wfg = bilby.gw.WaveformGenerator(

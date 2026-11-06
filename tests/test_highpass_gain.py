@@ -206,3 +206,31 @@ def test_searched_fraction_is_calibrated_for_a_narrow_posterior():
         tr, td = draw(1)
         v.append(searched_fraction(*draw(5000), float(tr[0]), float(td[0])))
     assert abs(np.mean(v) - 0.5) < 0.05
+
+
+@pytest.mark.parametrize("cls,m1,m2", [("BNS", 1.5, 1.3), ("NSBH", 6.0, 1.4), ("BBH", 35.0, 30.0)])
+def test_injection_carries_the_data_lowpass(cls, m1, m2):
+    """Nothing above the data's roll-off, where dividing by the falling ASD would inflate it."""
+    pytest.importorskip("lal")
+    from ahsd.evaluation.path_audit import detector_signal
+    p = dict(mass_1=m1, mass_2=m2, luminosity_distance=100.0, ra=1.0, dec=0.3, theta_jn=0.5,
+             psi=0.2, phase=0.1)
+    h = detector_signal(p, "H1", 1187008882.4, event_type=cls)
+    P = np.abs(np.fft.rfft(h)) ** 2
+    f = np.fft.rfftfreq(len(h), 1 / 4096)
+    assert P[f >= 1900].sum() < 1e-3 * P.sum()      # only the start taper's leakage
+
+
+def test_data_lowpass_keeps_the_band_and_the_phase():
+    from ahsd.evaluation.path_audit import data_lowpass
+    t = np.arange(4096 * 4) / 4096
+    x = np.sin(2 * np.pi * 300.0 * t)
+    np.testing.assert_allclose(data_lowpass(x), x, atol=1e-8)
+    assert np.abs(data_lowpass(np.sin(2 * np.pi * 2000.0 * t))).max() < 1e-8
+
+
+def test_likelihood_stops_below_the_data_lowpass():
+    from ahsd.evaluation.path_audit import LOWPASS_HZ
+    from ahsd.inference.priors import LIKELIHOOD_FMAX
+    assert LIKELIHOOD_FMAX <= LOWPASS_HZ[0]
+

@@ -41,6 +41,19 @@ NS_OFFSET_S = 32.0            # after: the 28 s context stream starts 2 s past t
 # (BNS about 135 s, NSBH about 18 s, see bilby_pipeline)
 _GEN_SECONDS = {"BBH": 8, "NSBH": 128, "BNS": 256}
 TAPER_S = 1.0     # start of a cropped inspiral, so the cut adds no broadband transient
+# GWOSC 4 kHz data is low-passed from about 1700 Hz (ASD down to 1-3% by 1900 Hz). A real
+# signal carries that filter; without it an injection divided by the measured ASD had
+# 54-70% of its BNS power above 1900 Hz, so "SNR 15" was really quieter and the amplitude
+# check read 0.78 (analysis/distance_realdata/audit_bns_hf.py, 2026-11-06).
+LOWPASS_HZ = (1700.0, 1900.0)
+
+
+def data_lowpass(h: np.ndarray) -> np.ndarray:
+    """Zero-phase cosine roll-off over LOWPASS_HZ, standing in for the data's filter."""
+    f = np.fft.rfftfreq(len(h), 1.0 / SR)
+    lo, hi = LOWPASS_HZ
+    w = np.where(f <= lo, 1.0, np.where(f >= hi, 0.0, 0.5 * (1 + np.cos(np.pi * (f - lo) / (hi - lo)))))
+    return np.fft.irfft(np.fft.rfft(h) * w, n=len(h))
 
 
 def detector_signal(params: Dict, det: str, gps: float, approximant: str = None,
@@ -66,7 +79,7 @@ def detector_signal(params: Dict, det: str, gps: float, approximant: str = None,
     h = sum(ifo.antenna_response(params["ra"], params["dec"], gps, params["psi"], m) * pol[m]
             for m in ("plus", "cross"))
     dt = ifo.time_delay_from_geocenter(params["ra"], params["dec"], gps)
-    h = np.roll(h, D * SR // 2 + int(round(dt * SR)))
+    h = data_lowpass(np.roll(h, D * SR // 2 + int(round(dt * SR))))
     if D == 8:
         return h
     h = h[(D // 2 - before_s) * SR:(D // 2 + 4) * SR].copy()
@@ -122,7 +135,7 @@ def real_path_injections(model: str, sources: List[Tuple[float, float, float]], 
     from ahsd.models.lean_npe import PARAM_NAMES as N
 
     rng = np.random.default_rng(seed)
-    amp, ra_err, searched, dist = [], [], [], []
+    amp, ra_err, searched, dist, rows = [], [], [], [], []
     offset = BBH_OFFSET_S if event_type == "BBH" else NS_OFFSET_S
     before_s = CONTEXT_BEFORE_S if getattr(load_model(model, device=device)[0], "lowrate_len", 0) else 4
     for gps, m1, m2 in sources:
@@ -160,14 +173,18 @@ def real_path_injections(model: str, sources: List[Tuple[float, float, float]], 
                       device=device, seed=k + 1).samples
             ra_s, dec_s = s[:, N.index("ra")], s[:, N.index("dec")]
             searched.append(searched_fraction(ra_s, dec_s, p["ra"], p["dec"]))
+            z = np.exp(1j * ra_s).mean()
+            err = float(abs((np.angle(z) - p["ra"] + np.pi) % (2 * np.pi) - np.pi))
             if len(per) >= 2 and sorted(per)[-2] >= SKY_MIN_SNR:
-                mean_ra = np.angle(np.exp(1j * ra_s).mean())
-                ra_err.append(float(abs((mean_ra - p["ra"] + np.pi) % (2 * np.pi) - np.pi)))
+                ra_err.append(err)
             dist.append(float(np.median(s[:, N.index("luminosity_distance")]) / (1000.0 / scale)))
+            rows.append({"event": float(g), "k": k, "ra": p["ra"], "dec": p["dec"], "snr": dict(zip(dets, per)),
+                         "ra_error": err, "concentration": float(abs(z)), "searched": searched[-1],
+                         "distance": dist[-1]})
     return {"n": len(dist), "n_sky": len(ra_err), "amplitude": float(np.median(amp)),
             "ra_error": float(np.median(ra_err)) if ra_err else float("nan"),
             "searched": float(np.mean(searched)),
-            "distance": float(np.median(dist))}
+            "distance": float(np.median(dist)), "injections": rows}
 
 
 def path_gates(r: Dict) -> List[Tuple[str, bool, str]]:

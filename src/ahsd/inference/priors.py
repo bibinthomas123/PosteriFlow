@@ -54,8 +54,10 @@ def window_fmin(mc_min: float, t_merger: float, f_lower: float = F_LOWER) -> flo
 
 # Upper limit of every likelihood. GWOSC 4 kHz data is low-passed: above about 1700 Hz its
 # ASD falls to 1-3% of the 300 Hz level. Real signals are filtered with the noise; an
-# unfiltered template divided by that ASD is inflated: optimal SNR x1.5 for BNS, x1.3 for
-# NSBH, x1.000 for a 35+30 BBH (analysis/distance_realdata/audit_nyquist.py, 2026-11-06).
+# unfiltered template divided by that ASD is inflated. Frequency-domain optimal SNR: x1.16-
+# 1.30 for BNS, x1.15-1.28 for a 6+1.4 NSBH, x1.00 for an 8.9+1.9 NSBH and for BBH down to
+# 8+5, whose signals end below the limit (analysis/distance_realdata/audit_small_checks.py,
+# 2026-11-06; audit_nyquist.py read a cropped signal, whose edges leak, and overstated it).
 LIKELIHOOD_FMAX = 1700.0
 
 # per class: (mass_1 range, mass_2 range, a1 max, a2 max)

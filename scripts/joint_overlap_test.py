@@ -32,6 +32,14 @@ CASES = [
     # merger times 0.4 s apart, different masses
     (dict(mass_1=50.0, mass_2=40.0, luminosity_distance=2200.0, ra=0.8, dec=0.6, psi=2.2, geocent_time=-0.2),
      dict(mass_1=20.0, mass_2=15.0, luminosity_distance=1200.0, ra=3.3, dec=-0.5, psi=0.9, geocent_time=0.2)),
+    # three signals: case 0 with a quieter third, 0.3 s before the first
+    (dict(mass_1=36.0, mass_2=30.0, luminosity_distance=2000.0, ra=1.9, dec=-1.2, psi=0.5, geocent_time=0.0),
+     dict(mass_1=28.0, mass_2=22.0, luminosity_distance=1700.0, ra=4.1, dec=0.4, psi=1.9, geocent_time=0.12),
+     dict(mass_1=18.0, mass_2=14.0, luminosity_distance=1500.0, ra=0.7, dec=0.9, psi=1.1, geocent_time=-0.3)),
+    # three signals: well separated in time and mass
+    (dict(mass_1=50.0, mass_2=40.0, luminosity_distance=2200.0, ra=0.8, dec=0.6, psi=2.2, geocent_time=-0.35),
+     dict(mass_1=30.0, mass_2=20.0, luminosity_distance=1800.0, ra=5.2, dec=-0.9, psi=0.3, geocent_time=0.05),
+     dict(mass_1=20.0, mass_2=15.0, luminosity_distance=1700.0, ra=3.3, dec=-0.5, psi=0.9, geocent_time=0.3)),
 ]
 
 
@@ -85,13 +93,13 @@ def run(a):
     print(f"case {a.case}: network SNRs {np.round(net, 1)}", flush=True)
     t = time.time()
     rs = [infer(strain=raw, psds=psds, model=a.model, num_samples=a.samples, rank=r, device="cpu", seed=r)
-          for r in (0, 1)]
+          for r in range(len(ps))]
     t_npe = time.time() - t
-    c0, c1, diag = joint_correct(rs, raw, center_gps=gps, npool=a.npool, n=a.n, seed=a.seed, f_min=20.0,
-                                 n_global=a.n_global, target_ess=a.target_ess)
+    *cs, diag = joint_correct(rs, raw, center_gps=gps, npool=a.npool, n=a.n, seed=a.seed, f_min=20.0,
+                              n_global=a.n_global, target_ess=a.target_ess)
     rec = {"case": a.case, "snr": net.tolist(), "t_npe_s": round(t_npe, 1), **diag}
     names = ("mass_1", "mass_2", "luminosity_distance", "geocent_time", "ra", "dec", "theta_jn")
-    for k, (p, r, c) in enumerate(zip(ps, rs, (c0, c1))):
+    for k, (p, r, c) in enumerate(zip(ps, rs, cs)):
         rec[f"signal{k + 1}"] = {}
         for nme in names:
             j = r.param_names.index(nme)
@@ -106,7 +114,11 @@ def run(a):
     jc = diag["joint_correction"]
     print(f"joint: ESS {jc['ess']} of {jc['n']}, {jc['n_stages']} stages, converged {jc['converged']}, "
           f"{jc['wall_s']} s, acceptance {jc['mh_acceptance_mean']}")
-    for k in (1, 2):
+    th_truth = np.concatenate([theta_of(p) for p in ps])[None]
+    from ahsd.inference.joint_correction import JointLikelihood
+    jl = JointLikelihood(raw, psds, gps, 20.0, "IMRPhenomXP")
+    print(f"log LR at the truth {jl.log_lr(th_truth)[0]:.1f}; median over joint samples {jc['log_lr_median']}")
+    for k in range(1, len(ps) + 1):
         print(f"signal {k}:")
         for nme, row in rec[f"signal{k}"].items():
             n_, j_ = row["npe"], row["joint"]

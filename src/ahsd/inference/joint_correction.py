@@ -1,5 +1,9 @@
 """
-Exact likelihood correction for TWO overlapping signals.
+Exact likelihood correction for two or more overlapping signals.
+
+Written for two signals below; K signals work the same way, with 11 K parameters and the
+ordering loudness(1) >= ... >= loudness(K). Checked against the truth for three, and
+against joint dynesty for two (scripts/joint_overlap_test.py).
 
 The network answers one rank-conditioned query per signal (rank 0 = louder by
 Mc^(5/6)/d_L, rank 1 = quieter); each answer is a marginal posterior that
@@ -29,6 +33,7 @@ construction.
 """
 from __future__ import annotations
 
+import itertools
 import time
 from typing import Dict, List, Optional
 
@@ -118,7 +123,8 @@ class JointLikelihood:
             out.append([ifo.get_detector_response(pol, par)[m] for ifo, m, _, _ in self.ifos])
         return out
 
-    def log_lr(self, rows: np.ndarray, n_signals: int = 2) -> np.ndarray:
+    def log_lr(self, rows: np.ndarray, n_signals: Optional[int] = None) -> np.ndarray:
+        n_signals = n_signals or rows.shape[1] // P
         out = np.empty(len(rows))
         resp = [self.responses(rows, k) for k in range(n_signals)]
         for i in range(len(rows)):
@@ -150,7 +156,7 @@ class JointLikelihood:
         carries the mixture anchor's factor, is formed by the caller.
         Rows whose waveform is not a single (2, 2) rotation are returned
         unchanged with log q = 0 for both (always accepted as a no-op)."""
-        o = 1 - k
+        others = [j for j in range(rows.shape[1] // P) if j != k]
         jt, jp = k * P + _J["geocent_time"], k * P + _J["phase"]
         N = 4 * (self.nf - 1)
         dtau = self.dur / N
@@ -159,7 +165,7 @@ class JointLikelihood:
         new = rows.copy()
         lq_new, lq_old = np.zeros(len(rows)), np.zeros(len(rows))
         s_k = self.responses(rows, k)
-        s_o = self.responses(rows, o)
+        s_others = [self.responses(rows, j) for j in others]
         rows_q = rows.copy()
         rows_q[:, jp] = rows_q[:, jp] + np.pi / 4
         s_q = self.responses(rows_q, k)
@@ -172,7 +178,7 @@ class JointLikelihood:
             m = 2.0 * np.sign(ratio.imag)
             c = np.zeros(self.nf, complex)
             for jd, (_, _, d, w) in enumerate(self.ifos):
-                c[self.idx[jd]] += np.conj(d - s_o[i][jd]) * s_k[i][jd] * w
+                c[self.idx[jd]] += np.conj(d - sum(s[i][jd] for s in s_others)) * s_k[i][jd] * w
             z_rel = np.fft.fft(c, n=N)                     # sum_f c e^{-2 pi i f tau}
             t_old, ph_old = rows[i, jt], rows[i, jp]
             t_abs = t_old + tau
@@ -262,13 +268,13 @@ def _log_jac(th: np.ndarray) -> np.ndarray:
     """log |d theta / d x| of the log coordinates (both signals' masses and
     distances): every physical density gets this factor so that it is a
     density in the coordinates the walk and the mixture live in."""
-    return sum(np.log(th[:, k * P + _J[n]]) for k in range(2) for n in _LOG)
+    return sum(np.log(th[:, k * P + _J[n]]) for k in range(th.shape[1] // P) for n in _LOG)
 
 
 def _to_x(th: np.ndarray) -> np.ndarray:
-    """Physical [n, 22] -> sampler coordinates (log masses / distance)."""
+    """Physical [n, 11 K] -> sampler coordinates (log masses / distance)."""
     x = th.astype(np.float64).copy()
-    for k in range(2):
+    for k in range(th.shape[1] // P):
         for n in _LOG:
             x[:, k * P + _J[n]] = np.log(x[:, k * P + _J[n]])
     return x
@@ -277,7 +283,7 @@ def _to_x(th: np.ndarray) -> np.ndarray:
 def _from_x(x: np.ndarray) -> np.ndarray:
     """Sampler coordinates -> physical: exponentiate, wrap angles, sort masses."""
     th = x.copy()
-    for k in range(2):
+    for k in range(x.shape[1] // P):
         o = k * P
         for n in _LOG:
             th[:, o + _J[n]] = np.exp(th[:, o + _J[n]])
@@ -290,17 +296,16 @@ def _from_x(x: np.ndarray) -> np.ndarray:
 
 def _gm_logpdf(gm, x):
     """Mixture density of SORTED samples: sum over the m1<->m2 swap in each
-    signal block (4 label orderings), so the density matches the sorted
+    signal block (2^K label orderings), so the density matches the sorted
     convention the samples are kept in."""
     outs = []
-    for s1 in (False, True):
-        for s2 in (False, True):
-            xs = x.copy()
-            for k, sw in enumerate((s1, s2)):
-                if sw:
-                    a, b = k * P + _J["mass_1"], k * P + _J["mass_2"]
-                    xs[:, [a, b]] = x[:, [b, a]]
-            outs.append(gm.score_samples(xs))
+    for swaps in itertools.product((False, True), repeat=x.shape[1] // P):
+        xs = x.copy()
+        for k, sw in enumerate(swaps):
+            if sw:
+                a, b = k * P + _J["mass_1"], k * P + _J["mass_2"]
+                xs[:, [a, b]] = x[:, [b, a]]
+        outs.append(gm.score_samples(xs))
     return np.logaddexp.reduce(np.stack(outs), axis=0)
 
 
@@ -353,11 +358,11 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
                   device: str = "cpu", max_stages: int = 60, n_moves: int = 10, n_tp: int = 2,
                   refine_proposal: bool = True, n_global: int = 2, target_ess: float = 0.2,
                   n_refine: int = 2):
-    """Joint posterior of two overlapping signals from their rank-0 / rank-1
-    network posteriors. Returns (result_signal1, result_signal2, diagnostics);
-    the diagnostics include the effective sample size, the number of
-    tempering stages and log Z (the evidence of the two-signal model relative
-    to noise, a by-product of SMC usable to compare one vs two signals)."""
+    """Joint posterior of K overlapping signals from their rank-ordered network
+    posteriors. Returns (result_signal1, ..., result_signalK, diagnostics); the
+    diagnostics include the effective sample size, the number of tempering
+    stages and log Z (the evidence of the K-signal model relative to noise, a
+    by-product of SMC usable to compare numbers of signals)."""
     import multiprocessing as mp
     from sklearn.mixture import GaussianMixture
     from ahsd.inference.dynesty_bridge import GPS_REF
@@ -366,9 +371,10 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
     from ahsd.inference.priors import TC_HALF_WIDTH, TrainingPrior, chirp_mass, window_fmin
     from ahsd.inference.result import PosteriorResult
 
-    if len(results) != 2:
-        raise ValueError("joint_correct handles exactly two signals")
-    r0, r1 = results
+    K = len(results)
+    if not 2 <= K <= 4:       # the network queries up to five; four is what it trains on
+        raise ValueError(f"joint_correct handles two to four signals, got {K}")
+    r0 = results[0]
     if len(r0.param_names) > P:
         raise NotImplementedError("precessing posteriors are not supported by the joint correction")
     t0 = time.time()
@@ -381,8 +387,8 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
     def clean(r):
         keep = np.ones(len(r.samples), bool) if r.rail_mask is None else ~r.rail_mask
         return r.samples[keep][:, :P]
-    a, b = clean(r0), clean(r1)
-    raw_a, raw_b = a.copy(), b.copy()
+    raws = [clean(r) for r in results]
+    refined = [s.copy() for s in raws]
     refine = {}
     if refine_proposal:
         # Proposal refinement (exactness is untouched: the joint stage below
@@ -406,25 +412,31 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
             # was then fitted to. Subtract the best-fit waveform instead (slow
             # parameters: corrected median; time and phase: FFT best fit),
             # and alternate: signal 2 on d - s1, signal 1 on d - s2, ...
-            c0 = corrected_with_check(r0, raw_strain, reps=1, npool=npool, device=device)
-            a = clean(c0)
-            for it in range(max(1, n_refine)):
-                t1 = best_fit_time_phase(raw_strain, psds_, center, np.median(a, axis=0), appr)
-                c1 = corrected_with_check(r1, residual_strain(raw_strain, psds_, center, t1, prior),
-                                          reps=1, npool=npool, device=device)
-                b = clean(c1)
-                if it == n_refine - 1:
-                    break
-                t2 = best_fit_time_phase(raw_strain, psds_, center, np.median(b, axis=0), appr)
-                c0 = corrected_with_check(r0, residual_strain(raw_strain, psds_, center, t2, prior),
-                                          reps=1, npool=npool, device=device)
-                a = clean(c0)
+            done, last = [], {}
+
+            def correct_one(k):
+                # subtract the others loudest first, each fitted to what is left
+                d = raw_strain
+                for j in done:
+                    if j != k:
+                        tj = best_fit_time_phase(d, psds_, center, np.median(refined[j], axis=0), appr)
+                        d = residual_strain(d, psds_, center, tj, prior)
+                last[k] = corrected_with_check(results[k], d, reps=1, npool=npool, device=device)
+                refined[k] = clean(last[k])
+                if k not in done:
+                    done.append(k)
+
+            for k in range(K):                      # first pass: loudest to quietest
+                correct_one(k)
+            for _ in range(max(1, n_refine) - 1):
+                for k in range(K):
+                    correct_one(k)
             refine = {"rounds": int(max(1, n_refine)),
-                      "signal1_ess": c0.diagnostics["importance_sampling"].get("importance_ess"),
-                      "signal2_ess": c1.diagnostics["importance_sampling"].get("importance_ess")}
+                      **{f"signal{k + 1}_ess": last[k].diagnostics["importance_sampling"].get("importance_ess")
+                         for k in range(K)}}
         except Exception as e:     # fall back to the network posteriors
             refine = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
-    m = min(len(a), len(b), n)
+    m = min(*(len(s) for s in refined), n)
     # Per-signal proposal pools: the refined (single-signal corrected)
     # samples, the raw network samples, and a defensive share of prior draws.
     # A pool built from the refined samples alone inherits their failure: a
@@ -435,22 +447,27 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
         return np.concatenate([refined[rng.permutation(len(refined))[:m]],
                                raw[rng.permutation(len(raw))[:m // 2]],
                                prior.sample(max(1, m // 4), rng)])
-    pool1, pool2 = make_pool(a, raw_a), make_pool(b, raw_b)
-    pairs = np.concatenate([pool1[rng.integers(len(pool1), size=2 * m)],
-                            pool2[rng.integers(len(pool2), size=2 * m)]], axis=1)   # [2m, 22]
+    pools = [make_pool(s, r) for s, r in zip(refined, raws)]
+    # [2 (K - 1) m, 11 K]: more draws than the mixture below has room for per dimension
+    pairs = np.concatenate([p[rng.integers(len(p), size=2 * (K - 1) * m)] for p in pools], axis=1)
     # block proposals for the global move: a mixture per signal over the
     # "slow" parameters (merger time and phase are drawn from their exact
     # conditional, JointLikelihood.tp_propose)
     q_blocks = [GaussianMixture(n_components=12, covariance_type="full", reg_covar=1e-4,
-                                random_state=seed).fit(_slow(pool)) for pool in (pool1, pool2)]
+                                random_state=seed).fit(_slow(pool)) for pool in pools]
+
+    def ordered_mask(th):
+        """Signals in the training's loudness order, loudest first."""
+        loud = [loudness(th[:, k * P:(k + 1) * P]) for k in range(K)]
+        return np.all([a_ >= b_ for a_, b_ in zip(loud[:-1], loud[1:])], axis=0)
 
     def log_prior(th):
-        lp = prior.log_prob(th[:, :P]) + prior.log_prob(th[:, P:])
-        return np.where(loudness(th[:, :P]) >= loudness(th[:, P:]), lp, -np.inf)
+        lp = sum(prior.log_prob(th[:, k * P:(k + 1) * P]) for k in range(K))
+        return np.where(ordered_mask(th), lp, -np.inf)
 
     dur = segment_duration(raw_strain)
-    if f_min is None:     # the band that fits the segment for both signals' lightest proposal templates
-        both = np.concatenate([a, b])
+    if f_min is None:     # the band that fits the segment for every signal's lightest proposal templates
+        both = np.concatenate(refined)
         mc_lo = float(np.quantile(chirp_mass(both[:, _J["mass_1"]], both[:, _J["mass_2"]]), 0.005))
         tc_lo = float(np.quantile(both[:, _J["geocent_time"]], 0.005))
         f_min = window_fmin(mc_lo, dur - DURATION / 2 + tc_lo)
@@ -472,7 +489,7 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
         # beta = 1e-4 and the run "converged" where neither signal fits
         # (log LR -9 against 303 at the truth; 2026-11-04). Drawing from g0
         # makes its density exact, so only the likelihood moves the weights.
-        ordered = pairs[loudness(pairs[:, :P]) >= loudness(pairs[:, P:])]
+        ordered = pairs[ordered_mask(pairs)]
         gm0 = GaussianMixture(n_components=16, covariance_type="full", reg_covar=1e-5,
                               random_state=seed).fit(_to_x(ordered))
         theta = _from_x(np.asarray(gm0.sample(m)[0]))
@@ -519,7 +536,7 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
             """Random-walk block moves, then the time/phase proposal per signal
             (JointLikelihood.tp_propose); all leave t_beta invariant."""
             for _ in range(n_moves):
-                for k in range(2):
+                for k in range(K):
                     sl = slice(k * P, (k + 1) * P)
                     x = state[1]
                     cov = np.cov(x[:, sl].T)
@@ -538,7 +555,7 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
                     accs.append(a_)
                     mv["scale"] *= float(np.exp(a_ - 0.25))
             for _ in range(n_tp):
-                for k in range(2):
+                for k in range(K):
                     chunks = np.array_split(state[0], max(npool * 4, 4))
                     res = pool.map(_tp, [(c, k, beta, int(rng.integers(2 ** 31)), TC_HALF_WIDTH)
                                          for c in chunks])
@@ -553,7 +570,7 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
             # this lets a signal jump between sky modes and out of the other
             # signal's residual, which local steps cannot.
             for _ in range(n_global):
-                for k in range(2):
+                for k in range(K):
                     th = state[0]
                     o = k * P
                     cols = [o + j for j in _SLOW]
@@ -626,7 +643,7 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
         pool.join()
 
     diag = {"joint_correction": {
-        "ess": round(ess_final, 1), "n": int(m), "n_stages": len(betas), "betas": betas,
+        "n_signals": K, "ess": round(ess_final, 1), "n": int(m), "n_stages": len(betas), "betas": betas,
         "converged": bool(beta >= 1.0), "log_evidence_vs_anchor": float(log_z),
         "mh_acceptance_mean": round(float(np.mean(accs)), 3) if accs else None,
         "tp_acceptance_mean": round(float(np.mean(tp_acc)), 3) if tp_acc else None,
@@ -635,13 +652,13 @@ def joint_correct(results: List, raw_strain: Dict[str, np.ndarray], center_gps: 
         "unique_frac": round(len(np.unique(out[:, 0])) / len(out), 3),
         "f_min": round(float(f_min), 1), "wall_s": round(time.time() - t0, 1),
         "proposal_refinement": refine,
-        "note": "joint posterior of both signals (22 parameters, summed-waveform "
+        "note": f"joint posterior of {K} signals ({K * P} parameters, summed-waveform "
                 "likelihood); phase and merger time are sampled, not marginalized"}}
     res = []
-    for k, r in enumerate((r0, r1)):
+    for k, r in enumerate(results):
         res.append(PosteriorResult(
             samples=out[:, k * P:(k + 1) * P], log_prob=np.zeros(len(out)),
             param_names=list(PARAM_NAMES), trigger_gps=r.trigger_gps, truth=r.truth,
             prepared=r.prepared, diagnostics=diag, config={**r.config, "joint_corrected": True},
             rail_mask=None))
-    return res[0], res[1], diag
+    return (*res, diag)

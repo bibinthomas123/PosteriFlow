@@ -780,7 +780,7 @@ def main():
             # class models have two events each, and only injections a second detector
             # carries count for sky, which GW190425 (L1 and a weak V1) seldom gives
             path = real_path_injections(args.model, sources, device=device, event_type=cls,
-                                        n_per_event=2 if cls == "BBH" else 10)
+                                        n_per_event=6 if cls == "BBH" else 20)
         except Exception as e:
             print(f"real-path injections failed ({type(e).__name__}: {e})")
     gates = run_gates(gaus, real, gw_ok, gw_summary, basin=basin_rows, trained=trained, matched=matched, path=path)

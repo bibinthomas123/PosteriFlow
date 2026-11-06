@@ -891,6 +891,7 @@ def main():
     args.dataset_distance_prior, args.dataset_distance_ranges = None, None
     args.dataset_event_types = None
     args.dataset_bbh_mass_range, args.dataset_bbh_mc_max = None, None
+    args.dataset_v1_design = None
     args.lowrate_len = 0
     args.signed_spins = False
     args.precessing = False
@@ -902,6 +903,7 @@ def main():
         args.dataset_distance_ranges = dcfg.get("distance_ranges")
         args.dataset_bbh_mass_range = dcfg.get("bbh_mass_range")
         args.dataset_bbh_mc_max = dcfg.get("bbh_mc_max")
+        args.dataset_v1_design = dcfg.get("v1_design")
         # multi-rate datasets: the context stream is part of every strain row
         # (remix and fixed-split paths alike), so the model must know its length
         args.lowrate_len = int(dcfg.get("lowrate_seconds", 0) or 0) * int(dcfg.get("lowrate_rate", 512))

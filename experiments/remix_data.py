@@ -361,7 +361,14 @@ class RemixDataset(Dataset):
         self.real_bank = None
         if real_noise_dir and self.real_noise_prob > 0.0:
             bank_dir = Path(real_noise_dir)
-            design = {d: np.load(bank_dir / f"design_asd_{d}.npy") for d in ("H1", "L1", "V1")}
+            from ahsd.data.bilby_pipeline import V1_FLAT, design_asd_file
+            # the curve the stored signals were whitened with (none recorded: the old flat V1)
+            cfg_path = cache.parents[1] / "dataset_config.yaml"
+            self.v1_design = V1_FLAT
+            if cfg_path.exists():
+                import yaml
+                self.v1_design = (yaml.safe_load(open(cfg_path)) or {}).get("v1_design") or V1_FLAT
+            design = {d: np.load(bank_dir / design_asd_file(d, self.v1_design)) for d in ("H1", "L1", "V1")}
             self.real_bank = {d: [] for d in ("H1", "L1", "V1")}
             self.recolor = {d: [] for d in ("H1", "L1", "V1")}  # parallel filters
             self.recolor_sig = {d: [] for d in ("H1", "L1", "V1")}  # the same, as signals see them

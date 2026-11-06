@@ -265,3 +265,41 @@ def test_noise_holdout_is_disjoint_and_spans_every_run():
     assert noise_split_files(files, 0.0, "train") == files and noise_split_files(files, 0.1, None) == files
     assert va == noise_split_files(list(reversed(files))[::-1], 0.1, "val")
 
+
+def test_virgo_design_curve_is_real_and_old_models_keep_theirs():
+    from ahsd.data.bilby_pipeline import design_asd_file, get_default_psd
+    f = lambda p, x: float(np.sqrt(np.interp(x, p["frequencies"], p["psd"])))
+    v = get_default_psd("V1")
+    assert f(v, 20.0) > 5 * f(v, 100.0) and f(v, 1000.0) > 2 * f(v, 100.0)     # not flat
+    assert f(v, 100.0) != f(get_default_psd("H1"), 100.0)                      # not aLIGO
+    old = get_default_psd("V1", "flat")
+    assert f(old, 20.0) == f(old, 1000.0)
+    assert design_asd_file("V1") == "design_asd_V1.npy"                        # nothing recorded: flat
+    assert design_asd_file("V1", "advirgo") == "design_asd_V1_advirgo.npy"
+    assert design_asd_file("H1", "advirgo") == "design_asd_H1.npy"
+
+
+def test_weighted_median():
+    from ahsd.evaluation.path_audit import weighted_median
+    assert weighted_median([1, 2, 3], [1, 1, 1]) == pytest.approx(2.0)
+    assert weighted_median([1, 2, 3], [0, 0, 1]) == pytest.approx(3.0, abs=1e-9)
+    assert weighted_median([3, 1, 2], [1, 1, 1]) == pytest.approx(2.0)
+
+
+def test_distance_gate_centres_an_ideal_posterior():
+    """Isotropic inclination at fixed SNR: an ideal posterior reads high unweighted and 1 weighted."""
+    from ahsd.evaluation.path_audit import weighted_median
+    amp = lambda c: np.sqrt(((1 + c ** 2) / 2) ** 2 + c ** 2) / np.sqrt(2)
+    grid = np.linspace(0, 1, 20001)
+    order = np.argsort(amp(grid))
+    post = amp(grid)[order][np.searchsorted(np.cumsum(amp(grid)[order]) / amp(grid).sum(), 0.5)]
+    truth = amp(np.random.default_rng(0).uniform(0, 1, 200000))
+    ratio = post / truth
+    assert 1.15 < np.median(ratio) < 1.23
+    assert abs(weighted_median(ratio, truth) - 1.0) < 0.01
+
+
+def test_gate_detail_reads_old_reports():
+    from ahsd.evaluation.path_audit import path_gates
+    assert all(ok for _, ok, _ in path_gates(dict(n=20, n_sky=10, amplitude=1.0, ra_error=0.3, searched=0.5, distance=1.0)))
+

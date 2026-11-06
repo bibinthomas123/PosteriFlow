@@ -152,7 +152,7 @@ def main():
     split_counts, n_batches = merge(out, shard_dirs, fracs)
     elapsed = time.time() - t0
     with open(out / "dataset_config.yaml", "w") as f:
-        yaml.safe_dump({**cfg, "n_samples": args.n_samples, "random_seed": seeds,
+        yaml.safe_dump({**cfg, "n_samples": args.n_samples, "random_seed": seeds, "v1_design": "advirgo",
                         "parallel_shards": args.shards,
                         "snr_definition": "window+context" if cfg.get("lowrate_seconds") else "window"},
                        f, sort_keys=False)

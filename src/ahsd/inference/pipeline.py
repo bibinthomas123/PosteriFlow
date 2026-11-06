@@ -80,6 +80,7 @@ def load_model(path: str, device: Optional[str] = None):
                     mf_shape_norm=a.get("mf_shape_norm", False), mf_token_fusion=a.get("mf_token_fusion", "add"), mf_bank=a.get("mf_bank", "mf_bank.npz"), pol_features=a.get("pol_features", False), lowrate_len=a.get("lowrate_len", 0), mc_bank=a.get("mc_bank", "") or "", q_embed_dim=a.get("q_embed_dim", 0), flow_layers=a.get("flow_layers", 10), encoder_kwargs=a.get("encoder_kwargs"), flow_hidden=a.get("flow_hidden", 256), flow_bins=a.get("flow_bins", 16), precessing=a.get("precessing", False))
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
+    model.v1_design = a.get("dataset_v1_design") or "flat"   # none recorded: the old flat V1
     meta = {"model_path": str(path), "model_epoch": int(ckpt.get("epoch", -1)),
             "model_val_nll": float(ckpt.get("val_nll", float("nan"))),
             "premerger": bool(a.get("premerger", False)),
@@ -140,7 +141,8 @@ def model_asd_bands(model: LeanNPE, prepared: PreparedData, device) -> Optional[
         return None
     if prepared.source == "real":
         from ahsd.inference.preprocessing import compute_asd_bands
-        bands = compute_asd_bands(prepared, psd_bands=model.encoder.psd_bands)
+        bands = compute_asd_bands(prepared, psd_bands=model.encoder.psd_bands,
+                                  v1_design=getattr(model, "v1_design", "flat"))
     else:
         bands = np.zeros((3, model.encoder.psd_bands), dtype=np.float32)
     return torch.from_numpy(bands).unsqueeze(0).to(device).float()

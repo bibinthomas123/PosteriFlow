@@ -705,21 +705,31 @@ class BilbySignalInjector:
 
 # ── Convenience: get default analytic PSD for a detector ────────────────────
 
-def get_default_psd(detector: str) -> Dict:
-    """Return analytic aLIGO/AdVirgo PSD as {frequencies, psd} dict."""
-    try:
-        if detector == "V1":
-            psd_obj = PowerSpectralDensity.from_advancedvirgo()
-        else:
-            psd_obj = PowerSpectralDensity.from_aligo()
-        return {
-            "frequencies": psd_obj.frequency_array,
-            "psd": psd_obj.psd_array,
-        }
-    except Exception:
-        # Minimal fallback: flat 1e-46 PSD
+# Virgo's design curve. Datasets before 2026-11-06 used a flat 1e-46: this function called a
+# bilby method that does not exist and a bare except hid it. Data, the noise bank's filter,
+# asd_bands and the chirp-mass bank must agree, so a dataset records its curve and a checkpoint
+# inherits it; a dataset that records none used "flat".
+V1_ADVIRGO, V1_FLAT = "advirgo", "flat"
+
+
+def get_default_psd(detector: str, v1_design: str = V1_ADVIRGO) -> Dict:
+    """Design PSD as {frequencies, psd}: aLIGO, or Advanced Virgo for V1. v1_design="flat"
+    gives the old curve, for models trained on it."""
+    if detector == "V1" and v1_design == V1_FLAT:
         freqs = np.linspace(1.0, 2048.0, 4096)
         return {"frequencies": freqs, "psd": np.full(len(freqs), 1e-46)}
+    if detector == "V1":
+        psd_obj = PowerSpectralDensity.from_power_spectral_density_file("AdV_psd.txt")
+    else:
+        psd_obj = PowerSpectralDensity.from_aligo()
+    return {"frequencies": psd_obj.frequency_array, "psd": psd_obj.psd_array}
+
+
+def design_asd_file(detector: str, v1_design: str = V1_FLAT) -> str:
+    """Noise-bank file of a detector's design ASD; design_asd_V1.npy holds the flat curve."""
+    if detector == "V1" and v1_design != V1_FLAT:
+        return f"design_asd_V1_{v1_design}.npy"
+    return f"design_asd_{detector}.npy"
 
 
 # ── Aliases for dataset_generator import compatibility ──────────────────────

@@ -275,20 +275,21 @@ def prepare_real(strain: Dict[str, np.ndarray], trigger_gps: float,
 _DESIGN_ASD_CACHE: Dict[tuple, np.ndarray] = {}
 
 
-def _design_asd(det: str, design_asd_dir: str) -> Optional[np.ndarray]:
+def _design_asd(det: str, design_asd_dir: str, v1_design: str = "flat") -> Optional[np.ndarray]:
     """Load (and cache) detector `det`'s design ASD from `design_asd_dir`, used
     as the reference in the design-vs-measured sensitivity summary. None if
     missing."""
-    key = (det, design_asd_dir)
+    from ahsd.data.bilby_pipeline import design_asd_file
+    key = (det, design_asd_dir, v1_design)
     if key not in _DESIGN_ASD_CACHE:
-        p = Path(design_asd_dir) / f"design_asd_{det}.npy"
+        p = Path(design_asd_dir) / design_asd_file(det, v1_design)
         _DESIGN_ASD_CACHE[key] = np.load(p).astype(np.float64) if p.exists() else None
     return _DESIGN_ASD_CACHE[key]
 
 
 def compute_asd_bands(prepared: PreparedData, psd_bands: int = 16,
                       design_asd_dir: str = "data/noise_bank",
-                      clamp: float = 50.0) -> np.ndarray:
+                      clamp: float = 50.0, v1_design: str = "flat") -> np.ndarray:
     """Per-detector sensitivity summary for a PSD-conditioned LeanNPE, matching
     the training definition (RemixDataset._asd_bands): band-mean of
     log(clip(design_ASD / measured_ASD)). 0 for design-whitened / missing
@@ -301,7 +302,7 @@ def compute_asd_bands(prepared: PreparedData, psd_bands: int = 16,
         slices.append(idx if len(idx) else np.array([int(np.argmin(np.abs(freqs - lo)))]))
     ab = np.zeros((3, psd_bands), dtype=np.float32)
     for i, det in enumerate(DETECTORS):
-        design = _design_asd(det, design_asd_dir)
+        design = _design_asd(det, design_asd_dir, v1_design)
         if det not in prepared.asds or design is None:
             continue  # white-fill / no design ASD -> design-like (0)
         meas = np.asarray(prepared.asds[det], dtype=np.float64)

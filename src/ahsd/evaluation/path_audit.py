@@ -27,7 +27,7 @@ SR = 4096
 DETS = ("H1", "L1", "V1")
 AMP_RANGE = (0.90, 1.15)      # training / inference amplitude, same signal
 RA_MAX = 0.5                  # rad, median |error| of the posterior's circular mean
-DIST_RANGE = (0.75, 1.25)     # median posterior distance / truth, training prior
+DIST_RANGE = (0.75, 1.25)     # distance-weighted median of posterior distance / truth
 SKY_MIN_SNR = 5.0             # second-loudest detector, for an injection to count in RA_MAX
 SKY_MIN_N = 4                 # injections that must count, or the sky is unmeasured and fails
 SEARCHED_TOL = 0.2            # |mean searched fraction - 0.5|; 2.4 sigma at 12 injections, 3.1 at 20
@@ -89,18 +89,26 @@ def detector_signal(params: Dict, det: str, gps: float, approximant: str = None,
 
 
 def training_path_signal(h4: np.ndarray, det: str, asd: np.ndarray,
-                         design_dir: str = "data/noise_bank") -> np.ndarray:
+                         design_dir: str = "data/noise_bank", v1_design: str = "flat") -> np.ndarray:
     """A 4 s signal as RemixDataset builds it: design whitening, recolouring into
     the segment's measured ASD, filter gain included."""
     from ahsd.data.bilby_pipeline import BilbyPreprocessor, get_default_psd, highpass_gain
     from ahsd.inference.preprocessing import _design_asd
-    sig = BilbyPreprocessor(SR, 4.0).preprocess(h4, get_default_psd(det), detector=det).astype(np.float64)
-    design = _design_asd(det, design_dir)
+    sig = BilbyPreprocessor(SR, 4.0).preprocess(h4, get_default_psd(det, v1_design), detector=det).astype(np.float64)
+    design = _design_asd(det, design_dir, v1_design)
     n = min(len(design), len(asd))
     filt = np.ones(len(h4) // 2 + 1)
     filt[:n] = np.clip(design[:n] / np.maximum(asd[:n], 1e-30), 1 / 50, 50)
     gain = highpass_gain(np.fft.rfftfreq(len(h4), 1 / SR), SR)
     return np.fft.irfft(np.fft.rfft(sig) * filt * gain, n=len(h4))
+
+
+def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """Median of `values` with non-negative `weights`, interpolated between samples."""
+    v, w = np.asarray(values, float), np.asarray(weights, float)
+    order = np.argsort(v)
+    c = np.cumsum(w[order]) - 0.5 * w[order]
+    return float(np.interp(0.5 * w.sum(), c, v[order]))
 
 
 def searched_fraction(ra_s: np.ndarray, dec_s: np.ndarray, ra: float, dec: float) -> float:
@@ -129,15 +137,23 @@ def real_path_injections(model: str, sources: List[Tuple[float, float, float]], 
     """sources: (gps, m1_det, m2_det) of events whose data provides the noise. BBH
     injections go before each event; BNS and NSBH after, because their own inspiral is
     still in band before it. Returns the medians the gates read, with sky error only
-    from injections a second detector carries."""
+    from injections a second detector carries.
+
+    Distance is a distance-weighted median. The injections have isotropic angles at fixed
+    SNR, which sets each one's true distance. Under the uniform distance prior such events
+    occur in proportion to that distance (dd/dSNR ~ d), so an ideal posterior reads about
+    1.19 x truth unweighted (spread 0.74-1.85) and 1.00 weighted; measured 2026-11-06 on BNS
+    and NSBH, the unweighted median was 1.18 over 8 seeds, from 0.87 to 1.43 per seed."""
     from ahsd.inference.pipeline import infer, load_model
     from ahsd.inference.preprocessing import fetch_gwosc, prepare_real
     from ahsd.models.lean_npe import PARAM_NAMES as N
 
     rng = np.random.default_rng(seed)
-    amp, ra_err, searched, dist, rows = [], [], [], [], []
+    amp, ra_err, searched, dist, truth_d, rows = [], [], [], [], [], []
     offset = BBH_OFFSET_S if event_type == "BBH" else NS_OFFSET_S
-    before_s = CONTEXT_BEFORE_S if getattr(load_model(model, device=device)[0], "lowrate_len", 0) else 4
+    net = load_model(model, device=device)[0]
+    before_s = CONTEXT_BEFORE_S if getattr(net, "lowrate_len", 0) else 4
+    v1_design = getattr(net, "v1_design", "flat")
     for gps, m1, m2 in sources:
         g, raw, starts, srs, _ = fetch_gwosc(gps, strict=False)
         t = g + offset
@@ -167,7 +183,7 @@ def real_path_injections(model: str, sources: List[Tuple[float, float, float]], 
                 a = (prep.strain[i] - noise.strain[i]).astype(np.float64)
                 per.append(float(np.sqrt((a ** 2).sum())))
                 if per[-1] > 4:
-                    b = training_path_signal((hs[d] * scale)[-6 * SR:-2 * SR], d, noise.asds[d])
+                    b = training_path_signal((hs[d] * scale)[-6 * SR:-2 * SR], d, noise.asds[d], v1_design=v1_design)
                     amp.append(float((a * b).sum() / (a * a).sum()))
             s = infer(strain=prep, event_type=event_type, model=model, num_samples=num_samples,
                       device=device, seed=k + 1).samples
@@ -178,13 +194,16 @@ def real_path_injections(model: str, sources: List[Tuple[float, float, float]], 
             if len(per) >= 2 and sorted(per)[-2] >= SKY_MIN_SNR:
                 ra_err.append(err)
             dist.append(float(np.median(s[:, N.index("luminosity_distance")]) / (1000.0 / scale)))
+            truth_d.append(1000.0 / scale)
             rows.append({"event": float(g), "k": k, "ra": p["ra"], "dec": p["dec"], "snr": dict(zip(dets, per)),
                          "ra_error": err, "concentration": float(abs(z)), "searched": searched[-1],
-                         "distance": dist[-1]})
+                         "distance": dist[-1], "truth_distance": truth_d[-1]})
     return {"n": len(dist), "n_sky": len(ra_err), "amplitude": float(np.median(amp)),
             "ra_error": float(np.median(ra_err)) if ra_err else float("nan"),
             "searched": float(np.mean(searched)),
-            "distance": float(np.median(dist)), "injections": rows}
+            "searched_weighted": float(np.average(searched, weights=truth_d)),
+            "distance": weighted_median(dist, truth_d), "distance_unweighted": float(np.median(dist)),
+            "n_eff": float(np.sum(truth_d) ** 2 / np.sum(np.square(truth_d))), "injections": rows}
 
 
 def path_gates(r: Dict) -> List[Tuple[str, bool, str]]:
@@ -196,7 +215,9 @@ def path_gates(r: Dict) -> List[Tuple[str, bool, str]]:
          r["n_sky"] >= SKY_MIN_N and r["ra_error"] < RA_MAX,
          f"{r['ra_error']:.3f} rad, {r['n_sky']} of {r['n']} injections count (at least {SKY_MIN_N} needed)"),
         (f"sky calibration on real-path injections, mean searched fraction 0.5 +- {SEARCHED_TOL}",
-         abs(r["searched"] - 0.5) < SEARCHED_TOL, f"{r['searched']:.3f}, n={r['n']}"),
-        (f"distance on real-path injections, median posterior/truth within {DIST_RANGE[0]}-{DIST_RANGE[1]}",
-         DIST_RANGE[0] <= r["distance"] <= DIST_RANGE[1], f"{r['distance']:.3f}x truth"),
+         abs(r["searched"] - 0.5) < SEARCHED_TOL,
+         f"{r['searched']:.3f}, distance-weighted {r.get('searched_weighted', float('nan')):.3f}, n={r['n']}"),
+        (f"distance on real-path injections, distance-weighted median posterior/truth within {DIST_RANGE[0]}-{DIST_RANGE[1]}",
+         DIST_RANGE[0] <= r["distance"] <= DIST_RANGE[1],
+         f"{r['distance']:.3f}x truth, unweighted {r.get('distance_unweighted', float('nan')):.3f}, effective n {r.get('n_eff', float('nan')):.0f}"),
     ]

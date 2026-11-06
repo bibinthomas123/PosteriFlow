@@ -69,7 +69,9 @@ def _bias_region(mc: float, q: float, theta_jn: float) -> Dict:
                     "dl_bias": round(cell["dl_ratio"], 2),
                     "severe_mass_bias": bool(m1b > 0.4)})
     else:
-        out.update({"cell": None, "severe_mass_bias": bool(q > 0.8)})
+        # no measured map, so no mass-bias claim: q > 0.8 alone used to raise a strong
+        # warning for every class, including equal-mass BNS such as GW170817
+        out.update({"cell": None, "severe_mass_bias": False})
     return out
 
 

@@ -286,3 +286,11 @@ def test_bilby_priors_apply_the_chirp_mass_cap():
     assert _mc(d["mass_1"], d["mass_2"]).max() <= 90.0
     assert d["mass_1"].max() > 100
 
+
+def test_no_mass_bias_claim_without_a_measured_map(monkeypatch):
+    """Without the twin grid, an equal-mass event must not be called severely biased."""
+    from ahsd.inference import gating
+    monkeypatch.setattr(gating, "_twin_grid", lambda: None)
+    r = gating._bias_region(1.2, 0.87, 2.4)
+    assert r["cell"] is None and r["severe_mass_bias"] is False
+

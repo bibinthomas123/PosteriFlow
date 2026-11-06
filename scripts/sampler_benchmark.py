@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--lvk", default=str(ROOT / "results/dingo_h2h/lvk"))
     ap.add_argument("--approximant", default="IMRPhenomXHM")
     ap.add_argument("--out", default=str(ROOT / "results/sampler_benchmark"))
+    ap.add_argument("--seed", type=int, default=None, help="sampler seed, for repeat runs")
+    ap.add_argument("--nlive", type=int, default=None, help="override the default live points")
     a = ap.parse_args()
 
     from ahsd.inference import infer
@@ -71,10 +73,15 @@ def main():
 
     outdir = Path(a.out) / a.sampler / ev_name
     outdir.mkdir(parents=True, exist_ok=True)
+    settings = dict(DEFAULTS[a.sampler])
+    if a.nlive is not None:
+        settings["nlive"] = a.nlive
+    if a.seed is not None:
+        settings["seed"] = a.seed
     t0 = time.time()
     r = run_dynesty(seg, psds, outdir / "bilby", ev_name, center_gps=gps, trigger_offset=0.0,
                     npool=a.npool, prior=prior, approximant=a.approximant, mc_min=mc_min,
-                    sampler=a.sampler, sampler_kwargs=DEFAULTS[a.sampler])
+                    sampler=a.sampler, sampler_kwargs=settings)
     wall = time.time() - t0
 
     post = r.posterior
@@ -89,7 +96,9 @@ def main():
     L = np.load(lv / "lvk_posterior.npz")
     ours = {"chirp_mass": chirp_mass(th[:, 0], th[:, 1]), "mass_ratio": th[:, 1] / th[:, 0],
             "luminosity_distance": th[:, J["luminosity_distance"]]}
-    rec = {"event": ev_name, "sampler": a.sampler, "settings": DEFAULTS[a.sampler],
+    rec = {"event": ev_name, "sampler": a.sampler, "settings": settings,
+           "log_evidence": float(r.log_evidence), "log_evidence_err": float(r.log_evidence_err),
+           "log_bayes_factor": float(r.log_bayes_factor), "n_posterior": len(post),
            "approximant": a.approximant, "detectors": sorted(dets), "segment_s": seg_s,
            "wall_s": round(wall, 1), "npool": a.npool,
            "n_likelihood": int(getattr(r, "num_likelihood_evaluations", 0) or 0), "params": {}}

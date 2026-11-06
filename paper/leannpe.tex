@@ -50,8 +50,8 @@ sampler that evaluates the exact likelihood, with Metropolis--Hastings moves
 that leave each tempered target invariant (including sky reflections and steps
 along the mass-ratio--spin ridge), a higher-mode waveform, and a replicate test
 that routes events it cannot resolve to nested sampling. On held-out simulated events the
-binary-black-hole network \pending{[recheck after the retrain]} is calibrated in all eleven parameters, in
-Gaussian and real noise (90\% coverage 0.88--0.91), and on thirty matched
+binary-black-hole network \pending{[recheck after the retrain]} has near-nominal marginal coverage in all eleven parameters, in
+Gaussian and real noise (90\% coverage 0.88--0.91, each $\pm0.013$ at 95\% confidence), and on thirty matched
 injections its chirp-mass intervals are 1.03 times as wide as
 \texttt{dynesty}'s in the median. On 28 O3 binary-black-hole events analysed
 by both LeanNPE and DINGO with the same LVK noise spectra, and judged against
@@ -134,7 +134,7 @@ involved. The contributions of this paper are:
   localizes it (Section~\ref{sec:experiments}).
 \end{enumerate}
 The central methodological point is the interplay of the last two stages: a
-fast, calibrated but broad amortized posterior, and a likelihood correction
+fast, broad amortized posterior with near-nominal coverage, and a likelihood correction
 that turns it into a posterior comparable to state-of-the-art analyses, while
 exposing, through replicate and \texttt{dynesty} comparisons, where the final
 posterior is still unreliable.
@@ -409,6 +409,17 @@ by losing the other. The encoder also receives a 16-band summary of each
 detector's log-ASD relative to the design curve, so it knows how sensitive
 each detector was.
 
+Real-noise validation shares its noise with training in the models certified so far, BNS
+and NSBH among them: the signals are held out, but the segments are drawn from the same bank,
+so those real-noise coverage figures are measured on noise the network has seen.
+\pending{[If the v9 model is adopted:] The final BBH model excludes every tenth segment per
+observing run from training (64, 63 and 68 segments for H1, L1 and V1), and its real-noise
+validation and certification use only those. The hold-out is not fully clean: that model
+fine-tunes from one trained on the whole bank, so its weights carry some exposure to the
+held-out segments.} The real events and the injections around them use data fetched for
+each event, not the bank. One of the 1950 bank segments (L1) does contain a catalogued event,
+GW190725, which is not among the events scored here.
+
 \subsection{Datasets} \label{sec:datasets}
 
 Each source class has its own dataset. Detector-frame masses are drawn as
@@ -441,9 +452,23 @@ the two factors cancel and the effective prior is the assumed one cut at design
 SNR $\geq 6$. Stored masses look heavier than the prior only through that cut;
 weighting them by $1/(T-d_{\min})$ restores the prior (chirp-mass KS distance
 0.238 to 0.015), and detected events sit far above it. Thirty percent of examples contain
-overlapping signals (two to four). Two BBH datasets are used in this paper:
-$2\times10^5$ events with distances to 4\,Gpc, and $10^6$ events with distances
-to 6\,Gpc.
+overlapping signals (two to four). Table~\ref{tab:datasets} lists each dataset. The likelihood is a separate choice:
+the BBH catalogue correction and \texttt{dynesty} use IMRPhenomXHM, so the correction can
+use higher modes the network's training signals lack, and NSBH and BNS use their
+training waveforms.
+
+\begin{deluxetable}{lccccc}
+\tablecaption{Datasets. Each stores its full generator configuration and per-shard seeds (first seed listed) in \texttt{dataset\_config.yaml}. All have a uniform distance prior, signed aligned spins, $\mathrm{SNR}\geq6$ at design sensitivity and 30\% overlapping examples, split 80/10/10 by event. \label{tab:datasets}}
+\tablehead{\colhead{Class} & \colhead{Events} & \colhead{Waveform} & \colhead{$m_1$ ($\msun$)} & \colhead{$d_L$ (Gpc)} & \colhead{Seed}}
+\startdata
+BBH & $2\times10^5$ & IMRPhenomXP & 5--100 & 0.1--4 & 2026 \\
+BBH & $10^6$ & IMRPhenomXP & 5--100 & 0.1--6 & 4096 \\
+BBH (harmonics test) & $5\times10^5$ & IMRPhenomXPHM & 5--100 & 0.1--6 & 6606 \\
+\pending{BBH (v9)} & \pending{$1.42\times10^6$} & \pending{IMRPhenomXP} & \pending{5--200} & \pending{0.1--6} & \pending{9009} \\
+NSBH & $2\times10^5$ & IMRPhenomNSBH & 3--100 & 0.02--1.2 & 2026 \\
+BNS & $2\times10^5$ & IMRPhenomD\_NRTidalv2 & 1--2.5 & 0.01--0.4 & 2026 \\
+\enddata
+\end{deluxetable}
 
 \begin{figure*}[t]
 \centering
@@ -635,7 +660,7 @@ most sensitive detector costs almost all sky information: against the optical po
 0.2\,s of the glitch and tapered over a further 0.1\,s, applied above 10\,Hz so the cut
 leaks no low-frequency power. The network never trained on such gaps. Twenty injections at
 network SNR 15 with a matching gap give 0.43\,rad, against 0.27\,rad with the data
-intact and 1.09\,rad without L1, and stay calibrated. Network and likelihood read the
+intact and 1.09\,rad without L1, with mean searched fractions of 0.45--0.58, consistent with 0.5 at this sample size (standard error 0.065). Network and likelihood read the
 same gated strain, and the result carries a warning.
 
 Every likelihood stops at 1700\,Hz. GWOSC 4\,kHz strain is low-passed, and above that
@@ -670,14 +695,18 @@ acceptance ratio. The proposal is refined
 by alternating single-signal corrections on residuals with the best-fit
 waveform of the other signal subtracted.
 
-\section{Confidence Diagnostics} \label{sec:ood}
+\section{Data-Quality Indicators} \label{sec:ood}
 
 Every posterior carries diagnostics: the fraction of samples railing at the
 edge of the scaled support, a Mahalanobis distance of the context to the
 training contexts with its validation percentile, data-quality heuristics on
 the strain (whitened standard deviation, peak amplitude, excess kurtosis), and
 for corrected posteriors the replicate spread and sampling efficiency. They
-combine into a \texttt{HIGH}/\texttt{MEDIUM}/\texttt{LOW} label. The
+combine into a \texttt{HIGH}/\texttt{MEDIUM}/\texttt{LOW} label. These are indicators of
+how unusual an event is, not calibrated probabilities: we have not measured the failure
+rate within each label, and a \texttt{HIGH} label does not guarantee a correct posterior.
+GW190814, whose secondary lies above the NSBH network's 2.5\,$\msun$ limit, receives
+\texttt{HIGH} while the LVK mass ratio falls outside its 90\% interval. The
 likelihood correction's replicate test is the only diagnostic that acts
 automatically.
 
@@ -699,7 +728,7 @@ strongly on SNR, so the raw difference between the two NLLs mostly measures loud
 therefore bound the difference by less than 3\,nats within the SNR bins 10--20 and
 20--40, where real events sit, with each domain binned by its own SNR. These are comparisons
 of populations, not of paired events. The second gate injects known signals into data
-around real events, through the real-event path, at network SNR 15: 12 for BBH and 20 each for NSBH and
+around real events, through the real-event path, at network SNR 15: 36 for BBH and 40 each for NSBH and
 BNS. BBH injections go 20\,s before the event; NSBH and BNS go 32\,s after, so that their 28\,s context stream is
 clear of the event and its glitch, and they carry the inspiral through that stream.
 Injections are low-passed like the data above 1700\,Hz. Without that, 54--70\% of a BNS
@@ -711,7 +740,8 @@ over all injections must lie within $0.5\pm0.2$; the density and the mass are ta
 separate halves of the samples, since reading both off one histogram biases it high
 (0.60 for a calibrated uniform sky). We set the SNR binning and the sky selection after seeing
 models fail the earlier versions of these gates, for reasons the audits above identified, and report them
-as such. The thresholds themselves did not change.
+as such. The thresholds themselves did not change. The distance median is weighted by each injection's true distance. Angles are isotropic at fixed SNR, and
+under a uniform distance prior such events occur in proportion to their distance, so an ideal posterior reads about 1.19 times the truth unweighted (0.74--1.85 between the 10th and 90th percentiles) and 1.00 weighted. Unweighted, the BNS and NSBH medians were 1.17--1.18 over eight injection seeds, ranging from 0.87 to 1.43 per seed.
 
 \paragraph{Real events against LVK, alongside DINGO.} We analysed 34 O3 BBH
 events with the full pipeline (network, correction with IMRPhenomXHM, the
@@ -727,6 +757,11 @@ priors, including a distance prior uniform in comoving volume as in the
 released cosmological LVK samples and the DINGO runs, and judged against the published LVK posterior of the same event:
 offset of the median in LVK standard deviations, 90\% width relative to LVK's,
 and whether the LVK median lies inside the 90\% interval.
+
+\paragraph{Reference sampler.} \texttt{dynesty} is a reference, not ground truth, so
+we also check it. It uses 1000 live points unless stated; \pending{selected real events are
+repeated with independent seeds and with 2000 live points, and we report the spread in the
+evidence and in the posterior medians and widths [numbers pending].}
 
 \paragraph{Overlap capacity.} Events with $k=1,\dots,6$ signals are built by
 summing $k$ independent held-out signals and one noise draw, the composition
@@ -755,10 +790,15 @@ a2 & 0.891 & 0.895 & 0.460 & 0.060 \\
 \enddata
 \end{deluxetable}
 
-The BBH network is calibrated in every parameter and both noise domains
-(Table~\ref{tab:cert}): 90\% coverage lies between 0.885 and 0.911, the 50\%
-coverage between 0.48 and 0.52 on Gaussian noise, and SBC passes ($p>10^{-3}$)
-for all eleven parameters in both domains. The posterior depends strongly on
+The BBH network has near-nominal marginal coverage in every parameter and both
+noise domains (Table~\ref{tab:cert}): 90\% coverage lies between 0.885 and 0.911, and
+the 50\% coverage between 0.48 and 0.52 on Gaussian noise. With 2000 events each 90\%
+coverage carries a binomial standard error of 0.0067, or $\pm0.013$ at 95\% confidence,
+so the extremes are small but not all within sampling noise. SBC passes our threshold ($p>10^{-3}$)
+for all eleven parameters in both domains, but that threshold is permissive: four of
+the 22 values lie below 0.05, where about one is expected by chance, so some rank
+non-uniformity remains (mass\_2 and phase in Gaussian noise, geocent\_time and a1 in real noise). Marginal coverage and marginal SBC
+do not test parameter correlations or the far tails. No post-hoc recalibration is applied. The posterior depends strongly on
 the data: the shuffle statistic is 30.4\,nats in Gaussian and 24.8\,nats in
 real noise. Distance is unbiased (median true/predicted 0.98) with a
 correlation of 0.91 (real noise: 0.88) between posterior median and truth, and
@@ -972,8 +1012,7 @@ handles $k$ simultaneous signals. With 300 segments per $k$, a single
 parameter's 90\% coverage carries a binomial 95\% uncertainty of about
 $\pm0.03$. Up to the four signals present in training, the rank-conditioned
 network maintains approximately nominal marginal coverage: 0.84--0.92 across
-ranks, with the louder ranks at the low end, slightly overconfident rather than
-calibrated. The quieter signals
+ranks, with the louder ranks at the low end, slightly overconfident. The quieter signals
 (median SNR 8--15) have broad chirp-mass posteriors (37--47\% error), as their
 SNR implies, and the loudest signal's chirp-mass error grows from 2.4\% alone to
 4.8\% with three companions. At $k=5$ the fifth rank, never trained, falls to
@@ -1105,8 +1144,8 @@ necessarily learned to condition on its input.
 
 \subsection{Network and correction}
 
-The network and the correction have different jobs. The network must be
-calibrated and must cover every mode -- its widths set how much work the
+The network and the correction have different jobs. The network must have
+reliable coverage and must cover every mode -- its widths set how much work the
 correction has to do -- and it answers in seconds. The correction targets the
 posterior under the exact likelihood, and its convergence is checked rather
 than assumed (Section~\ref{sec:correction}). The real-event results show what
@@ -1160,7 +1199,11 @@ posterior ridge but not their relative probabilities
 are wrong. The replicate test detects this and falls back to nested sampling,
 which is correct but slow. The
 network is trained for up to four overlapping signals and queries at most
-five; the joint correction is implemented for two.
+five; the joint correction is validated against \texttt{dynesty} for two
+\pending{[update after the three-signal tests]}. All overlap results here are on simulated
+signals with stationary Gaussian noise; no overlapping signal has been analysed in real
+data, so these results show the rank-conditioned network works in simulation, not that it
+recovers overlaps in real observations.
 
 \section{Future Work} \label{sec:future}
 
@@ -1182,7 +1225,7 @@ most direct attack on the Gaussian--real gap.
 LeanNPE turns the overlap problem into a well-posed query -- the posterior of
 the $k$-th loudest signal -- answered by one network pass and corrected
 against the exact likelihood by a tempered sequential Monte Carlo sampler.
-\pending{[Numbers in this summary predate the 2026-11-05 fixes.]} Its BBH network is calibrated in all eleven parameters in Gaussian and real
+\pending{[Numbers in this summary predate the 2026-11-05 fixes.]} Its BBH network has near-nominal marginal coverage in all eleven parameters in Gaussian and real
 noise, matches \texttt{dynesty}'s chirp-mass width in the median on matched
 injections, and keeps approximately nominal marginal coverage for up to four
 overlapping signals in simulation; for two signals the joint correction agrees

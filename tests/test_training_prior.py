@@ -236,3 +236,53 @@ def test_precessing_coordinates():
         assert abs(float(torch.linalg.slogdet(J)[1] - sc.log_abs_det_jacobian(th[i][None])[0])) < 1e-6
     m = LeanNPE(psd_cond=True, encoder_type="coherent", mass_param="mc_q", dist_range=(80, 5000), precessing=True)
     assert len(m.param_names) == 15 and m.flow.features == 15
+
+
+HEAVY = dict(train_bbh_mass_range=[5.0, 200.0], train_bbh_mc_max=90.0,
+             train_event_types=["BBH"], train_distance_ranges=RANGES, train_distance_prior="uniform")
+
+
+def _mc(m1, m2):
+    return (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2
+
+
+def test_default_bbh_support_is_unchanged():
+    """Models trained before bbh_mass_range keep the old prior, and the sampler its draws."""
+    from ahsd.data.parameter_sampler import ParameterSampler
+    p = TrainingPrior.from_meta({"train_event_types": ["BBH"], "train_distance_ranges": RANGES})
+    assert p.m1_range == (5.0, 100.0) and p.mc_max is None
+    s = ParameterSampler({"random_seed": 3})._sample_masses("BBH")
+    rng = np.random.default_rng(3)
+    log_m1 = rng.uniform(np.log(5.0), np.log(100.0))
+    assert abs(s["mass_1"] - np.exp(log_m1)) < 1e-9
+
+
+def test_heavy_config_reaches_low_q_at_high_chirp_mass():
+    """The whole point: GW190706's region exists in the data, inside the chirp-mass cap."""
+    from ahsd.data.parameter_sampler import ParameterSampler
+    s = ParameterSampler({"random_seed": 0, "bbh_mass_range": [5.0, 200.0], "bbh_mc_max": 90.0})
+    m = np.array([[d["mass_1"], d["mass_2"]] for d in (s._sample_masses("BBH") for _ in range(20000))])
+    mc, q = _mc(m[:, 0], m[:, 1]), m[:, 1] / m[:, 0]
+    assert m[:, 0].max() > 150 and mc.max() <= 90.0
+    high = (mc >= 70) & (mc < 86)
+    assert high.sum() > 100 and (q[high] < 0.6).mean() > 0.4
+
+
+def test_prior_follows_the_checkpoint_mass_support():
+    p = TrainingPrior.from_meta(HEAVY)
+    assert p.m1_range == (5.0, 200.0) and p.mc_max == 90.0
+    th = p.sample(4000, np.random.default_rng(0))
+    m1, m2 = th[:, 0], th[:, 1]
+    assert _mc(m1, m2).max() <= 90.0 and m1.max() > 100
+    assert np.isfinite(p.log_prob(th)).all()
+    bad = th[:1].copy()
+    bad[0, 0], bad[0, 1] = 190.0, 180.0     # inside the box, chirp mass 160
+    assert p.log_prob(bad)[0] == -np.inf
+
+
+def test_bilby_priors_apply_the_chirp_mass_cap():
+    pytest.importorskip("bilby")
+    d = TrainingPrior.from_meta(HEAVY).bilby_priors(0.0).sample(500)
+    assert _mc(d["mass_1"], d["mass_2"]).max() <= 90.0
+    assert d["mass_1"].max() > 100
+

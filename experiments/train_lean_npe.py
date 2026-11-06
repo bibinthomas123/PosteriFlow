@@ -154,6 +154,8 @@ def audit_scaler_support(train_ds, args, log):
     # the mass pair under either mass_param.
     offenders = []
     for i, name in enumerate(PARAM_NAMES):
+        if args.mass_param == "mc_q" and name in ("mass_1", "mass_2"):
+            continue      # the flow never sees them: chirp mass and q are checked below
         lo, hi, _ = ParamScaler.RANGES[name]
         if name == "geocent_time" and args.premerger:
             lo, hi = -1.6, 5.2
@@ -166,6 +168,14 @@ def audit_scaler_support(train_ds, args, log):
         frac_hi = float((v > hi).mean())
         if frac_lo + frac_hi > 1e-4:
             offenders.append((name, lo, hi, frac_lo, frac_hi, float(v.min()), float(v.max())))
+
+    if args.mass_param == "mc_q":
+        m1, m2 = p[:, PARAM_NAMES.index("mass_1")], p[:, PARAM_NAMES.index("mass_2")]
+        for name, v in (("chirp_mass", (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2), ("mass_ratio", m2 / m1)):
+            lo, hi, _ = ParamScaler.RANGES[name]
+            frac_lo, frac_hi = float((v < lo).mean()), float((v > hi).mean())
+            if frac_lo + frac_hi > 1e-4:
+                offenders.append((name, lo, hi, frac_lo, frac_hi, float(v.min()), float(v.max())))
 
     if not offenders:
         log.info(f"scaler support audit: all {len(PARAM_NAMES)} params within "
@@ -877,6 +887,7 @@ def main():
     # model actually learned. None = unknown (dataset predates provenance).
     args.dataset_distance_prior, args.dataset_distance_ranges = None, None
     args.dataset_event_types = None
+    args.dataset_bbh_mass_range, args.dataset_bbh_mc_max = None, None
     args.lowrate_len = 0
     args.signed_spins = False
     args.precessing = False
@@ -886,6 +897,8 @@ def main():
         dcfg = yaml.safe_load(open(dcfg_path)) or {}
         args.dataset_distance_prior = str(dcfg.get("distance_prior") or "comoving_d2").lower()
         args.dataset_distance_ranges = dcfg.get("distance_ranges")
+        args.dataset_bbh_mass_range = dcfg.get("bbh_mass_range")
+        args.dataset_bbh_mc_max = dcfg.get("bbh_mc_max")
         # multi-rate datasets: the context stream is part of every strain row
         # (remix and fixed-split paths alike), so the model must know its length
         args.lowrate_len = int(dcfg.get("lowrate_seconds", 0) or 0) * int(dcfg.get("lowrate_rate", 512))

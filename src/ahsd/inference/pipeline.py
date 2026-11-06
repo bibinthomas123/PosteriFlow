@@ -93,6 +93,9 @@ def load_model(path: str, device: Optional[str] = None):
             "train_event_types": a.get("dataset_event_types"),
             # a1/a2 are signed aligned components (signed_spins datasets)
             "train_signed_spins": bool(a.get("signed_spins", False)),
+            # BBH mass support, when the dataset set one (None = the sampler's default)
+            "train_bbh_mass_range": a.get("dataset_bbh_mass_range"),
+            "train_bbh_mc_max": a.get("dataset_bbh_mc_max"),
             "device": device}
     _MODEL_CACHE[key] = (model, meta)
     return model, meta

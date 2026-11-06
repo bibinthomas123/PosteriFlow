@@ -108,6 +108,13 @@ class ParameterSampler:
         # modes break the distance-inclination degeneracy); default: the
         # generator's per-class approximant
         self._approximants = {k.upper(): v for k, v in (cfg.get("approximants") or {}).items()}
+        # BBH mass support. A primary cap of 100 removes low mass ratios at high chirp
+        # mass (none below 0.6 at Mc 70-80), where real events sit: GW190706, LVK q 0.52,
+        # read 0.90 in every run. bbh_mc_max keeps a wider cap inside the chirp-mass
+        # bank and the model's chirp-mass support.
+        self._bbh_mass = tuple(float(v) for v in (cfg.get("bbh_mass_range") or _MASS_BBH))
+        mc_max = cfg.get("bbh_mc_max")
+        self._bbh_mc_max = float(mc_max) if mc_max is not None else None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -172,14 +179,17 @@ class ParameterSampler:
         of NSBH, uniform for NS components), returned with mass_1 >= mass_2."""
         et = event_type.upper()
         if et == "BBH":
-            lo, hi = _MASS_BBH
+            lo, hi = self._bbh_mass
             # Both masses flat-in-log → joint prior p(m1,m2) ∝ 1/(m1·m2) for m1≥m2.
             # Matches bilby/LALInference default BBH prior. Using uniform for m2
             # would over-weight equal-mass systems (high q) vs the log-flat standard.
-            log_m1 = self.rng.uniform(np.log(lo), np.log(hi))
-            m1 = float(np.exp(log_m1))
-            log_m2 = self.rng.uniform(np.log(lo), log_m1)
-            m2 = float(np.exp(log_m2))
+            while True:
+                log_m1 = self.rng.uniform(np.log(lo), np.log(hi))
+                m1 = float(np.exp(log_m1))
+                log_m2 = self.rng.uniform(np.log(lo), log_m1)
+                m2 = float(np.exp(log_m2))
+                if self._bbh_mc_max is None or (m1 * m2) ** 0.6 / (m1 + m2) ** 0.2 <= self._bbh_mc_max:
+                    break
         elif et == "BNS":
             lo, hi = _MASS_BNS
             m1 = float(self.rng.uniform(lo, hi))

@@ -76,22 +76,29 @@ class TrainingPrior:
     dist_range: Tuple[float, float]
     dist_shape: str                       # "uniform" | "comoving_d2"
     signed_spins: bool = False            # a1/a2 aligned components in [-max, max]
+    mc_max: Optional[float] = None        # chirp-mass cap inside the mass box (BBH)
 
     @classmethod
     def for_class(cls, event_type: str, dist_ranges: Optional[Dict] = None,
-                  dist_shape: Optional[str] = None, signed_spins: bool = False) -> "TrainingPrior":
+                  dist_shape: Optional[str] = None, signed_spins: bool = False,
+                  bbh_mass_range: Optional[Tuple[float, float]] = None,
+                  bbh_mc_max: Optional[float] = None) -> "TrainingPrior":
         """Prior of one source class; dist_ranges is the dataset's
-        {class: [lo, hi]} (sampler defaults when absent)."""
+        {class: [lo, hi]} (sampler defaults when absent), and bbh_mass_range and
+        bbh_mc_max its BBH mass support when it set one."""
         et = event_type.upper()
         if et not in _CLASS:
             raise ValueError(f"unknown event_type {event_type!r}; expected one of {list(_CLASS)}")
         m1, m2, a1, a2 = _CLASS[et]
+        if et == "BBH" and bbh_mass_range is not None:
+            m1 = m2 = tuple(bbh_mass_range)
         rng = (dist_ranges or {}).get(et) or (ps._DIST_MIN[et], ps._DIST_MAX[et])
         shape = (dist_shape or "comoving_d2").lower()
         if shape not in ("uniform", "comoving_d2"):
             raise ValueError(f"unknown distance prior {dist_shape!r}")
         return cls(et, tuple(m1), tuple(m2), float(a1), float(a2),
-                   (float(rng[0]), float(rng[-1])), shape, bool(signed_spins))
+                   (float(rng[0]), float(rng[-1])), shape, bool(signed_spins),
+                   float(bbh_mc_max) if et == "BBH" and bbh_mc_max is not None else None)
 
     @classmethod
     def from_meta(cls, meta: Dict, event_type: Optional[str] = None) -> "TrainingPrior":
@@ -105,7 +112,8 @@ class TrainingPrior:
             et = event_type or meta.get("event_type") or "BBH"
         return cls.for_class(et, meta.get("train_distance_ranges"),
                              meta.get("train_distance_prior"),
-                             bool(meta.get("train_signed_spins", False)))
+                             bool(meta.get("train_signed_spins", False)),
+                             meta.get("train_bbh_mass_range"), meta.get("train_bbh_mc_max"))
 
     @property
     def lambda_range(self) -> Optional[Tuple[float, float]]:
@@ -148,6 +156,12 @@ class TrainingPrior:
             lm1 = rng.uniform(np.log(m1_lo), np.log(m1_hi), n)
             m1 = np.exp(lm1)
             m2 = np.exp(rng.uniform(np.log(m2_lo), np.log(np.minimum(m1, m2_hi))))
+            while self.mc_max is not None:
+                out = chirp_mass(m1, m2) > self.mc_max
+                if not out.any():
+                    break
+                m1[out] = np.exp(rng.uniform(np.log(m1_lo), np.log(m1_hi), int(out.sum())))
+                m2[out] = np.exp(rng.uniform(np.log(m2_lo), np.log(np.minimum(m1[out], m2_hi))))
         elif self.event_type == "NSBH":
             m1 = np.exp(rng.uniform(np.log(m1_lo), np.log(m1_hi), n))
             m2 = rng.uniform(m2_lo, m2_hi, n)
@@ -211,6 +225,8 @@ class TrainingPrior:
               (d >= d_lo) & (d <= d_hi) & (np.abs(tc) < TC_HALF_WIDTH) &
               (a1 >= self.a1_lo) & (a1 <= self.a1_max) & (a2 >= self.a2_lo) & (a2 <= self.a2_max) &
               (th > 0) & (th < np.pi) & (np.abs(dec) < np.pi / 2))
+        if self.mc_max is not None:
+            ok &= chirp_mass(np.maximum(m1, 1e-6), np.maximum(m2, 1e-6)) <= self.mc_max
         m1c, m2c = np.maximum(m1, 1e-6), np.maximum(m2, 1e-6)
         if self.event_type == "BBH":
             # log m1 uniform, log m2 uniform on [lo, log m1]: 1/(m1 m2 log(m1/lo))
@@ -247,6 +263,8 @@ class TrainingPrior:
             priors["mass_1"] = P.LogUniform(m1_lo, m1_hi, name="mass_1")
             priors["mass_2"] = P.ConditionalLogUniform(condition_func=upto_m1, minimum=m2_lo,
                                                        maximum=m2_hi, name="mass_2")
+            if self.mc_max is not None:
+                priors["chirp_mass"] = P.Constraint(minimum=0.0, maximum=self.mc_max, name="chirp_mass")
         elif self.event_type == "BNS":
             priors["mass_1"] = P.Uniform(m1_lo, m1_hi, name="mass_1")
             priors["mass_2"] = P.ConditionalUniform(condition_func=upto_m1, minimum=m2_lo,
